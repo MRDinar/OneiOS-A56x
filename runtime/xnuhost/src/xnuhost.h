@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include "xnuhost/hostcall.h"
+#include "gpu3d.h"
 
 #define XH_MAX_CPUS 8
 
@@ -54,6 +55,7 @@ typedef struct {
   char  text_fixups[1024];  // text-fixup=FILE,OFFSET,ORIGINAL,REPLACEMENT entries for /chosen text-fixups, NUL-separated
   unsigned text_fixups_length;
   bool  input;              // read /dev/input
+  int   display_direct;     // 1: a helper that can copies frames from guest RAM itself (display.c); 0: xnuhost copies; -1 unset (1)
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
   bool  tasks;              // start the task factory
   int   task_uid;           // uid of iOS task processes, -1 = xnuhost's own
@@ -316,6 +318,16 @@ int   xh_display_init(const xh_config *c, unsigned *width, unsigned *height, uns
 xh_display *xh_display_get(void);
 // The rectangle changed (already copied into pixels).
 void  xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h);
+// Direct frames (display.c, docs/booter.md 2.8): guest RAM is the memfd `fd`, guest physical `phys` at offset 0.
+void  xh_display_set_ram(int fd, uint64_t phys, uint64_t size);
+// Whether a helper that copies frames from guest RAM itself is connected and has the RAM.
+bool  xh_display_direct(void);
+// Hands the helper a frame: rows of `stride` bytes from byte `offset` of the guest segments, `width` x `height`, the
+// rectangle x, y, w, h changed, in B,G,R,X/A bytes. 0: posted, and `done(opaque, seq)` is called once (from another
+// thread, maybe before this returns) when it is in the layer or was given up on; -1: not posted (copy it here).
+typedef void (*xh_display_done)(void *opaque, uint64_t seq);
+int   xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, uint32_t stride, uint32_t width, uint32_t height,
+                      uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t seq, xh_display_done done, void *opaque);
 void  xh_display_close(void);
 
 // Input (input.c): /dev/input/event* into the virtio-input device.

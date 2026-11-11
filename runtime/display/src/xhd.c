@@ -55,9 +55,9 @@ int xhd_connect(const char *path, int wait_ms, const volatile int *stop)
   }
 }
 
-int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz)
+int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz, uint32_t flags)
 {
-  struct xhd_message m = { { 'X', 'H', 'D', 'P' }, width, height, hz, 0 };
+  struct xhd_message m = { { 'X', 'H', 'D', 'P' }, width, height, hz, flags };
   return send(fd, &m, sizeof m, MSG_NOSIGNAL) < 0 ? -errno : 0;
 }
 
@@ -127,22 +127,122 @@ void xhd_rect_union(struct xhd_rect *into, const struct xhd_rect *r)
   into->x = x0; into->y = y0; into->w = (uint32_t)(x1 - x0); into->h = (uint32_t)(y1 - y0);
 }
 
-int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
+int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage) { return xhd_drain_direct(fd, frame, damage, NULL); }
+
+void xhd_direct_init(struct xhd_direct *d)
+{
+  memset(d, 0, sizeof *d);
+  d->ram_fd = d->table_fd = -1;
+}
+
+void xhd_direct_close(struct xhd_direct *d)
+{
+  if (d->ram) munmap((void *)d->ram, d->ram_size);
+  if (d->table) munmap((void *)d->table, d->table_bytes);
+  if (d->ram_fd >= 0) close(d->ram_fd);
+  if (d->table_fd >= 0) close(d->table_fd);
+  xhd_direct_init(d);
+}
+
+// xnuhost's "memory": guest RAM and the table, both mapped read-only. Only the first is taken.
+static void direct_memory(struct xhd_direct *d, const struct xhd_message *m, const int *fds, unsigned nfds)
+{
+  uint64_t ram = (uint64_t)m->a | (uint64_t)m->b << 32;
+  struct stat a, b;
+  if (!d || d->ram || nfds != 2 || !m->c || m->c > 64 || m->d < sizeof(struct xhd_slot) || m->d > (64u << 20) || m->d % 8 ||
+      fstat(fds[0], &a) || fstat(fds[1], &b) || !ram || (uint64_t)a.st_size < ram || (uint64_t)b.st_size < (uint64_t)m->c * m->d) return;
+  void *rm = mmap(NULL, ram, PROT_READ, MAP_SHARED, fds[0], 0);
+  if (rm == MAP_FAILED) return;
+  void *tm = mmap(NULL, (size_t)m->c * m->d, PROT_READ, MAP_SHARED, fds[1], 0);
+  if (tm == MAP_FAILED) { munmap(rm, ram); return; }
+  d->ram = rm; d->ram_size = ram; d->table = tm; d->table_bytes = (size_t)m->c * m->d; d->slots = m->c; d->slot_bytes = m->d;
+  d->ram_fd = dup(fds[0]); d->table_fd = dup(fds[1]);
+}
+
+int xhd_drain_direct(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_direct *direct)
 {
   // A bound on one round: a guest that floods flushes must not keep the frame from being posted.
   for (int i = 0; i < 4096; i++) {
     struct xhd_message m;
-    ssize_t n = recv(fd, &m, sizeof m, MSG_DONTWAIT);
+    char control[CMSG_SPACE(sizeof(int) * 4)];
+    struct iovec iov = { &m, sizeof m };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+    ssize_t n = recvmsg(fd, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
     if (n < 0) {
       if (errno == EINTR) continue;
       return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
     }
+    int fds[4];
+    unsigned nfds = 0;
+    for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+      if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+      size_t count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+      for (size_t k = 0; k < count; k++) {
+        int got;
+        memcpy(&got, CMSG_DATA(cm) + k * sizeof(int), sizeof(int));
+        if (nfds < 4) fds[nfds++] = got; else close(got);
+      }
+    }
+    if (n == sizeof m && !memcmp(m.magic, "XHDM", 4)) direct_memory(direct, &m, fds, nfds);
+    for (unsigned k = 0; k < nfds; k++) close(fds[k]);                // kept ones were duplicated
     if (n == 0) return -1;
-    if (n != sizeof m || memcmp(m.magic, "XHDF", 4)) continue;      // not a flush: ignored
+    if (n != sizeof m) continue;
+    if (!memcmp(m.magic, "XHDS", 4)) {
+      // The newest frame wins; the answer for it covers the ones before it.
+      uint64_t seq = (uint64_t)m.b | (uint64_t)m.c << 32;
+      if (direct && direct->ram && m.a < direct->slots && (!direct->pending || seq > direct->seq)) { direct->pending = 1; direct->slot = m.a; direct->seq = seq; }
+      continue;
+    }
+    if (memcmp(m.magic, "XHDF", 4)) continue;                         // not a flush: ignored
     struct xhd_rect r = { m.a, m.b, m.c, m.d };
     if (xhd_rect_clip(&r, frame->width, frame->height)) xhd_rect_union(damage, &r);
   }
   return 0;
+}
+
+int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride, uint32_t dst_width, uint32_t dst_height, int swap,
+                    struct xhd_rect *done)
+{
+  memset(done, 0, sizeof *done);
+  if (!d->ram || !d->pending || d->slot >= d->slots) return -EINVAL;
+  const uint8_t *base = d->table + (size_t)d->slot * d->slot_bytes;
+  struct xhd_slot s;
+  memcpy(&s, base, sizeof s);
+  if (__atomic_load_n((const uint64_t *)base, __ATOMIC_ACQUIRE) != d->seq || s.seq != d->seq) return -ESTALE;   // reused already
+  if (s.format != 1 || !s.width || !s.height || s.stride < (uint64_t)s.width * 4 || s.nsegs > (d->slot_bytes - sizeof s) / sizeof(struct xhd_seg))
+    return -EINVAL;
+  const struct xhd_seg *segs = (const struct xhd_seg *)(base + sizeof s);
+  struct xhd_rect r = { s.x, s.y, s.w, s.h };
+  if (!xhd_rect_clip(&r, s.width, s.height) || !xhd_rect_clip(&r, dst_width, dst_height)) return 0;
+  // Rows only go forward: one cursor walks the segments.
+  unsigned at = 0;
+  uint64_t seg_start = 0;
+  for (uint32_t row = r.y; row < r.y + r.h; row++) {
+    uint64_t want = s.offset + (uint64_t)row * s.stride + (uint64_t)r.x * 4, left = (uint64_t)r.w * 4;
+    uint8_t *to = dst + (size_t)row * dst_stride + (size_t)r.x * 4;
+    while (at < s.nsegs && want >= seg_start + segs[at].length) { seg_start += segs[at].length; at++; }
+    unsigned k = at;
+    uint64_t k_start = seg_start, pos = want;
+    while (left) {
+      if (k >= s.nsegs) return -EINVAL;                                 // the rows reach past the segments
+      const struct xhd_seg *g = &segs[k];
+      if (g->offset > d->ram_size || g->length > d->ram_size - g->offset) return -EINVAL;
+      uint64_t in = pos - k_start, n = g->length - in < left ? g->length - in : left;
+      const uint8_t *from = d->ram + g->offset + in;
+      if (!swap) memcpy(to, from, (size_t)n);
+      else for (uint64_t i = 0; i + 4 <= n; i += 4) { to[i] = from[i + 2]; to[i + 1] = from[i + 1]; to[i + 2] = from[i]; to[i + 3] = 0xff; }
+      to += n; left -= n; pos += n;
+      if (left) { k_start += g->length; k++; }
+    }
+  }
+  *done = r;
+  return 0;
+}
+
+int xhd_send_done(int fd, uint64_t seq, uint32_t flags)
+{
+  struct xhd_message m = { { 'X', 'H', 'D', 'A' }, (uint32_t)seq, (uint32_t)(seq >> 32), flags, 0 };
+  return send(fd, &m, sizeof m, MSG_NOSIGNAL | MSG_DONTWAIT) < 0 ? -errno : 0;
 }
 
 void xhd_fit(uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh, struct xhd_fit *fit)

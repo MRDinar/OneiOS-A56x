@@ -121,6 +121,69 @@ static void test_copy(void)
   CHECK(dst[0] == 0xee && dst[DS * 4] == 0xee && dst[DS + 7] == 0xee && dst[DS + 24] == 0xee);
 }
 
+// ---- direct frames: guest RAM and the table from xnuhost, the rows copied from scattered segments --------
+static void send_fds(int fd, const struct xhd_message *m, const int *fds, int n)
+{
+  char control[CMSG_SPACE(sizeof(int) * 2)];
+  struct iovec iov = { (void *)m, sizeof *m };
+  struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = CMSG_SPACE(sizeof(int) * (size_t)n) };
+  memset(control, 0, sizeof control);
+  struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+  cm->cmsg_level = SOL_SOCKET; cm->cmsg_type = SCM_RIGHTS; cm->cmsg_len = CMSG_LEN(sizeof(int) * (size_t)n);
+  memcpy(CMSG_DATA(cm), fds, sizeof(int) * (size_t)n);
+  sendmsg(fd, &msg, 0);
+}
+
+static void test_direct(void)
+{
+  enum { RAM = 0x10000, SLOTS = 4, SLOT = 64 + 8 * 16, W = 10, H = 100, STRIDE = 48, DS = 44 };
+  int ram = xhd_memfd("test-ram", RAM), tab = xhd_memfd("test-table", SLOTS * SLOT), pair[2];
+  CHECK(ram >= 0 && tab >= 0 && socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
+  uint8_t *rp = mmap(NULL, RAM, PROT_READ | PROT_WRITE, MAP_SHARED, ram, 0), *tp = mmap(NULL, SLOTS * SLOT, PROT_READ | PROT_WRITE, MAP_SHARED, tab, 0);
+  for (size_t i = 0; i < RAM; i++) rp[i] = (uint8_t)(i * 13 + (i >> 8));
+  // The scanout: 4800 bytes in two pages out of order, so row 85 runs from one into the other.
+  struct xhd_slot *slot = (struct xhd_slot *)(tp + 2 * SLOT);
+  struct xhd_seg *segs = (struct xhd_seg *)(slot + 1);
+  segs[0] = (struct xhd_seg){ 0x8000, 0x1000 }; segs[1] = (struct xhd_seg){ 0x2000, 0x1000 };
+  *slot = (struct xhd_slot){ 7, 0, STRIDE, W, H, 2, 1, 0, 8, H, 1, { 0 } };
+  struct xhd_message mem = { { 'X', 'H', 'D', 'M' }, RAM, 0, SLOTS, SLOT }, frame = { { 'X', 'H', 'D', 'S' }, 2, 7, 0, 0 };
+  int fds[2] = { ram, tab };
+  send_fds(pair[0], &mem, fds, 2);
+  send(pair[0], &frame, sizeof frame, 0);
+  struct xhd_frame f = { .width = W, .height = H };
+  struct xhd_direct d;
+  xhd_direct_init(&d);
+  struct xhd_rect damage = { 0, 0, 0, 0 };
+  CHECK(xhd_drain_direct(pair[1], &f, &damage, &d) == 0 && d.ram && d.ram_size == RAM && d.slots == SLOTS && d.pending && d.slot == 2 && d.seq == 7);
+  static uint8_t dst[DS * H], want[DS * H];
+  memset(dst, 0xee, sizeof dst); memset(want, 0xee, sizeof want);
+  for (uint32_t y = 0; y < H; y++) for (uint32_t x = 1; x < 9; x++) for (int b = 0; b < 4; b++) {
+    uint64_t at = (uint64_t)y * STRIDE + x * 4 + (uint64_t)b;
+    want[y * DS + x * 4 + (uint32_t)b] = rp[(at < 0x1000 ? 0x8000 : 0x2000 - 0x1000) + at];
+  }
+  struct xhd_rect done;
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == 0 && done.x == 1 && done.w == 8 && done.h == H);
+  CHECK(!memcmp(dst, want, sizeof dst));                                 // every row, across the two pages, nothing else
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 1, &done) == 0);
+  CHECK(dst[85 * DS + 4] == want[85 * DS + 6] && dst[85 * DS + 6] == want[85 * DS + 4] && dst[85 * DS + 7] == 0xff);   // swapped
+  CHECK(xhd_copy_direct(&d, dst, DS, 4, 3, 0, &done) == 0 && done.w == 3 && done.h == 3);                // clipped to the buffer
+  slot->nsegs = 1;
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == -EINVAL);                                         // rows past the segments
+  slot->nsegs = 2; segs[1].offset = RAM - 0x800;
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == -EINVAL);                                         // a segment past the RAM
+  segs[1].offset = 0x2000; slot->seq = 11;
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == -ESTALE);                                         // the slot was reused
+  frame.b = 5;                                                                                              // an older frame: the newer stays
+  send(pair[0], &frame, sizeof frame, 0);
+  CHECK(xhd_drain_direct(pair[1], &f, &damage, &d) == 0 && d.seq == 7);
+  CHECK(xhd_send_done(pair[1], 7, 0) == 0);
+  struct xhd_message a;
+  CHECK(recv(pair[0], &a, sizeof a, 0) == (ssize_t)sizeof a && !memcmp(a.magic, "XHDA", 4) && a.a == 7 && a.b == 0);
+  xhd_direct_close(&d);
+  munmap(rp, RAM); munmap(tp, SLOTS * SLOT);
+  close(ram); close(tab); close(pair[0]); close(pair[1]);
+}
+
 // ---- the protocol against a serving thread --------------------------------------------------
 struct server { char path[200]; int delay_ms; uint32_t width, height; int mode; int done; };
 
@@ -165,10 +228,10 @@ static void test_panel_report(void)
 {
   int pair[2];
   CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, pair) == 0);
-  CHECK(xhd_send_panel(pair[0], 1440, 3120, 120) == 0);
+  CHECK(xhd_send_panel(pair[0], 1440, 3120, 120, XHD_PANEL_DIRECT) == 0);
   struct xhd_message m;
   CHECK(recv(pair[1], &m, sizeof m, 0) == (ssize_t)sizeof m);
-  CHECK(!memcmp(m.magic, "XHDP", 4) && m.a == 1440 && m.b == 3120 && m.c == 120 && m.d == 0);
+  CHECK(!memcmp(m.magic, "XHDP", 4) && m.a == 1440 && m.b == 3120 && m.c == 120 && m.d == 1);
   close(pair[0]);
   close(pair[1]);
 }
@@ -312,6 +375,7 @@ int main(int argc, char **argv)
   test_hello_check();
   test_copy();
   test_panel_report();
+  test_direct();
   test_protocol(dir);
   if (argc > 1) test_displayctl(argv[1], dir);
   rmdir(dir);

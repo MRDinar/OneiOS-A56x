@@ -14,7 +14,12 @@
 //   hello  { "XHD1", width, height, stride, format } + the frame memfd (SCM_RIGHTS)
 //   flush  { "XHDF", x, y, w, h }
 // and from the helper, straight after connecting (xnuhost waits for it before it sizes the frame in a session):
-//   panel  { "XHDP", width, height, hz, 0 }
+//   panel  { "XHDP", width, height, hz, flags }      flags bit 0 (XHD_PANEL_DIRECT): frames may come as "frame" below
+// Direct frames (runtime/xnuhost/src/display.c): the helper copies the guest's scanout from guest RAM itself.
+//   memory { "XHDM", RAM bytes low, high, slots, slot bytes } + the RAM memfd and the table memfd (SCM_RIGHTS)
+//   frame  { "XHDS", slot, seq low, seq high, 0 }    described by that slot of the table (struct xhd_slot, then segments)
+//   done   { "XHDA", seq low, seq high, flags, 0 }   (helper -> xnuhost) the frames up to seq are in the layer; flags
+//          bit 0 (XHD_DONE_FAILED): the last could not be copied, and xnuhost goes back to copying frames itself
 struct xhd_message { char magic[4]; uint32_t a, b, c, d; };
 
 struct xhd_rect { uint32_t x, y, w, h; };            // w == 0: empty
@@ -32,14 +37,41 @@ int xhd_check_hello(const struct xhd_message *m, size_t length, off_t memfd_size
 // Connect to the socket at path, waiting up to wait_ms for it to appear; *stop != 0 ends the wait.
 // Refuses anything that is not a socket (a link included). Returns the fd or -errno.
 int xhd_connect(const char *path, int wait_ms, const volatile int *stop);
-// Tell xnuhost the panel's mode. 0 or -errno.
-int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz);
+// Tell xnuhost the panel's mode (and XHD_PANEL_DIRECT in flags: direct frames are welcome). 0 or -errno.
+#define XHD_PANEL_DIRECT 1u
+int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz, uint32_t flags);
+
+// A slot of the direct table, as xnuhost writes it: the frame `seq`, rows of `stride` bytes from byte `offset` of the
+// segments (the guest's pages as offsets into the RAM memfd, in the scanout's order), `width` x `height`, the
+// rectangle x, y, w, h changed, format 1 (B,G,R,X/A). seq is written last.
+struct xhd_slot { uint64_t seq, offset; uint32_t stride, width, height, nsegs, x, y, w, h, format, pad[3]; };
+struct xhd_seg { uint64_t offset, length; };
+struct xhd_direct {
+  int ram_fd, table_fd;
+  const uint8_t *ram, *table;                         // read-only maps; NULL until xnuhost's "memory"
+  uint64_t ram_size;
+  size_t table_bytes;
+  uint32_t slots, slot_bytes;
+  int pending;                                        // a frame came: the newest is slot / seq
+  uint32_t slot;
+  uint64_t seq;
+};
+void xhd_direct_init(struct xhd_direct *d);
+void xhd_direct_close(struct xhd_direct *d);
+// Copy the pending frame's rectangle (clipped to dst_width x dst_height) from guest RAM into a B,G,R,X/A buffer (swap:
+// R,G,B,X, alpha 0xff). 0, with *done the rectangle, or -errno: a slot that changed or does not fit RAM copies nothing.
+int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride, uint32_t dst_width, uint32_t dst_height, int swap,
+                    struct xhd_rect *done);
+#define XHD_DONE_FAILED 1u
+int xhd_send_done(int fd, uint64_t seq, uint32_t flags);
 // Receive the hello and map the frame. 0 or -errno.
 int xhd_recv_hello(int fd, struct xhd_frame *frame, int timeout_ms);
 void xhd_frame_close(struct xhd_frame *frame);
 // Read every pending flush without blocking, adding each (clipped to the frame) to *damage.
 // 0 the socket is open, -1 it closed.
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage);
+// The same, and with `direct` (may be NULL: those messages are then ignored) the "memory" and "frame" messages too.
+int xhd_drain_direct(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_direct *direct);
 
 int xhd_rect_clip(struct xhd_rect *r, uint32_t width, uint32_t height);   // 0 when nothing is left
 void xhd_rect_union(struct xhd_rect *into, const struct xhd_rect *r);

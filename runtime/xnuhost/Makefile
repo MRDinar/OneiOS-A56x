@@ -129,9 +129,10 @@ $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c -lpthread -o $@
 # The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket.
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/log.c $(HDR)
+# With the display helper's own protocol code (runtime/display/src/xhd.c) on the other end for the direct frames.
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/log.c ../display/src/xhd.c ../display/src/xhd.h $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/log.c -lpthread -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -I../display/src -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/log.c ../display/src/xhd.c -lpthread -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)

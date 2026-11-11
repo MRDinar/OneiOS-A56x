@@ -74,7 +74,16 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   Whether One UI's resolution setting is a panel mode or only a logical size on this phone is not known; the
   helper's `panel modes: active ..., native ...` line of the first run says.
 - **Frames.** One copy per frame, of the damaged rectangle only: the window copies back what the last buffer had
-  and hands out the rectangle to draw. `B,G,R,A` buffers take the guest's bytes as they are (`memcpy`; the layer
+  and hands out the rectangle to draw. With direct frames (the default; `--no-direct` asks xnuhost for the old
+  way) the helper says so in its `panel` report, xnuhost hands it guest RAM and a table of frame descriptions
+  (`XHDM`), and a `frame` message (`XHDS`) makes the helper copy that frame's rows straight from the guest's pages
+  (the compositor's surface, scattered over RAM; the table has its segments) into the buffer, then post it and
+  answer `done` (`XHDA`), which is when xnuhost answers the guest's flush. xnuhost copies nothing then, so a frame
+  costs one copy on the host instead of two. The memfd stays for what xnuhost still draws itself (the boot
+  console, 2D resources) and for the first four buffers. A frame that cannot be copied (a slot reused, a segment
+  outside RAM) is answered with the failure flag and xnuhost copies the frames itself from then on. Protocol:
+  `docs/booter.md` 2.8. Every 10 s the log has `10 s: N frames (M from guest RAM), F/s; buffer wait mean ... ms;
+  copy mean ... ms, max ... ms; this process P% of a core`, and once `frames come straight from guest RAM now`. `B,G,R,A` buffers take the guest's bytes as they are (`memcpy`; the layer
   is marked opaque); if the phone gives no such buffer the helper falls back to `R,G,B,X` and swaps while it
   copies. Pacing is the buffer queue's: the next buffer is handed out when surfaceflinger has taken the last, so
   the loop runs at the panel's vsync and every flush that came meanwhile is one post.
@@ -83,7 +92,7 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
 
 ```
 oneios-display (--session DIR | --socket PATH) [--takeover] [--wait SECONDS] [--logical WxH]
-               [--hz N] [--format bgra|rgbx] [--no-projection]
+               [--hz N] [--format bgra|rgbx] [--no-projection] [--no-direct]
 ```
 
 Exit codes: 0 the session ended or it was asked to stop, 2 usage or a missing file, 3 no socket or no usable
@@ -152,8 +161,10 @@ If the helper hangs, `displayctl` ends it 3 s after the test; if `displayctl` it
 
 - No run on the phone yet, so every framework call is unproven on Android 17: the hidden methods used are all
   in `java/OneiOSDisplay.java`, and each has a fallback or a logged failure.
-- The copy is not zero-copy. For that xnuhost would have to keep the guest's frame in a gralloc buffer
-  (`AHardwareBuffer`) instead of a memfd and pass that; `virtio_gpu.c` and the socket's hello would change.
+- The copy is not zero-copy: one CPU copy a frame remains (`docs/booter.md` 2.8 says why). The helper maps all of
+  guest RAM read-only for it; the pages it touches count in its resident size as well as xnuhost's.
+- Direct frames have not run on the phone: the buffer-wait and copy times, and whether answering the flush after
+  the post slows the guest's swaps, are unmeasured there.
 - The native-mode request (`setDesiredDisplayModeSpecs` by reflection) is unproven like the rest; a refusal is
   logged and the frame is scaled. At 1440x3120 a full-frame copy is 18 MB, 2.2 GB/s at 120 Hz when every frame
   is all damage.

@@ -21,6 +21,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->display, "shm");
   strcpy(c->gpu, "auto");
   c->input = true;
+  c->display_direct = -1;
   c->tasks = true;
   c->task_uid = -1;
   c->log_level = XH_LOG_INFO;
@@ -89,6 +90,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     c->text_fixups_length += (unsigned)n + 1;
   }
   else if (!strcmp(key, "input")) return flag(value, &c->input);
+  else if (!strcmp(key, "display-direct")) { bool on; if (flag(value, &on)) return -1; c->display_direct = on; }
   else if (!strcmp(key, "input-script")) return copy(c->input_script, sizeof c->input_script, value);
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
@@ -212,6 +214,7 @@ int xh_config_finish(xh_config *c)
   if (!c->width) c->width = from_image.width;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;
+  if (c->display_direct < 0) c->display_direct = from_image.display_direct < 0 ? 1 : from_image.display_direct;
   if (!c->scale) c->scale = from_image.scale ? from_image.scale : 3;
   if (c->scale_fixup < 0) c->scale_fixup = from_image.scale_fixup < 0 ? 1 : from_image.scale_fixup;
   if (!c->text_fixups_length) { memcpy(c->text_fixups, from_image.text_fixups, sizeof c->text_fixups); c->text_fixups_length = from_image.text_fixups_length; }
