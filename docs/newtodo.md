@@ -89,7 +89,7 @@ docs each item names. **Proven** = ran on the phone; **built** = compiled and ho
 13. **Slow Home Screen** (0060): `oneios-ls-state:` and `oneios-icons-state:` lines; lsd's fixed start work stays.
 14. **WebKit** (`docs/newtodo.md` 10): **cause found and fixed (fix-webkit-icache, 2026-11-14; PC only).** The crash
     report's fault was JSC's i-cache flush (`dc cvau`) on the read-execute JIT alias, taken as a write because the
-    stub and the kernel dropped ESR ISS.CM. Fixed in the stub and in hosted 0070. On the phone (new runtime and
+    stub and the kernel dropped ESR ISS.CM. Fixed in the stub and in hosted 0071. On the phone (new runtime and
     `kernel.kc`): no `.ips` with `sys_icache_invalidate`, WebContent stays up, Safari loads a page.
 
 ## Decisions waiting for the owner
@@ -248,7 +248,7 @@ docs each item names. **Proven** = ran on the phone; **built** = compiled and ho
     region`, then `CODE SIGNING: ... vm_map_entry_reinit_code_signing_after_copy: curprot cannot be write+execute.
     removing execute access`, then crashes; after ~20 corpses iOS says `Too many corpses being created`. MobileSafari
     sits at 70-101 % CPU (spinning on the content process it keeps losing).
-    - **Cause found and fixed 2026-11-14 (fix-webkit-icache; built and tested on the PC, not on the phone).** The crash
+    - **Cause found and fixed 2026-11-14 (fix-webkit-icache, PR #33; built, tested and booted on the PC to SpringBoard with `hosted_selftest=1` all passed; not on the phone).** The crash
       report (phone, main `9f6dc38`, `com.apple.WebKit.WebContent-2026-11-14-060324.ips`): `EXC_BAD_ACCESS / SIGBUS,
       KERN_PROTECTION_FAILURE at 0xc998c0000`, esr "(Data Abort) byte write Permission fault", thread 0 in
       `libsystem_platform sys_icache_invalidate + 40` <- `JSC::LinkBuffer::finalizeCodeWithoutDisassemblyImpl` <-
@@ -261,7 +261,7 @@ docs each item names. **Proven** = ran on the phone; **built** = compiled and ho
       write: KERN_PROTECTION_FAILURE, exactly the report's "byte write Permission fault". `test_jit` passed because
       its RX alias was mapped before the thread ran (no fault), and qemu-user never faults on cache maintenance. The
       host mapping of the RX alias was readable all along (`hosted_pte_prot` gives `READ | EXEC`). Fixed on both
-      sides: the stub (`xs_fault_access`: CM is a read; host test `test_fault_access`) and hosted **0070** (the same in
+      sides: the stub (`xs_fault_access`: CM is a read; host test `test_fault_access`) and hosted **0071** (the same in
       the kernel, also for the kernel's own faults; XNU gets CM and WnR as the hardware set them with an access flag
       fault, so its own CM rule makes it a read; checked by `hosted_selftest=1`). Test: `test_jit_icache` in the test
       kernel (`docs/booter.md` 2.6 and 6). Either half alone fixes it (a new runtime with the old kernel, or the new

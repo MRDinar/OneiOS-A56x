@@ -1026,7 +1026,7 @@ host: no (the host holds the RAM fixed); the free queues take the pages iOS free
 - **0058/0066 now:** give-back is xnuhost's default still (`ram-giveback=1`) until the fixed RAM has run on a PC boot and
   the phone; then it becomes opt-in.
 
-## 0070-cache-maintenance-fault-read.patch (fix-webkit-icache, 2026-11-14)
+## 0071-cache-maintenance-fault-read.patch (fix-webkit-icache, 2026-11-14)
 
 **A cache maintenance fault is a read.** The phone's WebContent crash report (2026-11-14 06:03, main `9f6dc38`):
 `KERN_PROTECTION_FAILURE`, "(Data Abort) byte write Permission fault", in `sys_icache_invalidate` of JSC's first JIT
@@ -1051,6 +1051,14 @@ read WnR alone: `hosted_trap_access` said `XH_PROT_WRITE`, `hosted_user_fill` re
 The runtime half is in the stub (`runtime/xnuhost/stub/stub_abi.h` `xs_fault_access`, host test `test_fault_access`):
 either half alone fixes the crash. Tests: `docs/booter.md` 2.6 and 6 (`test_jit_icache`; qemu-user never faults on
 cache maintenance, so only arm64 hardware runs the fault itself).
+
+- **Built and booted on the PC (2026-11-14).** Written and built as 0070 and renamed to 0071 before the merge (0070 is
+  fix-wifi-join-2's): the rename changed only the number in comments. `HOSTED_OUT=fixic` built in 844 s; the prelink's
+  audit 0 failures, `stubs-check` 666 good. A PC boot (qemu-aarch64, 8 vCPUs, `--ram 4G`, a new data store,
+  `hosted_selftest=1`, 1500 s): `hosted selftest: 29 passed, 0 failed` with the new check `ok`; SpringBoard and
+  backboardd up (backboardd opened the framebuffer), no panic; the only exception was chronod's
+  (`type=0xa`), which an earlier PC boot on main had too. No WebContent process ran (Safari is not opened on the PC),
+  and qemu does not fault on cache maintenance, so the fix itself is proven on the phone only.
 
 ## gpu/: the blobs' kinds and ages, `oneios-cpu`'s span (hang, 2026-11-13; the archive, not a numbered patch)
 

@@ -6,7 +6,7 @@ diff --git a/osfmk/arm64/hosted/hosted_machine.c b/osfmk/arm64/hosted/hosted_mac
  	/* The software TLB: the page tables may already allow what the host mapping does not have yet. */
  	if (ec == ESR_EC_DABORT_EL1 || ec == ESR_EC_IABORT_EL1) {
 -		uint32_t access = ec == ESR_EC_IABORT_EL1 ? XH_PROT_EXEC : (esr & ISS_DA_WNR) ? XH_PROT_WRITE : XH_PROT_READ;
-+		/* 0070: a cache maintenance instruction (ISS.CM) reports WnR but reads the page (hosted_user.c) */
++		/* 0071: a cache maintenance instruction (ISS.CM) reports WnR but reads the page (hosted_user.c) */
 +		uint32_t access = ec == ESR_EC_IABORT_EL1 ? XH_PROT_EXEC :
 +		    ((esr & ISS_DA_WNR) && !(esr & ISS_DA_CM)) ? XH_PROT_WRITE : XH_PROT_READ;
  		if (hosted_kernel_fill(frame->far, access)) {
@@ -20,7 +20,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  }
  
 +/*
-+ * 0070: a cache maintenance instruction by address that faults (the ones EL0 may run: dc cvau, dc cvac, dc civac,
++ * 0071: a cache maintenance instruction by address that faults (the ones EL0 may run: dc cvau, dc cvac, dc civac,
 + * dc cvap, ic ivau) reports a data abort with ISS.WnR = 1 and ISS.CM = 1. It needs read access to the page only
 + * (Linux's is_write_abort and XNU's inspect_data_abort take it as a read): JSC's sys_icache_invalidate of a new
 + * thunk on the read-execute alias of its JIT region, whose first access is that dc cvau when the host has not
@@ -48,7 +48,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  	uint32_t ec = (uint32_t)ESR_EC(trap->esr);
  
 +	if (hosted_esr_is_cache_maintenance(trap->esr)) {
-+		return XH_PROT_READ;    /* 0070: also from a stub that said XH_PROT_WRITE for it (xnuhost before 0070) */
++		return XH_PROT_READ;    /* 0071: also from a stub that said XH_PROT_WRITE for it (xnuhost before 0071) */
 +	}
  	if (trap->access != 0) {
  		return trap->access;
@@ -59,7 +59,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  	}
 +	if (hosted_esr_is_cache_maintenance(esr)) {
 +		/*
-+		 * 0070: CM and WnR as the hardware set them, so the thread state says what the instruction was; the fault
++		 * 0071: CM and WnR as the hardware set them, so the thread state says what the instruction was; the fault
 +		 * an access flag fault, not a permission fault: inspect_data_abort takes CM with WnR as a write only when
 +		 * it is a permission fault. As with the permission fault below, arm_fast_fault is tried before vm_fault.
 +		 */
@@ -74,7 +74,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  	printf("hosted selftest: copyio and user mode\n");
  
 +	/*
-+	 * 0070: the syndrome a user fault reaches XNU with. A cache maintenance fault as the hardware reports it (CM and
++	 * 0071: the syndrome a user fault reaches XNU with. A cache maintenance fault as the hardware reports it (CM and
 +	 * WnR, a translation fault: dc cvau on a page the host has not mapped), with the stub of an older xnuhost that
 +	 * said XH_PROT_WRITE for it, must be a read by inspect_data_abort's rule (a write only with WnR and either no CM
 +	 * or a permission fault); a store stays a write.

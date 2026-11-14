@@ -383,7 +383,7 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
   CM) made `inspect_data_abort` ask `vm_fault` for write on a read-execute entry: KERN_PROTECTION_FAILURE. That was
   WebKit's crash loop (phone, 2026-11-14 06:03): every WebContent process died in `sys_icache_invalidate` of its first
   JIT thunk (`JSC::LLInt::createJSGateThunk`), on the read-execute alias of its JIT region, "byte write Permission
-  fault". Now the stub says `XH_PROT_READ` for CM, and hosted 0070 does the same on the kernel's side (also with an
+  fault". Now the stub says `XH_PROT_READ` for CM, and hosted 0071 does the same on the kernel's side (also with an
   older stub, and for the kernel's own faults) and hands XNU the fault with CM and WnR kept as the hardware set them
   and an access flag fault (XNU's rule: CM with WnR is a write only for a permission fault). The fill maps the page
   read-execute (`hosted_pte_prot`: AP read-only and UXN clear = `XH_PROT_READ | XH_PROT_EXEC`, the stub's
@@ -834,7 +834,7 @@ or `PROT_NONE` page (checked with a probe on 2026-11-14), so under `make check-a
 first fault is the branch (the test prints a `NOTE`) and the cache maintenance fault path runs only on arm64
 hardware (the phone, or `check-arm64` on an arm64 Linux host, which runs the binary without qemu). The decision
 itself (an ESR with CM is a read, whatever WnR says) is checked on the host by `test_fault_access` in
-`test_xnuhost` with the hardware's syndromes, and on the kernel's side by `hosted_selftest=1` (0070).
+`test_xnuhost` with the hardware's syndromes, and on the kernel's side by `hosted_selftest=1` (0071).
 
 **Not covered anywhere**: qemu-user has no seccomp and no `process_vm_writev`, so the `svc #0x80` trap and
 `task_read/write` have run nowhere (the test prints SKIP). The filter's logic is tested in the interpreter
