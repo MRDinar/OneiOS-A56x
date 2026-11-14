@@ -45,7 +45,9 @@ assumed: the node is found and its range is read at open.
 ## Start and restore
 
 `br_bright_open` reads One UI's value; `br_bright_close` (xnuhost's SIGTERM path) writes it back and takes at
-most 300 ms. After a SIGKILL the panel keeps iOS's last level, at least the floor; One UI's system_server sets
+most 300 ms. It always writes it, even when the bridge's own last write was that value: the node may have been set
+outside the bridge during the session (`oneios-tool phone backlight set N`); until 2026-11-14 the close skipped it
+then, and only the fork's return (`control/base/backlight`) put One UI's value back. After a SIGKILL the panel keeps iOS's last level, at least the floor; One UI's system_server sets
 its own level when it starts again.
 
 **One UI's value 0** (seen on the phone, 2026-11-11: the switch leaves the panel blank, `One UI left 0`). iOS

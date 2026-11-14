@@ -516,7 +516,9 @@ void br_bright_close(br_bright *b)
   if (b->info.panel) {
     pthread_join(b->panel_thread, NULL);
     // One UI's own value; system_server sets it again when it starts. If that was 0, the start value: the return's
-    // screen needs a lit panel.
+    // screen needs a lit panel. Always written: the node may have been set outside the bridge during the session
+    // (`oneios-tool phone backlight set N`, or by hand), so the bridge's own last write is not the node's value.
+    __atomic_store_n(&b->written, UINT32_MAX, __ATOMIC_RELAXED);
     panel_write(b, b->info.start);
   }
   if (b->info.touch_nodes) touch_power(b, true);     // after the backlight; the return finds the IC awake

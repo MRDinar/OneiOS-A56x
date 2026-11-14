@@ -205,6 +205,17 @@ static void test_touch(void)
     trace_is("p:100 t:2,0 t:2,1");
   }
   o.no_touch_off = false;
+  // The node set outside the bridge during the session (`oneios-tool phone backlight set N`): the close writes One UI's
+  // value back even when the bridge's own last write was that same value.
+  b = br_bright_open(&o);
+  if (b) {
+    usleep(80000);
+    (void)trace_is("");
+    put(panel, "brightness", "5350\n");
+    br_bright_close(b);
+    CHECK(get(panel, "brightness") == 100);
+    (void)trace_is("");
+  }
   // One UI left the panel at 0: iOS starts from the middle of the slider (a quarter of the light), the panel is
   // lit before the IC is woken, and the close leaves it lit.
   put(panel, "brightness", "0\n");
