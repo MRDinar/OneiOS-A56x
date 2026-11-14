@@ -1050,6 +1050,40 @@ host: no (the host holds the RAM fixed); the free queues take the pages iOS free
   then it becomes opt-in. Since fix-ram-fit `ram=auto` takes only what fits, so even with give-back the host need not
   swap iOS's RAM.
 
+## 0071-cache-maintenance-fault-read.patch (fix-webkit-icache, 2026-11-14)
+
+**A cache maintenance fault is a read.** The phone's WebContent crash report (2026-11-14 06:03, main `9f6dc38`):
+`KERN_PROTECTION_FAILURE`, "(Data Abort) byte write Permission fault", in `sys_icache_invalidate` of JSC's first JIT
+thunk (`JSC::LLInt::createJSGateThunk`), on the read-execute alias of the JIT region. A `dc cvau` / `ic ivau` that
+faults reports ESR ISS.WnR = 1 **and** ISS.CM = 1 (Linux passes the ESR of a user address on whole); 0002's trap path
+read WnR alone: `hosted_trap_access` said `XH_PROT_WRITE`, `hosted_user_fill` refused it on the read-execute page, and
+`hosted_trap_fault_esr` rebuilt the syndrome as a permission fault with WnR and no CM, which `inspect_data_abort`
+(sleh.c: a write when WnR is set and either CM is clear or the fault is a permission fault) turned into a write
+`vm_fault` on a read-execute entry. The patch, `osfmk/arm64/hosted/`:
+
+- `hosted_user.c`: `hosted_esr_is_cache_maintenance` (EC 0x24 with CM); `hosted_trap_access` returns `XH_PROT_READ` for
+  it before it looks at the stub's `access` (so a runtime older than the stub's own fix is covered too);
+  `hosted_trap_fault_esr` gives it to XNU as the hardware reported it, CM and WnR kept, with the fault status an
+  access flag fault (level 3) instead of a permission fault: XNU's CM rule makes it a read, and `arm_fast_fault` is
+  still tried before `vm_fault` (it is for every fault that is not a translation fault; its `was_af_fault` argument is
+  unused). Stores and loads are unchanged (a permission fault, WnR for a write).
+- `hosted_machine.c`: the kernel's own faults (`hosted_exception_upcall`'s fill) take CM as a read too. (The kernel
+  runs at EL0 on the host, so it can only run the cache maintenance EL0 may, all of which need read access only.)
+- `hosted_selftest=1`: a new check, "a cache maintenance fault (CM, WnR) reaches XNU as a read with CM kept; a store as
+  a write", on synthetic traps (the stub's old `XH_PROT_WRITE` included).
+
+The runtime half is in the stub (`runtime/xnuhost/stub/stub_abi.h` `xs_fault_access`, host test `test_fault_access`):
+either half alone fixes the crash. Tests: `docs/booter.md` 2.6 and 6 (`test_jit_icache`; qemu-user never faults on
+cache maintenance, so only arm64 hardware runs the fault itself).
+
+- **Built and booted on the PC (2026-11-14).** Written and built as 0070 and renamed to 0071 before the merge (0070 is
+  fix-wifi-join-2's): the rename changed only the number in comments. `HOSTED_OUT=fixic` built in 844 s; the prelink's
+  audit 0 failures, `stubs-check` 666 good. A PC boot (qemu-aarch64, 8 vCPUs, `--ram 4G`, a new data store,
+  `hosted_selftest=1`, 1500 s): `hosted selftest: 29 passed, 0 failed` with the new check `ok`; SpringBoard and
+  backboardd up (backboardd opened the framebuffer), no panic; the only exception was chronod's
+  (`type=0xa`), which an earlier PC boot on main had too. No WebContent process ran (Safari is not opened on the PC),
+  and qemu does not fault on cache maintenance, so the fix itself is proven on the phone only.
+
 ## gpu/: the blobs' kinds and ages, `oneios-cpu`'s span (hang, 2026-11-13; the archive, not a numbered patch)
 
 No XNU source changes, so no patch in the series: `oneios-tool kernel gen gpu` compiles a staged
