@@ -218,6 +218,11 @@
 # sleeps the touch IC and floors the panel only for a real display off, and wakes both at display on. A brightness of 0
 # is no longer an off. oneios-display-power-hook=0: not passed. In iokit/Kernel/IOUserClient.cpp after 0029/0062's hooks.
 0069-display-power-request.patch
+# fix-wifi-join-2: info-level messages of chosen log subsystems kept (oneios-log-persist=SUBSYSTEM[,...], default none):
+# /private/var/preferences/Logging/Subsystems/SUBSYSTEM.plist written before launchd (Enable and Persist Info) when
+# missing. For CoreWiFi's "Filtering based on ..." reasons (com.apple.WiFiManager), which the phone's log lacked.
+# Numbered 0070 (0067-0069 were held by other agents).
+0070-log-persist.patch
 # radio2: no numbered patch for the Wi-Fi: net/ is an archive of this build (kernel/build-hosted.sh,
 # oneios-tool kernel gen net), started by oneios_drivers_start's oneios_net_start (weak in drivers/bridge/OneiOSBridge.c).
 # net/README.md: IO80211Controller/IO80211Interface under the collection's original IOEthernetController and
