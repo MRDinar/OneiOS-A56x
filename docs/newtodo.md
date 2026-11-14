@@ -5,6 +5,50 @@ the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyO
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
 
+## Update 2026-11-14 (the 9f6dc38 session on the phone, and the round that followed)
+
+**Proven on the phone** (main 9f6dc38, 2026-11-14): first frame at +135 s, no panic; USB adb held the whole boot
+(`usb: ... UDC a600000.dwc3 configured`); #22's scan TIMESTAMP and 63-channel list in use; #25's chunked
+`pull-data` over USB (128 chunks, 11 copied, 0 retried, 271 s); #13's ioslog on the copy (checkpoint xid 2350).
+Found there and fixed since (all on `main`, built and host-tested, **not run on the phone yet**):
+
+| PR | Fault | Fix |
+|---|---|---|
+| f7bb1c3, #28 | the display helper's `.so` lacked libnativewindow (panel stayed on the OneOS splash) | `-lnativewindow`; `-Wl,-z,defs` on every Android `.so`, and `runtime/package/elf-check.sh` (NEEDED and symbols against the NDK's API 30 stubs) in the build, the package and CI |
+| #31 | no CLI for the session's by-hand fixes | `phone display-restart [--lib --dex]`, `phone touch status\|wake`, `phone backlight status\|set N` |
+| #29 | the slider reads 0 (IOKit truncates floats); a brightness of 0 slept the touch IC | the slider's 16.16 `DisplayBrightnessSliderPosition` and `brightness-nits-cap` read; hosted **0069** passes iOS's real display power (`IOMobileFramebufferRequestPowerChange`) so the IC sleeps only at a real off and wakes at every on and power-key press; the bridge's close always writes One UI's level |
+| #26 | the power key does nothing (LockButton reaches UISensor, then nothing) | off by default: `oneios-hid-buttons-builtin=1` (buttons published Built-In, Consumer Control: backboardd listed them as an external keyboard), `oneios-button-haptics=1` (a stand-in `AppleSPUHapticsAudioDriver`) |
+| #30 | the host swapped 2.1 GiB of iOS's RAM (Settings watchdog-killed, heat) | `ram=auto` fits: (MemAvailable at start − 1 GiB − 256 MiB) / 1.08; hosted **0067** in the series; the warning `the host swaps iOS's RAM: N MiB ...`; `ram-giveback=0` stays opt-in |
+| #27 | "it runs damn hot" | a `thermal: 30 s:` line (host CPU, swap rates, battery temperature and current, xnuhost's CPU); `oneios-cpu-sys:` kernel time per process |
+| #33 | every WebContent process died in `sys_icache_invalidate` (a cache-maintenance fault taken as a write) | the stub and hosted **0071**: a fault with ISS.CM is a read; `test_jit_icache` |
+| #34 | Wi-Fi never joins: auto-join "disabled by user" (a client's request, likely Control Center's Wi-Fi button) | PHY_MODE and AGE in the scan record; hosted **0070** `oneios-log-persist=` keeps a subsystem's info-level log |
+| #32 | bluetoothd crash-loops with `owner-hide-vmm` (proven: the hide caused it) | the hide dropped; 0062 logs `kern.hv_vmm_present` reads; xnuhost warns if the boot arguments hide the VM from bluetoothd |
+| OneOS #2 | an old session's `display.log` could end the boot screen early | the switch moves the old log aside |
+
+Integration of #26-#34 (one tree): kernel `xnu.macho` fe21f390, prelink audit 0 failures (2711 paired),
+`stubs-check` 666 good, `kernel.kc` b37e1e88; `runtime/host-tests.sh` every part (links included); `cargo test`
+122 passed; stand-in phone 200, app 65, cycle 103 in both /proc modes.
+
+**The next phone session** (build from `main`), `xnuhost.conf`:
+- Remove `owner-hide-vmm=bluetoothd,BlueTool`. Add `bt-transport-override=10` (bluetoothd's own switch to Apple's
+  virtual transport).
+- `ram=auto` (it now fits; or keep `ram=6G`); `ram-giveback` at its default first, then one session with
+  `ram-giveback=0` (look for `CAP_IPC_LOCK yes`, `locked (mlock: the host cannot swap it)`, no `the host swaps iOS's
+  RAM` line, and `stopping:` right after the return's SIGTERM).
+- `oneios-log-persist=com.apple.WiFiManager` (writes a file in the kept Data store: delete it later).
+- `oneios-hid-buttons-builtin=1 oneios-button-haptics=1` for the power key (boot B in `docs/hardware.md` 5; split
+  them if it works), with `oneios-ubt=SpringBoard,backboardd,configd,wifid oneios-ubt-at=240 oneios-ubt-every=60
+  oneios-ubt-count=150`.
+- In the session: re-enable Wi-Fi auto-join (Control Center's Wi-Fi button again, or tap a network), open Safari,
+  drag the brightness slider, lock and wake with the power key, flip Bluetooth.
+- Read: the `thermal: 30 s` and `oneios-cpu-sys:` lines; `ONEIOS BACKLIGHT: brightness-nits-cap`, `... display off:
+  backboardd[N] asked its framebuffer`; `oneios-hid: buttons: Consumer Control, Built-In published`; the swap line;
+  WebContent staying up (no new `.ips` with `sys_icache_invalidate`); the iOS-log searches of `docs/hardware.md` 3-5
+  and 7a.
+
+**Waits for the owner:** the fork's CI never ran after OneOS #1 (start "OneOS APK (oneios)" by hand, or check that
+Actions is on for the fork); rerunning a failed CI job needs the token's Actions: Read and write.
+
 ## State at the pause
 
 - `main` holds everything below. Every open branch was merged in one integration tree, its kernel was built and
