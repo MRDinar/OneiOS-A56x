@@ -75,7 +75,7 @@ $(H)/test_audio_helper: tests/test_audio_helper.c audio/aaudio_helper.c audio/au
 
 # The treble backend's HAL bridges (battery, thermal, haptics) against fake HALs (tests/fake_hal.c) on the same binderfs;
 # fake-hal alone serves the stand-in phone (tools/oneios-tool/tests/phone/hw-backend.sh).
-HAL_TEST := tests/test_hal_binder.c tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c hw/hw_backend.c hw/hw_log.c cpu/topology.c battery/battery.c
+HAL_TEST := tests/test_hal_binder.c tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c hw/hw_backend.c hw/hw_log.c cpu/topology.c battery/battery.c thermal/thermal.c
 $(H)/test_hal_binder: $(HAL_TEST) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DFAKE_HAL_LIB -fsanitize=address,undefined $(HAL_TEST) -lpthread -o $@

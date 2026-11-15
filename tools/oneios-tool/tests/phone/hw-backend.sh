@@ -5,9 +5,10 @@
 # tests/fake_hal.c, in a user namespace; skipped with a line where the kernel has no binderfs):
 #   s24            the S24 Ultra as the bridges see it: sys/class/backlight/panel0-backlight (max 51000, Samsung's
 #                  doubled range), sys/class/sec/tsp (the touch IC's power node, name sec_touchscreen),
-#                  sys/class/power_supply/{battery,usb}; .fake/hal/health (the same battery for the health HAL)
+#                  sys/class/power_supply/{battery,usb}, sys/class/thermal/thermal_zone{0,1}, sys/class/sec/sec-ap-thermistor;
+#                  .fake/hal/{health,thermal} (the same battery and temperatures for the HALs)
 #   other          another phone: sys/class/backlight/lcd-backlight (max 2047), no sec class, no power_supply nodes;
-#                  .fake/hal/health (its battery only through the health HAL)
+#                  .fake/hal/{health,thermal} (its battery and temperatures only through the HALs)
 #   odd            a phone whose backlight has a vendor's own name (vendor-bl): samsung's folder listing finds it, the
 #                  treble backend (named paths only) does not
 # Checked per backend: which node is used and its range, the line naming the backend and why, what is written and
@@ -124,5 +125,33 @@ hw_backend_checks() {
     [ $st = 0 ] && printf '%s\n' "$out" | grep -q 'falling back to samsung (hw-backend-fallback=1)' && printf '%s\n' "$out" | grep -q '^backend: samsung$' && printf '%s\n' "$out" | grep -q '^sample: 64%' \
       && ok "hw-backend: battery treble, no health HAL, hw-backend-fallback=1: the nodes" || bad "hw-backend: battery fallback" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
   elif [ -n "$HAVE_HAL" ]; then bad "hw-backend: batteryctl does not build" "$(tail -n 2 "$W/hw-build.txt" | tr '\n' '|')"; fi
+
+  # ---- thermal sensors: samsung (the zones, Samsung's thermistors, lrp) and treble (the thermal HAL); the same level
+  if [ -n "$HAVE_HAL" ] && make -s -C "$B/thermal" build/host/thermalctl > "$W/hw-build.txt" 2>&1; then
+    local THCTL=$B/thermal/build/host/thermalctl TZ=$S24/sys/class/thermal
+    mkdir -p "$TZ/thermal_zone0" "$TZ/thermal_zone1" "$S24/sys/class/sec/sec-ap-thermistor" "$S24/sys/class/power_supply/battery"
+    echo cpu-1-2 > "$TZ/thermal_zone0/type"; echo 61200 > "$TZ/thermal_zone0/temp"; echo gpuss-0 > "$TZ/thermal_zone1/type"; echo 55000 > "$TZ/thermal_zone1/temp"
+    echo 365 > "$S24/sys/class/sec/sec-ap-thermistor/temperature"; echo 304 > "$S24/sys/class/power_supply/battery/temp"; echo 412 > "$S24/sys/class/power_supply/battery/lrp"
+    printf '0 cpu-1-2 61.2\n1 gpu 55.0\n2 battery 30.4\n3 skin 41.2\n' > "$S24/.fake/hal/thermal"
+    printf '0 cpu0 45.0\n0 cpu7 52.5\n13 soc 53.0\n2 battery 29.0\n3 skin-therm 35.5\n' > "$OTHER/.fake/hal/thermal"
+    th() { local p=$1; shift; with_hal "$p" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_THERMAL_ROOT="$p" "$@" "$THCTL"; }
+    out=$(th "$S24" 2>&1); st=$?
+    [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^backend: samsung$' && printf '%s\n' "$out" | grep -q '^zones: 2 of interest$' \
+      && printf '%s\n' "$out" | grep -q '^reading (C): cpu 61.2 gpu 55.0 ddr - soc 61.2 (cpu-1-2) xo - ap 36.5 battery 30.4 lrp 41.2; case = 41.2 (lrp)$' \
+      && printf '%s\n' "$out" | grep -q '^level: light (10)' \
+      && ok "hw-backend: thermal samsung (the default) on the S24: 2 zones, ap, lrp; case 41.2 C, light" || bad "hw-backend: thermal samsung on the S24" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+    out=$(th "$S24" ONEIOS_HW_BACKEND=treble 2>&1); st=$?
+    [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^backend: treble$' && printf '%s\n' "$out" | grep -q 'thermal: on: the thermal HAL android.hardware.thermal.IThermal/default (version 2), 4 temperatures' \
+      && printf '%s\n' "$out" | grep -q '^reading (C): cpu 61.2 gpu 55.0 ddr - soc 61.2 (cpu-1-2) xo - ap - battery 30.4 lrp -; case = 41.2 (the HAL.s SKIN)$' \
+      && printf '%s\n' "$out" | grep -q '^level: light (10)' \
+      && ok "hw-backend: thermal treble on the S24: the thermal HAL, the same case 41.2 C and the same level" || bad "hw-backend: thermal treble on the S24" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+    out=$(th "$OTHER" ONEIOS_HW_BACKEND_THERMAL=treble 2>&1); st=$?
+    [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^reading (C): cpu 52.5 gpu - ddr - soc 53.0 (soc) xo - ap - battery 29.0 lrp -; case = 35.5 (the HAL.s SKIN)$' \
+      && printf '%s\n' "$out" | grep -q '^level: nominal' && ok "hw-backend: thermal treble on another phone: the HAL's CPU, SOC, battery and skin" || bad "hw-backend: thermal treble on another phone" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+    rm "$OTHER/.fake/hal/thermal"
+    out=$(th "$OTHER" ONEIOS_HW_BACKEND=treble 2>&1); st=$?
+    [ $st = 1 ] && [ "$(printf '%s\n' "$out" | grep -c 'treble: missing:')" = 1 ] && printf '%s\n' "$out" | grep -q 'hw: thermal: treble: missing: android.hardware.thermal.IThermal/default (no service: .*the bridge stays off' \
+      && ok "hw-backend: thermal treble, no thermal HAL: one missing line, off" || bad "hw-backend: thermal treble, no thermal HAL" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+  elif [ -n "$HAVE_HAL" ]; then bad "hw-backend: thermalctl does not build" "$(tail -n 2 "$W/hw-build.txt" | tr '\n' '|')"; fi
   rm -rf "$T"
 }

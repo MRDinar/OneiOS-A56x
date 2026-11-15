@@ -75,7 +75,7 @@ void hal_health_encode(ab_parcel *p, const hal_health_info *in);  // the fake HA
 // ---- thermal: Temperature[] (Temperature.aidl: type, name, value in degrees C, throttlingStatus) -
 enum { HAL_TEMP_CPU = 0, HAL_TEMP_GPU = 1, HAL_TEMP_BATTERY = 2, HAL_TEMP_SKIN = 3, HAL_TEMP_SOC = 13 };   // TemperatureType
 #define HAL_TEMPS_MAX 64u
-typedef struct { int32_t type; char name[24]; float celsius; int32_t throttling; } hal_temperature;
+typedef struct hal_temperature { int32_t type; char name[24]; float celsius; int32_t throttling; } hal_temperature;
 // The reply of getTemperatures after its status header. The number read (at most max), or -EPROTO.
 int  hal_temperatures_decode(ab_reader *r, hal_temperature *out, unsigned max);
 void hal_temperatures_encode(ab_parcel *p, const hal_temperature *in, unsigned n);

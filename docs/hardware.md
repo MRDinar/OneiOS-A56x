@@ -1997,6 +1997,9 @@ the health HAL (`android.hardware.health.IHealth/default`, `getHealthInfo`).
 ## 7d. Thermal (thermal, 2026-11-12)
 
 Details: `runtime/bridges/thermal/README.md` (sensors, levels, the step, `thermalctl`), `drivers/thermal/README.md`.
+The sensors have two backends since 2026-11-15 (section 7e): samsung, the files below (the default, unchanged);
+treble, the thermal HAL (`android.hardware.thermal.IThermal/default`, `getTemperatures`). The levels and the step are
+the same for both.
 
 ### "It runs damn hot, why" (9f6dc38 session, 2026-11-14; fix-thermal-log)
 
@@ -2190,7 +2193,7 @@ who or what it waits for).
 | Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
 | Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
 | Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | **done** (test_battery, test_hal_binder, hw-backend.sh) |
-| Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | next (this PR, step 4) |
+| Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | **done** (test_thermal, test_hal_binder, hw-backend.sh) |
 | Thermal load line | `bridges/thermal/thermal.c` (`br_host_load_read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
 | Thermal policy, CPU step | `thermal.c` (`br_thermal_decide`), `xnuhost/src/main.c` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
 | Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | next (this PR, step 5) |
@@ -2241,6 +2244,16 @@ fallback), the stand-in phone (6 checks: `batteryctl` on the S24's nodes and thr
 with only the HAL). On the phone: `hw: battery: backend samsung (the default)` then the same `battery: on:
 /sys/class/power_supply, ...` line; a treble boot by `battery: on: the health HAL
 android.hardware.health.IHealth/default (version N), ...` and the same `ONEIOS BATTERY` line in iOS's log.
+
+**Thermal sensors** (`runtime/bridges/thermal`, README "The two backends of the sensors"). Treble: the thermal HAL,
+`android.hardware.thermal.IThermal/default`, one `getTemperatures()` per reading: cpu, gpu, soc (CPU, GPU, SOC), the
+battery, and the case from the HAL's SKIN sensor (samsung: Samsung's `lrp`). The policy is untouched and the same for
+both: a SKIN of 41.2 C gives the level `lrp` 41.2 C gives. Tested: `test_thermal.c` (81 checks, the 72 samsung ones
+unchanged), `test_hal_binder.c` (a reading, a hotter one to HEAVY, the HAL's death, not registered, no
+temperature), the stand-in phone (4 checks: `thermalctl` on the S24's zones and through the fake HAL, another
+phone's CPU/SOC/skin). On the phone: `hw: thermal: backend samsung (the default)` then the same `thermal: on: N zones;
+case ... (lrp)` line; a treble boot by `thermal: on: the thermal HAL android.hardware.thermal.IThermal/default
+(version N), K temperatures; case ... (SKIN)`.
 
 ## 8. Sources
 

@@ -8,6 +8,7 @@
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
 #include "../battery/battery.h"
+#include "../thermal/thermal.h"
 #include "../hal/hal.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -126,6 +127,45 @@ static void test_battery(void)
   stop_fake(pid);
 }
 
+static void test_thermal(void)
+{
+  put("thermal", "0 cpu-0-0 48.5\n0 cpu-1-2 61.2\n1 gpu 55.0\n2 battery 30.4\n3 skin 37.1\n");
+  pid_t pid = start_fake();
+  br_thermal_options o = { .backend = BR_HW_TREBLE, .root = "/nonexistent", .poll_ms = 50, .load_ms = 3600000 };
+  lines[0] = 0;
+  br_thermal *t = br_thermal_open(&o);
+  CHECK(t != NULL);
+  CHECK(logged("hw: thermal: backend treble (the caller's choice)") && logged("thermal: on: the thermal HAL android.hardware.thermal.IThermal/default (version 2), 5 temperatures; case 37.1 C (SKIN), SoC 61.2 C (cpu-1-2), battery 30.4 C; nominal"));
+  if (t) {
+    br_thermal_state s;
+    br_thermal_get(t, &s);
+    CHECK(br_thermal_backend(t) == BR_HW_TREBLE && s.raw.cpu == 612 && s.raw.gpu == 550 && s.raw.skin == 371 && s.raw.battery == 304 && s.level == BR_THERMAL_NOMINAL);
+    // The worker asks again: a hot case is the same level as Samsung's lrp would give.
+    put("thermal", "0 cpu-1-2 70.0\n3 skin 44.5\n2 battery 33.0\n");
+    usleep(300000);
+    br_thermal_get(t, &s);
+    CHECK(s.raw.skin == 445 && s.raw.cpu == 700 && s.level == BR_THERMAL_HEAVY);
+    stop_fake(pid);
+    pid = -1;
+    lines[0] = 0;
+    usleep(300000);
+    br_thermal_get(t, &s);
+    CHECK(logged("thermal: the thermal HAL's getTemperatures failed") && s.raw.skin == BR_THERMAL_UNKNOWN);
+    br_thermal_close(t);
+  }
+  if (pid > 0) stop_fake(pid);
+  char path[300];
+  snprintf(path, sizeof path, "%s/thermal", values);
+  unlink(path);
+  pid = start_fake();
+  lines[0] = 0;
+  CHECK(br_thermal_open(&o) == NULL && logged("hw: thermal: treble: missing: android.hardware.thermal.IThermal/default (no service: ") && logged("the bridge stays off"));
+  put("thermal", "");                                               // registered, but no temperature
+  lines[0] = 0;
+  CHECK(br_thermal_open(&o) == NULL && logged("treble: missing: android.hardware.thermal.IThermal/default: getTemperatures: no temperature"));
+  stop_fake(pid);
+}
+
 int main(void)
 {
   setvbuf(stdout, NULL, _IOLBF, 0);
@@ -135,6 +175,7 @@ int main(void)
   if (!device || access(device, R_OK | W_OK)) { printf("test_hal_binder: set ONEIOS_BINDER to a binderfs binder device (make test-binder does)\n"); return 77; }
   if (!mkdtemp(values)) return 1;
   test_battery();
+  test_thermal();
   char command[300];
   snprintf(command, sizeof command, "rm -rf %s", values);
   CHECK(system(command) == 0);
