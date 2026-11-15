@@ -18,6 +18,8 @@
 #   bridges   runtime/bridges/tests/host.sh: the unit tests, test-binder (a binderfs in a user namespace: it says
 #             "skipped" when the kernel has no binderfs), brightness, battery; the Android build when the NDK is there
 #   camera    runtime/bridges/camera/tests/host.sh
+#   encoder   runtime/bridges/encoder/tests/host.sh: the video encoder device over the real transport through the
+#             oneios-encoder helper (stand-in encoder); the Android build when the NDK is there
 #   links     runtime/package/elf-check-test.sh, when the NDK is there (on a Mac: on the Mac, after the container): the
 #             link rule of Android shared objects (-z defs, runtime/host.mk) and runtime/package/elf-check.sh, on the
 #             display helper's library as 1f7dd1f linked it (both must fail) and on a stage of runtime/build.sh
@@ -88,6 +90,7 @@ suite() {
   part display make -s -C runtime/display test
   part bridges runtime/bridges/tests/host.sh
   part camera runtime/bridges/camera/tests/host.sh
+  part encoder runtime/bridges/encoder/tests/host.sh
   if ndk_ok; then
     part links runtime/package/elf-check-test.sh
     part package runtime/package/test.sh

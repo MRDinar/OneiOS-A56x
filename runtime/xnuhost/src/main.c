@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include "bridges/devices.h"
 #include "bridges/camera.h"
+#include "encoder.h"
 #include "imageset.h"
 #include "xnuloader/boot.h"
 #include "xnuloader/machine.h"
@@ -294,6 +295,10 @@ static void ram_fix_start(void)
 // The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
 // drm2kgsl keeps its first 2 MiB unused, the rest holds 16 KiB of response buffer per 3D context.
 #define GPU_POOL_BYTES (8ull << 20)
+// The video encoder's media pool (runtime/bridges/encoder): the V4L2 OUTPUT (NV12) and CAPTURE (bitstream) buffers
+// the guest maps. 48 MiB fits 1080p-class widget/screenshot snapshots across the device's session slots; with the 8
+// MiB GPU pool it stays under the hosted kernel's 64 MiB mappable-pool bound (main.c, the RAM layout).
+#define MEDIA_POOL_BYTES (48ull << 20)
 static void gpu_log(int level, const char *line) { xh_log(level == 0 ? XH_LOG_ERROR : level == 1 ? XH_LOG_INFO : XH_LOG_DEBUG, "%s", line); }
 
 // ---- the host bridges (runtime/bridges): CPU placement, cpufreq, haptics, Bluetooth, network, sound ---
@@ -489,10 +494,14 @@ static int boot(void)
   if (kernel.cpusubtype == 2 && !(g_info.features & XH_FEATURE_PAC)) { LOGE("an arm64e kernel needs pointer authentication with keys shared across fork; this host has none"); return -1; }
 
   // RAM: the kernel's window, then the GPU's pool (the memory of the renderer's that the guest maps: each 3D
-  // context's response buffer), then the boot framebuffer the kernel's console draws into.
+  // context's response buffer), then the video encoder's media pool (its V4L2 OUTPUT/CAPTURE buffers), then the boot
+  // framebuffer the kernel's console draws into. The GPU pool and the media pool both lie between the window's end and
+  // the framebuffer, which the hosted kernel lets a task map (0024-gpu-pool.patch, hosted_pa_in_gpu_pool, up to 64
+  // MiB): GPU_POOL_BYTES + MEDIA_POOL_BYTES must stay under that, so no new pmap patch is needed for the media pool.
   uint64_t fb_bytes = ((uint64_t)fb_width * fb_height * 4 + 0x1fffff) & ~0x1fffffull;
   uint64_t pool_bytes = strcmp(config.gpu, "2d") ? GPU_POOL_BYTES : 0;
-  uint64_t window = config.ram_bytes - fb_bytes - pool_bytes;
+  uint64_t media_bytes = strcmp(config.encoder, "off") ? MEDIA_POOL_BYTES : 0;
+  uint64_t window = config.ram_bytes - fb_bytes - pool_bytes - media_bytes;
   // 2 MiB host pages for the RAM where this kernel allows them (fix-ram-hugepages; ramfix.c xh_huge_choose): shmem THP
   // by madvise, only with the RAM held fixed (a give-back's pieces would split them).
   xh_huge_choose("", config.ram_huge && !config.ram_giveback, &huge_choice);
@@ -505,7 +514,8 @@ static int boot(void)
        (unsigned long long)huge_choice.hugetlb_free, (unsigned long long)(huge_choice.hugetlb_size >> 10),
        (unsigned long long)g_mem.fd_phys, (unsigned long long)(g_mem.head >> 10));
   uint64_t phys = g_mem.phys;                       // physical = where it is mapped (mem.c)
-  boot_fb_pa = phys + window + pool_bytes;
+  uint64_t media_pool_pa = phys + window + pool_bytes;              // after the GPU pool, before the framebuffer
+  boot_fb_pa = phys + window + pool_bytes + media_bytes;
   if (xh_mem_kva() == 0) { g_info.kva_base = g_mem.kva; g_info.kva_size = g_mem.kva_size; }
   LOGI("memory: %llu MiB at 0x%llx, physical = virtual (slide 0x%llx); I/O aperture 0x%llx",
        (unsigned long long)(window >> 20), (unsigned long long)phys,
@@ -714,6 +724,28 @@ static int boot(void)
         snprintf(helper, sizeof helper, "%s/bin/oneios-camera", config.runtime) < (int)sizeof helper && access(helper, X_OK) == 0) {
       camera = br_camera_helper(helper, getenv("ONEIOS_CAMERA_BACKEND"));
       if (camera && br_camera_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, camera)) kinds[ndev++] = XL_DEV_CAMERA;
+    }
+
+    // The video encoder (encoder=auto): the "droidvm,virtio-media" device over Android's MediaCodec, for iOS's
+    // paravirtualized VideoToolbox encoder (HEIC still images, then video). Off by default until the guest codec
+    // archive lands; both samsung and treble use MediaCodec, so one backend serves both. Its V4L2 buffers live in the
+    // media pool carved above.
+    if (ndev < XL_MAX_DEVICES && media_bytes && *config.runtime &&
+        snprintf(helper, sizeof helper, "%s/bin/oneios-encoder", config.runtime) < (int)sizeof helper && access(helper, X_OK) == 0) {
+      br_hw_select(BR_HW_ENCODER, BR_HW_UNSET);
+      if (br_encoder_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev,
+                            br_encoder_backend_helper(helper), xh_ram(media_pool_pa, media_bytes), media_pool_pa, media_bytes)) {
+        machine.media_pool_base = media_pool_pa;
+        machine.media_pool_size = media_bytes;
+        kinds[ndev++] = XL_DEV_MEDIA;
+        // The guest codec archive publishes iOS's paravirtualized VideoToolbox driver with this boot argument
+        // (DroidVMVTParavirt.cpp); droidvm-media (default on) brings up the transport (DroidVMVirtioMedia.c).
+        if (!strstr(config.boot_args, "droidvm-vt-paravirt=")) {
+          size_t used = strlen(config.boot_args);
+          if (used + 24 < sizeof config.boot_args)
+            snprintf(config.boot_args + used, sizeof config.boot_args - used, "%sdroidvm-vt-paravirt=1", used ? " " : "");
+        }
+      }
     }
   }
 
