@@ -1905,8 +1905,11 @@ its start and a mixer track opened, with it kept; AAudio_setMMapPolicy refused: 
 target up to 10-15 ms and back to 5 ms 5 s after. `origin/main`'s helper and test under the same load failed 5
 checks (overflows, the stall's silence cut, the markers): this test now skips those, as the other timing checks,
 when the host ran it late. `test_bridges.c`: the probe of a non-helper back end is `-ENOTSUP`. The kernel's edit
-list against the pinned `DroidVMAudio.cpp` and the goldens: `cargo test -p oneios-kernel`, the hosted kernel build
-(`HOSTED_OUT=audiolat`). **The PC cannot show:** the phone's HAL and DSP (whether MMAP exclusive is given, its burst,
+list against the pinned `DroidVMAudio.cpp` and the goldens: `cargo test -p oneios-kernel`; the hosted kernel build
+(`HOSTED_OUT=audiolat`, 1229 s; `compare-golden.sh`: the audio files the same) and its prelink (`kernel.kc`
+`ee72d94886023f31`, audit 0 failures). A PC boot of it was not run: the box's qemu queue had five boots of up to 100
+minutes ahead, and a PC boot plays no iOS sound (the null back end), so it would only show the attach lines.
+**The PC cannot show:** the phone's HAL and DSP (whether MMAP exclusive is given, its burst,
 what it holds below the read), the real end to end, iOS's I/O buffer and the HAL's write end (no iOS sound plays on
 a PC boot with the null back end), the round trip through air.
 
