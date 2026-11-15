@@ -165,7 +165,7 @@ static_assert(sizeof(ow_bss) == 56 && sizeof(ow_state) == 92 && sizeof(ow_join) 
 // ---- the station: the host's radio ----
 enum { kStaOff = OW_LINK_OFF, kStaIdle = OW_LINK_IDLE, kStaScanning = OW_LINK_SCANNING, kStaAuth = OW_LINK_AUTH, kStaAssoc = OW_LINK_ASSOC,
        kStaKeys = OW_LINK_KEYS, kStaUp = OW_LINK_UP };
-enum { kMaxNetworks = 64, kScanTimeoutMs = 10000, kJoinTimeoutMs = 30000 };
+enum { kMaxNetworks = 64, kScanTimeoutMs = 10000, kJoinTimeoutMs = 30000, kScanReuseMs = 8000, kScanReuseDelayMs = 20 };
 struct Net { ow_bss bss; uint8_t ies[OW_MAX_IES]; uint64_t seen_ns; };   // seen_ns: when the radio last saw it (TIMESTAMP)
 
 static IOLock *gLock;                  // everything below
@@ -206,7 +206,7 @@ static ow_channel gChannels[OW_MAX_CHANNELS];   // the host's channel list (OW_C
 static unsigned gChannelCount;
 static uint8_t gMac[6];
 static ifnet_t gIf;
-static thread_call_t gScanTimeout, gJoinTimeout;
+static thread_call_t gScanTimeout, gJoinTimeout, gScanReuse;
 static void (*gLink)(bool up);         // the controller's link status
 static uint32_t gLogged[256 / 32];
 
@@ -250,11 +250,11 @@ static void send(uint16_t type, const void *payload, uint16_t length) {
 }
 
 // ---- the rates: one line a minute while anything happened (kept: it is what says whether iOS asks again and again) ----
-// `ONEIOS WIFI: 60 s: events 10x6 4x1; scans asked 6 (started 6, joined 0, refused 0), done 6 (2 networks), timed out 0;
+// `ONEIOS WIFI: 60 s: events 10x6 4x1; scans asked 6 (started 3, reused 3, joined 0, refused 0), done 6 (2 networks), timed out 0;
 // records 18; power sets 0 (changed 0); by wifid 6/18 ...` (asked scans / records read, per process). Armed at the
 // first count after a line, so an idle interface logs nothing.
 enum { kRateSeconds = 60, kRateWho = 5 };
-enum { kRateScanAsked, kRateScanStarted, kRateScanJoined, kRateScanRefused, kRateScanDone, kRateScanTimeout, kRateRead, kRatePowerSet,
+enum { kRateScanAsked, kRateScanStarted, kRateScanReused, kRateScanJoined, kRateScanRefused, kRateScanDone, kRateScanTimeout, kRateRead, kRatePowerSet,
        kRatePowerChanged, kRateKinds };
 struct RateWho { char name[16]; uint32_t scans, reads; };
 struct Rates { uint32_t events[16], kinds[kRateKinds], networks; RateWho who[kRateWho]; };
@@ -274,9 +274,9 @@ static void rate_line(thread_call_param_t, thread_call_param_t) {
     for (const RateWho &w : r.who)
         if (w.name[0] && n < sizeof who) n += static_cast<size_t>(snprintf(who + n, sizeof who - n, " %s %u/%u", w.name, w.scans, w.reads));
     const uint32_t *k = r.kinds;
-    log("%u s: events %s; scans asked %u (started %u, joined %u, refused %u), done %u (%u networks), timed out %u; records %u; "
+    log("%u s: events %s; scans asked %u (started %u, reused %u, joined %u, refused %u), done %u (%u networks), timed out %u; records %u; "
         "power sets %u (changed %u); by%s", kRateSeconds, events[0] ? events : "none", k[kRateScanAsked], k[kRateScanStarted],
-        k[kRateScanJoined], k[kRateScanRefused], k[kRateScanDone], r.networks, k[kRateScanTimeout], k[kRateRead], k[kRatePowerSet],
+        k[kRateScanReused], k[kRateScanJoined], k[kRateScanRefused], k[kRateScanDone], r.networks, k[kRateScanTimeout], k[kRateRead], k[kRatePowerSet],
         k[kRatePowerChanged], who[0] ? who : " nobody");
 }
 static void rate_arm_locked() {
@@ -366,12 +366,20 @@ static void left(bool involuntary, uint32_t reason) {
     link_changed(false, involuntary, reason);
 }
 
+// The last good scan's results stand for kScanReuseMs after it finished (gReuseUntil, absolute time; 0: none).
+static uint64_t gReuseUntil;
+static bool gReusing;                  // a reused scan's SCAN_DONE is on its way
+static void scan_finished_locked(bool good) {
+    gReuseUntil = 0;
+    if (good) clock_interval_to_deadline(kScanReuseMs, kMillisecondScale, &gReuseUntil);
+}
 static void scan_timeout(thread_call_param_t, thread_call_param_t) {
     IOLockLock(gLock);
     const bool was = gScanning;
-    if (was) {   // the host never finished: what came is the result
+    if (was) {   // the host never finished: what came is the result (not one to give again)
         Net *t = gScan; gScan = gFill; gFill = t; gScanCount = gFillCount; gFillCount = 0; gScanGeneration++; gScanning = false;
         if (gState == kStaScanning) gState = kStaIdle;
+        scan_finished_locked(false);
     }
     IOLockUnlock(gLock);
     if (was) { log("scan: no end from the host in %u ms", kScanTimeoutMs); tally(kRateScanTimeout); post_event(kEvScanDone, nullptr, 0); }
@@ -387,19 +395,39 @@ static void arm(thread_call_t call, unsigned ms) {
     uint64_t at; clock_interval_to_deadline(ms, kMillisecondScale, &at); thread_call_enter_delayed(call, at);
 }
 
+// The SCAN_DONE of a request answered with the last scan's records, a moment after the request: IO80211 marks its
+// asynchronous scan as pending around the ioctl, and an event that came first would go to the plain callback.
+static void scan_reused(thread_call_param_t, thread_call_param_t) {
+    IOLockLock(gLock);
+    gReusing = false; gScanGeneration++;   // every reader starts the list again
+    const unsigned count = gScanCount;
+    IOLockUnlock(gLock);
+    tally(kRateScanDone, false, count);
+    post_event(kEvScanDone, nullptr, 0);
+}
+
 // A scan request: one scan of the host's at a time; a request while one runs gets that one's SCAN_DONE (one event for
-// both). With no radio (the host has not answered, or power is off) the request is refused and no event is posted:
-// until 2026-11-15 it got an empty SCAN_DONE at once, an event for a scan that never ran, which a daemon that scans
-// again on an empty list answers with the next request at once.
+// both). A request within kScanReuseMs of the end of the last good scan gets that scan's records again (with their
+// own ages and TIMESTAMPs, so a client's age filter sees how old they are) and no new radio scan: on the PC
+// (wifi=sim, 2026-11-15) locationd's Wi-Fi positioning asked wifid for two scans every 6 s for as long as the boot
+// ran (`Async scan requested by "locationd"`, `@WifiFlow, outcome, nofix`: no fix, location off, no GNSS), 20 radio
+// scans a minute; on the phone a scan takes seconds, so the radio scanned back to back and every other client's scan
+// (auto-join, Settings) and a join queued behind them. With no radio (the host has not answered, or power is off)
+// the request is refused and no event is posted: until 2026-11-15 it got an empty SCAN_DONE at once, an event for a
+// scan that never ran, which a daemon that scans again on an empty list answers with the next request at once.
 static int scan() {
     IOLockLock(gLock);
     const bool radio = gRadio && gPower;
-    const bool start = radio && !gScanning;
+    const bool joined = radio && (gScanning || gReusing);
+    const bool reuse = radio && !joined && gReuseUntil && mach_absolute_time() < gReuseUntil;
+    const bool start = radio && !joined && !reuse;
     if (start) { gScanning = true; gFillCount = 0; if (gState == kStaIdle) gState = kStaScanning; }
+    if (reuse) gReusing = true;
     IOLockUnlock(gLock);
     tally(kRateScanAsked, true);
     if (!radio) { tally(kRateScanRefused); return ENETDOWN; }
-    if (!start) { tally(kRateScanJoined); return 0; }
+    if (joined) { tally(kRateScanJoined); return 0; }
+    if (reuse) { tally(kRateScanReused); arm(gScanReuse, kScanReuseDelayMs); return 0; }
     tally(kRateScanStarted);
     send(OW_SCAN, nullptr, 0); arm(gScanTimeout, kScanTimeoutMs);
     return 0;
@@ -513,6 +541,7 @@ static void host_message(uint16_t type, const uint8_t *payload, size_t length) {
         if (was) {
             Net *t = gScan; gScan = gFill; gFill = t; gScanCount = gFillCount; gFillCount = 0; gScanGeneration++; gScanning = false;
             if (gState == kStaScanning) gState = kStaIdle;
+            scan_finished_locked(d.error == 0);
         }
         const unsigned count = gScanCount;
         IOLockUnlock(gLock);
@@ -675,7 +704,7 @@ static int answer(bool set, apple80211req &rq) {
             IOLockLock(gLock);
             const bool changed = gPower != on;
             gPower = on;
-            if (!on) { if (gState >= kStaAuth) leave_locked(false, 0, &notify); gState = kStaOff; }
+            if (!on) { if (gState >= kStaAuth) leave_locked(false, 0, &notify); gState = kStaOff; scan_finished_locked(false); }
             else if (gState == kStaOff) gState = kStaIdle;
             IOLockUnlock(gLock);
             tally(kRatePowerSet);
@@ -850,10 +879,11 @@ static bool station_init() {
     gScan = static_cast<Net *>(IOMallocZeroData(sizeof(Net) * kMaxNetworks));
     gFill = static_cast<Net *>(IOMallocZeroData(sizeof(Net) * kMaxNetworks));
     gScanTimeout = thread_call_allocate(scan_timeout, nullptr);
+    gScanReuse = thread_call_allocate(scan_reused, nullptr);
     gJoinTimeout = thread_call_allocate(join_timeout, nullptr);
     gRateCall = thread_call_allocate(rate_line, nullptr);
     gRateLock = IOLockAlloc();   // last: tally() counts nothing until the call it arms exists
-    return gLock && gScan && gFill && gScanTimeout && gJoinTimeout && gRateCall && gRateLock;
+    return gLock && gScan && gFill && gScanTimeout && gJoinTimeout && gScanReuse && gRateCall && gRateLock;
 }
 
 }  // namespace oneios_wifi

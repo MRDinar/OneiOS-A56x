@@ -793,6 +793,25 @@ Sharing functionality not available from Sharing`; 63 `AUTO-JOIN: Scan SUCCEEDED
   event rate is wifid's request rate, one for one. On the phone the 63 auto-join scans match. No BSSID, RSSI or link
   event is posted outside a join or a leave (SSID_CHANGED, BSSID_CHANGED and LINK_CHANGED only when the link was up,
   ASSOC_DONE once per join), and the host's 2-second `OW_STATE` while joined posts nothing.
+- **Who asks: locationd, two scans every 6 s, for ever** [F, the PC boot of this branch, iOS's own log]: every scan
+  request in the boot was wifid's `Async scan requested by "locationd" for 1 iterations with maxage=0` (116 of 116 in
+  the first minutes of scanning), a 2.4 GHz scan of channels 1, 6, 11 and then one of 2 to 13 0.1 s later
+  (`WiFiDeviceManagerIs5GScanRequest: 2GHz Scan request because channel 1|2 is requested`). locationd's Wi-Fi
+  positioning gets no fix (`@WifiAps, lookiter, ..., notindb`, `@WifiFlow, outcome, nofix`, `wifi fix is insufficient as
+  it is invalid`: its access point database has none of them and there is no network to ask) and no GNSS to fall back
+  on, so it sets the next scan 6 s on (`@WifiTimer, set, locreq, 6`, `WifiTimer, nextscan, ..., haveLoc, 0, codepath,
+  Unassociated`), with location services off system-wide (`location disabled system-wide, denying executable ...`,
+  `BigSwitch 0`); its Wi-Fi provider was started by its own location controller (`WlpReg, 1, loccontroller`,
+  `@ClxProvider, start, wifi, desiredAccuracy, 100.0`; which client holds it is private in the log). Each answer goes
+  through wifid's whole scan path (`{SCAN+} Attempting Apple80211ScanAsync`, `WiFiScanObserver ingestScanResults`,
+  `WiFiSettlementObserver _handleScanResults`, `Locationd scan done.`). The rate line of that boot, every minute for 8
+  minutes: `events 10x20; scans asked 20 (started 20, joined 0, refused 0), done 20 (2 networks), ...; records 40; power
+  sets 0 (changed 0); by wifid 20/40`. [I] On the phone, where a radio scan takes seconds, that is a radio that scans back
+  to back, and auto-join's, Settings' and a join's commands wait in wifid's queue behind them.
+- **Fixed: a scan request within 8 s of the end of the last good scan gets that scan's records again** (their own
+  ages and TIMESTAMPs, so an age filter sees how old they are), its SCAN_DONE 20 ms later (IO80211 marks the async scan
+  pending around the ioctl), and no radio scan. The rate line counts them as `reused`. A scan that timed out or failed,
+  and power off, end the reuse. The events stay one per request (wifid asked for each): what goes is the radio time.
 - What a SCAN_DONE does in a client [F, IO80211.framework `_eventRead`]: a client with an asynchronous scan of its own
   pending reads the records (`_getAsyncScanResults`: `SCAN_RESULT` until `EIO`, which is the expected end); any other
   client that monitors the event gets its callback with code 10 and no data. The event goes to every client's event
@@ -809,7 +828,7 @@ Sharing functionality not available from Sharing`; 63 `AUTO-JOIN: Scan SUCCEEDED
 - **Fixed: a scan with no radio got an empty SCAN_DONE at once** (power off, or the host not answered yet): an event for
   a scan that never ran, which a daemon that scans again on an empty list answers at once. Now the request is refused
   (`ENETDOWN`) and nothing is posted.
-- **A lasting rate line**: `ONEIOS WIFI: 60 s: events 10x6 4x1; scans asked 6 (started 6, joined 0, refused 0), done 6
+- **A lasting rate line**: `ONEIOS WIFI: 60 s: events 10x6 4x1; scans asked 6 (started 3, reused 3, joined 0, refused 0), done 6
   (2 networks), timed out 0; records 18; power sets 0 (changed 0); by wifid 6/18` (scans asked / records read per
   process), one a minute while anything happened. It says on the next phone boot whether iOS asks again and again and
   who.
@@ -818,8 +837,11 @@ Sharing functionality not available from Sharing`; 63 `AUTO-JOIN: Scan SUCCEEDED
   come from `WiFiManagerClientDispatchAttachmentEvent` (wifid's attach notice) and from the reconnect in
   `__WiFiManagerClientGetOrReconnectServerPort` (after wifid's port died, the client copies the device list and adds
   each again). Our interface is attached once (`attachInterface` at the controller's start, no detach) and the driver
-  has no path that publishes it again. [I] 17 such errors are 17 attach notices or reconnects (a wifid restart would
-  give one per client): the phone's launchd log (`wifid` exits) and `ioslog --proc wifid --grep 'attached'` decide.
+  has no path that publishes it again. On the PC boot of this branch the error came once to three times in each
+  process that has a Wi-Fi client (UserEventAgent 1, rapportd 1, apsd 2, locationd 3), with en0 attached once and
+  wifid not restarted: one per client object that starts while wifid has the device (the device list it copies and
+  the attach notice name the same en0), not an interface that comes and goes. [I] Preferences' 17 are 17 such client
+  objects (one per Wi-Fi view it opens); harmless.
 - [I] **Preferences' own load is not shown to come from Wi-Fi events.** 724 TableView signposts over the session are
   about 60 list reloads of about 12 cells, close to the 63 scans (the Wi-Fi list redraws per scan, as on an iPhone);
   `Create send gesture actions` is UIKit's `_UIGestureRecognizerSendActions` signpost (one per gesture action: the
