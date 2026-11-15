@@ -29,7 +29,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.c` (evdev, no grab) and `virtio_input.c`; `input_script.c` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
-| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: queued, see 7e; never run on the phone (section 7e) |
+| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7e); never run on the phone (section 7e) |
 
 Common pieces:
 
@@ -2176,7 +2176,7 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
 | A pencil's force is the event's pressure / 120 (an Apple Pencil's 0..4.17 for 0..500 under a maximum of 500); PencilKit widens its ink by that force | droidvm's reading (`-[UITouch _unclampedForce]`, PencilKit `InputPoint`) | [I] |
 | Altitude and azimuth: UIKit reads the stylus event's polar orientation (`kIOHIDEventFieldDigitizerAltitude` 0xb000f, `Azimuth` 0xb0010) | droidvm's reading of `-[UITouch _updateWithChildEvent:]` | [I] |
 | Apple's IOHIDEventDriver makes a stylus transducer of a Stylus collection; takes In Range, Tip Switch, Barrel Switch (button 1), Eraser (button 2), Tip Pressure, Z; **drops X and Y Tilt** and parses no azimuth or altitude | IOHIDFamily-2238.120.5 (the profile's pin) `IOHIDEventDriver.cpp` | [F] source at the pin |
-| `IOHIDEvent::setFixedValue` is slot 26 (after getFixedValue's 25), discriminator 0x6e23 | `IOHIDEvent.h` at the pin; `__builtin_ptrauth_string_discriminator("_ZN10IOHIDEvent13setFixedValueEjij")` = 0x6e23, as the same builtin gives NativeHidInput's known 0xf637 for getFixedValue | [F] |
+| `IOHIDEvent::setFixedValue` is slot 26 (after getFixedValue's 25), discriminator 0x6e23 | `IOHIDEvent.h` at the pin; `__builtin_ptrauth_string_discriminator("_ZN10IOHIDEvent13setFixedValueEjij")` = 0x6e23, as the same builtin gives NativeHidInput's known 0xf637 for getFixedValue; and 24A446's kernelcache itself (`ipsw kernel cpp out/kernel-inputs/24A446/kernelcache.macho -c IOHIDEvent --methods`): slot 25 pac 0xf637, slot 26 pac 0x6e23, 37 slots | [F] |
 | The event's IOHIDDigitizerEventData is 0xa0 bytes with orientationType at +0x58 (1 = polar) | droidvm (HID.framework `+polarDigitizerEvent:`); the wrapper checks size and type before it writes and counts a mismatch | [I], checked at run time |
 | MobileGestalt `DeviceSupportsApplePencil`: not read by UIKitCore (no such string there); PencilKit, NotesSupport, Preferences, AnnotationKit read it (UI and settings). libMobileGestalt has a `supports-apple-pencil` string beside the `/product` `supports-*` names, and 24A446's iPhone device tree has no `supports-apple-pencil` | strings | [F] strings; [I] that the answer is that `/product` property and so false here. Not set by OneiOS: strokes do not need it; what Notes or PencilKit show differently with it is [U] |
 | The side button: UIKit's pencil barrel events (double tap, squeeze) are generic-gesture HID events (type 0x27) of the pencil's own service, not the digitizer's button mask | UIKitCore `_UIEventHIDIsPencilBarrelEvent` | [F]; so the S Pen's button reaches iOS as the digitizer's Barrel Switch, which no iOS code is known to act on [U] |
@@ -2216,7 +2216,27 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
   again), the guest device's configuration, `pen-rotate=auto`, the script's pen lines and the demo script.
 - Generator: `cargo test -p oneios-kernel --test golden`, `the_pen_edits_fit_the_pinned_source` (the edits against
   NativeHidInput 24f1f3f after the phone's).
-- PC boot (`--input-script runtime/xnuhost/tools/input-demo.script --set pen=auto`, kernel.kc c99c179c of this branch: audit 0 failures, stubs 666 good, 0 bad): queued behind other agents' boots when this was written; its lines are added here when it has run.
+- PC boot (2026-11-15, Linux PC, qemu-aarch64 under `flock /tmp/oneios-qemu.lock`, 8 vCPUs, `--ram 4G`, a fresh Data
+  store from the PC image set, `--no-input --input-script runtime/xnuhost/tools/input-demo.script --set pen=auto`;
+  kernel.kc c99c179c of this branch: audit 0 failures, `stubs-check` 666 good, 0 bad; stopped by hand after 9.5 min, no
+  panic). xnuhost: `pen: the guest's pen device is /arm-io/input-1 (the input script's pen); oneios-pen=1`, then 87 times
+  `pen: in range 1988 ms: 70 frames (8 hovering, 62 touching), 2 strokes, pressure up to 3800/4095, tilt x 0..40 y -30..0
+  degrees, the side button pressed 1 time; 0 unchanged frames not sent`. Guest: `droidvm input /arm-io/input-1: OneiOS
+  pen, pen`, `virtio-input: 2 device(s) in the device tree, 2 started`, `pen: HID device started under IOHIDResource`,
+  `pen: event driver IOHIDEventDriver attached`, `pen: Digitizer/Stylus, Built-In, ... published on the event service;
+  edge wrapper 0` (printed before the first report: the wrapper is put on the pen's driver at its first report),
+  `pen: 1 user client(s) on the event service: IOHIDEventServiceUserClient (pid 54, backboardd)`; at the end
+  `pen: 6141 pen frames, 6141 HID reports (last result 0x0), 6141 sent (6055 stylus events given the pencil's angles,
+  pressure and height, 0 of a layout not known)` (the 86 others are the out-of-range reports, for which the driver
+  makes no event: its "multiple untouch" rule) and `pen: 3780 HID events queued for the service's client(s), 0 dropped`.
+  So the event data's layout is the one the wrapper knows, in 24A446. **iOS's own log** (`oneios-tool ioslog show
+  out/pcboot/data/data.img --proc backboardd --grep digitizer`): `digitizer attached (sender 100000216)
+  service:<BKIOHIDService ...; eventSource: builtin; primaryUsagePage: 0xD; primaryUsage: 0x20; name: OneiOS pen;
+  transport: SPI; ...>` and `*** acquired pencil digitizer` (beside `*** acquired main display digitizer` for the touch
+  screen); and (`--grep encil`) 41 `touchstats 100000216-<main> ...: [ down: 2, up: 2, rangeIn: 1, rangeOut: 1, pencil: 2,
+  pathsSeen: 4, destinations: { ... touchIDs: ... } ]`: backboardd counts the strokes as pencil touches and routes them
+  to a destination. Not shown on the PC: an app drawing them (the boot shows no UI to the script), UIKit's hover, and
+  the stroke's width.
 - Not run on the phone.
 
 ### On the phone: the lines that prove it
@@ -2227,7 +2247,7 @@ With `pen=auto` in the session's `xnuhost.conf` (or `--set pen=auto`):
 |---|---|
 | The device found, read only | xnuhost.log `pen: /dev/input/eventN "sec_e-pen": read only, not grabbed; x ..., y ..., pressure ..., distance ..., tilt x ...; keys: tool pen, ..., stylus (the side button); turned D degrees (...)` |
 | The guest has the device | `pen: the guest's pen device is /arm-io/input-1 (the host's pen); oneios-pen=1`; guest `droidvm input /arm-io/input-1: OneiOS pen, pen` |
-| The pen service published | `oneios-hid: pen: HID device started under IOHIDResource`; `oneios-hid: pen: event driver IOHIDEventDriver attached (...)`; `oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 3` |
+| The pen service published | `oneios-hid: pen: HID device started under IOHIDResource`; `oneios-hid: pen: event driver IOHIDEventDriver attached (...)`; `oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 0` (0 before the first report) |
 | backboardd holds it | `oneios-hid: pen: 1 user client(s) on the event service: IOHIDEventServiceUserClient (pid N, backboardd)` |
 | Events arrive | `pen: the first event from sec_e-pen`; per time in range `pen: in range T ms: F frames (H hovering, C touching), S strokes, pressure up to P/4095, tilt x ... degrees, the side button pressed B times`; guest `oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus events given the pencil's angles, pressure and height, 0 of a layout not known); the last: ...` and `oneios-hid: pen: N HID events queued for the service's client(s), 0 dropped` |
 | iOS takes it as a pencil | `oneios-tool ioslog show DATA.img --proc backboardd --grep 'pencil digitizer'`: `*** acquired pencil digitizer` (not `already have`); `--grep 'digitizer attached'` lists the service |

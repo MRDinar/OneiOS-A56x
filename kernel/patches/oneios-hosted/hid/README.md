@@ -180,7 +180,7 @@ droidvm input /arm-io/input-1: OneiOS pen, pen
 oneios-hid: virtio-input: 2 device(s) in the device tree, 2 started
 oneios-hid: pen: HID device started under IOHIDResource
 oneios-hid: pen: event driver IOHIDEventDriver attached (registry id 0x...)
-oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 3
+oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 0
 oneios-hid: pen: 1 user client(s) on the event service: IOHIDEventServiceUserClient (pid N, backboardd)
 oneios-hid: pen: N HID events queued for the service's client(s), 0 dropped
 oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus events given the pencil's angles, pressure and height, 0 of a layout not known); the last: in range, tip down, x 41.6% y 64.1%, pressure 2000/4095, height 0/255, tilt x 40 y -30 degrees
@@ -189,7 +189,7 @@ oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus
 In iOS's log (`oneios-tool ioslog show DATA.img --proc backboardd --grep 'pencil digitizer'`): `*** acquired pencil
 digitizer`.
 
-Tested: the kernel with these edits builds (`HOSTED_OUT=spen`), its `kernel.kc` prelinks (audit 0 failures; `oneios-tool prelink stubs-check`: 666 good, 0 bad); the PC boot: `docs/hardware.md` 7e, "Tested". Not on the phone.
+Tested: the kernel with these edits builds (`HOSTED_OUT=spen`), its `kernel.kc` prelinks (audit 0 failures; `oneios-tool prelink stubs-check`: 666 good, 0 bad); the PC boot of 2026-11-15 with the demo script's pen (`--set pen=auto`): every line above came (`edge wrapper 0` is printed before the first report; the wrapper is put on at the first report), `6141 HID reports ... 6055 stylus events given the pencil's angles, pressure and height, 0 of a layout not known`, `3780 HID events queued ..., 0 dropped`, and in iOS's log backboardd's `*** acquired pencil digitizer` and `touchstats 100000216 ... pencil: 2` (`docs/hardware.md` 7e, "Tested"). Not on the phone.
 
 ## Which event driver (lead, 2026-11-11)
 
