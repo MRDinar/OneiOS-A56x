@@ -41,6 +41,25 @@ with two jobs, 51 unit tests pass (`oneios-common` 3, `oneios-image` 29 + 1, `on
 (the numbers in [todo_rust.md](todo_rust.md)); `ioslog`, `prelink`, `image im4p` and the APFS file reader were not
 built on a Mac yet.
 
+**For the phone itself (Android arm64, 2026-11-15; the first step of `docs/TODO.md`, "Make the iOS image on the
+phone").** With the NDK's clang as the linker (API 30), from the Mac:
+
+```sh
+N=$ANDROID_NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin      # linux-x86_64 on Linux
+rustup target add aarch64-linux-android
+CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$N/aarch64-linux-android30-clang \
+CC_aarch64_linux_android=$N/aarch64-linux-android30-clang AR_aarch64_linux_android=$N/llvm-ar \
+  cargo build --release --target aarch64-linux-android -p oneios-tool --manifest-path tools/oneios-tool/Cargo.toml
+$N/llvm-strip -o oneios-tool-android tools/oneios-tool/target/aarch64-linux-android/release/oneios-tool
+```
+
+It built in 26 s on the Mac (13.9 MB stripped, a PIE for `/system/bin/linker64`). One change was needed:
+`oneios-image`'s in-kernel copy calls the `copy_file_range` system call itself, because the libc crate has no wrapper
+for Android. Run as root on the S24 Ultra, on the staged files of `/data/local/tmp/oneios` (One UI up, no session):
+`ioslog boots data/data.img` 3.1 s, `ioslog show data/data.img --boot last -o FILE` 4.0 s (540,553 entries),
+`image apfs-ls image/os.img /` 0.07 s. Not run on the phone yet: `prelink`, `remotezip`, `image apfs-copy`, the
+`package` check. Not built in CI or released yet.
+
 No Apple file is in the repository: the tests make their own stand-in caches, images and logs, and the comparison
 scripts read Apple's files in place (`inputs/`, `out/`, both git-ignored).
 

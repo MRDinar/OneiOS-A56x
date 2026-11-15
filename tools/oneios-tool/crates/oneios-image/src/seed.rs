@@ -803,8 +803,20 @@ fn kernel_copy(from: &File, to: &File, at: u64, size: u64) -> std::io::Result<u6
     let mut done = 0u64;
     while done < size {
         let want = ((size - done) as usize).min(1 << 30);
-        // Safety: both descriptors are open, and the two offsets are this function's own.
-        let n = unsafe { libc::copy_file_range(from.as_raw_fd(), &mut off_in, to.as_raw_fd(), &mut off_out, want, 0) };
+        // Safety: both descriptors are open, and the two offsets are this function's own. The system call itself, not
+        // libc's wrapper: the libc crate has no wrapper for Android (bionic has one only from API 34), and the call is
+        // the same on both. A kernel or a seccomp policy without it gives ENOSYS or EPERM: the caller copies the rest.
+        let n = unsafe {
+            libc::syscall(
+                libc::SYS_copy_file_range,
+                from.as_raw_fd(),
+                &mut off_in as *mut i64,
+                to.as_raw_fd(),
+                &mut off_out as *mut i64,
+                want,
+                0u32,
+            )
+        };
         if n > 0 {
             done += n as u64;
             continue;
