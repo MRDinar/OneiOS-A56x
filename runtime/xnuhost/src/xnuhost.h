@@ -197,6 +197,9 @@ int  xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, 
 // True when the boot arguments' owner-hide-vmm=NAME[,NAME...] (the kernel's per-process vmm-present switch) names
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);
+// The transport the boot arguments' bt-transport-override gives 24A446's bluetoothd, read the way bluetoothd reads it,
+// or -1 when they give none. xnuhost warns for 10: the virtual transport is bluetoothd's own simulated controller.
+int xh_boot_args_bt_transport(const char *args);
 // Appends the text fixups a UI scale needs on this build's dyld shared cache to a NUL-separated list
 // (/chosen text-fixups). Returns the list's new length; unknown builds and a scale of 2 add nothing.
 unsigned xh_scale_fixups(const char *build, unsigned scale, char *list, unsigned length, unsigned size);

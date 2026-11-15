@@ -948,10 +948,9 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   do not have), logs zeros for it, then asks for `bluetooth`. On the PC the same two `marconi-bt:` lines come, and
   0062 shows `property "local-mac-address" (IODeviceTree, recursive) of IOPlatformDevice "bluetooth" -> found`, with no
   `bluetooth: Not a valid MAC address` line. The phone's next boot's `oneios-iokit:` lines confirm it.
-- **[I] Power init waits on the virtual-machine path:** with `vmm-present` bluetoothd takes chip `APPLE_VIRTUAL` and
-  skips chip initialization, then its power state is never set (DEADBEEF looks like an unset value). Apple's VMs have
-  a virtual Bluetooth controller of their own (transport-encoding 10); with H4 the VM path probably waits for
-  something only that controller gives. Not proven.
+- **Power init fails on the virtual-machine path [F since 2026-11-15, read in 24A446's bluetoothd: next section]:**
+  with `vmm-present` bluetoothd takes chip `APPLE_VIRTUAL`, and its chip initialisation in a VM succeeds only when the
+  transport is 10; with H4 (1) it fails and power init sets PowerState 3, the line above.
 - **Tried and dropped (2026-11-14): hiding the VM from bluetoothd** with `owner-hide-vmm=bluetoothd,BlueTool` (the
   kernel's per-process `kern.hv_vmm_present` switch of Droid-VM-UniXNU's `zzyd-owner-hide-vmm.patch`). bluetoothd then
   leaves the virtual-controller path and **crashes at its start, in a loop** [F]: on the phone (main 9f6dc38) 18 pids in
@@ -961,13 +960,9 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   binary and its own library, `native-ios27.md`); the project does not change Apple's binaries, so **the VM path stays**
   and its power init is what to fix. Never put bluetoothd in `owner-hide-vmm`: no default does, and xnuhost now says
   so in its log when the boot arguments do (`boot arguments: owner-hide-vmm names bluetoothd: ...`).
-- **Next step: the VM path's own transport.** In a VM bluetoothd expects Apple's virtual controller, transport-encoding
-  10 ("virtual"). Its boot argument `bt-transport-override=10` selects it without a new build. On the PC
-  (`--set bluetooth=sim --boot-args "... bt-transport-override=10"`) and on the phone (in `xnuhost.conf`'s boot-args):
-  read the `oneios-iokit: bluetoothd[...]` lines that follow power init (what service or user client the virtual
-  transport looks for), then publish that service in `drivers/bluetooth` over the same H4 core and host bridge.
-  On the PC nothing asks bluetoothd to power on within a run (no `Beginning asynchronous power init` there), so this
-  is a phone test; a PC boot for it was queued on 2026-11-14 and cancelled (the queue was over an hour).
+- **Tried on the phone (main 3233fed, 2026-11-15) and a dead end: the VM path's own transport**,
+  `bt-transport-override=10`. The virtual transport is a simulated controller inside bluetoothd's own process, not a
+  service to publish: next section. Do not use it; xnuhost now says so in its log when the boot arguments carry it.
 - **0062 now also says how a process saw the VM:** `oneios-iokit: bluetoothd[N] sysctl kern.hv_vmm_present -> 1 (a
   virtual machine)` or `-> 0 (the virtual machine hidden by owner-hide-vmm)` (kernel.kc bc81badb, built, not yet in a
   boot).
@@ -975,6 +970,88 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   BlueTool[...]` lines (what it looks up, whether a `kernel control "com.apple.uart.sk.bluetooth"` lookup ever comes);
   in iOS's log `oneios-tool ioslog show data.img --proc bluetoothd --grep "power|Power|chip|Chip|Virtual|BlueTool|OLYHAL|HWIdentifiers|StackManager|core stack|transport|MAC"`
   and `--proc BlueTool`.
+
+### The virtual transport is bluetoothd's own (fix-bt-virtual, 2026-11-15)
+
+The phone session of main 3233fed (2026-11-15) had `bt-transport-override=10` and no `owner-hide-vmm`: no crash loop,
+but Bluetooth never powered on. bluetoothd[73] `exited due to exit(1), ran for 56223ms`, then pids 168, 190, 245; 42
+`Returning bluetooth power state: FFFFFFFFFFFFFFFF`, 17 `... FFFFFFFFCAFEBABE`, 51 `manager state not powered on`; 128
+`BTVirtual transport send packet type: 0x00000001`, 128 `-[BTVCPacketControl didSendPacket:error:] no completion
+function`, 116 `send HCI event to virtual transport size 6`; no `.ips`. Read in 24A446's `/usr/sbin/bluetoothd` on the
+PC (`oneios-tool image apfs-copy` from `os.img`, `llvm-objdump -d`, the `adrp`/`add` pairs matched to its strings; the
+addresses are the binary's, unslid):
+
+- **Transport 10 never leaves bluetoothd's process [F].** `BTVirtualTransportRegisterCBs` (0x1003c42a0) stores five
+  callbacks, and `BTVirtual transport init` (0x1003c4384) creates its HCI, ACL and LMP transports through them. Its
+  only caller (0x100899d78, logged `registerCallbacks`) hands it bluetoothd's own `TransportCreate`, `TransportFree`
+  and `TransportWrite` (0x100899e00 on); `TransportWrite` (0x10089a3d4) sends the packet, by `objc_msgSend`, to a
+  `BTVCHciManager` that bluetoothd allocates itself (0x100899d2c): `-[BTVCHciManager
+  transportWriteCmd:length:amountWritten:dtor:]`. That object is a simulated LE controller ("BTVC", sources
+  `MobileBluetooth_base/Server/Platforms/Darwin/VirtualController/`): `handleHciCmd: opCode 0x%04X`,
+  `handleHciResetCmd`, `handleHciReadLocalVerInfoCmd`, ... `handleHciLeExtendedCreateConnectionCmd`, and its events go
+  back with `%s send HCI event to virtual transport size %d`. Its "radio" is Bonjour (`_btvc._tcp`,
+  `BTVCBonjourService`) to other virtual devices. So there is no IOKit service, kernel control or XPC service to publish:
+  the 128 commands and the 6-byte events (a Command Complete with only a status: Reset, Set Event Mask, LE Set Event
+  Mask, the filter accept list, ...) are bluetoothd talking to itself, and nothing reaches `drivers/bluetooth`, the
+  bridge or the phone's controller. A boot with it has no `oneios-iokit: bluetoothd[...] kernel control
+  "com.apple.uart.sk.bluetooth"` line and no `ONEIOS BT: dev:`, `sk:` or `ios:` line.
+- **"no completion function" is not a missing answer [F].** `-[BTVCPacketControl didSendPacket:error:]` (0x1006f08xx)
+  logs `%s completion function` and calls the block when the packet was queued with one, and `%s no completion
+  function` when it was queued with none: BTVC's own pacing of its own packets. Nothing outside is asked for a
+  completion, a credit or a Number of Completed Packets.
+- **In a VM only transport 10 powers on [F].** The chip initialisation of power init (0x10062941c) asks whether it runs
+  in a VM; if so it logs `Bluetooth is running inside a Virtual Machine, so skipping chip initialization` and returns
+  `transport == 10` (0x1006294b4: the transport is the device tree's `transport-encoding`, or the boot argument's,
+  kept at 0x100c1ce28 by 0x10030901c). Power init (0x100628730) sets PowerState 3 when that is false. So with
+  `/defaults/vmm-present` and H4 (1), power init always fails before any transport is opened: the c1223f8 session's
+  `PowerState:3 managerState:2` and no `/dev/btwake` open. The VM answer is `kern.hv_vmm_present`, read once and kept
+  (0x10056a164); four places use it: `main`'s check for `/dev/cu.bluetooth` (skipped), the chip factory (chip
+  `APPLE_VIRTUAL`), this chip initialisation, and CloudPairing.
+- **So an unchanged 24A446 bluetoothd cannot reach the phone's controller while it sees a VM**: transport 10 is its own
+  simulation, every other transport fails power init. With the VM hidden (`owner-hide-vmm`) it crashes at its start
+  (above). [I, from the code and the crash's address] The chip factory (0x10050a08c) picks the chip by the environment
+  (`BT_CHIP=ACI BT`: chip 2000), by transport 9 (APPLE PCIE: chip 3000), by the VM (chip 6000, `APPLE_VIRTUAL`), or by
+  the product's type (`MGIsDeviceOneOfType`, a table of products); none matches transport 1 on iPhone18,2 (whose own
+  tree says transport 9, so it is not in the table), the factory logs the fault `Unknown platform 0x%08x detected` and
+  leaves the chip null, and the chip's field at 0x350 (read right after `getChip()`, 0x1000071f0, in many places) is
+  the `SIGSEGV at 0x350` of the 9f6dc38 session. The fault line in that session's iOS log would prove it.
+- **The exit(1) [F for the paths, U for which one].** bluetoothd calls `_exit(1)` in two places: its fatal-error path,
+  which first logs `Bluetooth error - restarting { build=release, reason=%d, context="%s" }`, and the chip
+  initialisation's restart (`timed out booting the chip, restarting`, `hardware is unhealthy, restarting`, `Unknown
+  platform/chipset/manufacturer combination, restarting`). Fatal errors with BTVC's code among their callers: `Filter
+  Accept List add error`, `... remove error`, `... clear error`, `Policy enforcement timeout`, `BT VSC init failed`.
+  Which one ended pid 73 after 56 s is in 3233fed's iOS log: `oneios-tool ioslog show data.img --proc bluetoothd
+  --grep "Bluetooth error - restarting|restarting|Filter Accept List|Policy enforcement|VSC init|Unknown platform"`.
+  It does not matter for the controller: transport 10 is not a way to it.
+- **Nothing of ours stays busy for the next bluetoothd [F, from the code].** In a transport-10 boot nothing of ours is
+  opened (no control, no node; the HAL stays closed). With H4 a client's disconnect (`sk_ctl_disconnect`,
+  `ctl_disconnect`, the nodes' close) frees the core's client slot, destroys the Skywalk pipe and closes the HAL
+  (`obt_ios_release`); a new pid connects to a free slot, and a failed controller is opened again by the bridge.
+- **Fixed in our code:** (1) `oneios_bt_ios.c`'s pump thread woke every 20 ms from the root mount to the end of the
+  session with no client and nothing queued (50 wakeups a second of a vCPU, in every session, and with the VM
+  visible bluetoothd never connects). It now sleeps until it is kicked (a packet for the client, bluetoothd's bytes in
+  the Skywalk FIFO, `ctl_rcvd`'s room again, which kicks it now) and looks every 20 ms only while bytes wait for the
+  client. (2) xnuhost logs `boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in
+  its own process: nothing reaches the phone's controller (docs/hardware.md 4); take it out` (read as bluetoothd reads
+  it: any word that contains the name, the value after its `=`, under 13, the last word wins; host-tested).
+- **PC boot (2026-11-15, kernel.kc 7261a00b from xnu.macho 948bb412 with both fixes; `--set bluetooth=sim`,
+  `bt-transport-override=10`; stopped after 27 minutes):** xnuhost logged the new `boot arguments:
+  bt-transport-override=10 ...` error line; the root mounted on the first try; `ONEIOS BT: on: ...` and `ONEIOS BT:
+  transport up 2620 ms after the start: ...` as before. bluetoothd[75] (one pid for the whole run): `transport override
+  from boot-arg: 10`, `HCI Transport is set to virtual`, `fStackStarted:0`; its `oneios-iokit:` lines are the device
+  tree (`marconi-bt`, `bluetooth`, `local-mac-address`, `transport-encoding`), the key store, `IOPMrootDomain`,
+  `/product` and `kern.hv_vmm_present -> 1`, with **no kernel control lookup** and no `ONEIOS BT: dev:`, `sk:` or
+  `ios:` line. As in every PC boot so far nothing asked bluetoothd to power on (no `Beginning asynchronous power init`),
+  so neither a power-on nor the phone's exit(1) can be seen on the PC; a power on would run BTVC, not the stand-in
+  controller.
+- **What would reach the controller [U, not tried]:** a chip for transport 1 outside the VM without changing the binary:
+  `BT_CHIP=ACI BT` in bluetoothd's environment (chip 2000) with the VM hidden, or transport 9 (chip 3000, whose transport
+  is Apple's PCIe Skywalk protocol, not H4). Each needs the VM hidden from bluetoothd and a PC boot that reads the
+  chip's first commands (`ONEIOS BT: bluetoothd: command 0x....`); UniXNU instead patches the binary, which this project
+  does not.
+- **The next phone session:** take `bt-transport-override=10` out of `xnuhost.conf` (and keep `owner-hide-vmm` without
+  bluetoothd). Read the 3233fed session's `--grep` above for the exit's reason, and the 9f6dc38 session's
+  `oneios-tool ioslog show data.img --proc bluetoothd --grep "Unknown platform|getChip|SIGSEGV"` for the null chip.
 
 ### Missing, unknown
 

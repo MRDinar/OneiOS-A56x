@@ -991,9 +991,17 @@ int main(int argc, char **argv)
   // The display driver's scale and refresh rate go on the kernel's command line (a value given there stays).
   if (xh_display_boot_args(config.boot_args, sizeof config.boot_args, config.scale, fb_hz, config.display_format)) { LOGE("no room in the boot arguments for the display's switches"); return EXIT_SETUP; }
   // 24A446's bluetoothd with the virtual machine hidden takes its chip path and dies (SIGSEGV at 0x350) in a loop that
-  // launchd then throttles for 1200 s (phone and PC, 2026-11-14; docs/hardware.md 4): said, not changed.
+  // launchd then throttles for 1200 s (phone and PC, 2026-11-14; docs/hardware.md 4): said, not changed. [I] Its chip
+  // factory finds no chip for transport-encoding 1 outside a VM (only transport 9 or a product of its table gives one),
+  // and 0x350 is a field of the chip object it then reads through a null pointer.
   if (xh_boot_args_hides_vmm_from(config.boot_args, "bluetoothd"))
     LOGE("boot arguments: owner-hide-vmm names bluetoothd: it crashes in a loop that way (docs/hardware.md 4); take it out");
+  // bt-transport-override=10 hands bluetoothd its own simulated controller (BTVC: the transport's write goes to an object
+  // in bluetoothd's own process, which answers the commands itself): nothing reaches the kernel's transport or the phone's
+  // controller, and on the phone (main 3233fed, 2026-11-15) bluetoothd then exited(1) after 56 s, again and again.
+  if (xh_boot_args_bt_transport(config.boot_args) == 10)
+    LOGE("boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: "
+         "nothing reaches the phone's controller (docs/hardware.md 4); take it out");
   xh_perf_init(&config);
   if (boot()) { xh_tasks_shutdown(); return EXIT_SETUP; }
 
