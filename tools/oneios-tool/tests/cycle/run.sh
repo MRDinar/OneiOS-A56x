@@ -24,6 +24,10 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
 TOOL=${TOOL:-$ROOT/tools/oneios-tool/target/release/oneios-tool}
 W=${WORK:-$ROOT/out/rustport-cycle}
+# A tmux server of its own (the stand-in build steps run in tmux by name, cycle-kernel ...): two runs at once must
+# not meet on the box's one server ("duplicate session").
+export TMUX_TMPDIR=$W.tmux; mkdir -p "$TMUX_TMPDIR"
+unset TMUX   # run from inside tmux (scripts/bg.sh), $TMUX would name the box's server instead
 [ -x "$TOOL" ] || { echo "run.sh: no $TOOL" >&2; exit 2; }
 . "$HERE/../phone/lib.sh"
 rm -rf "$W"; mkdir -p "$W"
@@ -190,7 +194,10 @@ cmp -s "$R/out/kernel/24A446/kernel.kc" "$S/image/kernel.kc" && grep -q "^versio
 no_session "$P" && ok "cycle: One UI is back, no session" || bad "cycle: a session is left"
 for f in xnuhost.log switch.log return.log return.outcome sums.txt summary.md; do [ -s "$D/full/$f" ] || bad "cycle: $f is missing in out/session-logs/DATE/full"; done
 cmp -s "$D/full/xnuhost.log" "$S/session/xnuhost.log" && ok "cycle: out/session-logs/DATE/full has the session's log, the fork's logs and sums.txt" || bad "cycle: the collected log"
-for want in "^# Cycle full" "every step that ran ended well" "prelink: audit 0 failures \(build.sh exit 0\), stubs: 666 good, 0 bad" "app source: 0.4.86 \(versionCode 115\)" "app installed: 0.4.86 \(versionCode 115\)" "^\| stage \| [0-9.]+ \| ok \|" "^\| return \| [0-9.]+ \| ok \|" "^- \+[0-9]+ s ready: .*guest ready: first frame" "^## Panics" "^none$" "One UI restored in place \(Enforcing\)" "  image/kernel.kc$"; do
+# The source version is the fork checkout's own (ONEOS_DIR), not a fixed one: it moves with each upstream merge.
+src_name=$(sed -n 's/^ *versionName = "\([^"]*\)".*/\1/p' "$FORK/app-android/app/build.gradle.kts" | head -1)
+src_code=$(sed -n 's/^ *versionCode = \([0-9]*\).*/\1/p' "$FORK/app-android/app/build.gradle.kts" | head -1)
+for want in "^# Cycle full" "every step that ran ended well" "prelink: audit 0 failures \(build.sh exit 0\), stubs: 666 good, 0 bad" "app source: $src_name \\(versionCode $src_code\\)" "app installed: 0.4.86 \(versionCode 115\)" "^\| stage \| [0-9.]+ \| ok \|" "^\| return \| [0-9.]+ \| ok \|" "^- \+[0-9]+ s ready: .*guest ready: first frame" "^## Panics" "^none$" "One UI restored in place \(Enforcing\)" "  image/kernel.kc$"; do
   grep -Eq "$want" "$D/full/summary.md" && ok "summary.md: $(printf '%s' "$want" | cut -c1-60)" || bad "summary.md: $want"
 done
 end_case
@@ -281,5 +288,6 @@ if grep -Eqi 'find |ls -R|du |/sys/power|reboot' "$W/adb.log" "$W/root.log"; the
 else ok "nothing sent to the phone walks a tree, writes /sys/power or restarts ($(calls) adb calls, their root scripts too)"; fi
 
 no_session_left "cycle suite"; tmux kill-session -t oneios-cycle-kernel 2>/dev/null
-[ -n "${KEEP:-}" ] || rm -rf "$W"
+tmux kill-server 2>/dev/null   # this run's own server only (TMUX_TMPDIR above)
+[ -n "${KEEP:-}" ] || rm -rf "$W" "$TMUX_TMPDIR"
 [ $FAILED = 0 ] && echo "ALL OK" || { echo "FAILED: $FAILED"; exit 1; }
