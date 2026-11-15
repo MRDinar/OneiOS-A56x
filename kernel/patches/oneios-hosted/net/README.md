@@ -104,7 +104,10 @@ scan, join and leave), `NAME[PID]: interface request 0x..` (the first 24 other r
 interface for a user client of type 0x.. -> 0x..` (the first 8), `scan
 done: N networks`, `join: layout 656, authentication lower 0x.. upper 0x.., key of N bytes of kind K` (the request's
 length, 656 on 24A446, picks its layout), `join: a network name of N bytes, a passphrase|a PSK|open`, `join done:
-joined` or `join failed (status S, 802.11 code C)`, `link down (reason R)`. An `off: ...` line names what was missing. For a debugger:
+joined` or `join failed (status S, 802.11 code C)`, `link down (reason R)`, `power 0|1` (each change; `power 1 (as it was: no
+event)` for the first four sets that change nothing), and once a minute while anything happened `60 s: events 10xN ...;
+scans asked N (started, reused, joined, refused), done N (M networks), timed out N; records N; power sets N (changed N); by NAME
+scans/records ...` (the events posted by code, and who asked: the rate of iOS's requests). An `off: ...` line names what was missing. For a debugger:
 `oneios_wifi_stage` (1 the family loaded, 2 the classes are the bound ones, 3 registered, 4 the controller
 started), `oneios_wifi_requests`, `oneios_wifi_refused`, `oneios_wifi_rx`, `oneios_wifi_tx`, `oneios_wifi_dropped`.
 
@@ -126,3 +129,16 @@ On the phone (2026-11-14) the record came out as written (`scan record 1 ... TIM
 also carries PHY_MODE at 0x8e0 (the modes the band, rates and HT/VHT/HE elements show; it was zero) and an AGE (0x84)
 as of the answer, and `scan record 1` (now in a shorter form the console keeps whole: `scan record 1 (2280 B): ch .. flags .. RSSI .. ... TIMESTAMP .. ns (.. ms ago) PHY 0x.. IEs .. B`) says the PHY mode. Why auto-join drops the results is to be read from
 CoreWiFi's info-level lines, which hosted 0070 (`oneios-log-persist=com.apple.WiFiManager`) keeps.
+
+## Events only for a change, scan records per reader (fix-settings-wifi-cpu, 2026-11-15)
+
+`POWER_CHANGED` is posted only when a `POWER` set changes the state (every set posted one before); a scan request with
+no radio is refused (`ENETDOWN`) instead of getting an empty `SCAN_DONE` at once; `SCAN_RESULT` keeps a cursor per
+reading thread, reset by each finished scan (one cursor for all readers before); a scan request within 8 s of the end
+of the last good scan gets its records again with no radio scan (locationd asked for two scans every 6 s on the PC);
+and the `60 s:` rate line counts the events and requests. Why, and what the PC showed: `docs/hardware.md` 3, "Settings uses a full core while the password
+sheet is open".
+
+Built (`HOSTED_OUT=fixsw`; prelink audit 0 failures, `stubs-check` 666 good) and booted on the PC with `wifi=sim`: SCAN_DONE
+20 a minute before and after (one per request: locationd's), radio scans 20 a minute before and 5 after. Not run on the
+phone yet.
