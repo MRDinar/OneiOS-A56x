@@ -5,6 +5,40 @@ the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyO
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
 
+## The next phone session (2026-11-15, main 70af164 and OneOS oneios 820253b): one `xnuhost.conf`
+
+Everything below is on `main` (and the fork's `oneios`), built and host-tested, **not run on the phone yet**. Build
+the runtime and the APK from these two, then:
+
+- **Remove** `owner-hide-vmm=bluetoothd,BlueTool` and `bt-transport-override=10` (both proven harmful: item #32 and
+  "The virtual transport is bluetoothd's own", `docs/hardware.md` 4). xnuhost now logs an error line for either.
+- **RAM:** `ram=auto` alone. Since #39 (fix-ram-locked) the default is `ram-giveback=0 ram-prefault=1 ram-lock=1`, and
+  `ram=auto` takes (MemAvailable − 768 MiB − 256 MiB) / 1.08 when the lock can work: about 6912 MiB on this phone.
+  Writing `ram-giveback=0 ram-prefault=1 ram-lock=1` out does the same. Lines that prove it: `CAP_IPC_LOCK yes`,
+  `the guest gets 6912 MiB ... less 768 MiB headroom with the lock`, `memory: fixed RAM: held and locked`,
+  `oneios-mem: free pages given back to the host: no`, no `the host swaps iOS's RAM` line, no `unlocked for the rest
+  of the session`, swap in/out near 0 in `thermal: 30 s:`, `stopping:` right after the return's SIGTERM.
+- **CPU:** OneOS #6 moves the switch's `--inner` shell (and so xnuhost) into the root cpuset: the switch log should
+  say `oneios inner: cpuset / (cpus 0-7)`. `oneios-tool phone cpu` (read only) shows the cores, clocks, cpusets and
+  xnuhost's threads with their uclamps; `phone cpu --trace 10` while iOS is busy. Hosted CLPC (0075) and the uclamp of
+  released iOS threads are on by default (`docs/booter.md`).
+- **GPU:** the default `gpu-level=deadline`. One A/B against `gpu-level=hold` if frames feel late; `gpu-priority=0`
+  turns the per-context priorities off (`docs/gpu.md` 2.2b).
+- **Wi-Fi:** `oneios-log-persist=com.apple.WiFiManager` (a file in the kept Data store: delete it later). In the
+  session tap Control Center's Wi-Fi button once to turn auto-join back on (`docs/hardware.md` 3). Read the
+  `ONEIOS WIFI: 60 s:` lines (#37): `started` about one per 8 s or fewer while locationd scans, `events 10xN` = scans
+  asked − refused; and Preferences' `oneios-cpu:` with the password sheet open (was 106-111 %).
+- **Buttons:** `oneios-hid-buttons-builtin=1 oneios-button-haptics=1` (boot B in `docs/hardware.md` 5), with
+  `oneios-ubt=SpringBoard,backboardd,configd,wifid oneios-ubt-at=240 oneios-ubt-every=60 oneios-ubt-count=150`.
+- **Optional:** `pen=auto` (S Pen as Apple Pencil, `docs/hardware.md` 7f); `hw-backend=treble` for one session to try
+  the GSI/Treble paths (samsung stays the default; `hw-backend-<bridge>=` per bridge, `docs/hardware.md` 7e).
+- In the session: Safari (WebContent must stay up: no new `.ips` with `sys_icache_invalidate`), the brightness slider,
+  lock and wake with the power key, Bluetooth on, the Wi-Fi password sheet.
+
+**Before it, on the Mac:** `./gradlew test assembleFullDebug` on the fork's `oneios` (core:root: 245 tests, 0 failed,
+2 skipped expected) and OneOS #5's click-through. **The owner:** start the fork's "OneOS APK (oneios)" workflow by hand
+(it has not run for a push since 2026-11-12); rerunning CI needs the token's Actions: Read and write.
+
 ## Update 2026-11-15 (fix-gpu-perf): the GPU by deadline and by process, and the background storms
 
 Built and host-tested on the Linux PC, **not run on the phone**. Details: `docs/gpu.md` 2.2b.
@@ -240,6 +274,12 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
 
 ## Decisions waiting for the owner
 
+- Two caps of ours remain against the rule "all CPU cores, no caps of ours on the GPU" (found by fix-ram-locked):
+  #40 sets `uclamp.max` 512 on iOS threads the kernel hints as background, and #42 runs background GPU contexts at
+  KGSL's lowest level at a still screen (`gpu-level=hold` or `gpu-priority=0` turn it off). Both are named in
+  `runtime/bridges/thermal/README.md`. Keep them, or remove them?
+- OneOS #6 moves the switch's shell into the root cpuset (a cgroup v1 hierarchy of its own; the cpu and memory
+  cgroups are unchanged). If the rule "never leave its cgroup" is meant to cover the cpuset too, revert it.
 - `scripts/image/imagetool.py` and `scripts/fetch/remotezip.py` are unused on `main` (the Rust commands replace
   them): delete them?
 - `userland/roottweak` (Python group 4): port it to Rust? A mistake changes the seed, so only with a byte-for-byte
