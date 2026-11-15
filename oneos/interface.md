@@ -357,4 +357,6 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   Rust side is its step list (`download` of the released `xnu.macho`, `fetch` of the profile's IPSW members from
   Apple's URL, `im4p`, `apfs-copy`, `tweaks`, `prelink` with the audit and `stubs-check`, the `receive`-style lists),
   one `space` event before it writes, and those four result fields. Until then the tool answers `refused`
-  `unknown` and the screen says so.
+  `unknown`; the app then also sends `tweaks` (refused `not-ported`: the root tweaks are still Python) and shows both
+  answers in the tool's words, and stages nothing. Not in the tool either: `scripts/image/build.sh`'s order and checks,
+  the AEA decryption.
