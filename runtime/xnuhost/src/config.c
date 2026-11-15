@@ -26,6 +26,7 @@ void xh_config_defaults(xh_config *c)
   c->ram_session_reserve = c->ram_unlock_below = c->ram_gpu_reserve = -1;
   c->ram_fit_on = c->ram_pagetable_percent = -1;
   c->return_graceful_ms = -1;
+  c->ready_content_wait = -1;
   strcpy(c->display, "shm");
   strcpy(c->gpu, "auto");
   c->input = true;
@@ -119,6 +120,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "ram-pagetable-percent")) { ok = number(value, 0, 50, &c->ram_pagetable_percent); }
   else if (!strcmp(key, "ram-unlock-below")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_unlock_below = (int64_t)v; }
   else if (!strcmp(key, "return-graceful-ms")) { ok = number(value, 0, 120000, &c->return_graceful_ms); }
+  else if (!strcmp(key, "ready-content-wait")) { ok = number(value, 0, 480, &c->ready_content_wait); }
   else if (!strcmp(key, "width")) c->width = (unsigned)atoi(value);
   else if (!strcmp(key, "height")) c->height = (unsigned)atoi(value);
   else if (!strcmp(key, "hz")) { c->hz = (unsigned)atoi(value); ok = c->hz == 0 || (c->hz >= 24 && c->hz <= 240); }
@@ -330,6 +332,8 @@ int xh_config_finish(xh_config *c)
   // or tested end to end, so it is off until the Mac/phone proves it. return-graceful-ms=N (or the image's
   // xnuhost.conf) turns it on. The host state machine itself is tested (docs/booter.md "The return").
   if (c->return_graceful_ms < 0) c->return_graceful_ms = from_image.return_graceful_ms < 0 ? 0 : from_image.return_graceful_ms;
+  // session/ready at the first lit frame of the guest's own, or this many seconds after its first (black) one (ready.c).
+  if (c->ready_content_wait < 0) c->ready_content_wait = from_image.ready_content_wait < 0 ? XH_READY_CONTENT_WAIT : from_image.ready_content_wait;
   if (!*c->ram_meminfo) strcpy(c->ram_meminfo, *from_image.ram_meminfo ? from_image.ram_meminfo : "/proc/meminfo");
   // The RAM held fixed for the session (ramfix.c) with ram-giveback=0; the default is still 0058's way (ram-giveback=1):
   // the fixed RAM has run in the host tests and the test kernel only, not in a PC boot of iOS or on the phone.

@@ -1013,8 +1013,9 @@ What all of them keep:
    `/proc/$$/ns/mnt` is not init's, and empty otherwise. A unit test compares the start line with the switch's.
 6. *Ready.* `control/display.log`'s size is noted before the start and only what the log gains is read, twice a
    second; each whole line is printed once (a line still being written waits for the next look). The command ends
-   with status 0 at `oneios-display: first frame posted` (the helper posts the whole frame right after `layer up`,
-   without waiting for a flush from xnuhost), and says whether the session is still open. A helper that ended
+   with status 0 at `oneios-display: first frame posted` (in a session that is ready the helper posts the whole frame right after `layer up`,
+   without waiting for a flush from xnuhost; before `session/ready` it waits for that file, since 2026-11-15:
+   `runtime/display/README.md`), and says whether the session is still open. A helper that ended
    before that (two looks in a row: its pid is no helper any more) is status 1 with its last lines, which is how
    the fault of 2026-11-14 would have read (`cannot locate symbol ...`). After `--timeout` seconds without the
    line it is status 1 with the log's last lines; the helper is left running (it waits 60 s for xnuhost's socket).

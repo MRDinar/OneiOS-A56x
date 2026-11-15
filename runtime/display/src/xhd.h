@@ -63,6 +63,14 @@ void xhd_frame_close(struct xhd_frame *frame);
 // 0 the socket is open, -1 it closed.
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage);
 
+// The first post waits for the guest (2026-11-15): the layer is above the OneOS boot screen and opaque, so a posted
+// frame covers it, and until session/ready the frame is black (the empty memfd, then backboardd's first frames) or the
+// kernel console. 1 while `ready` (SESSION/ready, which xnuhost makes at the first frame of the guest's own with
+// content, or ready-content-wait seconds after its first) does not exist; 0 when it does, or with no session (NULL:
+// --socket, displayctl). Any error but ENOENT counts as there, so a fault here never keeps the picture away.
+#define XHD_HOLD_POLL_MS 250                           // how often a held helper looks for `ready` between flushes
+int xhd_hold_first(const char *ready);
+
 int xhd_rect_clip(struct xhd_rect *r, uint32_t width, uint32_t height);   // 0 when nothing is left
 void xhd_rect_union(struct xhd_rect *into, const struct xhd_rect *r);
 

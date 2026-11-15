@@ -276,7 +276,9 @@ Two changes in xnuhost's device (`runtime/xnuhost/src/virtio_gpu.c`) came with t
 - A surface of scattered 4 KiB pages needs up to 4388 backing entries at 1440x3120 (3765 at 1320x2868); the limit
   for a 2D resource was 4096 and is now 16384, as for blobs.
 - The scanout client also presents the boot video (the console, until the compositor's first frame). That picture
-  is shown, but **`session/ready` is created at the first frame of a surface that is not the boot framebuffer**.
+  is shown, but **`session/ready` is created at the first frame of a surface that is not the boot framebuffer**,
+  and since 2026-11-15 only once such a frame is not all black (backboardd's first frames are; or 120 s after the
+  first of them: `docs/booter.md` 2.8, "the ready rule").
 
 ## What the 3D / Metal path needs later (not done, not blocking)
 

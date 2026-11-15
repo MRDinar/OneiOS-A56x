@@ -55,7 +55,7 @@ back stay exactly OneOS-shaped.
    session turns them on with `usb-repair` in the stage).
 4. **Start xnuhost** in a mount namespace with the stage over `/data`, in its own cgroup, then `oneios-display`.
 5. **Boot:** xnuhost loads `kernel.kc`; XNU mounts the OS volume (verified by xnuhost), on first start formats the
-   Data volume and unpacks the seed, mounts the cryptexes, starts launchd; backboardd draws on the guest's framebuffer, and at its first frame (not the boot console's)
+   Data volume and unpacks the seed, mounts the cryptexes, starts launchd; backboardd draws on the guest's framebuffer, and at its first frame that is not all black (not the boot console's; since 2026-11-15, `docs/booter.md` 2.8)
    xnuhost writes `session/ready`.
 6. **Return:** Volume Up + Volume Down for 3 s, a return request from inside iOS, xnuhost exiting, or no `ready` in
    time. The return ends xnuhost (SIGTERM, then SIGKILL), restores One UI's backlight, restarts the composer and
