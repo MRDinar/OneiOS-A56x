@@ -931,7 +931,14 @@ The bridges are linked in as `libonebridges.a` and come after the GPU in the win
 `virtio-snd`. They are on in a takeover session and off in `--mode bench` (`--set bridges=0|1`). With them,
 `/cpus` gets the host's cluster types (E vCPUs first), each vCPU thread is put on one host CPU of its cluster
 (`cpu-pin=1`, section 2.6a; `cpu-pin=0`: any CPU of its cluster), and so is the iOS thread a vCPU runs (when the vCPU
-changes). Bluetooth (`--bluetooth`,
+changes). The speaker's output latency (since 2026-11-15, fix-audio-latency): once virtio-snd has the AAudio helper,
+xnuhost asks it for its measured latency before the guest boots (`br_audio_probe_latency`, at most 2 s: the helper
+opens the speaker in silence, which then lingers for iOS's first sound) and adds `oneios-audio-latency=FRAMES` to the
+boot arguments, unless they have one (`audio: speaker latency N frames (N ms) measured by the helper:
+oneios-audio-latency=N`, or `audio: output latency N frames (N ms): the boot arguments' oneios-audio-latency, not
+measured`, or `audio: speaker latency not measured (...): the kernel's default output latency`); the guest publishes
+it as the speaker's output latency ([hardware.md](hardware.md) section 6). `ONEIOS_AUDIO_PROBE=0` in the environment
+leaves the probe out. Bluetooth (`--bluetooth`,
 `bluetooth=` in `xnuhost.conf`): `hidl` bridges the phone's controller (`/bluetooth` transport-encoding 1 =
 bluetoothd's H4 UART transport, which on iOS 27 is a Skywalk pipe: [hardware.md](hardware.md) section 4; transport-speed 3000000, the address of `/mnt/vendor/efs/bluetooth/bt_addr`);
 `virtual` gives iOS none (encoding 10, the guest driver hides the nub); the default `auto` is `hidl` when the bridges

@@ -37,17 +37,36 @@
 // Input: a reader thread reads the microphone in periods of 240 frames (blocking AAudioStream_read) and sends each
 // one to xnuhost.
 //
-// The way back to One UI (docs/hardware.md section 6): no thread of this process may run realtime. AAudio gives
-// a realtime (SCHED_FIFO) callback thread to an MMAP stream and to a FAST track with a callback, and it asks
-// system_server's scheduling_policy service for it; in a session that service is gone. So: no data callback,
-// AAudio's MMAP path off for this process (AAudio_setMMapPolicy NEVER). The performance mode is NONE; LOW_LATENCY
-// (ONEIOS_AUDIO_PERF=low, not run on the phone yet) is asked only when that MMAP refusal worked: AAudio tries MMAP only for LOW_LATENCY,
-// and a stream that reports MMAP anyway is closed and opened again with NONE. Without a callback, libaudioclient
-// takes the FAST flag off itself (AOSP AudioTrack::createTrack_l: "AUDIO_OUTPUT_FLAG_FAST denied by client" for a
-// synchronous native writer), so the track is a normal mixer track and no priority boost is ever asked; what
-// LOW_LATENCY still sends is AUDIO_OUTPUT_FLAG_RAW, which lets the audio policy pick an output that has it
-// (docs/hardware.md section 6). And a guard: every thread of the process is checked after each start and every
-// 10 s, and one found SCHED_FIFO or SCHED_RR is set back to SCHED_OTHER (logged).
+// The way back to One UI (docs/hardware.md section 6): no thread of this process may run realtime. AAudio makes
+// a realtime (SCHED_FIFO) thread only for a data callback (AudioStream::createThread_l -> registerThread, which
+// asks system_server's scheduling_policy service; in a session that service is gone). So: no data callback, ever:
+// one blocking writer thread at SCHED_OTHER, with a uclamp.min boost (ONEIOS_AUDIO_UCLAMP, 512 of 1024: the
+// governor's clock and the placement of runtime/bridges/cpu's vCPU hint, never a policy change).
+// The speaker's path (since 2026-11-15, fix-audio-latency; AOSP main read, not One UI's own build):
+//   1. MMAP exclusive (the default, ONEIOS_AUDIO_MMAP=exclusive): LOW_LATENCY, sharing EXCLUSIVE, MMAP allowed
+//      (AAudio_setMMapPolicy AUTO). The DSP reads our buffer itself (the `mmap_no_irq_out` port): no mixer and no
+//      thread in between, and nothing asks for a priority (AudioStreamInternal starts a thread only for a callback;
+//      AAudioServiceStreamMMAP and AudioFlinger's MmapThread ask none). Our writer keeps the buffer ahead of the
+//      DSP's read; the level is the target above the frames the DSP takes before the guest's next period.
+//   2. MMAP shared only while system_server runs (ONEIOS_AUDIO_MMAP=shared asks it first): its mixer is
+//      audioserver's AAudio endpoint thread, which registers itself (AAudioServiceStreamBase::registerAudioThread_l
+//      -> android::requestPriority), and without the scheduling_policy service that call waits for it forever: the
+//      endpoint would never mix and its stream's command thread would hang. A stream opened shared in a session is
+//      closed before its start and opened again on 3.
+//   3. Legacy (ONEIOS_AUDIO_MMAP=off, or 1 and 2 not given): MMAP refused (AAudio_setMMapPolicy NEVER), LOW_LATENCY
+//      on a normal mixer track: libaudioclient takes FAST off a synchronous native writer (AudioTrack::
+//      createTrack_l, "AUDIO_OUTPUT_FLAG_FAST denied by client"), so a FAST track is not to be had without a
+//      callback; what LOW_LATENCY still sends is AUDIO_OUTPUT_FLAG_RAW (the audio policy may pick the `fast`
+//      output's normal mixer). ONEIOS_AUDIO_PERF=none: performance mode NONE (the path before 2026-11-15).
+// And a guard: every thread of the process is checked after each start and every 10 s, and one found SCHED_FIFO
+// or SCHED_RR is set back to SCHED_OTHER (logged).
+// End to end (the `end-to-end` of the speaker's report): iOS's sample time to the speaker. The guest's engine
+// hands each period on at a fixed time of its clock (DroidVMAudio.cpp as staged: the speaker's period as it
+// starts), on the same counter as the host's CLOCK_MONOTONIC_RAW; the earliest arrival of a stream fixes that
+// schedule, each period's lateness is its arrival against it, and the host's part is what the ring and AAudio
+// hold ahead of it when it arrives (AAudioStream_getTimestamp: written but not yet presented).
+// The probe (audio_proto.h AU_PROBE, xnuhost before the boot): the speaker stream opened in silence, its latency
+// measured and sent back, so the kernel publishes the host's measured latency as the device's output latency.
 //
 // One UI's audioserver and its AAudio service (media.aaudio) keep running in a session. A root process is a
 // "service uid" for audioserver, so no app-op is asked for playback; recording needs the microphone's permission
@@ -70,6 +89,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -83,9 +103,17 @@
 
 static int sock;
 static unsigned target_ms = 20, target_max_ms = 80, target_decay_s = 20;
+static unsigned target_env_ms;                   // ONEIOS_AUDIO_TARGET_MS (0: the path's default: 5 ms MMAP, 20 ms a mixer)
 static unsigned buffer_bursts;                   // ONEIOS_AUDIO_BURSTS; 0: the buffer follows the need (buffer_fit)
-static aaudio_performance_mode_t perf_mode = AAUDIO_PERFORMANCE_MODE_NONE;   // ONEIOS_AUDIO_PERF=low: LOW_LATENCY (not run on the phone yet)
+static aaudio_performance_mode_t perf_mode = AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;   // ONEIOS_AUDIO_PERF=none: NONE
 static bool mmap_refused;                        // AAudio_setMMapPolicy(NEVER) worked
+enum { MMAP_OFF, MMAP_SHARED, MMAP_EXCLUSIVE };
+static int mmap_want = MMAP_EXCLUSIVE;           // ONEIOS_AUDIO_MMAP=exclusive|shared|off
+enum { PATH_LEGACY, PATH_MMAP_SHARED, PATH_MMAP_EXCLUSIVE };
+static int out_path;                             // the speaker stream's path
+static bool continuous;                          // its reader (the DSP, AAudio's endpoint) takes frames all the time
+static unsigned uclamp_min = 512;                // ONEIOS_AUDIO_UCLAMP (0..1024; 0: none)
+static unsigned told_frames;                     // the output latency iOS was told (AU_TOLD; 0: not known)
 
 // ---- the speaker ring (guarded by ring_lock) ----------------------------------------------------
 static int16_t ring[RING_FRAMES * 2];
@@ -103,8 +131,17 @@ struct out_stats {
   unsigned fill_min, fill_max;
   int margin;                                    // the level less what the next pull takes (frames; averaged once the pulls are known)
   unsigned target_peak;                          // the highest target since the start (frames; 0: never raised)
+  uint64_t xruns;                                // AAudio's own underruns (AAudioStream_getXRunCount) seen by the writer
+  // End to end, per guest period that arrived while AAudio had a timestamp (since the last report): iOS's sample
+  // time to the speaker, and the guest's lateness in it (s).
+  double e2e_sum, e2e_max, late_sum;
+  unsigned e2e_n;
 };
 static struct out_stats ostat;
+
+// The guest's schedule (guarded by ring_lock): the frames since its START and the earliest arrival less their
+// time (CLOCK_MONOTONIC_RAW, s; -1: none yet).
+static struct { uint64_t frames; double anchor; } guest_clock = { 0, -1 };
 
 // The server's pulls, as AAudioStream_getFramesRead shows them (the writer's own; read by out_report).
 typedef struct {
@@ -174,14 +211,63 @@ static void *aaudio_symbol(const char *name)
   return f ? f : dlsym(RTLD_DEFAULT, name);
 }
 
+// AAudio_setMMapPolicy (process-wide, read at each open): 1 NEVER, 2 AUTO. Returns whether it took.
+static bool mmap_policy(int32_t policy)
+{
+  static aaudio_result_t (*set_policy)(int32_t);
+  static bool looked;
+  if (!looked) { set_policy = (aaudio_result_t (*)(int32_t))aaudio_symbol("AAudio_setMMapPolicy"); looked = true; }
+  if (!set_policy) return false;
+  aaudio_result_t rc = set_policy(policy);
+  if (rc != AAUDIO_OK) fprintf(stderr, "oneios-audio: AAudio_setMMapPolicy(%s): %s\n", policy == 1 ? "NEVER" : "AUTO", AAudio_convertResultToText(rc));
+  return rc == AAUDIO_OK;
+}
+
 static void mmap_off(void)
 {
-  mmap_refused = false;
-  aaudio_result_t (*set_policy)(int32_t) = (aaudio_result_t (*)(int32_t))aaudio_symbol("AAudio_setMMapPolicy");
-  if (!set_policy) { fprintf(stderr, "oneios-audio: AAudio_setMMapPolicy not found: performance mode none (MMAP is only refused by it)\n"); return; }
-  aaudio_result_t rc = set_policy(1 /* AAUDIO_POLICY_NEVER */);
-  if (rc != AAUDIO_OK) fprintf(stderr, "oneios-audio: AAudio_setMMapPolicy(NEVER): %s: performance mode none\n", AAudio_convertResultToText(rc));
-  else mmap_refused = true;
+  mmap_refused = mmap_policy(1 /* AAUDIO_POLICY_NEVER */);
+  if (!mmap_refused) fprintf(stderr, "oneios-audio: MMAP not refused: a stream that is not MMAP exclusive gets performance mode none\n");
+}
+
+// Whether system_server runs (its scheduling_policy service answers an MMAP shared endpoint's thread registration).
+// ONEIOS_AUDIO_SYSTEM_SERVER=0|1 says so instead (the host test).
+static bool system_server_up(void)
+{
+  const char *forced = getenv("ONEIOS_AUDIO_SYSTEM_SERVER");
+  if (forced && *forced) return *forced == '1';
+  DIR *proc = opendir("/proc");
+  bool up = false;
+  if (!proc) return false;
+  for (struct dirent *e; !up && (e = readdir(proc));) {
+    if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+    char path[300], comm[32] = { 0 };
+    snprintf(path, sizeof path, "/proc/%s/comm", e->d_name);
+    FILE *f = fopen(path, "re");
+    if (!f) continue;
+    if (fgets(comm, sizeof comm, f)) up = !strcmp(comm, "system_server\n");
+    fclose(f);
+  }
+  closedir(proc);
+  return up;
+}
+
+// The writer thread's boost: uclamp.min (sched_setattr, Linux 5.3) with its policy and nice kept (SCHED_OTHER).
+struct helper_sched_attr {
+  uint32_t size, sched_policy;
+  uint64_t sched_flags;
+  int32_t  sched_nice;
+  uint32_t sched_priority;
+  uint64_t sched_runtime, sched_deadline, sched_period;
+  uint32_t sched_util_min, sched_util_max;
+};
+static void boost_writer(void)
+{
+#ifdef SYS_sched_setattr
+  if (!uclamp_min) return;
+  struct helper_sched_attr attr = { .size = sizeof attr, .sched_flags = 0x18 /* KEEP_POLICY | KEEP_PARAMS */ | 0x20 /* UTIL_CLAMP_MIN */,
+                                    .sched_util_min = uclamp_min };
+  if (syscall(SYS_sched_setattr, 0, &attr, 0)) fprintf(stderr, "oneios-audio: speaker writer: uclamp.min %u: %s\n", uclamp_min, strerror(errno));
+#endif
 }
 
 static int mmap_used(AAudioStream *stream)
@@ -197,7 +283,7 @@ static const char *perf_name(aaudio_performance_mode_t mode)
   return mode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY ? "low latency" : mode == AAUDIO_PERFORMANCE_MODE_POWER_SAVING ? "power saving" : "none";
 }
 
-static AAudioStream *open_with(bool output, unsigned rate, unsigned channels, aaudio_performance_mode_t mode)
+static AAudioStream *open_with(bool output, unsigned rate, unsigned channels, aaudio_performance_mode_t mode, aaudio_sharing_mode_t sharing)
 {
   AAudioStreamBuilder *builder;
   AAudioStream *stream = NULL;
@@ -207,7 +293,7 @@ static AAudioStream *open_with(bool output, unsigned rate, unsigned channels, aa
   AAudioStreamBuilder_setChannelCount(builder, (int32_t)channels);
   AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
   AAudioStreamBuilder_setPerformanceMode(builder, mode);
-  AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+  AAudioStreamBuilder_setSharingMode(builder, sharing);
   if (output) { AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA); AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC); }
   else AAudioStreamBuilder_setInputPreset(builder, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
   aaudio_result_t result = AAudioStreamBuilder_openStream(builder, &stream);
@@ -216,19 +302,67 @@ static AAudioStream *open_with(bool output, unsigned rate, unsigned channels, aa
   return stream;
 }
 
+static const char *path_name(int path)
+{
+  return path == PATH_MMAP_EXCLUSIVE ? "MMAP exclusive: the DSP reads the buffer" :
+         path == PATH_MMAP_SHARED ? "MMAP shared: audioserver's AAudio endpoint mixes it" : "a mixer track";
+}
+
+// The speaker's stream on the first path given (the header's 1, 2, 3); sets out_path. `why`: what was passed over.
+static AAudioStream *open_speaker(unsigned rate, unsigned channels, aaudio_performance_mode_t *asked, char *why, size_t size)
+{
+  AAudioStream *stream = NULL;
+  out_path = PATH_LEGACY;
+  if (perf_mode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY && mmap_want != MMAP_OFF) {
+    // Without AAudio_setMMapPolicy the system's aaudio.mmap_policy decides (2, AUTO, on the phone).
+    (void)mmap_policy(2 /* AAUDIO_POLICY_AUTO */);
+    mmap_refused = false;
+    *asked = AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
+    stream = open_with(true, rate, channels, *asked, mmap_want == MMAP_EXCLUSIVE ? AAUDIO_SHARING_MODE_EXCLUSIVE : AAUDIO_SHARING_MODE_SHARED);
+    if (!stream) snprintf(why, size, "LOW_LATENCY with MMAP did not open");
+    else {
+      int used = mmap_used(stream);
+      bool exclusive = AAudioStream_getSharingMode(stream) == AAUDIO_SHARING_MODE_EXCLUSIVE;   // a legacy track is never exclusive
+      if (exclusive && used != 0) out_path = PATH_MMAP_EXCLUSIVE;
+      else if (used == 1 && system_server_up()) out_path = PATH_MMAP_SHARED;
+      else if (used == 0) snprintf(why, size, "MMAP not given");                            // AAudio's own legacy track: kept
+      else {
+        snprintf(why, size, used == 1 ? "MMAP shared without system_server (its endpoint thread would wait for scheduling_policy "
+                 "forever): closed before its start" : "MMAP use not known and not exclusive: closed");
+        AAudioStream_close(stream);
+        stream = NULL;
+      }
+    }
+    if (stream) return stream;
+  } else snprintf(why, size, perf_mode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY ? "ONEIOS_AUDIO_MMAP=off" : "ONEIOS_AUDIO_PERF=none");
+  mmap_off();
+  *asked = mmap_refused ? perf_mode : AAUDIO_PERFORMANCE_MODE_NONE;
+  stream = open_with(true, rate, channels, *asked, AAUDIO_SHARING_MODE_SHARED);
+  if (stream && *asked != AAUDIO_PERFORMANCE_MODE_NONE && mmap_used(stream) == 1) {
+    fprintf(stderr, "oneios-audio: speaker: MMAP in use despite the policy: opened again with performance mode none\n");
+    AAudioStream_close(stream);
+    *asked = AAUDIO_PERFORMANCE_MODE_NONE;
+    stream = open_with(true, rate, channels, *asked, AAUDIO_SHARING_MODE_SHARED);
+  }
+  return stream;
+}
+
 static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels)
 {
-  // The speaker asks LOW_LATENCY only with MMAP refused; the microphone stays NONE.
-  aaudio_performance_mode_t asked = output && mmap_refused ? perf_mode : AAUDIO_PERFORMANCE_MODE_NONE;
-  AAudioStream *stream = open_with(output, rate, channels, asked);
-  if (stream && asked != AAUDIO_PERFORMANCE_MODE_NONE && mmap_used(stream) == 1) {
-    fprintf(stderr, "oneios-audio: %s: MMAP in use despite the policy: opened again with performance mode none\n", output ? "speaker" : "microphone");
-    AAudioStream_close(stream);
-    asked = AAUDIO_PERFORMANCE_MODE_NONE;
-    stream = open_with(output, rate, channels, asked);
-  }
+  // The speaker on its path; the microphone performance mode NONE, shared (AAudio tries MMAP only for LOW_LATENCY).
+  aaudio_performance_mode_t asked = AAUDIO_PERFORMANCE_MODE_NONE;
+  char why[160] = "";
+  AAudioStream *stream = output ? open_speaker(rate, channels, &asked, why, sizeof why)
+                                : open_with(false, rate, channels, asked, AAUDIO_SHARING_MODE_SHARED);
   if (!stream) return NULL;
   int32_t burst = AAudioStream_getFramesPerBurst(stream);
+  if (output) {
+    // The level's floor: 5 ms above what an MMAP reader takes before the guest's next period, 20 ms above a
+    // mixer's next pull (ONEIOS_AUDIO_TARGET_MS sets it for both).
+    continuous = out_path != PATH_LEGACY;
+    target_ms = target_env_ms ? target_env_ms : continuous ? 5 : 20;
+    target_max_ms = target_ms > 80 ? target_ms : 80;
+  }
   // AAudio's own buffer: ONEIOS_AUDIO_BURSTS bursts, or (by default) a burst plus the target plus a chunk, as the
   // writer keeps it (buffer_fit).
   if (output && burst > 0) {
@@ -236,12 +370,13 @@ static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels)
     int32_t capacity = AAudioStream_getBufferCapacityInFrames(stream);
     AAudioStream_setBufferSizeInFrames(stream, capacity > 0 && frames > capacity ? capacity : frames);
   }
-  fprintf(stderr, "oneios-audio: %s open: %d Hz, %d channel(s), %s asked, %s given, sharing %s, mmap %d, burst %d, buffer %d of %d frames, device %d, session %d\n",
+  fprintf(stderr, "oneios-audio: %s open: %d Hz, %d channel(s), %s asked, %s given, sharing %s, mmap %d, burst %d, buffer %d of %d frames, "
+          "device %d, session %d%s%s%s%s%s\n",
           output ? "speaker" : "microphone", AAudioStream_getSampleRate(stream), AAudioStream_getChannelCount(stream),
           perf_name(asked), perf_name(AAudioStream_getPerformanceMode(stream)),
           AAudioStream_getSharingMode(stream) == AAUDIO_SHARING_MODE_EXCLUSIVE ? "exclusive" : "shared", mmap_used(stream), burst,
           AAudioStream_getBufferSizeInFrames(stream), AAudioStream_getBufferCapacityInFrames(stream), AAudioStream_getDeviceId(stream),
-          AAudioStream_getSessionId(stream));
+          AAudioStream_getSessionId(stream), output ? "; " : "", output ? path_name(out_path) : "", *why ? " (" : "", why, *why ? ")" : "");
   aaudio_result_t result = AAudioStream_requestStart(stream);
   if (result != AAUDIO_OK) { fprintf(stderr, "oneios-audio: start %s: %s\n", output ? "speaker" : "microphone", AAudio_convertResultToText(result)); AAudioStream_close(stream); return NULL; }
   return stream;
@@ -267,20 +402,46 @@ static void out_report(const char *when)
   unsigned fill = ring_count, aim = target, pull = pulls.size;
   double period = pulls.period;
   ostat.fill_min = ostat.fill_max = ring_count;
+  ostat.e2e_sum = ostat.e2e_max = ostat.late_sum = 0;      // the end to end is per report
+  ostat.e2e_n = 0;
   pthread_mutex_unlock(&ring_lock);
   int queued = out_dir.stream ? pipeline_frames(&out_dir) : -1;
   int xruns = out_dir.stream ? AAudioStream_getXRunCount(out_dir.stream) : 0;
-  char pulled[64];
-  if (pull) snprintf(pulled, sizeof pulled, "server pulls %u frames every %.1f ms", pull, period * 1e3);
+  char pulled[64], e2e[160];
+  if (continuous) snprintf(pulled, sizeof pulled, "the reader takes frames all the time (%s)", out_path == PATH_MMAP_EXCLUSIVE ? "MMAP exclusive" : "MMAP shared");
+  else if (pull) snprintf(pulled, sizeof pulled, "server pulls %u frames every %.1f ms", pull, period * 1e3);
   else snprintf(pulled, sizeof pulled, "server pulls not seen");
+  char told[48] = "not known";
+  if (told_frames) snprintf(told, sizeof told, "%u ms", FRAMES_MS(told_frames));
+  if (s.e2e_n) snprintf(e2e, sizeof e2e, "end-to-end %.0f ms (max %.0f; the guest's period late by %.1f ms + the host %.0f ms; iOS is told %s)",
+                        s.e2e_sum / s.e2e_n * 1e3, s.e2e_max * 1e3, s.late_sum / s.e2e_n * 1e3, (s.e2e_sum - s.late_sum) / s.e2e_n * 1e3, told);
+  else snprintf(e2e, sizeof e2e, "end-to-end not measured (no guest period with a timestamp; iOS is told %s)", told);
   fprintf(stderr, "oneios-audio: speaker %s: %.1f s, %llu frames in, %llu played, %llu underruns, %llu overflows (%llu frames dropped), "
           "slips +%llu/-%llu, %llu frames of silence cut, ring %u ms (%u..%u, target %u, peak %u), margin %d ms, %s, AAudio %d ms queued, %d xruns; "
-          "latency about %d ms\n",
+          "latency about %d ms; %s\n",
           when, since(&out_dir.started), (unsigned long long)s.in, (unsigned long long)s.played, (unsigned long long)s.underruns,
           (unsigned long long)s.overflows, (unsigned long long)s.dropped, (unsigned long long)s.slips_up, (unsigned long long)s.slips_down,
           (unsigned long long)s.silence, FRAMES_MS(fill), FRAMES_MS(s.fill_min), FRAMES_MS(s.fill_max), FRAMES_MS(aim),
           FRAMES_MS(s.target_peak > aim ? s.target_peak : aim), s.margin * 1000 / (int)RATE, pulled, queued < 0 ? -1 : (int)FRAMES_MS(queued), xruns,
-          queued < 0 ? -1 : (int)FRAMES_MS((unsigned)queued + fill));
+          queued < 0 ? -1 : (int)FRAMES_MS((unsigned)queued + fill), e2e);
+}
+
+// One guest period has come in (ring_lock held): its lateness against the guest's schedule (the earliest arrival
+// of the stream less its sample time) plus what the ring and AAudio hold ahead of it (`ahead`, frames; -1: no
+// timestamp yet) is its end to end, from iOS's sample time to the speaker.
+static void guest_period(unsigned frames, int ahead)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &t);
+  double now = (double)t.tv_sec + t.tv_nsec / 1e9, at = (double)guest_clock.frames / RATE;
+  if (guest_clock.anchor < 0 || now - at < guest_clock.anchor) guest_clock.anchor = now - at;
+  guest_clock.frames += frames;
+  if (ahead < 0) return;
+  double late = now - at - guest_clock.anchor, e2e = late + (double)ahead / RATE;
+  ostat.e2e_sum += e2e;
+  ostat.late_sum += late;
+  ostat.e2e_n++;
+  if (e2e > ostat.e2e_max) ostat.e2e_max = e2e;
 }
 
 // One burst of output from the ring: `want` frames played from `take` frames of the ring (take = want, or one
@@ -372,6 +533,8 @@ static void *writer(void *arg)
   unsigned settled = 0, seen = 0;
   double ring_average = 0, quiet_since = now_s();        // quiet_since: the last underrun or target change
   bool phase = false;
+  int32_t xruns_seen = AAudioStream_getXRunCount(d->stream);
+  boost_writer();
   pulls_reset(&pulls, AAudioStream_getFramesRead(d->stream));
   pthread_mutex_lock(&ring_lock);
   unsigned fitted = target;
@@ -380,13 +543,26 @@ static void *writer(void *arg)
   while (atomic_load(&d->run)) {
     int64_t read = AAudioStream_getFramesRead(d->stream);
     int64_t queued = queued_frames(d, read);
+    int32_t xruns = AAudioStream_getXRunCount(d->stream);
     double now = now_s();
     unsigned take = 0, length = CHUNK;
     bool play = false, cut = false;
     pthread_mutex_lock(&ring_lock);
     pulls_saw(&pulls, read, now);
-    int ahead = pulls_ahead(&pulls, now);
-    if (ahead >= 0 && !pulls.told) {
+    // An MMAP reader (the DSP, or AAudio's endpoint every burst) takes frames all the time: what it takes before
+    // the guest's next period comes in is a chunk, whatever the phase. A mixer takes a period at a time (its pulls).
+    int ahead = continuous ? (int)CHUNK : pulls_ahead(&pulls, now);
+    if (xruns > xruns_seen) {                            // AAudio ran dry (the writer was late): the level goes up
+      ostat.xruns += (uint64_t)(xruns - xruns_seen);
+      unsigned raised = target + MS_FRAMES(5);
+      target = raised > MS_FRAMES(target_max_ms) ? MS_FRAMES(target_max_ms) : raised;
+      if (target > ostat.target_peak) ostat.target_peak = target;
+      quiet_since = now;
+      level = reference = -1;
+      settled = 0;
+    }
+    xruns_seen = xruns;
+    if (!continuous && ahead >= 0 && !pulls.told) {
       pulls.told = true;
       fprintf(stderr, "oneios-audio: speaker: the server pulls %u frames every %.1f ms: the level follows its pulls\n", pulls.size, pulls.period * 1e3);
     }
@@ -409,7 +585,9 @@ static void *writer(void *arg)
     // The need: what the next pull takes from what came in since the last one, plus the target. Blind: a burst
     // plus the target, at every moment.
     const int64_t need = (int64_t)target + (phase ? ahead : (int64_t)d->burst);
-    const int64_t low = phase ? ahead : low_blind;
+    // About to run dry: below what the next pull takes; for AAudio's endpoint below its burst; for the DSP below
+    // 2 ms (the writer's wait and a write).
+    const int64_t low = out_path == PATH_MMAP_SHARED ? (int64_t)d->burst : continuous ? (int64_t)MS_FRAMES(2) : phase ? ahead : low_blind;
     const int64_t margin = (int64_t)ring_count + queued - (phase ? ahead : (int64_t)d->burst);
     ostat.margin = level >= 0 && phase ? (int)level : (int)margin;
     if (!priming && ring_count >= CHUNK && margin > (int64_t)target + MS_FRAMES(10) && silent(ring_head, CHUNK)) {
@@ -580,6 +758,7 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
     guest_on = true;
     generation++;
     memset(&ostat, 0, sizeof ostat);
+    guest_clock.frames = 0; guest_clock.anchor = -1;
     pthread_mutex_unlock(&ring_lock);
     clock_gettime(CLOCK_MONOTONIC, &d->started);
     return 0;
@@ -593,12 +772,17 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
     priming = true;
     guest_on = true;
     generation++;
-    target = MS_FRAMES(target_ms);
     memset(&ostat, 0, sizeof ostat);
+    guest_clock.frames = 0; guest_clock.anchor = -1;
     pthread_mutex_unlock(&ring_lock);
   } else in_sent = in_lost = in_short = 0;
   d->stream = open_stream(output, rate, channels);
   if (!d->stream) return EIO;
+  if (output) {                                          // the path's floor (open_stream)
+    pthread_mutex_lock(&ring_lock);
+    target = MS_FRAMES(target_ms);
+    pthread_mutex_unlock(&ring_lock);
+  }
   int32_t burst = AAudioStream_getFramesPerBurst(d->stream);
   d->burst = burst >= 16 && burst <= (int32_t)MAX_BURST ? (unsigned)burst : 240u;
   d->channels = (unsigned)AAudioStream_getChannelCount(d->stream);
@@ -614,9 +798,11 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
 
 static void put_pcm(const int16_t *pcm, unsigned frames)
 {
+  int pipeline = pipeline_frames(&out_dir);              // what AAudio holds that is not yet presented (-1: no timestamp)
   pthread_mutex_lock(&ring_lock);
   ostat.in += frames;
   if (!guest_on) { pthread_mutex_unlock(&ring_lock); return; }
+  guest_period(frames, pipeline < 0 ? -1 : pipeline + (int)ring_count);
   // Before the server takes its first frames (a new track's stall, about 200 ms) the whole ring holds: the start of
   // a short sound is all there is of it.
   unsigned limit = !consuming ? RING_FRAMES : allowance + MS_FRAMES(40) > target + MS_FRAMES(60) ? allowance + MS_FRAMES(40) : target + MS_FRAMES(60);
@@ -649,26 +835,77 @@ static unsigned env_ms(const char *name, unsigned fallback, unsigned low, unsign
   return n < low ? low : n > high ? high : n;
 }
 
+// What the server has read (the DSP, the endpoint or the mixer) and not yet presented: the HAL and the DSP after the
+// read (frames; -1: no timestamp yet).
+static int below_read(dir_state *d)
+{
+  int64_t position, when;
+  if (AAudioStream_getTimestamp(d->stream, CLOCK_MONOTONIC, &position, &when) != AAUDIO_OK) return -1;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  int64_t now = (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+  int64_t below = AAudioStream_getFramesRead(d->stream) - (position + (now - when) * (int64_t)RATE / 1000000000);
+  return below < 0 ? 0 : (int)below;
+}
+
+static int cmp_int(const void *a, const void *b) { int x = *(const int *)a, y = *(const int *)b; return x < y ? -1 : x > y; }
+
+// AU_PROBE (xnuhost, before the guest boots): the speaker's stream opened now and kept in silence (it lingers, so
+// iOS's first sound finds it open), and its latency for a guest period: what AAudio holds below its read (the
+// median of 10 looks once the server reads and gives a timestamp, up to 1.5 s for that: a mixer track's start
+// stall is about 200 ms) plus the level the writer holds when a period comes in (the target; on a mixer also half
+// a pull). Returns frames (0: not measured).
+static unsigned probe(void)
+{
+  if (!out_dir.stream) {
+    if (start_dir(true, RATE, 2)) { fprintf(stderr, "oneios-audio: probe: the speaker did not open\n"); return 0; }
+    pthread_mutex_lock(&ring_lock);
+    guest_on = false;                                    // silence until the guest's START, then the linger
+    pthread_mutex_unlock(&ring_lock);
+    clock_gettime(CLOCK_MONOTONIC, &idle_since);
+  }
+  int samples[10];
+  unsigned n = 0;
+  for (unsigned i = 0; i < 150 && n < 10; i++) {
+    struct timespec nap = { 0, 10000000 };
+    nanosleep(&nap, NULL);
+    int below = AAudioStream_getFramesRead(out_dir.stream) > 0 ? below_read(&out_dir) : -1;
+    if (below >= 0) samples[n++] = below;
+  }
+  if (!n) { fprintf(stderr, "oneios-audio: probe: no timestamp from the speaker's stream in 1.5 s: not measured\n"); return 0; }
+  qsort(samples, n, sizeof *samples, cmp_int);
+  pthread_mutex_lock(&ring_lock);
+  unsigned level = target + (continuous ? 0 : (pulls.size ? pulls.size : out_dir.burst) / 2);
+  pthread_mutex_unlock(&ring_lock);
+  unsigned frames = (unsigned)samples[n / 2] + level;
+  fprintf(stderr, "oneios-audio: probe: speaker latency %u frames (%u ms) on %s: %u ms below AAudio's read + %u ms of level when a period "
+          "comes in\n", frames, FRAMES_MS(frames), path_name(out_path), FRAMES_MS((unsigned)samples[n / 2]), FRAMES_MS(level));
+  return frames;
+}
+
 int main(int argc, char **argv)
 {
   if (argc != 2) { fprintf(stderr, "usage: oneios-audio SOCKET_FD (started by xnuhost)\n"); return 2; }
   sock = atoi(argv[1]);
   setvbuf(stderr, NULL, _IOLBF, 0);
-  target_ms = env_ms("ONEIOS_AUDIO_TARGET_MS", 20, 5, 150);
-  if (target_max_ms < target_ms) target_max_ms = target_ms;
+  target_env_ms = env_ms("ONEIOS_AUDIO_TARGET_MS", 0, 2, 150);
   target_decay_s = env_ms("ONEIOS_AUDIO_TARGET_DECAY_S", 20, 1, 3600);
   buffer_bursts = env_ms("ONEIOS_AUDIO_BURSTS", 0, 1, 8);
   linger_s = env_ms("ONEIOS_AUDIO_LINGER_S", 60, 0, 600);
-  const char *perf = getenv("ONEIOS_AUDIO_PERF");
-  perf_mode = perf && !strcmp(perf, "low") ? AAUDIO_PERFORMANCE_MODE_LOW_LATENCY : AAUDIO_PERFORMANCE_MODE_NONE;
-  mmap_off();
-  char buffer[48];
+  uclamp_min = env_ms("ONEIOS_AUDIO_UCLAMP", 512, 0, 1024);
+  const char *perf = getenv("ONEIOS_AUDIO_PERF"), *mmap = getenv("ONEIOS_AUDIO_MMAP");
+  perf_mode = perf && !strcmp(perf, "none") ? AAUDIO_PERFORMANCE_MODE_NONE : AAUDIO_PERFORMANCE_MODE_LOW_LATENCY;
+  mmap_want = !mmap || !*mmap || !strcmp(mmap, "exclusive") ? MMAP_EXCLUSIVE : !strcmp(mmap, "shared") ? MMAP_SHARED : MMAP_OFF;
+  char buffer[48], target_text[64];
   if (buffer_bursts) snprintf(buffer, sizeof buffer, "%u bursts", buffer_bursts);
   else snprintf(buffer, sizeof buffer, "a burst + the target + 5 ms");
-  fprintf(stderr, "oneios-audio: ready: performance mode %s (a blocking writer: no FAST track, no realtime thread), MMAP %s, AAudio buffer %s, "
-          "ring %u ms, target %u ms (at most %u, down 5 ms per %u s without an underrun), linger %u s\n",
-          perf_name(mmap_refused ? perf_mode : AAUDIO_PERFORMANCE_MODE_NONE), mmap_refused ? "off" : "not refused", buffer,
-          FRAMES_MS(RING_FRAMES), target_ms, target_max_ms, target_decay_s, linger_s);
+  if (target_env_ms) snprintf(target_text, sizeof target_text, "%u ms", target_env_ms);
+  else snprintf(target_text, sizeof target_text, "5 ms on MMAP, 20 ms on a mixer");
+  fprintf(stderr, "oneios-audio: ready: performance mode %s, MMAP %s (a blocking writer at SCHED_OTHER, uclamp.min %u: no data callback, "
+          "no realtime thread), AAudio buffer %s, ring %u ms, target %s (at most 80, down 5 ms per %u s without an underrun), linger %u s\n",
+          perf_name(perf_mode), perf_mode != AAUDIO_PERFORMANCE_MODE_LOW_LATENCY || mmap_want == MMAP_OFF ? "off" :
+          mmap_want == MMAP_EXCLUSIVE ? "exclusive first (shared only with system_server)" : "shared (only with system_server)",
+          uclamp_min, buffer, FRAMES_MS(RING_FRAMES), target_text, target_decay_s, linger_s);
   static struct { struct au_header header; int16_t pcm[AU_MAX_FRAMES * 2]; } packet;
   for (;;) {
     struct pollfd wait = { .fd = sock, .events = POLLIN };
@@ -701,6 +938,16 @@ int main(int argc, char **argv)
       if (output && out_dir.stream && frames) put_pcm(packet.pcm, frames);
       break;
     }
+    case AU_PROBE: {
+      unsigned frames = probe();
+      struct au_header reply = { .kind = AU_LATENCY, .output = 1, .value = frames };
+      (void)send(sock, &reply, sizeof reply, MSG_DONTWAIT | MSG_NOSIGNAL);
+      break;
+    }
+    case AU_TOLD:
+      told_frames = packet.header.value;
+      fprintf(stderr, "oneios-audio: iOS is told an output latency of %u frames (%u ms)\n", told_frames, FRAMES_MS(told_frames));
+      break;
     }
   }
   stop_dir(true);

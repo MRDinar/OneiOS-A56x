@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -98,6 +99,38 @@ static void helper_close(void *ctx)
 }
 
 static const br_audio_backend helper_backend = { helper_start, helper_stop, helper_write, helper_read, helper_close };
+
+int br_audio_probe_latency(const br_audio_backend *backend, void *ctx, unsigned timeout_ms)
+{
+  if (backend != &helper_backend || !ctx) return -ENOTSUP;
+  helper *h = ctx;
+  struct au_header ask = { .kind = AU_PROBE, .output = 1 };
+  int rc = send_message(h, &ask, NULL, 0);
+  if (rc) return rc;
+  struct { struct au_header header; int16_t pcm[AU_MAX_FRAMES]; } packet;
+  struct timespec t0, t;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  for (;;) {
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    long spent = (long)(t.tv_sec - t0.tv_sec) * 1000 + (t.tv_nsec - t0.tv_nsec) / 1000000;
+    if (spent >= (long)timeout_ms) return -ETIMEDOUT;
+    struct pollfd wait = { .fd = h->fd, .events = POLLIN };
+    if (poll(&wait, 1, (int)(timeout_ms - (unsigned)spent)) <= 0) continue;
+    ssize_t got = recv(h->fd, &packet, sizeof packet, MSG_DONTWAIT);
+    if (got == 0) return -EPIPE;
+    if (got < (ssize_t)sizeof packet.header) continue;
+    if (packet.header.kind == AU_STATE && packet.header.value)
+      br_log(0, "audio: helper: %s stream: %s", packet.header.output ? "speaker" : "microphone", strerror((int)packet.header.value));
+    if (packet.header.kind == AU_LATENCY) return packet.header.value ? (int)packet.header.value : -EIO;
+  }
+}
+
+void br_audio_told(const br_audio_backend *backend, void *ctx, unsigned frames)
+{
+  if (backend != &helper_backend || !ctx) return;
+  struct au_header told = { .kind = AU_TOLD, .output = 1, .value = frames };
+  (void)send_message(ctx, &told, NULL, 0);
+}
 
 const br_audio_backend *br_audio_helper(const char *path, void **ctx)
 {
