@@ -3,6 +3,8 @@
 // (its own CPU step) and the guest (drivers/thermal). Read only; nothing outside the process is changed.
 #include "thermal.h"
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
+#include "../hal/hal.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -223,6 +225,25 @@ void br_thermal_read(const br_thermal_sensors *s, br_thermal_raw *raw)
   raw->skin = raw->lrp != BR_THERMAL_UNKNOWN ? raw->lrp : raw->ap;
 }
 
+void br_thermal_from_hal(const struct hal_temperature *temps, unsigned n, br_thermal_raw *raw)
+{
+  memset(raw, 0, sizeof *raw);
+  raw->cpu = raw->gpu = raw->ddr = raw->soc = raw->xo = raw->ap = raw->battery = raw->lrp = raw->skin = BR_THERMAL_UNKNOWN;
+  for (unsigned i = 0; i < n; i++) {
+    float c = temps[i].celsius;
+    if (!(c >= -40.0f && c <= 200.0f)) continue;                 // NaN too
+    int32_t deci = (int32_t)(c * 10.0f + (c < 0 ? -0.5f : 0.5f));
+    int32_t *into = temps[i].type == HAL_TEMP_CPU ? &raw->cpu : temps[i].type == HAL_TEMP_GPU ? &raw->gpu
+                  : temps[i].type == HAL_TEMP_BATTERY ? &raw->battery : temps[i].type == HAL_TEMP_SKIN ? &raw->skin : NULL;
+    if (into && (*into == BR_THERMAL_UNKNOWN || deci > *into)) *into = deci;
+    bool soc = temps[i].type == HAL_TEMP_CPU || temps[i].type == HAL_TEMP_GPU || temps[i].type == HAL_TEMP_SOC;
+    if (soc && (raw->soc == BR_THERMAL_UNKNOWN || deci > raw->soc)) {
+      raw->soc = deci;
+      snprintf(raw->soc_zone, sizeof raw->soc_zone, "%.*s", (int)sizeof raw->soc_zone - 1, temps[i].name);
+    }
+  }
+}
+
 // ---- where the heat comes from ------------------------------------------------------------------
 static void deci_text(char *out, size_t size, int32_t v);
 static bool read_text(const char *root, const char *rel, char *out, size_t size)
@@ -353,7 +374,43 @@ struct br_thermal {
   unsigned cap_told;
   uint32_t load_ms;                         // the load line's period (BR_THERMAL_LOAD_MS)
   br_host_load load;                        // the last sample
+  br_hal *hal;                              // treble: the thermal HAL (NULL: samsung, the files)
+  unsigned hal_temps;                       // temperatures it gave at the open
+  bool hal_failed;
 };
+
+struct temps { hal_temperature t[HAL_TEMPS_MAX]; unsigned n; };
+static int take_temps(void *ctx, ab_reader *r)
+{
+  struct temps *x = ctx;
+  int n = hal_temperatures_decode(r, x->t, HAL_TEMPS_MAX);
+  if (n < 0) return n;
+  x->n = (unsigned)n;
+  return 0;
+}
+
+// The treble backend's reading: one getTemperatures call (code 3 of the frozen IThermal.aidl).
+static int hal_read(br_thermal *t, br_thermal_raw *raw, unsigned *count)
+{
+  ab_parcel p;
+  struct temps x = { .n = 0 };
+  br_hal_parcel(&p, HAL_THERMAL);
+  int rc = br_hal_call(t->hal, HAL_THERMAL_GET_TEMPERATURES, &p, take_temps, &x);
+  if (rc) return rc;
+  br_thermal_from_hal(x.t, x.n, raw);
+  if (count) *count = x.n;
+  return 0;
+}
+
+// The reading of either backend. A HAL that stops answering: one line, the readings unknown until it answers again.
+static void sensors_read(br_thermal *t, br_thermal_raw *raw)
+{
+  if (!t->hal) { br_thermal_read(&t->sensors, raw); return; }
+  int rc = hal_read(t, raw, NULL);
+  if (rc && !t->hal_failed) br_log(0, "thermal: the thermal HAL's getTemperatures failed (%s): the readings are unknown until it answers", br_hal_error(rc));
+  if (rc) br_thermal_from_hal(NULL, 0, raw);
+  t->hal_failed = rc != 0;
+}
 
 // With the lock held: every load_ms, the "thermal: N s: host CPU ..." line (br_host_load_line).
 static void load_tick(br_thermal *t)
@@ -396,7 +453,7 @@ static void say_level(const br_thermal_state *s, const br_thermal_state *was)
 static void step(br_thermal *t)
 {
   br_thermal_raw raw;
-  br_thermal_read(&t->sensors, &raw);
+  sensors_read(t, &raw);
   br_thermal_state next;
   br_thermal_decide(&t->limits, &raw, &t->now, &next);
   if (t->cap_off) next.cap = 0;
@@ -457,7 +514,20 @@ br_thermal *br_thermal_open(const br_thermal_options *options)
 {
   br_thermal *t = calloc(1, sizeof *t);
   if (!t) return NULL;
-  if (br_thermal_find(options ? options->root : NULL, &t->sensors)) {
+  if (br_hw_select(BR_HW_THERMAL, options ? options->backend : BR_HW_UNSET) == BR_HW_TREBLE) {
+    char why[256];
+    br_thermal_raw first;
+    snprintf(t->sensors.root, sizeof t->sensors.root, "%.*s", (int)sizeof t->sensors.root - 1, options && options->root ? options->root : "");
+    t->hal = br_hal_open(options ? options->binder : NULL, HAL_THERMAL_INSTANCE, HAL_THERMAL, why, sizeof why);
+    int rc = t->hal ? hal_read(t, &first, &t->hal_temps) : 0;
+    if (t->hal && (rc || !t->hal_temps)) {
+      snprintf(why, sizeof why, "%s: getTemperatures: %s", HAL_THERMAL_INSTANCE, rc ? br_hal_error(rc) : "no temperature");
+      br_hal_close(t->hal);
+      t->hal = NULL;
+    }
+    if (!t->hal && !br_hw_missing(BR_HW_THERMAL, why)) { free(t); return NULL; }
+  }
+  if (!t->hal && br_thermal_find(options ? options->root : NULL, &t->sensors)) {
     br_log(1, "thermal: off: no thermal zone, board thermistor or battery temperature can be read");
     free(t);
     return NULL;
@@ -470,7 +540,7 @@ br_thermal *br_thermal_open(const br_thermal_options *options)
   t->load_ms = options && options->load_ms ? options->load_ms : BR_THERMAL_LOAD_MS;
   br_host_load_read(t->sensors.root, &t->load);
   br_thermal_raw raw;
-  br_thermal_read(&t->sensors, &raw);
+  sensors_read(t, &raw);
   br_thermal_decide(&t->limits, &raw, NULL, &t->now);
   if (t->cap_off) t->now.cap = 0;
   t->sent = t->now;
@@ -483,6 +553,7 @@ br_thermal *br_thermal_open(const br_thermal_options *options)
   pthread_condattr_destroy(&attr);
   if (pthread_create(&t->thread, NULL, worker, t)) {
     br_log(0, "thermal: off: no thread");
+    br_hal_close(t->hal);
     pthread_cond_destroy(&t->wake);
     pthread_mutex_destroy(&t->lock);
     free(t);
@@ -492,11 +563,17 @@ br_thermal *br_thermal_open(const br_thermal_options *options)
   deci_text(skin, sizeof skin, raw.skin);
   deci_text(soc, sizeof soc, raw.soc);
   deci_text(battery, sizeof battery, raw.battery);
-  br_log(1, "thermal: on: %u zones; case %s (%s), SoC %s (%s), battery %s; %s; read every %u ms%s", t->sensors.nzone, skin,
+  if (t->hal)
+    br_log(1, "thermal: on: the thermal HAL %s (version %d), %u temperatures; case %s (SKIN), SoC %s (%s), battery %s; %s; read every %u ms%s",
+           HAL_THERMAL_INSTANCE, br_hal_version(t->hal), t->hal_temps, skin, soc, raw.soc_zone[0] ? raw.soc_zone : "-", battery,
+           br_thermal_level_name(t->now.level), t->poll_ms, t->cap_off ? "; ONEIOS_THERMAL_CAP=0: xnuhost does not hold itself back" : "");
+  else br_log(1, "thermal: on: %u zones; case %s (%s), SoC %s (%s), battery %s; %s; read every %u ms%s", t->sensors.nzone, skin,
          raw.lrp != BR_THERMAL_UNKNOWN ? "lrp" : "ap thermistor", soc, raw.soc_zone[0] ? raw.soc_zone : "-", battery,
          br_thermal_level_name(t->now.level), t->poll_ms, t->cap_off ? "; ONEIOS_THERMAL_CAP=0: xnuhost does not hold itself back" : "");
   return t;
 }
+
+int br_thermal_backend(const br_thermal *t) { return t->hal ? BR_HW_TREBLE : BR_HW_SAMSUNG; }
 
 void br_thermal_get(br_thermal *t, br_thermal_state *out)
 {
@@ -532,6 +609,7 @@ void br_thermal_close(br_thermal *t)
   pthread_cond_broadcast(&t->wake);
   pthread_mutex_unlock(&t->lock);
   pthread_join(t->thread, NULL);
+  br_hal_close(t->hal);
   pthread_cond_destroy(&t->wake);
   pthread_mutex_destroy(&t->lock);
   free(t);

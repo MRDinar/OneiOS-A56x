@@ -82,6 +82,20 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   it falls back to `BGRA_8888` and encodes the half floats to sRGB, clamped (what is outside sRGB is lost). Pacing is
   the buffer queue's: the next buffer is handed out when surfaceflinger has taken the last, so the loop runs at the
   panel's vsync and every flush that came meanwhile is one post.
+- **The first post waits for `session/ready` (since 2026-11-15).** With `--session DIR` the helper posts nothing
+  until `DIR/ready` exists (`xhd_hold_first`): xnuhost makes it at the guest's first frame of its own that is not
+  all black, or `ready-content-wait` seconds (120) after its first black one (`docs/booter.md` 2.8, "the ready
+  rule"). Until then the layer is up but has no buffer, so the OneOS boot screen under it stays on the panel. The
+  flushes that come meanwhile add up to the damage (the first post is the whole frame anyway); the helper looks for
+  the file at every flush and every 250 ms between them, and only until its first post. Before this the helper
+  posted the empty memfd (black) at once, a second after `layer up`, then the console's and backboardd's black
+  frames: its opaque layer covered the boot screen and the fork ended the boot screen at that `first frame posted`,
+  and the panel was black until iOS's Apple logo (phone, main 3233fed, 2026-11-15). Lines: `the first frame waits
+  for DIR/ready (xnuhost's first frame of the guest's own with content); the boot screen stays`, then `first frame
+  posted (...; held T s for session/ready, N wakes for flushes not shown)`. A helper started again in a session that is ready
+  (`oneios-tool phone display-restart`) posts at once. `--socket PATH` (and `displayctl`) never waits. Not run on
+  the phone yet; the host test is `test_hold_first`. The bars' black background layer (only for a frame that is not
+  the panel's size) is still drawn before the hold: in a session the frame is the panel's size, so there is none.
 - **Colour.** The buffers are tagged with a dataspace (`ANativeWindow_setBuffersDataSpace`, libnativewindow's: the
   library links `-lnativewindow` and `-Wl,-z,defs`; without the first, `1f7dd1f`'s library could not be loaded on the
   phone, 2026-11-14: `cannot locate symbol "ANativeWindow_getBuffersDataSpace"`, and the panel stayed on the OneOS
@@ -240,9 +254,25 @@ OneOS boot screen stays up under the helper's layer, as on 2026-11-13, and shows
 (`OneOSBootStatus`, `control/bootui/renderer.log`) puts its layer at z 2,000,000,000; this helper's is at
 2,147,483,646 and opaque, so it is always above. The helper does not re-create or re-place its layer on a display
 off or on, a power-key press or a refresh-rate change: nothing in it listens for them, and iOS's display off is a
-black (blank) frame on the same layer. So the boot screen can only show through when this layer is gone, i.e. the
-helper ended or was killed [I: the 2026-11-13 helper had been started late, by hand, after the libnativewindow
-fault, and was not in `control/display.pid`, so the hand-off never ended the renderer]. The fork's feeder ends the
-renderer once a helper in `control/display.pid` logs `first frame posted`; since OneOS `fix-bootui-handoff` the
-switch starts each session with an empty `display.log`, so an earlier session's line cannot end it early.
-Not run on the phone yet.
+black (blank) frame on the same layer. So once the helper has posted a frame, the boot screen can only show through
+when this layer is gone, i.e. the helper ended or was killed [I: the 2026-11-13 helper had been started late, by
+hand, after the libnativewindow fault, and was not in `control/display.pid`, so the hand-off never ended the
+renderer]. The fork's feeder ends the renderer once a helper in `control/display.pid` logs `first frame posted`, or
+`session/ready` exists and the helper logged `layer up` (OneOS `switcher/assets/oneios_switch.sh` `display_up`); since
+OneOS `fix-bootui-handoff` the switch starts each session with an empty `display.log`, so an earlier session's line
+cannot end it early.
+**The black screen between the boot screen and the Apple logo (phone, main 3233fed, 2026-11-15), fixed here and in
+xnuhost [F for the code, not run on the phone].** Before the fix both of the fork's markers came with black
+frames: `first frame posted` a second after `layer up` (the helper posted the empty memfd at once, and the frame
+stayed black or the console's), and `session/ready` at backboardd's first frame, which is black. Whichever ended the
+renderer, this opaque layer had covered it with black, and it stayed black until iOS drew its logo. Now
+`session/ready` comes at the guest's first frame with content (`docs/booter.md` 2.8, "the ready rule") and this
+helper posts nothing before it (above, "The first post waits for `session/ready`"), so both markers come with the
+logo: the boot screen shows until the logo replaces it. The fork needs no change: its markers, its 30 s rule for a
+renderer that never drew, and the dead-man timer (600 s without `ready`) are as they were. If iOS only ever draws
+black, `ready` comes `ready-content-wait` (120) seconds after its first frame: then the helper posts that black
+frame, the boot screen ends, and the panel is black as before. On the phone, read: in `control/display.log` the
+`first frame posted (...; held T s for session/ready ...)` line; in `session/xnuhost.log` `display: the guest's first
+frame of its own: all black ...` (where the old rule was ready) and `guest ready: first frame with content, T s and N
+frames after the guest's first (black) frame`; in `control/bootui.log` the feeder's `the boot screen ends` line at
+the same time, and on the glass the boot screen until the Apple logo.

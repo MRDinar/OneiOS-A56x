@@ -60,6 +60,14 @@ static void update(void)
   for (unsigned c = 0; c < g.ncpu; c++) xh_gic_notify(c, best(c) != XH_INTID_NONE);
 }
 
+// The same for one CPU: a change that can move only that CPU's line (its SGI, PPI, the ack or EOI of one of its
+// interrupts, an SPI routed to it). Every ack and EOI used to compute and tell all eight lines under the one lock
+// (host-overhead, 2026-11-15): eight best() scans per interrupt step, and a signal to each CPU with a line up.
+static void update_cpu(unsigned c)
+{
+  if (xh_gic_notify && c < g.ncpu) xh_gic_notify(c, best(c) != XH_INTID_NONE);
+}
+
 void xh_gic_init(unsigned ncpu, uint64_t dist_base, uint64_t redist_base)
 {
   // Recursive: the notify hook, called with the lock held, asks xh_gic_pending for the calling CPU.
@@ -93,7 +101,7 @@ void xh_gic_set_spi(unsigned intid, bool level)
   if (intid < 32 || intid >= NIDS) return;
   pthread_mutex_lock(&g.lock);
   if (level) g.level[intid / 32] |= 1u << (intid % 32); else g.level[intid / 32] &= ~(1u << (intid % 32));
-  update();
+  update_cpu(g.target[intid]);
   pthread_mutex_unlock(&g.lock);
 }
 
@@ -102,7 +110,7 @@ void xh_gic_set_ppi(unsigned cpu, unsigned intid, bool level)
   if (cpu >= g.ncpu || intid < 16 || intid >= 32) return;
   pthread_mutex_lock(&g.lock);
   if (level) g.cpu[cpu].level |= 1u << intid; else g.cpu[cpu].level &= ~(1u << intid);
-  update();
+  update_cpu(cpu);
   pthread_mutex_unlock(&g.lock);
 }
 
@@ -111,7 +119,7 @@ void xh_gic_send_sgi(unsigned cpu, unsigned sgi)
   if (cpu >= g.ncpu || sgi >= 16) return;
   pthread_mutex_lock(&g.lock);
   g.cpu[cpu].pending |= 1u << sgi;
-  update();
+  update_cpu(cpu);
   pthread_mutex_unlock(&g.lock);
 }
 
@@ -131,7 +139,7 @@ uint32_t xh_gic_ack(unsigned cpu)
     if (id == XH_INTID_VTIMER) g_vcpu[cpu].stat_timer++;
     else if (id < XH_SGI_COUNT || id >= XH_GIC_IPI_SPI) g_vcpu[cpu].stat_sgi++;
   }
-  update();
+  update_cpu(cpu);
   pthread_mutex_unlock(&g.lock);
   return id;
 }
@@ -141,7 +149,8 @@ void xh_gic_eoi(unsigned cpu, uint32_t intid)
   pthread_mutex_lock(&g.lock);
   if (intid < 32) g.cpu[cpu].active &= ~(1u << intid);
   else if (intid < NIDS) g.active[intid / 32] &= ~(1u << (intid % 32));
-  update();                                   // a level line still high is pending again
+  update_cpu(cpu);                            // a level line still high is pending again
+  if (intid >= 32 && intid < NIDS && g.target[intid] != cpu) update_cpu(g.target[intid]);
   pthread_mutex_unlock(&g.lock);
 }
 

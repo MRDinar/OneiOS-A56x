@@ -31,6 +31,7 @@ Command line (the first line is what the OneOS fork runs, `oneos/interface.md` s
 xnuhost --session-abi 1 --mode takeover --runtime DIR --image DIR --data DIR --session DIR
         [--kernel FILE] [--cpus N] [--ram SIZE|auto] [--boot-args TEXT] [--display shm|drm|none]
         [--width W --height H] [--hz N] [--scale 2|3] [--no-input] [--input-script FILE] [--no-tasks]
+        [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]
         [--config FILE] [--set KEY=VALUE] [-v]
 xnuhost --selftest            # on the phone: page size, address bits, PAC keys across fork, memfd, seccomp
 ```
@@ -42,7 +43,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
-| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`; the command line wins |
+| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ready-content-wait`; the command line wins |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
@@ -54,11 +55,17 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--ram SIZE` or `--ram auto` (`ram=`) | `auto` | the guest's RAM: a multiple of 2 MiB, 256 MiB to 64 GiB. `auto`: the least of `ram-percent` of the host's `MemTotal`, `MemTotal` less `ram-host-floor`, and what fits beside the session's needs (section 2.2, "What fits"), rounded down to 256 MiB (below). A size given by hand that is more than fits is used, with an error line saying so |
 | `--set ram-fit=0\|1` | 1 | 1: `ram=auto` takes no more than what fits (2026-11-14); 0: as before (share and floor only) |
 | `--set ram-gpu-reserve=SIZE` | 256M | what fits leaves this for KGSL's own memory |
+| `--set gpu-level=deadline\|hold\|governor` (`gpu-level=`) | `deadline` | the GPU's level (`docs/gpu.md` 2.2b): the top only for a frame that would miss its deadline; `hold`: every render-server frame at the top to 150 ms after it (the rule before 2026-11-15); `governor`: KGSL's governor alone. Passed to the renderer as `ONEIOS_GPU_LEVEL` |
+| `--set gpu-priority=0\|1` (`gpu-priority=`) | 1 | 1: each GPU context's KGSL priority from its owner's class (render server and front 4, default 8, background 12), background contexts at KGSL's lowest level at a still screen; 0: the guest's queue priority, as upstream (`ONEIOS_GPU_PRIORITY=off`) |
 | `--set ram-pagetable-percent=N` | 8 | what fits counts the iOS tasks' page tables as this share of the guest's RAM, 0 to 50 |
 | `--set ram-percent=N` | 90 | `ram=auto`'s share of `MemTotal`, 10 to 100 |
 | `--set ram-host-floor=SIZE` | 1.5G | what `ram=auto` always leaves the host |
 | `--set host-mem-log=SECONDS` | 30 | a `memory: host MemAvailable` line every so often; 0 = only at the start and the stop |
+| `--hw-backend samsung\|treble` (`hw-backend=`, also in `xnuhost.conf`) | `samsung` | which form of the phone's hardware every bridge uses: today's Samsung paths, or the vendor-neutral Treble interfaces (AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths). One line per bridge says which and why (`hw: battery: backend treble (hw-backend=treble)`). [hardware.md](hardware.md) 7e has the audit table |
+| `--hw-backend-BRIDGE samsung\|treble` (`hw-backend-backlight=`, `-battery`, `-thermal`, `-haptics`, `-touch`, `-keys`, `-audio`, `-camera`, `-wifi`, `-bluetooth`, `-display`) | unset (`hw-backend`'s) | one bridge's backend, over `hw-backend`; an unknown bridge name is refused |
+| `--hw-backend-fallback 0\|1` (`hw-backend-fallback=`) | 0 | a treble bridge whose interface is missing: 0 the bridge stays off, 1 it uses its samsung form; either way one line says what was missing |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
+| `--set ready-content-wait=SECONDS` | 120 | `session/ready` comes at the guest's first frame of its own that is not all black, or this long after its first frame of its own when all were black; 0 = at its first frame (the rule before 2026-11-15); 0 to 480 (section 2.8, "the ready rule") |
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |
 | `--set ram-giveback=0\|1` | **0** (since fix-ram-locked, 2026-11-15) | 0: the RAM is **held fixed and locked for the session** (section 2.2, "Fixed RAM": prefaulted, `mlock`ed, no free pages given back; the owner's rule: iOS's RAM is never swapped). 1: 0058's way again (faulted in as used, free pages given back, the host may swap it); one setting flips it back |
 | `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes; at an `mlock` that fails part way the prefault stops and what is locked stays locked. Where the lock cannot be had at all (the first 16 MiB step fails: EPERM, or an RLIMIT_MEMLOCK under 16 MiB as on the PC; or the RAM is more than fits) the RAM is not held fixed either: 0058's give-back, with an error line (section 2.2, "Fixed RAM"). Nothing is prefaulted unlocked unless `ram-lock=0` |
@@ -179,7 +186,7 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   one number names a byte for the kernel's pointers, its physical addresses (DMA addresses in virtqueues,
   page tables it may still write) and, minus the base, the offset a task maps.
 - The top of the memfd, outside the kernel's window, is the boot framebuffer (`boot_args.Video`); the main
-  loop shows it until the guest is ready. The guest's display driver maps it too (`kernel_map` takes any page of
+  loop shows it until the guest presents a frame of its own (not later: from then on the frames are the guest's). The guest's display driver maps it too (`kernel_map` takes any page of
   the memfd; kernel `0020`) and presents it itself through the virtio GPU.
 - The board's device windows are a `PROT_NONE` reservation at their physical addresses
   (`0x08000000..0x0b000000`), so a device register's physical address is also its pointer and every access
@@ -669,6 +676,177 @@ of the vCPU's wall time outside `cpu_idle`; "C% of a core" is the vCPU thread's 
 The kernel's side of the same trips (which system calls, the fills, the TLB lock) is the hosted kernel's
 `oneios-perf:` report (patch 0041, `kernel/patches/oneios-hosted/README.md`).
 
+**Host overhead, 2026-11-15 (fix-host-overhead).** From the phone session of main 3233fed (30 s windows): 1,021,984 user
+stays, 684,514 system calls, 330,746 faults, 331,008 user maps and 414,758 user unmaps (each an mmap or munmap of one
+page in the task's process), and the host at 482 % of 800 with 212 % in Linux's own code. What changed in xnuhost:
+
+- **The deferred queue joins entries** (`stub/stub_abi.h` `xs_queue_join`, unit-tested in `test_xnuhost`): a map of the
+  next page of the same file range with the same protection extends the last map; adjacent or overlapping unmaps become
+  one; an unmap followed by a map of the same range is the map alone (`MAP_FIXED` replaces the old page in one step: the
+  pattern of a fault that changes an entry, the flush then the refill); a map followed by an unmap of the same range is
+  the unmap alone; the same range mapped twice keeps the later map. Only the last entry is looked at (one compare per
+  call). An unmap joined into the last entry that has to be taken back (a thread of the task was counted running) puts the
+  entry back as it was and is ordered, as before. The `perf:   queue:` line counts the joins (one host call less each).
+- **Maps are populated** (`MAP_POPULATE`, `XS_MAP_POPULATE`): the stub's maps of the RAM memfd, in the release and in an
+  order, and the kernel's `kernel_map` fill the page tables in the same call, so the faulting instruction's retry does
+  not take a second, Linux, fault on the page it was just given.
+- **The GIC tells only the CPU a change concerns** (`gic.c` `update_cpu`): an ack, an EOI of an SGI or PPI, an SGI, a
+  PPI or SPI level change recompute that CPU's line (an SPI's: its target's), not all eight under the one lock. Changes of
+  the distributor, an enable, the priority mask still recompute every line.
+- **A line that is up is not signalled again** (`cpu.c` `xh_cpu_line`): every GIC change used to send each other vCPU
+  whose line was up a `tgkill` (or a futex wake), even when the line had been up for a while (a vCPU running with
+  interrupts masked got a signal per interrupt step anywhere). The CPU takes a pending line when it unmasks, when a host
+  call returns, and in `thread_run` and `cpu_idle` before they wait, and only it lowers its line, by recomputing under the
+  GIC's lock after the raiser's change, so a raise skipped is never lost. `perf:   queue:` counts the raises signalled and
+  those skipped.
+- **The uclamp reaches iOS's own code** (`task.c` `xh_thread_run`, `xh_cpu_uclamp`): the guest's frequency request
+  (DroidVMCpufreq's `SET_PERF`, `br_cpufreq`) and drm2kgsl's animation boost used to set `uclamp.min` on the vCPU thread
+  only, which waits while the iOS thread runs on its task's own Linux thread: the host's governor never saw a request for
+  the core where the work ran. Now each release gives the iOS thread its vCPU's clamp (one `sched_setattr` per change,
+  none otherwise; SCHED_OTHER stays SCHED_OTHER, nice is kept). The kernel's hint (`hostcall.h` `perf_hint`, hosted 0075:
+  the thread's performance-control class) gives a UI, user-initiated or realtime thread its floor and a background or
+  utility one no floor and a ceiling (`uclamp.max` 512, `XH_HINT_BG_MAX`). drm2kgsl's own clamp looked for threads named
+  `crosvm_vcpu*` and logged `vCPU uclamp.min 1024: 0 of 0 threads`; its patch 0008 calls xnuhost's
+  `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `xh_gpu_vcpu_boost`, the iOS threads).
+- **The same timer deadline again is not a host call** (`cpu.c` `xh_cpu_timer_set`): a future deadline equal to the
+  armed one leaves the host timer as it is (`perf: ... timer_set N (M to the host timer)`: N - M saved; the PC's baseline
+  boot made 4.8 million timer sets in 2,400 s, every one a `timer_settime`).
+- **Each vCPU is described as the core it runs on** (`runtime/bridges/cpu`, section 2.6b).
+- **The `perf: cpuN:` line ends with `last on host CPU N`** (`/proc/self/task/TID/stat`, a named file per vCPU).
+
+Before and after are in section 2.6b and `kernel/patches/oneios-hosted/README.md` ("0075"). What the phone shows: the
+`perf:   queue:` line (joins, uclamps given, raises skipped), `perf: task_map ... task_unmap ...` against the kernel's
+`oneios-perf:   pmap: user maps N, unmaps M` (fewer host calls than pmap operations), and `thermal: 30 s: host CPU ...
+sys ...` (the host's share in Linux).
+
+### 2.6b CPU placement, the topology iOS sees, and the parallel test (2026-11-15)
+
+**The topology.** `runtime/bridges/cpu` reads, per CPU by name (`/sys/devices/system/cpu/cpuN/...`, N = 0..15, never a
+directory walk): `cpu_capacity`, `cpufreq/cpuinfo_max_freq`, `cpuinfo_min_freq`, `related_cpus` (the frequency domain),
+`scaling_available_frequencies`, `scaling_boost_frequencies` (new), `scaling_max_freq` (new: a cap someone wrote, logged
+and never written), `regs/identification/midr_el1` (the core) and the caches. xnuhost logs at start one line per host
+CPU (`cpu: host CPU 7: Cortex-X4 (part 0xd82), P, frequency domain of CPU 7, capacity 1024, 480000-3398400 kHz (top as a
+boost frequency)`), one per vCPU (`cpu: vCPU 7 (P) is described to iOS as host CPU 7: ...`), and the cpuset it runs in
+with its CPUs and the `cpufreq/boost` switch (`cpu: xnuhost's cpuset /..., CPUs allowed 0-7; cpufreq boost 1`).
+
+- **What iOS 27's kernel reads** (xnu-12377, `osfmk/arm64/machine_routines.c` `ml_parse_cpu_topology`): each `/cpus/cpuN`
+  node's `cluster-type` (`E`, `M` or `P`), `reg`, `l2-cache-size`, `l3-cache-size`. The cluster of a CPU comes from
+  `MPIDR_CLUSTER_ID(reg)` only when the SoC config has `HAS_CLUSTER`; the hosted kernel is built on UniXNU's BCM2837
+  config (no `HAS_CLUSTER`, no `HAS_MCORE`), where the cluster is `cluster-type == P`: exactly two clusters, E and P,
+  whatever the tree says. `hw.nperflevels` is 2 (droidvm-amp.patch: `perflevel0` P, `perflevel1` E). The Edge scheduler
+  and DroidVMCpufreq's thread-group preferences (UI, above-UI and realtime classes on the P cluster) place the threads.
+  So three levels (X4, A720, A520) cannot be told to this kernel by the tree alone: that needs a kernel built with
+  per-cluster ids and `M` cores (not done; a guess that the Edge scheduler would take three cluster types on this config).
+- **The SM8650's four kinds** (cpu0-1 A520 2.27 GHz, cpu2-4 A720 3.15 GHz, cpu5-6 A720 2.96 GHz, cpu7 X4 3.39 GHz on the
+  S24 Ultra; read at run time, not coded): E = the A520s (the lowest capacity), P = the A720s and the X4. The 2.96 GHz
+  A720s are P on purpose: each is about twice an A520's work at the same clock, and as E they would take iOS's background
+  work while UI work queued on four P cores. They are the P cluster's slowest cores: cpu-pin puts vCPU 5-6 there, and
+  with the hint below a UI thread there still asks the host for its top clock.
+- **Each vCPU is described as its own core** (`br_cpu_plan_make`): cpu-pin puts the rank-th vCPU of a kind on the
+  rank-th CPU of the kind's mask, in CPU order (vCPU *i* on CPU *i* on the S24 Ultra), and the vCPU's clock table,
+  capacity and caches are now that core's. Before, every P vCPU was described as the fastest core of its kind (six X4s),
+  and a frequency request of a vCPU on an A720 was sized against the X4's table.
+- **The X4's top**: the guest's `DroidVMCpufreq: ... 480000-3052800 kHz (cpu7)` on the phone was the table of
+  `scaling_available_frequencies`, which leaves out boost frequencies (Linux lists `CPUFREQ_BOOST_FREQ` entries in
+  `scaling_boost_frequencies`; Qualcomm's cpufreq-hw marks the X4's 3.39 GHz that way [inference: not seen on this
+  phone's files yet]). The boost frequencies are now in the vCPU's table and its top. Whether Linux lets the core reach
+  them depends on `cpufreq/boost`, which xnuhost logs and never writes; `oneios-tool phone cpu` shows it, each domain's
+  `scaling_max_freq` and governor (a cap left by One UI's side would show there as `CAPPED`).
+
+**Priorities.** iOS's QoS reaches the host in two ways, both without realtime policies: the guest scheduler puts a
+thread on an E or P vCPU (the Edge scheduler with DroidVMCpufreq's preferences), and cpu-pin keeps the vCPU, and the
+iOS thread it runs, on its core; and the clamp of section 2.6a: the kernel's `perf_hint` (hosted 0075) says the class of
+the thread a vCPU is about to run, and the release gives that Linux thread `uclamp.min` 1024 for realtime, UI and
+above-UI, 768 for user-initiated, the vCPU's own request for default, and 0 with `uclamp.max` 512 for utility,
+background and darwin-background threads (RunningBoard's background and suspended roles clamp an app's threads to
+background QoS, so they never hold a fast core at its top clock). The same word is readable by host code on the vCPU
+(the GPU path: `xh_cpu_self()->cpu.perf_hint`, for fix-gpu-perf's per-context priority).
+
+**The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
+`sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's
+`switcher/assets/oneios_switch.sh` (branch `oneios`, read 2026-11-15): `--inner` moves the shell that execs xnuhost into
+the v2 cgroup `oneios_session` only; the v1 cpuset (`/dev/cpuset`) is changed only for the watcher and the key readers
+(`out_of_the_way`: the cpuset's root, every core). So xnuhost keeps the v1 cpuset of the root shell the app started
+[inference: top-app's or foreground's when the switch is tapped from the front app; never read on the phone yet]. If the
+`cpu: xnuhost's cpuset` line or `phone cpu` shows a cpuset of fewer CPUs, the fix belongs in the fork's `--inner` (a
+cpuset with `/dev/cpuset/cpus`, as its cgroup move), not in xnuhost, which never leaves its cgroup: not done in this
+change.
+
+**The parallel test** (`make -C runtime/xnuhost parallel-arm64`, the test kernel's `testkernel-parallel[=SCALE]`, 8
+vCPUs): N threads of one task, one per vCPU, each the same user-mode work (100 rounds of a 100,000-iteration loop and a
+system call), all at once, for N = 1, 2, 4 and 8; the wall time and the speed-up against one thread
+(`PARALLEL 8 threads: 555 ms, speed-up 3.67 (ideal 8)`). With nothing in xnuhost's path serialising the vCPUs it stays
+near N while the host has a core per thread. `PAR_SET="--set cpu-pin=2"` pins vCPU *i* and its thread on host CPU *i*.
+On the 4-CPU PC under qemu-aarch64 only up to 4 can show (the results are in section 2.6c). What it does not show: XNU's
+own scheduler and locks (the test kernel has none); a PC boot of iOS can show those only with qemu's 4 cores and its
+times.
+
+### 2.6c Before and after (fix-host-overhead, 2026-11-15), and the phone test
+
+**The PC** (x86_64, 4 CPUs, qemu-aarch64 user mode, so times are qemu's, about ten times the phone's, and the box ran other
+agents' kernel builds and boots throughout: load 5-20). Two boots of iOS with 8 vCPUs, `--ram 4G`, a fresh Data store
+each, 2,400 s each (`timeout`, exit 124 both): before = main 1b5fb9f (xnuhost and kernel.kc 4fb7be43), after = this branch
+(kernel.kc 0b1dad07, hosted 0075 without the two GPU-path functions added after the boot; the final kernel.kc bffa13ad
+was built and prelinked, not booted). Totals of all 30 s windows (`oneios-perf:` and `perf:`):
+
+| | before | after |
+|---|---|---|
+| SpringBoard started (s after xnuhost's start) | 872 | 349 |
+| user stays / system calls / faults | 1,679,239 / 612,881 / 985,102 | 4,348,990 / 1,948,793 / 2,224,827 |
+| vCPU threads' CPU (`perf: cpuN`, core-seconds) | 4,021 | 3,687 |
+| the same per user stay | 2.39 ms | 0.85 ms |
+| pmap user maps + unmaps | 1,763,898 | 4,419,042 |
+| of them joined in the queue (one host call less each) | - | 1,421,798 (32 %) |
+| raises of another vCPU's line / signalled / skipped (already up) | not counted (all signalled) | 1,426,233 / 806,462 / 619,771 (43 % saved) |
+| timer sets / to `timer_settime` | 4,822,253 / 4,822,253 | 6,090,227 / 5,898,001 (3 % saved) |
+| fill time per attempt (`filled from the tables` us / faults) | 398 us | 54 us (14,628 fills switched out, not timed) |
+| kernel entries made again unchanged (no host map) | - | 0 |
+
+What this shows and what it does not: the counts (joins, skipped raises and timer calls, the fills' honest time) are
+properties of the code and carry over to the phone. The times and the boot's progress do not compare cleanly: the before
+boot ran while the box was loaded about twice as much, so the 2.6 times as many stays in the same 2,400 s, SpringBoard 523
+s earlier and a third of the vCPU time per stay are partly the box. The unchanged-entry skip never fired here: the PC's
+kernel maps are new entries (a different cause than the guess in hosted 0075's README; the skip stays, cheap, for the
+phone to say). `oneios-cpu` lines are not printed on the PC (the GPU archive's report runs with 3D only); the window's
+bound is the host test's (`test_cpu_window`). uclamp: 0 on the PC (no CPU plan without the bridges).
+
+**`make bench-arm64 BENCH_SET="--set cpu-pin=2"`** on the same PC, alternated, two rounds each (p50, us): null system call
+19.0/19.0 before, 19.0/20.0 after; a fault filled by `task_map` 38.0/37.0 before, 38.0/37.0 after; timer interrupt of a
+running thread 29.0/28.0 before, 28.0/27.0 after (the means fell, 21.6-20.1 against 20.4-65.0 for the null call, but the
+box's load moved them more than the code did). The single-thread trip did not change, as expected: the fixes are in
+what runs between trips (queue, GIC, timers) and in what several vCPUs share.
+
+**The parallel test** (`parallel-arm64`, 8 vCPUs, scale 3, after the warm-up round; same box and load): 8 threads took
+357-573 ms after and 418-474 ms before against 92-270 ms for one thread: speed-ups 2.2-4.4 (after) and 1.6-5.2 (before)
+of an ideal 8, where the PC has 4 cores and other agents' jobs on them. The 2-thread and 4-thread runs are within the
+same spread. So on this box nothing shows a serialisation in xnuhost's path (8 threads never took 8 times one thread),
+and the PC cannot show more than its 4 cores; the phone's run (below) is the measurement that counts.
+
+**The phone test (for the Mac; one session before, on main, and one after, on this branch, the same image set).**
+
+1. Before the switch and in the session: `oneios-tool phone cpu > cpu-before.txt` (then `cpu-after.txt`). Read: the X4's
+   top and boost (`cpu7 Cortex-X4 ... top ... boost ...`), any `CAPPED` domain, `cpufreq boost`, xnuhost's cpuset and
+   `allowed` CPUs (all 8 is right; `0-1` means the vCPUs cannot reach the big cores), one `xnu-cpuN` thread on each CPU.
+2. The parallel test on the phone's own cores, no session open: push `runtime/xnuhost/build/android/xnuhost` and the
+   folder `build/android/testimage` to a scratch folder (`/data/local/tmp/par`), and run there as root the command line
+   of the `parallel-arm64` target with `--set cpu-pin=2` (and once without): `PARALLEL N threads: ... speed-up` for 1,
+   2, 4, 8. Right: near N up to 8 (the A520s are slower, so 8 lands
+   between 6 and 8 by their share).
+3. Idle lock screen 2 minutes, then Settings scrolled for 60 s, then a text field typed into for 60 s (the keyboard), each
+   with `oneios-tool phone cpu --trace 30 --out scroll.pftrace` during the scroll. From `xnuhost.log` per 30 s window:
+   - `perf: ... task_map N carried by a release, ... task_unmap N queued, M ordered` and `perf:   queue: J ... joined`:
+     J is the host calls saved; the kernel's `oneios-perf:   pmap: user maps, unmaps` against xnuhost's counts;
+   - `perf:   queue: ... raises ... K already up (no signal)`: tgkills saved;
+   - `perf:   queue: uclamp: U given to iOS threads` (not 0 in a session), and `phone cpu`'s iOS threads by uclamp.min
+     (1024 on the P cores while scrolling, 0 for the background);
+   - the kernel's `oneios-perf:   0075: fills switched out N ...; kernel entries made again unchanged M`, and the fill time
+     per fill in the first `oneios-perf:` line (it should now be a few us, not 230);
+   - `thermal: 30 s: host CPU ...% of 800 (sys ...%, user ...%) ... xnuhost ...%`: the same work with less `sys`;
+   - `oneios-cpu: 10 s: ... (all N%)`: N never above 800;
+   - `display: ... flushes` and the frame times of `oneios-gpu-report` while scrolling and typing.
+4. The trace (`ui.perfetto.dev`): the CPU each `xnu-cpuN` and iOS thread ran on, the clocks of cpu7 (up to 3.39 GHz with
+   boost on) and of the A720s while scrolling.
+
 ### 2.7 Devices
 
 All devices are virtio-mmio version 2 windows (`virtio.c`: split queues, indirect descriptors, the status
@@ -713,7 +891,11 @@ bridge device that serves only it. One log line says which:
 `bluetooth: on: the phone's controller through its HAL 1.1, address ...`, `bluetooth: on: a stand-in controller
 (bluetooth=sim), address ...` or `bluetooth: off (...)` with the reason. Boot arguments whose `owner-hide-vmm=` list
 names bluetoothd get an error line (`boot arguments: owner-hide-vmm names bluetoothd: ...`) and are left as they are:
-24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4).
+24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4). So do boot
+arguments that give bluetoothd `bt-transport-override=10`, read as bluetoothd reads it (`boot arguments:
+bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: ...`; since 2026-11-15):
+that transport is a simulated controller inside bluetoothd, and nothing reaches the phone's
+([hardware.md](hardware.md) 4, "The virtual transport is bluetoothd's own").
 Haptics (`haptics=` in `xnuhost.conf`, `--set haptics=...`; 2026-11-13): `auto`, the default, opens the phone's
 force-feedback device (`haptics: on: /dev/input/eventN ...`) when the bridges are on; `off` gives iOS no actuator
 (`haptics: off (haptics=off)`: no Actuator audio device, no `/product/haptics`); `sim` (a boot with no vibrator,
@@ -838,6 +1020,70 @@ Linux's page cache and a sparse file: the store is a raw image.
   (`xh_input_feed`): each frame's end gets `EV_MSC` / `MSC_TIMESTAMP` with the time it is sent, and each scripted
   gesture gets the `input: touch:` line with its touch-to-frame time, so the latency can be measured without a finger.
   The filter passes the three side keys, and Home (`KEY_HOMEPAGE`) and the ringer (`KEY_MUTE`) for a host that has them.
+- **`session/ready` (the ready rule, since 2026-11-15)** is created at the guest's first frame of its own **that
+  shows something**, or `ready-content-wait` seconds (default 120, `--set ready-content-wait=N`, 0 to 480, or the
+  image's `xnuhost.conf`) after its first frame of its own when every frame was black, or by the `ready` host call.
+  The guest's display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame
+  drawn there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but never counts,
+  lit or not (`virtio_gpu.c` `frame_shown`). "Shows something" is `xh_pixels_lit` (`include/xnuhost/pixels.h`): a grid
+  of every 16th pixel of every 16th row (90 x 195 = 17,550 pixels at 1440x3120, not the 18 MB frame) with one of R, G,
+  B above 16 of 255 (half floats through the clamp to 8-bit sRGB); a lit 16x16 area is always seen. The check runs on
+  each frame of the guest's own until ready, on the device's thread, before the frame goes to the display helper (so
+  `session/ready` is there when the helper sees the frame); the timeout is checked by the main loop's 100 ms tick, so
+  an iOS that draws one black frame and nothing more is still ready. `ready-content-wait=0` is the rule before
+  2026-11-15 (ready at the first frame of its own).
+  **Why:** the first frames of the guest's own are backboardd's and black. On the phone (main 3233fed, 2026-11-15)
+  `guest ready: first frame` came at +133 s with such a frame, the OneOS boot screen ended, and the panel stayed
+  black, as if off, until iOS drew its Apple logo. Together with the display helper's hold (its first post waits for
+  `session/ready`: `runtime/display/README.md`, "The OneOS boot screen and this layer") the boot screen now stays
+  until iOS shows its logo.
+  Log lines: `display: the guest's first frame of its own: all black; session/ready waits for one with content (up
+  to N s)` (the time the old rule was ready), then one of `guest ready: first frame (it has content)`, `guest ready:
+  first frame with content, T s and N frames after the guest's first (black) frame`, `guest ready: first frame, all
+  black: no frame with content in N s after the guest's first (F frames); ready all the same (ready-content-wait)`,
+  `guest ready: first frame (ready-content-wait=0: content not waited for)`, `guest ready: first frame (the kernel's
+  ready call)`. All begin with `guest ready: first frame`, the marker the fork's boot stages, its Session logs
+  screen and `oneios-tool` look for. Host tests: `test_pixels_lit` (an all-black frame with and without the X byte,
+  a console's rows of text, one lit pixel on the grid, one off it, the level at and above 16, a 16x16 block at
+  every place, half floats), `test_ready_rule` (lit at once, black then lit, the timeout by a frame and by the tick,
+  0, the host call, once only, the key's range) and `test_virtio_gpu` (the console lit and not counted, the guest's
+  black frame asked before its flush and asked again, a lit pixel, no question once ready).
+  The main loop's copy of the boot framebuffer ends at the guest's first frame of its own, as before (it used to end
+  at ready, which was that frame).
+  **PC boot (2026-11-15, `--display shm`, qemu-aarch64, kernel.kc bf31eb0d, the PC image set, a seeded Data store,
+  `display-capture.py` beside it):** `display-capture.py`'s first picture, at +0.5 s, is the empty memfd, black: what
+  the display helper posted before this fix, a second after it connected, over the boot screen. Then 2742 flushes
+  of the black boot framebuffer (not counted). backboardd opened the framebuffer at +534.7 s, swap 1 at +576.2 s,
+  `guest ready: first frame (it has content)` at +576.3 s, and the capture's next picture (577.1 s after its hello,
+  26 colours) is the Apple logo on black. Under qemu the guest's first frame is already the logo, so the old
+  rule and the new one were ready at the same frame there; the black frames before the logo are the phone's (its
+  frames come through the GPU's blobs). The timeout path has run in the host tests only.
+
+- **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
+  session proves it) or `pen=auto`; `pen-rotate=auto|0|90|180|270` (the digitizer's frame turned clockwise onto the
+  panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess); `pen-mirror=1` (then mirrored
+  left to right). With `pen=auto`, xnuhost (with `input` on) calls `xh_pen_lookup`: the default, `xh_pen_lookup_evdev`,
+  opens each `/dev/input/event0..63` read only and takes the best device with `BTN_TOOL_PEN`, `ABS_X/Y` and
+  `ABS_PRESSURE` (more for `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a name with "pen" in it, such as Samsung's
+  `sec_e-pen`); never one with a side key or multitouch positions; never grabbed. Another hardware backend replaces the
+  lookup by setting `xh_pen_lookup` to its own function (same signature; nothing else names a Samsung device). When a pen
+  is found, or the input script has `pen-` lines, the board gets a **second virtio-input device, `/arm-io/input-1`**,
+  named "OneiOS pen" (`BTN_TOOL_PEN`, `BTN_TOOL_RUBBER`, `BTN_TOUCH`, `BTN_STYLUS`; `ABS_X/Y` 0..32767, `ABS_PRESSURE`
+  0..4095, `ABS_DISTANCE` 0..255, `ABS_TILT_X/Y` -90..90 degrees; `INPUT_PROP_DIRECT`), and `oneios-pen=1` is added to
+  the guest's command line unless it has an `oneios-pen=` (so `--boot-args "... oneios-pen=0"` keeps the guest's side
+  off). The pen's descriptor is read on input.c's thread beside the others; its filter (`xh_pen_feed`) turns each evdev
+  frame into one sample in those units (in range, tip, side button, eraser end; pressure only while the tip is down; a
+  hover height never 0, half way for a device without `ABS_DISTANCE`; tilt by its resolution in units per radian, else
+  as degrees within +-90, else its range's end as 90; at most +-89), sends only the fields that changed and nothing for
+  a frame like the last, and reads the state again after `SYN_DROPPED`. No `MSC_TIMESTAMP` on the pen's device (the
+  guest's scan-time code is the touch screen's). Log lines: `pen: /dev/input/eventN "NAME": read only, not grabbed; x
+  A..B, y ..., pressure ..., distance ..., tilt x ... (res R); keys: ...; turned D degrees (why)`, or `pen: none found:
+  why`; `pen: the guest's pen device is /arm-io/input-1 (the host's pen); oneios-pen=1`; `pen: the first event from
+  NAME`; per time in range `pen: in range T ms: F frames (H hovering, C touching), S strokes, pressure up to P/4095,
+  tilt x a..b y c..d degrees, the side button pressed B times; U unchanged frames not sent`. The script's lines
+  (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.c`) go
+  through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
+  the side button. Host test: `test_pen` in `tests/test_xnuhost.c`.
 - `session/ready` is created at the guest's first presented frame (or by the `ready` host call). The guest's
   display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame drawn
   there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but is not that

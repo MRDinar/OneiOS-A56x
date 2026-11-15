@@ -1101,6 +1101,55 @@ stall inflated every share). Built into the kernel of 0066's boot B and booted o
 never called, the table is never made; the `oneios-cpu` lines are). Not run on the phone.
 Since 2026-11-14 (fix-thermal-log) an `oneios-cpu-sys:` line follows each `oneios-cpu:` line with the same processes'
 kernel time (`docs/gpu.md` 5.1); compiled alone with the kernel build's own flags, not yet in a built kernel.
+Since 2026-11-15 (fix-host-overhead) `oneios-cpu:`'s "all" is the processors' busy time (the span times the CPUs, less
+the time they idled: hosted 0075's `hosted_processors_idle_mach`), and each process's share is capped at it
+(`gpu/cpu_window.h`, the same file runtime/xnuhost's host tests check). The cause of a window over 800 % on 8 vCPUs,
+besides the old nominal divisor: recount adds a thread's time to its task only when the thread changes state, so time
+from earlier windows lands whole in the window where a long-running thread finally switched, and "all" was the sum of
+those deltas with no bound. A process's lump can still land in one window, but never past what the CPUs did in it.
+
+## 0075-host-overhead-per-cpu-stats-perf-hint.patch (fix-host-overhead, 2026-11-15)
+
+From the phone session of main 3233fed (30 s): `1021984 user stays; 684514 syscalls (bsd 473429, 26066040 us; mach
+211370, 8850591 us ...); 330746 faults, 49701 filled from the tables (11417628 us), 281312 to vm_fault (6309604 us),
+281229 refilled; ... pmap: user maps 331008, unmaps 414758 ... TLB lock taken 232732, 2775 waited (125098 us waiting
+...)`. What the patch changes:
+
+- **The counters are per vCPU.** `hosted_user_stats` (runs, syscalls, faults, ...), the audit tick (an atomic add on every
+  return to user mode) and 0041's per-call counters (`hosted_perf`, atomics on shared lines) were written by every vCPU on
+  every stay: about 34,000 stays a second on the phone, each taking the line from the vCPU that wrote it last. Now an array
+  of one 128-byte-aligned set per vCPU; the report adds them up.
+- **The fill's time is its own.** The fill runs with interrupts on, and the interrupt that ended the stay is often taken
+  there, with its preemption: the thread then waited while other threads ran, and that was counted as the fill's. 49,701
+  fills "took" 11.4 s per 30 s (fill_t also counts the 281,312 attempts that went on to vm_fault: 34 us each on average),
+  against 22 us per vm_fault. A fill during which the thread was switched out (`thread->c_switch` moved) is now counted
+  apart (`fills switched out N`) and not timed. Nothing in the fill's own work changed: the number is now honest.
+- **A kernel entry made again unchanged maps nothing in the host.** `pmap_enter_options_addr` reads the kernel's leaf
+  entry before and after the enter (`hosted_kernel_pte`); when it is the same valid entry, its host mapping exists (made by
+  `hosted_kernel_enter` when the entry was made, and a flush maps a still valid entry again at once), so no `kernel_map`:
+  each one is an mmap in xnuhost with its mmap_lock taken for writing, which holds every vCPU's page faults meanwhile. The
+  PC's idle boot made 220,270 kernel maps per 30 s with 1,468 kernel unmaps. The count: `kernel entries made again
+  unchanged N (no host map)`. Measured on the PC boot (2,900,519 kernel maps in 2,400 s): 0, so there the kernel maps are
+  new entries and the guess was wrong; the check stays (one walk per kernel enter) for the phone's count.
+- **The hosted CLPC's hint** (`hostcall.h` `perf_hint`, ABI unchanged: a reserved word of `struct xh_cpu`): before each
+  user stay the kernel writes the class of the thread (`thread_get_perfcontrol_class`, darwin background from the task's
+  policy): realtime, UI and above-UI floor 1024, user-initiated 768, utility and background (and darwin-background) no
+  floor and a ceiling. xnuhost's `thread_run` turns it into the uclamp of the Linux thread that runs the user code
+  (`docs/booter.md` 2.6a, 2.6b). RunningBoard's background and suspended roles reach it through the task's QoS clamp. The
+  same word is the role of the submitting thread for host code on the vCPU (the GPU path, fix-gpu-perf). `perf hints N`
+  counts the changes.
+- **`hosted_processors_idle_mach`** for the oneios-cpu window (above).
+- **The GPU path's CLPC signal** (fix-gpu-perf #42 declares both weak in `gpu/OneiOSAdreno.cpp`, this defines them):
+  `oneios_clpc_thread_role(thread)`, the task's effective role (`TASK_POLICY_ROLE`, RunningBoard's), darwin background
+  as `TASK_DARWINBG_APPLICATION`, a realtime thread of a task without a role as `TASK_GRAPHICS_SERVER`; and
+  `oneios_clpc_frame_deadline(thread)`, the deadline of the thread's work interval as its last notify gave it
+  (`kern_work_interval_notify` stores it in the interval, `wi_hosted_deadline`; 0 outside one). Compiled with the tree
+  and built into the kernel; on the PC (no 3D) nothing calls them.
+
+The report's new line: `oneios-perf:   0075: fills switched out N (not in the fill time); kernel entries made again
+unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch64; before/after in `docs/booter.md`
+2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
+pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
 ## 0049-wifi-association-event.patch (radio2, 2026-11-12)
 

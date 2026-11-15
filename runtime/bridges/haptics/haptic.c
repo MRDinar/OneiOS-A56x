@@ -10,8 +10,14 @@
 //
 // One effect is kept and updated for every request. A worker thread does the ioctls (each is I2C
 // traffic), so a request from a vCPU never waits; the newest request wins.
+//
+// Two backends (bridges/hw_backend.h, hw-backend-haptics): samsung, the evdev device above (unchanged); treble, the
+// vibrator HAL android.hardware.vibrator.IVibrator/default through servicemanager: on(ms), setAmplitude (when the HAL
+// has amplitude control), off(). The same worker, mapping and counters drive both.
 #define _GNU_SOURCE
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
+#include "../hal/hal.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -271,7 +277,7 @@ static void ff_close(void *ctx) { close((int)(intptr_t)ctx); }      // closing e
 
 static const br_haptic_backend evdev_backend = { .upload = ff_upload, .play = ff_play, .gain = ff_gain, .close = ff_close };
 
-br_haptic *br_haptic_open(const char *dev_dir)
+static br_haptic *open_evdev(const char *dev_dir)
 {
   char node[300];
   if (br_haptic_find(dev_dir, node, sizeof node)) { br_log(0, "haptics: off: no force-feedback device with FF_PERIODIC + FF_SINE under %s", dev_dir ? dev_dir : "/dev/input"); return NULL; }
@@ -285,5 +291,87 @@ br_haptic *br_haptic_open(const char *dev_dir)
 }
 #else
 int br_haptic_find(const char *dev_dir, char *path, size_t size) { (void)dev_dir; (void)path; (void)size; return -1; }
-br_haptic *br_haptic_open(const char *dev_dir) { (void)dev_dir; return NULL; }
+static br_haptic *open_evdev(const char *dev_dir) { (void)dev_dir; return NULL; }
 #endif
+
+// ---- the vibrator HAL back end (treble) ----------------------------------------------------------
+// The effect is a length and a level: on(length) then, with amplitude control, setAmplitude(level / 255 x gain), as
+// AOSP's vibrator service orders them. The period has no place in IVibrator's on(): the HAL plays at its own resonance.
+typedef struct { br_hal *hal; int32_t caps; unsigned length_ms, magnitude, gain; } vib_ctx;
+
+static int vib_simple(vib_ctx *v, uint32_t code)
+{
+  ab_parcel p;
+  br_hal_parcel(&p, HAL_VIBRATOR);
+  return br_hal_call(v->hal, code, &p, NULL, NULL);
+}
+static int vib_upload(void *ctx, int id, unsigned length_ms, unsigned period_ms, unsigned magnitude)
+{
+  vib_ctx *v = ctx;
+  (void)id; (void)period_ms;
+  v->length_ms = length_ms;
+  v->magnitude = magnitude;
+  return 0;
+}
+static int vib_play(void *ctx, int id, bool on)
+{
+  vib_ctx *v = ctx;
+  (void)id;
+  if (!on) return vib_simple(v, HAL_VIB_OFF);
+  ab_parcel p;
+  br_hal_parcel(&p, HAL_VIBRATOR);
+  ab_put_i32(&p, (int32_t)v->length_ms);
+  ab_put_null_binder(&p);                    // no callback: the worker does not wait for the end
+  int rc = br_hal_call(v->hal, HAL_VIB_ON, &p, NULL, NULL);
+  if (rc || !(v->caps & HAL_VIB_CAP_AMPLITUDE)) return rc;
+  float amplitude = (float)v->magnitude / (float)LEVEL_MAX * (float)v->gain / 10000.0f;
+  if (amplitude > 1.0f) amplitude = 1.0f;
+  if (amplitude < 0.01f) amplitude = 0.01f;   // the HAL refuses 0; the level floor keeps it above this anyway
+  br_hal_parcel(&p, HAL_VIBRATOR);
+  ab_put_float(&p, amplitude);
+  return br_hal_call(v->hal, HAL_VIB_SET_AMPLITUDE, &p, NULL, NULL);
+}
+static int vib_gain(void *ctx, unsigned gain) { ((vib_ctx *)ctx)->gain = gain > 10000 ? 10000 : gain; return 0; }
+static void vib_close(void *ctx)
+{
+  vib_ctx *v = ctx;
+  (void)vib_simple(v, HAL_VIB_OFF);
+  br_hal_close(v->hal);
+  free(v);
+}
+static const br_haptic_backend hal_backend = { .upload = vib_upload, .play = vib_play, .gain = vib_gain, .close = vib_close };
+
+static int take_caps(void *ctx, ab_reader *r) { *(int32_t *)ctx = ab_get_i32(r); return r->bad ? -EPROTO : 0; }
+
+// NULL with why filled when the HAL is not there.
+static br_haptic *open_hal(const char *binder, char *why, size_t size)
+{
+  vib_ctx *v = calloc(1, sizeof *v);
+  if (!v) { snprintf(why, size, "no memory"); return NULL; }
+  v->gain = 10000;
+  v->hal = br_hal_open(binder, HAL_VIBRATOR_INSTANCE, HAL_VIBRATOR, why, size);
+  if (!v->hal) { free(v); return NULL; }
+  ab_parcel p;
+  br_hal_parcel(&p, HAL_VIBRATOR);
+  int rc = br_hal_call(v->hal, HAL_VIB_GET_CAPABILITIES, &p, take_caps, &v->caps);
+  if (rc) { snprintf(why, size, "%s: getCapabilities: %s", HAL_VIBRATOR_INSTANCE, br_hal_error(rc)); br_hal_close(v->hal); free(v); return NULL; }
+  int32_t version = br_hal_version(v->hal);
+  br_haptic *h = br_haptic_open_backend(&hal_backend, v);
+  if (!h) { br_hal_close(v->hal); free(v); snprintf(why, size, "no worker thread"); return NULL; }
+  snprintf(h->name, sizeof h->name, "the vibrator HAL");
+  br_log(1, "haptics: on: the vibrator HAL %s (version %d, capabilities 0x%x: %s; level %u..%u as the amplitude)", HAL_VIBRATOR_INSTANCE, version,
+         (unsigned)v->caps, v->caps & HAL_VIB_CAP_AMPLITUDE ? "amplitude control" : "no amplitude control, every effect at the HAL's own strength", LEVEL_FLOOR, LEVEL_MAX);
+  return h;
+}
+
+br_haptic *br_haptic_open_as(const char *dev_dir, int backend, const char *binder)
+{
+  if (br_hw_select(BR_HW_HAPTICS, backend) == BR_HW_TREBLE) {
+    char why[256];
+    br_haptic *h = open_hal(binder, why, sizeof why);
+    if (h || !br_hw_missing(BR_HW_HAPTICS, why)) return h;
+  }
+  return open_evdev(dev_dir);
+}
+
+br_haptic *br_haptic_open(const char *dev_dir) { return br_haptic_open_as(dev_dir, BR_HW_UNSET, NULL); }

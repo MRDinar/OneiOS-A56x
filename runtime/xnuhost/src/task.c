@@ -132,6 +132,7 @@ typedef struct {
 
 typedef struct {
   bool used; uint16_t task; uint16_t area; uint8_t placed; /* vCPU + 1 it was last put with */ uint8_t epoch;
+  uint32_t uclamp;                           // the uclamp it carries, (min | max << 11) + 1 (0: never set; xh_cpu_uclamp)
   uint64_t released_at;                      // counter: its last release (perf.c, "down")
 } thread;
 // Changed by main.c's thermal step when the vCPUs' host CPUs change: each thread is placed again at its next run.
@@ -167,6 +168,17 @@ static long futex(uint32_t *word, int op, uint32_t value, const struct timespec 
 }
 
 static void *slot_page(uint32_t slot) { return T.trap + (uint64_t)slot * XS_SLOT_SIZE; }
+
+// uclamp.min and uclamp.max of a Linux thread (sched_setattr(2), Linux 5.3): the policy and nice kept, SCHED_OTHER stays
+// SCHED_OTHER (never a realtime policy: CLAUDE.md, the way back to One UI).
+static int set_uclamp(int tid, unsigned lo, unsigned hi)
+{
+  struct { uint32_t size, policy; uint64_t flags; int32_t nice; uint32_t priority; uint64_t runtime, deadline, period;
+           uint32_t util_min, util_max; } attr = { .size = sizeof attr,
+                                                   .flags = 0x18 /* KEEP_POLICY | KEEP_PARAMS */ | 0x20 /* UTIL_CLAMP_MIN */ | 0x40 /* MAX */,
+                                                   .util_min = lo > 1024 ? 1024 : lo, .util_max = hi > 1024 ? 1024 : hi };
+  return (int)syscall(SYS_sched_setattr, tid, &attr, 0);
+}
 
 static int slot_alloc(void)
 {
@@ -579,6 +591,22 @@ static bool user_range(uint64_t va, uint64_t size)
   return size && !((va | size) & (g_info.host_page_size - 1)) && va < T.base && size <= T.base - va;
 }
 
+// The deferred queue joins an op to the one before it where one host call does both (host-overhead, 2026-11-15): on the
+// phone the kernel's maps and unmaps were 331,008 and 414,758 per 30 s, each an mmap or munmap of one page in the task
+// (30-50 us there with the task's mmap_lock taken for writing), and many come in runs: the pmap flushes a range one page
+// at a time (madvise, the pageout's reference clearing), and a fault that changes an entry is an unmap of the page and,
+// at the return, the map of the same page again. xs_queue_join (stub_abi.h) is the rule, unit-tested on the build host.
+// qlock held. Returns true when `op` went into the last entry (*saved: that entry as it was, for a take-back).
+static bool queue_join(task *t, const struct xs_op *op, struct xs_op *saved)
+{
+  if (!t->npending) return false;
+  struct xs_op *last = &t->pending[t->npending - 1];
+  struct xs_op before = *last;
+  if (!xs_queue_join(last, op)) return false;
+  if (saved) *saved = before;
+  return true;
+}
+
 int64_t xh_task_map(uint64_t handle, uint64_t va, uint64_t size, uint32_t prot, uint64_t phys)
 {
   task *t = task_of(handle);
@@ -592,10 +620,11 @@ int64_t xh_task_map(uint64_t handle, uint64_t va, uint64_t size, uint32_t prot, 
     // and before any later unmap or protect of the task; the queue gives both (task.npending). A fill that comes
     // late only costs the toucher one more fault, which the kernel fills again.
     pthread_mutex_lock(&t->qlock);
-    bool queued = !t->dead && t->npending < XS_PENDING_MAX;
-    if (queued) { t->pending[t->npending] = op; __atomic_store_n(&t->npending, t->npending + 1, __ATOMIC_SEQ_CST); }   // read by releases without qlock
+    bool joined = !t->dead && queue_join(t, &op, NULL);
+    bool queued = joined || (!t->dead && t->npending < XS_PENDING_MAX);
+    if (queued && !joined) { t->pending[t->npending] = op; __atomic_store_n(&t->npending, t->npending + 1, __ATOMIC_SEQ_CST); }   // read by releases without qlock
     pthread_mutex_unlock(&t->qlock);
-    if (queued) { p->maps_deferred++; return 0; }
+    if (queued) { p->maps_deferred++; p->ops_joined += joined; return 0; }
     if (t->dead) return -ESRCH;
   }
   p->maps_ordered++;
@@ -617,17 +646,27 @@ int64_t xh_task_unmap(uint64_t handle, uint64_t va, uint64_t size)
     // order takes the queue first.
     pthread_mutex_lock(&t->qlock);
     bool queued = false;
-    if (!t->dead && t->npending < XS_PENDING_MAX) {
-      unsigned n = t->npending;
-      t->pending[n] = op;
+    bool joined = false;
+    struct xs_op saved;
+    unsigned n = t->npending;
+    // Joined to the last entry, npending stays (it is not 0, so a release that counts itself after the load below sees
+    // the queue and takes it, under qlock, with this unmap in it).
+    if (!t->dead) joined = queue_join(t, &op, &saved);
+    if (!t->dead && (joined || n < XS_PENDING_MAX)) {
+      if (!joined) t->pending[n] = op;
       t->nunmaps++;
-      __atomic_store_n(&t->npending, n + 1, __ATOMIC_SEQ_CST);
+      __atomic_store_n(&t->npending, joined ? n : n + 1, __ATOMIC_SEQ_CST);
       queued = __atomic_load_n(&t->running, __ATOMIC_SEQ_CST) == 0;
       // A thread is counted: take the unmap back (a release that saw it waits for qlock to take the queue).
-      if (!queued) { t->nunmaps--; __atomic_store_n(&t->npending, n, __ATOMIC_SEQ_CST); }
+      if (!queued) {
+        t->nunmaps--;
+        if (joined) t->pending[n - 1] = saved;
+        __atomic_store_n(&t->npending, n, __ATOMIC_SEQ_CST);
+        joined = false;
+      }
     }
     pthread_mutex_unlock(&t->qlock);
-    if (queued) { p->unmaps_deferred++; return 0; }
+    if (queued) { p->unmaps_deferred++; p->ops_joined += joined; return 0; }
     if (t->dead) return -ESRCH;
   }
   p->unmaps_ordered++;
@@ -834,6 +873,25 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   if (xh_cpu_place && (th->placed != v->cpu.index + 1 || th->epoch != epoch)) {
     uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
     if (tid) { xh_cpu_place((int)tid, v->cpu.index); th->placed = (uint8_t)(v->cpu.index + 1); th->epoch = epoch; }
+  }
+  // Its vCPU's clamp (xnuhost.h xh_cpu_uclamp): the host's governor picks a core's clock from what runs there, and what
+  // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.
+  // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and a ceiling,
+  // whatever its vCPU asked for last (a suspended or background process must not hold a fast core at its top clock); a UI or
+  // realtime thread at least the floor it names.
+  if (xh_cpu_uclamp) {
+    const uint32_t hint = __atomic_load_n(&v->cpu.perf_hint, __ATOMIC_RELAXED);
+    unsigned lo = xh_cpu_uclamp(v->cpu.index), hi = 1024;
+    if (hint & XH_HINT_VALID) {
+      if (hint & XH_HINT_BACKGROUND) { lo = 0; hi = XH_HINT_BG_MAX; }
+      else if (XH_HINT_FLOOR(hint) > lo) lo = XH_HINT_FLOOR(hint) > 1024 ? 1024 : XH_HINT_FLOOR(hint);
+    }
+    const uint32_t want = (lo | hi << 11) + 1;
+    uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
+    if (th->uclamp != want && tid) {
+      if (set_uclamp((int)tid, lo, hi) == 0 || errno != EINTR) th->uclamp = want;
+      p->uclamp_sets++;
+    }
   }
   // The task's deferred maps and unmaps go with this release: the thread carries them out before it runs. The task's
   // lock is held until it says they are done, so no unmap or protect of the task can pass them; with unmaps among

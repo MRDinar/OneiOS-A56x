@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "brightness.h"
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -250,6 +251,19 @@ static int panel_find(const char *dir, char *node, size_t size, uint32_t *max)
   return found;
 }
 
+// The treble backend's lookup: the standard class device names only, each a named file; no folder is listed.
+static int panel_find_named(const char *dir, char *node, size_t size, uint32_t *max)
+{
+  static const char * const names[] = BR_BRIGHT_TREBLE_NAMES;
+  char path[300];
+  for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
+    snprintf(path, sizeof path, "%.200s/%s/max_brightness", dir, names[i]);
+    if (read_u32(path, max) == 0 && *max) { snprintf(node, size, "%.120s/%.60s/brightness", dir, names[i]); return 0; }
+  }
+  errno = ENOENT;
+  return -1;
+}
+
 static void *panel_worker(void *arg)
 {
   br_bright *b = arg;
@@ -400,9 +414,22 @@ br_bright *br_bright_open(const br_bright_options *options)
   pthread_cond_init(&b->wake, NULL);
 
   const char *dir = o.backlight_dir ? o.backlight_dir : "/sys/class/backlight";
-  if (panel_find(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness) == 0 &&
+  bool treble = (b->info.backend = br_hw_select(BR_HW_BACKLIGHT, o.backend)) == BR_HW_TREBLE;
+  int found = treble ? panel_find_named(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness)
+                     : panel_find(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness);
+  if (found && treble) {
+    char what[400];
+    snprintf(what, sizeof what, "no backlight class device panel0-backlight, panel1-backlight, backlight, lcd-backlight or panel with a max_brightness under %.200s", dir);
+    if (!br_hw_missing(BR_HW_BACKLIGHT, what)) { pthread_mutex_destroy(&b->lock); pthread_cond_destroy(&b->wake); free(b); return NULL; }
+    treble = false;                       // hw-backend-fallback=1: the samsung form, all of it
+    b->info.backend = BR_HW_SAMSUNG;
+    found = panel_find(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness);
+  }
+  if (found == 0 &&
       read_u32(b->info.node, &b->info.saved) == 0 && (b->fd = open(b->info.node, O_WRONLY | O_CLOEXEC)) >= 0) {
-    b->info.ceiling = o.ceiling && o.ceiling <= b->info.max_brightness ? o.ceiling : br_bright_ceiling(b->info.max_brightness);
+    // Samsung's doubled ranges end at the manual maximum; the treble backend takes the class device's range whole.
+    uint32_t top = treble ? b->info.max_brightness : br_bright_ceiling(b->info.max_brightness);
+    b->info.ceiling = o.ceiling && o.ceiling <= b->info.max_brightness ? o.ceiling : top;
     b->info.floor = o.floor ? o.floor : 1;
     if (b->info.floor > b->info.ceiling) b->info.floor = b->info.ceiling;
     b->written = b->info.saved;
@@ -421,9 +448,10 @@ br_bright *br_bright_open(const br_bright_options *options)
   int panel_errno = errno;
   // The touch IC, before the worker can run: One UI may have left it off, and nothing in a session wakes it.
   const char *touch_dir = o.touch_dir ? o.touch_dir : "/sys/class/sec";
-  b->info.touch_nodes = touch_find(touch_dir, b->touch);
+  b->info.touch_nodes = treble ? 0 : touch_find(touch_dir, b->touch);
   b->touch_sleep = !o.no_touch_off;
-  if (b->info.touch_nodes) {
+  if (treble) br_log(1, "brightness: touch: treble: no vendor-neutral power node for the touch IC: left alone (the panel driver's own)");
+  else if (b->info.touch_nodes) {
     touch_power(b, true);
     br_log(1, "brightness: touch: %u IC%s under %s (%s) woken; %s", b->info.touch_nodes, b->info.touch_nodes > 1 ? "s" : "", touch_dir, b->touch[0],
            b->touch_sleep ? "asleep while iOS's display is off (its framebuffer's power request), woken at display on and at a power-key press; a brightness of 0 does not sleep it"
@@ -434,7 +462,11 @@ br_bright *br_bright_open(const br_bright_options *options)
            b->info.max_brightness, b->info.saved, b->info.saved ? "" : ": iOS starts from the start level");
   else br_log(0, "brightness: panel off: no writable backlight device under %s: %s", dir, strerror(panel_errno));
 
-  if (!o.no_als) als_open(b, &o);
+  if (!o.no_als && !treble) als_open(b, &o);
+  else if (!o.no_als && br_hw_fallback_allowed(br_hw_current())) {
+    br_log(1, "brightness: light sensor: treble: missing: the sensors HAL's light sensor (not read by this bridge yet); the samsung lookup instead (hw-backend-fallback=1)");
+    als_open(b, &o);
+  } else if (!o.no_als) br_log(1, "brightness: light sensor: treble: missing: the sensors HAL's light sensor (not read by this bridge yet); off (hw-backend-fallback=0): auto-brightness has no input");
   if (!b->info.panel && !b->info.als) { br_bright_close(b); return NULL; }
   return b;
 }

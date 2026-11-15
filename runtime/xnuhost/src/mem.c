@@ -90,7 +90,9 @@ int64_t xh_mem_kernel_map(uint64_t va, uint64_t size, uint32_t prot, uint64_t ph
   if (!size || ((va | size | phys) & page) || va < g_mem.kva || va - g_mem.kva > g_mem.kva_size || size > g_mem.kva_size - (va - g_mem.kva) ||
       !xh_ram(phys, size)) return -EINVAL;
   int p = (prot & XH_PROT_READ ? PROT_READ : 0) | (prot & XH_PROT_WRITE ? PROT_WRITE : 0) | (prot & XH_PROT_EXEC ? PROT_EXEC : 0);
-  void *at = mmap((void *)(uintptr_t)va, size, p, MAP_SHARED | MAP_FIXED, g_mem.fd, (off_t)(phys - g_mem.phys));
+  // Populated in the same call: the kernel touches what it maps (a stack, a zone page), and each first touch was a
+  // Linux fault of its own on the vCPU (host-overhead, 2026-11-15).
+  void *at = mmap((void *)(uintptr_t)va, size, p, MAP_SHARED | MAP_FIXED | MAP_POPULATE, g_mem.fd, (off_t)(phys - g_mem.phys));
   return at == MAP_FAILED ? -errno : 0;
 }
 

@@ -66,12 +66,63 @@ static void session_file(const char *name, const char *content)
   close(fd);
 }
 
-// The guest's first frame is on screen (or the kernel said so): the switch's dead-man timer stops.
-void xh_guest_ready(void)
+// The guest is up: session/ready (the switch's dead-man timer stops; the OneOS boot screen hands over to the display
+// helper) and the `guest ready: first frame` line, which the fork's boot stages and oneios-tool look for. When, is
+// ready.c's rule: the first frame of the guest's own with content, or ready-content-wait seconds after its first one.
+// The device's thread (xh_guest_frame), the main loop's tick and the ready host call all come through here.
+static xh_ready_state ready_rule;
+static pthread_mutex_t ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool guest_drawing;                  // a frame of the guest's own has been shown: the console's copy stops
+
+static void ready_now(xh_ready_why why, uint64_t now)
 {
+  if (why == XH_READY_NOT || why == XH_READY_ALREADY) return;
   if (__atomic_exchange_n(&guest_ready, true, __ATOMIC_ACQ_REL)) return;
   session_file("ready", "ready\n");
-  LOGI("guest ready: first frame");
+  double after = (double)(now - ready_rule.first_ms) / 1000.0;
+  unsigned long long frames = (unsigned long long)ready_rule.frames;
+  if (why == XH_READY_CONTENT && frames <= 1) LOGI("guest ready: first frame (it has content)");
+  else if (why == XH_READY_CONTENT)
+    LOGI("guest ready: first frame with content, %.1f s and %llu frames after the guest's first (black) frame", after, frames - 1);
+  else if (why == XH_READY_BLACK_TIMEOUT)
+    LOGI("guest ready: first frame, all black: no frame with content in %d s after the guest's first (%llu frames); ready all the same (ready-content-wait)",
+         config.ready_content_wait, frames);
+  else if (why == XH_READY_ANY_FRAME) LOGI("guest ready: first frame (ready-content-wait=0: content not waited for)");
+  else LOGI("guest ready: first frame (the kernel's ready call)");
+}
+
+void xh_guest_ready(void)
+{
+  pthread_mutex_lock(&ready_lock);
+  ready_now(xh_ready_on_call(&ready_rule), xh_mono_ms());
+  pthread_mutex_unlock(&ready_lock);
+}
+
+bool xh_guest_frame(bool lit)
+{
+  uint64_t now = xh_mono_ms();
+  pthread_mutex_lock(&ready_lock);
+  bool first = !ready_rule.frames && !ready_rule.ready;
+  xh_ready_why why = xh_ready_on_frame(&ready_rule, lit, config.ready_content_wait, now);
+  if (first) {
+    __atomic_store_n(&guest_drawing, true, __ATOMIC_RELEASE);
+    // The marker of the rule before 2026-11-15 (ready at this frame), kept for the timings.
+    if (!lit && why == XH_READY_NOT)
+      LOGI("display: the guest's first frame of its own: all black; session/ready waits for one with content (up to %d s)", config.ready_content_wait);
+  }
+  ready_now(why, now);
+  bool ready = ready_rule.ready;
+  pthread_mutex_unlock(&ready_lock);
+  return ready;
+}
+
+static void ready_tick(void)
+{
+  if (__atomic_load_n(&guest_ready, __ATOMIC_ACQUIRE)) return;
+  uint64_t now = xh_mono_ms();
+  pthread_mutex_lock(&ready_lock);
+  ready_now(xh_ready_on_tick(&ready_rule, config.ready_content_wait, now), now);
+  pthread_mutex_unlock(&ready_lock);
 }
 
 static uint8_t *read_file(const char *path, size_t *size, size_t limit)
@@ -327,6 +378,64 @@ static void thermal_step(void *ctx, const br_thermal_state *state)
   LOGI("thermal: step %u (%s): P vCPUs on host CPUs 0x%llx%s", state->cap, br_thermal_level_name(state->level), (unsigned long long)p,
        state->cap ? "" : " (all of their kind)");
 }
+// The host's cores as read at start (named files only, runtime/bridges/cpu), what each vCPU is described as to iOS, and the
+// cpuset xnuhost runs in: a cpuset of fewer CPUs (Android's background or system-background) would keep the vCPUs off the
+// X4 and the A720s whatever cpu-pin asks, so its CPUs are said here (host-overhead, 2026-11-15).
+static const char *core_name(unsigned part)
+{
+  return part == 0xd80 ? "Cortex-A520" : part == 0xd81 ? "Cortex-A720" : part == 0xd82 ? "Cortex-X4" : part == 0xd46 ? "Cortex-A510" :
+         part == 0xd4d ? "Cortex-A715" : part == 0xd4e ? "Cortex-X3" : part ? "an Arm core" : "unknown";
+}
+static void read_line(const char *path, const char *key, char *out, size_t size)
+{
+  out[0] = 0;
+  FILE *f = fopen(path, "r");
+  if (!f) return;
+  char line[512];
+  while (fgets(line, sizeof line, f)) {
+    if (key && strncmp(line, key, strlen(key))) continue;
+    const char *v = key ? line + strlen(key) : line;
+    while (*v == ' ' || *v == '\t') v++;
+    snprintf(out, size, "%s", v);
+    out[strcspn(out, "\n")] = 0;
+    break;
+  }
+  fclose(f);
+}
+static void log_cpu_layout(const br_cpu_topology *host)
+{
+  for (unsigned c = 0; c < host->ncpu; c++) {
+    const br_host_cpu *h = &host->cpu[c];
+    if (!h->present) continue;
+    LOGI("cpu: host CPU %u: %s (part 0x%x), %c, frequency domain of CPU %u, capacity %u, %u-%u kHz%s%s%.0u", c, core_name(h->part), h->part,
+         h->type, h->policy, h->capacity, h->min_khz, h->max_khz, h->boost_khz ? " (top as a boost frequency)" : "",
+         h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? "; capped now: scaling_max_freq " : "",
+         h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? h->scaling_max_khz : 0);
+  }
+  for (unsigned i = 0; i < cpu_plan.nvcpu; i++)
+    LOGI("cpu: vCPU %u (%c) is described to iOS as host CPU %u: %u-%u kHz, %u table entries, capacity %u", i, cpu_plan.v[i].type,
+         cpu_plan.v[i].host_cpu, cpu_plan.v[i].min_khz, cpu_plan.v[i].max_khz, cpu_plan.v[i].nfreq, cpu_plan.v[i].capacity);
+  char boost[32], cpuset[128], allowed[128];
+  read_line("/sys/devices/system/cpu/cpufreq/boost", NULL, boost, sizeof boost);
+  read_line("/proc/self/cpuset", NULL, cpuset, sizeof cpuset);
+  read_line("/proc/self/status", "Cpus_allowed_list:", allowed, sizeof allowed);
+  LOGI("cpu: xnuhost's cpuset %s, CPUs allowed %s; cpufreq boost %s", cpuset[0] ? cpuset : "(none)", allowed[0] ? allowed : "?",
+       boost[0] ? boost : "(no switch)");
+}
+
+// The clamp of the work on a vCPU (xnuhost.h xh_cpu_uclamp): what the guest's CLPC stand-in asks for it (DroidVMCpufreq's
+// SET_PERF, br_cpufreq_requested) or the GPU path's animation boost (xh_gpu_vcpu_boost), the higher one. thread_run gives it to
+// the iOS thread it releases.
+static br_cpufreq *cpu_freq;
+static unsigned vcpu_uclamp(unsigned vcpu)
+{
+  unsigned want = __atomic_load_n(&xh_gpu_vcpu_boost, __ATOMIC_RELAXED);
+  if (cpu_freq && vcpu < cpu_plan.nvcpu) {
+    unsigned asked = br_cpu_util_for(&cpu_plan, vcpu, br_cpufreq_requested(cpu_freq, vcpu));
+    if (asked > want) want = asked;
+  }
+  return want > 1024 ? 1024 : want;
+}
 static uint64_t cpufreq_read(void *opaque, uint64_t offset, unsigned size) { return br_cpufreq_read(opaque, offset, size); }
 static void cpufreq_write(void *opaque, uint64_t offset, unsigned size, uint64_t value) { br_cpufreq_write(opaque, offset, size, value); }
 
@@ -429,18 +538,64 @@ static int boot(void)
   }
   xh_virtio *input = xh_virtio_input_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev);
   kinds[ndev++] = XL_DEV_INPUT;
+  // The pen (pen.c, spen 2026-11-15; pen=off by default): a second input device, /arm-io/input-1, when the host has a pen
+  // digitizer (xh_pen_lookup: read only, never grabbed) or the input script has pen lines. The guest publishes it as
+  // iOS's pencil digitizer with oneios-pen=1, which is added to its command line here unless that already has one.
+  bool script_pen = false;
+  if (xh_input_script_load(config.input_script, &script_pen)) return -1;
+  static xh_input_pen pen;
+  memset(&pen, 0, sizeof pen);
+  pen.device.fd = -1;
+  if (strcmp(config.pen, "off")) {
+    char why[256] = "";
+    if (config.input && xh_pen_lookup(&pen.device, why, sizeof why) == 0) {
+      const char *how = "";
+      pen.rotate = xh_pen_rotation(config.pen_rotate, &pen.device, fb_width, fb_height, &how);
+      pen.mirror = config.pen_mirror;
+      char axes[256];
+      xh_pen_describe(&pen.device, axes, sizeof axes);
+      LOGI("pen: %s \"%s\": read only, not grabbed; %s; turned %u degrees (%s)%s%s%s", pen.device.path, pen.device.name, axes, pen.rotate, how,
+           pen.mirror ? ", mirrored" : "", *why ? "; " : "", why);
+    } else if (config.input) LOGI("pen: none found: %s", why);
+    if (pen.device.fd >= 0 || script_pen) {
+      pen.dev = xh_virtio_input_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev);
+      if (!pen.dev) return -1;
+      xh_pen_guest_device(pen.dev);
+      kinds[ndev++] = XL_DEV_INPUT;
+      if (!strstr(config.boot_args, "oneios-pen=")) {
+        size_t used = strlen(config.boot_args);
+        if (used + 13 >= sizeof config.boot_args) { LOGE("pen: no room in the boot arguments for oneios-pen=1"); return -1; }
+        snprintf(config.boot_args + used, sizeof config.boot_args - used, "%soneios-pen=1", used ? " " : "");
+      }
+      LOGI("pen: the guest's pen device is /arm-io/input-1 (%s)%s", pen.device.fd >= 0 ? "the host's pen" : "the input script's pen",
+           strstr(config.boot_args, "oneios-pen=1") ? "; oneios-pen=1" : "; the command line's oneios-pen= is kept");
+    }
+  } else if (script_pen) LOGI("pen: pen=off: the input script's pen lines are left out");
   // The GPU: the 2D scanout always; with it the 3D half on the phone's Adreno (drm2kgsl on KGSL), when the host has it.
   xh_gpu3d *gpu3d = NULL;
   if (pool_bytes) {
     const char *why = "";
+    // The GPU's level and priorities (gpu3d_kgsl.c, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
+    setenv("ONEIOS_GPU_LEVEL", *config.gpu_level ? config.gpu_level : "deadline", 1);
+    if (!config.gpu_priority) setenv("ONEIOS_GPU_PRIORITY", "off", 1);
     gpu3d = xh_gpu3d_kgsl_open(g_mem.fd, phys, g_mem.size, xh_ram(phys + window, pool_bytes), phys + window, pool_bytes, gpu_log, &why);
     if (!gpu3d && !strcmp(config.gpu, "3d")) { LOGE("gpu: no 3D: %s", why); return -1; }
     if (!gpu3d) LOGI("gpu: 2D only: %s", why);
   }
   if (!input || !xh_virtio_gpu_create_3d(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, fb_width, fb_height, gpu3d)) return -1;
   kinds[ndev++] = XL_DEV_GPU;
-  if (config.input && xh_input_start(input, fb_width, fb_height)) LOGE("input: could not start; continuing without");
-  if (xh_input_script_start(input, config.input_script)) return -1;
+  // The hardware backend of each bridge (hw-backend, bridges/hw_backend.h): set before any of them opens.
+  br_hw_configure(&config.hw);
+  if (config.input) {
+    // Touch and the side keys: one lookup for both backends (input.c: event0..31 by their capabilities, never grabbed).
+    char touch_why[64], keys_why[64];
+    int touch_hw = br_hw_choose(&config.hw, BR_HW_TOUCH, BR_HW_UNSET, touch_why, sizeof touch_why);
+    int keys_hw = br_hw_choose(&config.hw, BR_HW_KEYS, BR_HW_UNSET, keys_why, sizeof keys_why);
+    LOGI("hw: touch: backend %s (%s); keys: backend %s (%s): the same lookup in both, /dev/input/event0..31 by their "
+         "capabilities, read only, never grabbed", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why);
+  }
+  if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL, fb_width, fb_height)) LOGE("input: could not start; continuing without");
+  if (xh_input_script_start(input, pen.dev && pen.device.fd < 0 ? pen.dev : NULL)) return -1;
 
   static xl_machine machine;
   machine.chip_id = 0x8150;
@@ -477,11 +632,14 @@ static int boot(void)
                                                     .opaque = cpufreq, .read = cpufreq_read, .write = cpufreq_write }) == 0) {
         machine.cpufreq_base = XL_BOARD_CPUFREQ;
         machine.cpufreq_size = (uint64_t)config.ncpu * BR_CPUFREQ_WINDOW;
+        cpu_freq = cpufreq;
       }
+      xh_cpu_uclamp = vcpu_uclamp;
       LOGI("cpu: %u E + %u P vCPUs on the host's %u E + %u P cores%s", cpu_plan.n_e, cpu_plan.n_p, host.n_e, host.n_p,
            config.cpu_pin ? "; each vCPU and the iOS thread it runs on one core (cpu-pin=1)" : " (cpu-pin=0: a vCPU on any core of its kind)");
       if (config.cpu_pin)
         for (unsigned i = 0; i < config.ncpu; i++) LOGI("cpu%u: host CPU mask 0x%llx", i, (unsigned long long)place_mask(i));
+      log_cpu_layout(&host);
     } else LOGI("cpu: no host topology under /sys: vCPUs are not placed");
   }
   if (!cpu_planned && config.cpu_pin == 2) {
@@ -995,9 +1153,17 @@ int main(int argc, char **argv)
   // The display driver's scale and refresh rate go on the kernel's command line (a value given there stays).
   if (xh_display_boot_args(config.boot_args, sizeof config.boot_args, config.scale, fb_hz, config.display_format)) { LOGE("no room in the boot arguments for the display's switches"); return EXIT_SETUP; }
   // 24A446's bluetoothd with the virtual machine hidden takes its chip path and dies (SIGSEGV at 0x350) in a loop that
-  // launchd then throttles for 1200 s (phone and PC, 2026-11-14; docs/hardware.md 4): said, not changed.
+  // launchd then throttles for 1200 s (phone and PC, 2026-11-14; docs/hardware.md 4): said, not changed. [I] Its chip
+  // factory finds no chip for transport-encoding 1 outside a VM (only transport 9 or a product of its table gives one),
+  // and 0x350 is a field of the chip object it then reads through a null pointer.
   if (xh_boot_args_hides_vmm_from(config.boot_args, "bluetoothd"))
     LOGE("boot arguments: owner-hide-vmm names bluetoothd: it crashes in a loop that way (docs/hardware.md 4); take it out");
+  // bt-transport-override=10 hands bluetoothd its own simulated controller (BTVC: the transport's write goes to an object
+  // in bluetoothd's own process, which answers the commands itself): nothing reaches the kernel's transport or the phone's
+  // controller, and on the phone (main 3233fed, 2026-11-15) bluetoothd then exited(1) after 56 s, again and again.
+  if (xh_boot_args_bt_transport(config.boot_args) == 10)
+    LOGE("boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: "
+         "nothing reaches the phone's controller (docs/hardware.md 4); take it out");
   xh_perf_init(&config);
   if (boot()) { xh_tasks_shutdown(); return EXIT_SETUP; }
 
@@ -1043,13 +1209,16 @@ int main(int argc, char **argv)
     swap_watch();                           // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
     ram_valve_tick();                       // the lock's valve, once a second while locked
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
-    // Until the guest's display driver presents, show what its kernel console draws.
+    ready_tick();                           // session/ready for an iOS that only draws black (ready-content-wait)
+    // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
+    // ready: between its first frame and ready the frames are the guest's, and the console must not be copied over them).
+    bool console = !guest_ready && !__atomic_load_n(&guest_drawing, __ATOMIC_ACQUIRE);
     xh_display *d = xh_display_get();
     uint8_t *fb = xh_ram(boot_fb_pa, (uint64_t)fb_width * fb_height * 4);
-    if (!guest_ready && d && fb && d->format == XH_PIXELS_BGRX8 && memcmp(d->pixels, fb, (size_t)d->stride * d->height)) {
+    if (console && d && fb && d->format == XH_PIXELS_BGRX8 && memcmp(d->pixels, fb, (size_t)d->stride * d->height)) {
       memcpy(d->pixels, fb, (size_t)d->stride * d->height);
       xh_display_flush(0, 0, d->width, d->height);
-    } else if (!guest_ready && d && fb && d->format == XH_PIXELS_RGBA16F && d->width == fb_width && d->height == fb_height) {
+    } else if (console && d && fb && d->format == XH_PIXELS_RGBA16F && d->width == fb_width && d->height == fb_height) {
       // A half-float frame (display-format=rgba16f): the console's B,G,R,X bytes are compared with the last ones seen
       // and decoded to linear light when they changed.
       static uint8_t *seen;

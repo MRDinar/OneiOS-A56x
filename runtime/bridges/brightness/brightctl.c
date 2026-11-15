@@ -5,10 +5,12 @@
 //                                     10) for N ms (default 2000), with a 300 ms fade, then restores
 //   brightctl als [SECONDS]           live light sensor readings (default 15 s)
 // Environment: ONEIOS_BRIGHT_MAX, ONEIOS_BRIGHT_MIN, ONEIOS_ALS_SCALE (brightness.h), and for a test
-// off the phone ONEIOS_BRIGHT_DIR, ONEIOS_INPUT_DIR, ONEIOS_INPUT_SYSFS.
+// off the phone ONEIOS_BRIGHT_DIR, ONEIOS_INPUT_DIR, ONEIOS_INPUT_SYSFS, ONEIOS_TSP_DIR. The backend: ONEIOS_HW_BACKEND,
+// ONEIOS_HW_BACKEND_BACKLIGHT (samsung, the default, or treble), ONEIOS_HW_FALLBACK (bridges/hw_backend.h).
 // It ends with "brightctl: ok" or the reason it failed. SIGINT and SIGTERM restore the panel too.
 #define _GNU_SOURCE
 #include "brightness.h"
+#include "bridges/hw_backend.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,7 @@ static br_bright *open_bridge(bool no_als)
 
 static void print_info(const br_bright_info *i)
 {
+  printf("backend: %s\n", br_hw_name(i->backend));
   if (i->panel) printf("panel: %s  max_brightness %u, slider range %u..%u, One UI's value %u\n", i->node, i->max_brightness, i->floor, i->ceiling, i->saved);
   else printf("panel: no backlight device\n");
   if (i->als) printf("light sensor: %s\n", i->als_node);
@@ -65,6 +68,11 @@ int main(int argc, char **argv)
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
   signal(SIGHUP, on_signal);
+  br_hw_settings hw;
+  const char *bad = NULL;
+  br_hw_settings_init(&hw);
+  if (br_hw_settings_env(&hw, &bad)) { printf("brightctl: failed: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  br_hw_configure(&hw);
 
   if (!strcmp(command, "info")) {
     br_bright *b = open_bridge(false);

@@ -6,6 +6,8 @@ DroidVMClientMemory droidvm_virtgpu_client_memory[64];
 void oneios_gpu_blob_made(uint32_t, uint32_t, uint64_t, uint32_t, task_t, uint64_t) __attribute__((weak));
 void oneios_gpu_blob_closed(uint32_t) __attribute__((weak));
 void oneios_gpu_blob_gone(uint32_t) __attribute__((weak));
+// OneiOS: who submits, for the host's GPU policy (role, QoS, deadline: OneiOSAdreno.cpp, docs/gpu.md 2.2b).
+void oneios_gpu_hint(uint8_t *) __attribute__((weak));
 // (before anchor 1)
     c->resources[c->resourceCount++] = r;
     if (oneios_gpu_blob_made)
@@ -49,4 +51,14 @@ bool oneios_gpu_reader_waits(int) __attribute__((weak));
 }
 }
 // For the display: the holds taken so far
+// (before anchor 11)
+    CtxCreate create = {{CmdCtxCreate, 0, 0, context, 0, {}}, 0, in.capset_id, {'x', 'n', 'u', ':'}};
+    if (oneios_gpu_hint) {
+        uint8_t hint[3] = {};
+        oneios_gpu_hint(hint);
+        create.contextInit |= uint32_t(hint[0]) << 8 | uint32_t(hint[1]) << 16;
+    }
+// (before anchor 12)
+    Submit submit = {{CmdSubmit3D, uint32_t(FlagFence) | uint32_t(FlagRingIndex), fence, c->context, uint8_t(in.ring_idx), {}}, in.size, 0};
+    if (oneios_gpu_hint) oneios_gpu_hint(submit.h.padding);
 // (the end)

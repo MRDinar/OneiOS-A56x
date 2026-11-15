@@ -433,7 +433,9 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   evdev reader would open the PC's own devices). The script gives xnuhost's input device a panel's axes and, once
   the guest's driver runs it, repeats a tap, a swipe up from the bottom edge and the three side keys
   ([booter.md](booter.md) 2.8). The kernel's `oneios-hid:` lines say what attached and what arrived
-  ([the HID archive's README](../kernel/patches/oneios-hosted/hid/README.md)).
+  ([the HID archive's README](../kernel/patches/oneios-hosted/hid/README.md)). The script also has a pen (a hover, two
+  strokes, the side button), left out unless `--set pen=auto` is added: then the guest gets the pen device
+  `/arm-io/input-1` and `oneios-pen=1`, and the `pen:` and `oneios-hid: pen:` lines follow it ([hardware.md](hardware.md) 7f).
 - What user space did, after the run has stopped: the Data volume is in `--data`'s `data.img` and launchd keeps
   its own log on it (every job spawned or refused, every exit with its reason).
   `apfs-fuse -o ro,vol=2 out/run/data/data.img MNT`, then `MNT/root/log/com.apple.xpc.launchd/launchd.log`, and
@@ -444,7 +446,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   `--display shm` instead of `none` and run, beside it,
   `kernel/patches/oneios-hosted/display/display-capture.py --session out/run/session --out out/run/frame`: it prints a
   line when the picture changed and writes `out/run/frame-NNN.png`. `out/run/session/ready` appears at the first
-  frame that is not the boot console's. Boot argument `oneios-display=0` leaves the display out. The frame is
+  frame of the guest's own that is not all black (never a frame of the boot console; with every frame black, `ready-content-wait` seconds, 120, after the first: [booter.md](booter.md) 2.8, "the ready rule"); the log's `display: the guest's first frame of its own: all black` line is where the rule before 2026-11-15 was ready. Boot argument `oneios-display=0` leaves the display out. The frame is
   1440x3120 at 120 Hz and @3x unless told otherwise: `--width W --height H`, `--hz N`, `--set scale=2`
   ([booter.md](booter.md) 2.8); the log's `display: shm, guest frame ...` line and the capture's `hello` say what it is.
   The frame's pixels: `display: the frame's pixels: B,G,R,X 8-bit sRGB, 4 bytes a pixel` (the default);
@@ -515,6 +517,8 @@ $T phone touch status              # /sys/class/sec/tsp/enabled: 1 on, 0 off
 $T phone touch wake                # 2,0 then 2,1 to it (the touch IC sleeps after iOS's brightness was 0), then reads it back
 $T phone backlight status          # the panel's level, max_brightness, and One UI's own value (control/base/backlight)
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
+$T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
+$T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
 $T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots and checks. In chunks
                                    #   (--chunk 256 MiB), each checked against the phone's sha256 and tried again when its
                                    #   stream breaks (--retries 5); after a stop, the same command again goes on (OUT.part,

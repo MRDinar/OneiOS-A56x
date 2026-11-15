@@ -37,6 +37,28 @@ are 50-60 C above it. This bridge does, inside xnuhost only.
 
 Read every 5 s from xnuhost's start (about 40 files), whether or not iOS listens.
 
+### The two backends of the sensors (hw-backend-thermal, 2026-11-15)
+
+`hw-backend=samsung|treble` or `hw-backend-thermal=...` (`bridges/hw_backend.h`, `docs/hardware.md` 7e);
+`br_thermal_options.backend` forces one, `br_thermal_backend()` says which runs; `hw: thermal: backend X (why)`.
+Only the sensors differ: the levels, the hysteresis, xnuhost's step and the load line are the same code for both
+(the policy is fix-ram-locked's and not touched here).
+
+- **samsung** (the default): the table above, unchanged.
+- **treble**: the thermal HAL `android.hardware.thermal.IThermal/default` by name from servicemanager (`hal/hal.c`),
+  one `getTemperatures()` (code 3 of the frozen `IThermal.aidl`) per reading. `br_thermal_from_hal`: cpu and gpu the
+  hottest of their `TemperatureType`, soc the hottest of CPU, GPU and SOC (its name in `soc_zone`), battery, and the
+  case = the hottest SKIN (the HAL's own skin sensor, where samsung takes Samsung's `lrp`). ddr, xo, ap and lrp are
+  unknown. Values below -40 C or above 200 C (an off sensor) are skipped.
+- Not registered, or no temperature at the open: `hw: thermal: treble: missing: ...; the bridge stays off`, or the
+  files with `hw-backend-fallback=1`. A HAL that stops answering: one line, the readings unknown until it answers
+  (each reading then counts as a missing file does).
+
+`thermalctl` (no argument) reads `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_THERMAL`, `ONEIOS_HW_FALLBACK` and prints
+`backend: ...` and the reading (treble: through the bridge; `case = N (the HAL's SKIN)`). Tests: `test_thermal.c`
+`test_hal` (the parcel, the mapping, the same level as Samsung's lrp gives), `tests/test_hal_binder.c` (a reading, a
+hotter one, the HAL's death, not registered, no temperature), the stand-in phone (`tests/phone/hw-backend.sh`).
+
 ## Levels
 
 iOS's levels (`kOSThermalPressureLevel*` of the iPhoneOS SDK's `OSThermalNotification.h`): 0 nominal, 10 light,
@@ -84,12 +106,17 @@ the case took the X4 for the whole of a warm session. What stays, and why:
 3 (`thermalctl` prints steps 0 and 2). xnuhost's `thermal_step` (`main.c`) narrows the vCPU threads' affinity and bumps
 an epoch, and `xh_thread_run` (`task.c`) places each iOS thread again at its next run.
 
-CPU placement otherwise (read for fix-ram-locked, nothing of it caps): xnuhost runs one vCPU per host core (`--cpus`
-defaults to the host's cores, at most 8; on this phone 2 E and 6 P vCPUs), `cpu-pin` (on) pins each to its own core
-and the iOS threads it runs follow it, the virtual cpufreq device only raises a thread's uclamp minimum when iOS asks
-for a clock (it never sets a maximum), and nothing writes a cpufreq, devfreq or GPU node. The GPU has no cap of ours
-either: drm2kgsl's power constraint and its clock hold (`docs/gpu.md` 2.2) only ask KGSL for the top level while iOS
-draws; the 8 MiB GPU pool is the renderer's response buffers, not a limit; KGSL's own thermal limit stays.
+CPU placement otherwise (read for fix-ram-locked, on main `1b5fb9f`; nothing of it caps): xnuhost runs one vCPU per
+host core (`--cpus` defaults to the host's cores, at most 8; on this phone 2 E and 6 P vCPUs), `cpu-pin` (on) pins each
+to its own core and the iOS threads it runs follow it, the virtual cpufreq device only raises a thread's uclamp minimum
+when iOS asks for a clock (it never sets a maximum), and nothing writes a cpufreq, devfreq or GPU node. The GPU had no
+cap of ours either: drm2kgsl's power constraint and its clock hold (`docs/gpu.md` 2.2) only asked KGSL for the top level
+while iOS draws; the 8 MiB GPU pool is the renderer's response buffers, not a limit; KGSL's own thermal limit stays.
+Merged into main after that reading (fix-host-overhead #40, fix-gpu-perf #42; left as they are here, the owner's to
+decide against the rule "all CPU cores, no caps of ours on the GPU"): iOS threads the kernel hints as background or
+utility QoS get `uclamp.max` 512 (`XH_HINT_BG_MAX`, hosted 0075; `docs/booter.md` 2.6a), and background GPU contexts run
+at KGSL's lowest level at a still screen, the render server's at the top only for a frame that would miss its deadline
+(`gpu-level=hold` and `gpu-priority=0` turn those off; `docs/gpu.md` 2.2b). Neither touches UI or realtime threads.
 
 **Fixed 2026-11-13 (hang):** until then the P vCPUs at step 2 ran on cpu5-6 only (`thermal: step 2 (trapping): P vCPUs
 on host CPUs 0x60` on the phone, 2026-11-13 10:4x): `br_cpu_plan_cap` intersected the step's CPUs with the vCPU's own
@@ -148,7 +175,7 @@ reset stops the reports; the reads go on.
 
 `make -C runtime/bridges/thermal test` (Linux; on a Mac in the container: `runtime/host-tests.sh`, part `bridges`): the
 limits parser, each rule and its hysteresis, the steps' CPUs and pins on the S24 Ultra's topology and on a one-kind host, the
-sysfs reader on a fake tree (an off zone, no `lrp`), the worker's two listeners. 79 checks (2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for the SoC, its hysteresis, the worker's cap listener at 50 C).
+sysfs reader on a fake tree (an off zone, no `lrp`), the worker's two listeners. 88 checks with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for the SoC, its hysteresis, the worker's cap listener at 50 C).
 
 ## On the phone
 

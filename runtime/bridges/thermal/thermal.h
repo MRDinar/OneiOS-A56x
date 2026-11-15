@@ -7,6 +7,10 @@
 // In a session One UI's system_server is gone, and with it Samsung's skin-temperature policy (SSRM). The kernel's
 // own trips (the CPU and GPU junction at 90-110 C, LMh in hardware) keep running and cap every process, xnuhost's
 // threads too. Nothing else acts on the case temperature: this bridge does, inside xnuhost only.
+//
+// Two backends for the sensors (bridges/hw_backend.h, hw-backend-thermal): samsung, the files above (unchanged); treble,
+// the thermal HAL android.hardware.thermal.IThermal/default (getTemperatures: CPU, GPU, SOC, BATTERY, SKIN). The policy
+// (br_thermal_decide, the step) is the same for both; the load line reads the same standard files in both.
 #ifndef ONEIOS_BRIDGE_THERMAL_H
 #define ONEIOS_BRIDGE_THERMAL_H
 
@@ -85,6 +89,11 @@ typedef struct {
 // sensor of any kind can be read (no zone, no thermistor, no battery temperature).
 int br_thermal_find(const char *root, br_thermal_sensors *s);
 void br_thermal_read(const br_thermal_sensors *s, br_thermal_raw *raw);
+// The treble backend (hw-backend-thermal): the thermal HAL's temperatures (hal/hal.h) as a reading: cpu, gpu the hottest of
+// their type; soc the hottest of CPU, GPU and SOC (its name in soc_zone); battery; skin (the case) the hottest SKIN. ddr, xo,
+// ap and lrp (Samsung's) stay unknown. Implausible values (below -40 C, above 200 C) are skipped.
+struct hal_temperature;
+void br_thermal_from_hal(const struct hal_temperature *temps, unsigned n, br_thermal_raw *raw);
 
 // ---- where the heat comes from (2026-11-14) -------------------------------------------------------
 // One sample of the host's load, from named files only (never a folder list): root/proc/stat's "cpu" line and its cpuN
@@ -118,6 +127,8 @@ typedef struct {
   uint32_t poll_ms;                       // 0: BR_THERMAL_POLL_MS
   const br_thermal_limits *limits;        // NULL: the defaults and ONEIOS_THERMAL_SKIN, _SOC, _BATTERY
   uint32_t load_ms;                       // 0: BR_THERMAL_LOAD_MS, the "thermal: N s: host CPU" line's period
+  int      backend;                       // BR_HW_SAMSUNG, BR_HW_TREBLE (bridges/hw_backend.h); 0: the process's hw-backend
+  const char *binder;                     // treble: the binder device; NULL: ONEIOS_BINDER, else /dev/binder
 } br_thermal_options;
 
 typedef void (*br_thermal_fn)(void *ctx, const br_thermal_state *state);
@@ -132,6 +143,8 @@ void br_thermal_get(br_thermal *t, br_thermal_state *out);
 // the worker thread without the bridge's locks. NULL stops that listener.
 void br_thermal_on_cap(br_thermal *t, br_thermal_fn fn, void *ctx);
 void br_thermal_on_report(br_thermal *t, br_thermal_fn fn, void *ctx);
+// BR_HW_TREBLE when the thermal HAL is read, BR_HW_SAMSUNG for the files.
+int  br_thermal_backend(const br_thermal *t);
 void br_thermal_close(br_thermal *t);
 
 #endif

@@ -112,6 +112,20 @@ int br_cpu_read(const char *root, br_cpu_topology *t)
       if (c->min_khz && c->min_khz < c->max_khz) c->freq_khz[c->nfreq++] = c->min_khz;
       c->freq_khz[c->nfreq++] = c->max_khz;
     }
+    // The boost frequencies are not in scaling_available_frequencies (Linux lists CPUFREQ_BOOST_FREQ entries apart; Qualcomm's
+    // cpufreq-hw marks a LUT entry as one when fewer cores than the domain's may run at it: the X4's top). The phone's guest saw
+    // the X4's vCPU top at 3052.8 MHz where the core reaches 3.39 GHz (host-overhead, 2026-11-15): they belong in its table.
+    if (read_text(root, "%s/devices/system/cpu/cpu%u/cpufreq/scaling_boost_frequencies", i, text, sizeof text)) {
+      for (char *p = strtok(text, " \t\n"); p && c->nfreq < BR_MAX_FREQS; p = strtok(NULL, " \t\n")) {
+        uint32_t khz = (uint32_t)strtoul(p, NULL, 10);
+        bool known = false;
+        for (unsigned k = 0; k < c->nfreq; k++) known |= c->freq_khz[k] == khz;
+        if (khz && !known) { c->freq_khz[c->nfreq++] = khz; c->boost_khz = khz > c->boost_khz ? khz : c->boost_khz; }
+      }
+      qsort(c->freq_khz, c->nfreq, sizeof c->freq_khz[0], compare_u32);
+    }
+    if (read_number(root, "%s/devices/system/cpu/cpu%u/cpufreq/scaling_max_freq", i, &v)) c->scaling_max_khz = (uint32_t)v;
+    if (c->nfreq && c->freq_khz[c->nfreq - 1] > c->max_khz) c->max_khz = c->freq_khz[c->nfreq - 1];
     if (read_number(root, "%s/devices/system/cpu/cpu%u/regs/identification/midr_el1", i, &v)) c->part = (unsigned)(v >> 4) & 0xfff;
     read_caches(root, i, c);
     // Without cpu_capacity (a kernel without the arch topology driver) the top frequency orders the cores.
@@ -179,6 +193,26 @@ int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_
   bool one_to_one = pin && n_e <= ne && n_p <= np;
   for (unsigned i = 0; i < n_e; i++) vcpu_from(t, one_to_one ? 1ull << e_list[i] : e_mask, 'E', &plan->v[i]);
   for (unsigned i = 0; i < n_p; i++) vcpu_from(t, one_to_one ? 1ull << p_list[i] : p_mask, 'P', &plan->v[n_e + i]);
+  // With a mask per kind, cpu-pin (br_cpu_pin_mask) puts the rank-th vCPU of a kind on the rank-th CPU of the mask, in CPU
+  // order: on the SM8650 vCPU i on CPU i. Each vCPU is described as that core (its clock table, capacity, caches), not as the
+  // fastest core of its kind: before (host-overhead, 2026-11-15) the guest saw six X4s, and a frequency request of a vCPU on
+  // an A720 was sized against the X4's table. host_cpu says which core it is.
+  if (!one_to_one) {
+    unsigned re = 0, rp = 0;
+    for (unsigned c = 0; c < t->ncpu; c++) {
+      if (!t->cpu[c].present) continue;
+      unsigned at = t->cpu[c].type == 'E' ? (re < n_e ? re++ : nvcpu) : (rp < n_p ? n_e + rp++ : nvcpu);
+      if (at >= nvcpu) continue;
+      br_vcpu described;
+      vcpu_from(t, 1ull << c, plan->v[at].type, &described);
+      described.affinity = plan->v[at].affinity;
+      plan->v[at] = described;
+      plan->v[at].host_cpu = c;
+    }
+  } else {
+    for (unsigned i = 0; i < n_e; i++) plan->v[i].host_cpu = e_list[i];
+    for (unsigned i = 0; i < n_p; i++) plan->v[n_e + i].host_cpu = p_list[i];
+  }
   plan->nvcpu = nvcpu; plan->n_e = n_e; plan->n_p = n_p;
   return 0;
 }

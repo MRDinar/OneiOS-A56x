@@ -43,8 +43,21 @@ struct xh_cpu {
   uint64_t host_sp;           // 0x30    host only
   uint64_t kernel_data;       // 0x38 K  free for the kernel (its cpu_data pointer)
   uint64_t tpidr_el1;         // 0x40 K  shadow of TPIDR_EL1 for trapped mrs/msr (current thread)
-  uint64_t reserved[7];       // 0x48
+  uint32_t perf_hint;         // 0x48 K  what the user thread this vCPU runs needs (XH_HINT_*), written by the kernel before
+                              //         thread_run (kernel 0075); 0 = no hint (an older kernel). Read by thread_run (its
+                              //         uclamp) and by any host code on the vCPU (the GPU path: the submitting thread's role)
+  uint32_t perf_reserved;     // 0x4c
+  uint64_t reserved[6];       // 0x50
 };                            // 0x80; host-private data follows
+
+// perf_hint: bits 0-10 the utilisation clamp floor the thread asks for (0-1024), and its role from XNU's own policy
+// (thread_get_perfcontrol_class, the task's effective QoS and darwin-background state: RunningBoard's roles reach it there).
+#define XH_HINT_VALID       (1u << 16)    // the kernel wrote this word
+#define XH_HINT_BACKGROUND  (1u << 17)    // background or utility QoS, darwin background: no floor, capped at XH_HINT_BG_MAX
+#define XH_HINT_UI          (1u << 18)    // UI, above-UI or user-initiated class (an app's main thread, its frame workers)
+#define XH_HINT_REALTIME    (1u << 19)    // a realtime thread (the render server's, audio)
+#define XH_HINT_FLOOR(h)    ((h) & 0x7ffu)
+#define XH_HINT_BG_MAX      512u          // uclamp.max of a background thread: it never holds a core at its top clock
 
 // ---- saved register frames ---------------------------------------------------------------------
 struct xh_vreg { uint64_t lo, hi; };

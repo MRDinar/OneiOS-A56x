@@ -14,7 +14,8 @@ public final class OneiOSDisplay {
     private static native int[] nInfo(long handle);                    // width, height, stride, format
     private static native int[] nFit(int sw, int sh, int dw, int dh);  // x, y, w, h
     private static native int[] nBuffer(int frameFormat);              // buffer format, dataspace
-    private static native int nRun(long handle, Object surface, int format, int dataspace);
+    // ready: SESSION/ready with --session (the first post waits for it: src/xhd.h xhd_hold_first), null with --socket
+    private static native int nRun(long handle, Object surface, int format, int dataspace, String ready);
     private static native void nClose(long handle);
 
     private static final int RGBX_8888 = 2, BGRA_8888 = 5, RGBA_FP16 = 22;
@@ -58,7 +59,7 @@ public final class OneiOSDisplay {
     }
 
     private static int run(String[] args) throws Exception {
-        String socket = null, lib = null;
+        String socket = null, lib = null, ready = null;
         int wait = 30, hz = 0, format = BGRA_8888, dataspace = -1;
         boolean takeover = false, projection = true;
         int[] logical = null;
@@ -68,8 +69,8 @@ public final class OneiOSDisplay {
             if (a.equals("--no-projection")) { projection = false; continue; }
             if (i + 1 >= args.length) return usage();
             String v = args[++i];
-            if (a.equals("--session")) socket = v + "/display.sock";
-            else if (a.equals("--socket")) socket = v;
+            if (a.equals("--session")) { socket = v + "/display.sock"; ready = v + "/ready"; }
+            else if (a.equals("--socket")) { socket = v; ready = null; }
             else if (a.equals("--lib")) lib = v;
             else if (a.equals("--wait")) wait = Integer.parseInt(v);
             else if (a.equals("--hz")) hz = Integer.parseInt(v);
@@ -140,7 +141,7 @@ public final class OneiOSDisplay {
             place(transaction, layer, TOP);
             tx(transaction, "apply", new Class<?>[]{});
             log("layer up");
-            result = nRun(handle, surface, format, dataspace);
+            result = nRun(handle, surface, format, dataspace, ready);
         } finally {
             for (Object gone : new Object[]{layer, back}) {
                 if (gone == null) continue;

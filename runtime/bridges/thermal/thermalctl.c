@@ -6,8 +6,11 @@
 //                              clocks, the battery's current, the phone's CPU use, xnuhost's and its session's
 //   thermalctl top [-i S]      over S seconds (10): xnuhost's busiest threads, and the busiest processes of its session
 //   ONEIOS_THERMAL_ROOT=DIR    a fixture instead of the phone's /sys (tests)
+//   ONEIOS_HW_BACKEND, ONEIOS_HW_BACKEND_THERMAL=samsung|treble, ONEIOS_HW_FALLBACK (bridges/hw_backend.h): the report's
+//                              sensors (treble: the thermal HAL, through the bridge; ONEIOS_BINDER off the phone)
 #include "thermal.h"
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -51,14 +54,37 @@ static void mask_text(char *out, size_t size, uint64_t m)
 static int report(void)
 {
   br_thermal_sensors s;
+  br_thermal_raw raw;
+  bool from_hal = false;
+  br_hw_settings hw;
+  const char *bad = NULL;
+  br_hw_settings_init(&hw);
+  if (br_hw_settings_env(&hw, &bad)) { printf("thermalctl: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  br_hw_configure(&hw);
+  if (br_hw_choose(&hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE) {
+    // The treble backend: the bridge itself (its HAL client), one reading.
+    br_thermal_options o = { .root = root(), .backend = BR_HW_TREBLE };
+    br_thermal *t = br_thermal_open(&o);
+    if (!t && !br_hw_fallback_allowed(&hw)) { printf("thermalctl: no sensor can be read (treble)\n"); return 1; }
+    if (t) {
+      br_thermal_state now;
+      br_thermal_get(t, &now);
+      raw = now.raw;
+      int backend = br_thermal_backend(t);
+      from_hal = backend == BR_HW_TREBLE;
+      br_thermal_close(t);
+      printf("backend: %s\n", br_hw_name(backend));
+      goto decide;
+    }
+  }
   if (br_thermal_find(root(), &s)) { printf("thermalctl: no sensor can be read\n"); return 1; }
-  printf("zones: %u of interest\n", s.nzone);
+  printf("backend: samsung\nzones: %u of interest\n", s.nzone);
   for (unsigned i = 0; i < s.nzone; i++) {
     long long v = read_ll("%s%s", s.zone[i].path + strlen(root()), -999999);
     printf("  %-14s %-4s %lld\n", s.zone[i].type, (const char *[]){ "cpu", "gpu", "ddr", "xo" }[s.zone[i].group], v);
   }
-  br_thermal_raw raw;
   br_thermal_read(&s, &raw);
+decide:;
   br_thermal_limits l;
   br_thermal_limits_default(&l);
   br_thermal_state st;
@@ -67,7 +93,7 @@ static int report(void)
   int32_t vals[9] = { raw.cpu, raw.gpu, raw.ddr, raw.soc, raw.xo, raw.ap, raw.battery, raw.lrp, raw.skin };
   for (unsigned i = 0; i < 9; i++) deci(t[i], sizeof t[i], vals[i]);
   printf("reading (C): cpu %s gpu %s ddr %s soc %s (%s) xo %s ap %s battery %s lrp %s; case = %s (%s)\n", t[0], t[1], t[2], t[3],
-         raw.soc_zone[0] ? raw.soc_zone : "-", t[4], t[5], t[6], t[7], t[8], raw.lrp != BR_THERMAL_UNKNOWN ? "lrp" : "ap");
+         raw.soc_zone[0] ? raw.soc_zone : "-", t[4], t[5], t[6], t[7], t[8], raw.lrp != BR_THERMAL_UNKNOWN ? "lrp" : from_hal ? "the HAL's SKIN" : "ap");
   printf("level: %s (%u); case rule %u, SoC rule %u, battery rule %u; xnuhost step %u\n", br_thermal_level_name(st.level), st.level, st.skin_level,
          st.soc_level, st.battery_level, st.cap);
   br_cpu_topology topo;

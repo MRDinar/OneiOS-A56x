@@ -264,7 +264,10 @@ task_t proc_task(proc_t);
 int proc_pid(proc_t);
 kern_return_t task_info(task_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
 void absolutetime_to_nanoseconds(uint64_t, uint64_t *);
+// hosted 0075 (hosted_user.c): the time all processors have idled since boot, up to now, and how many there are
+uint64_t hosted_processors_idle_mach(uint32_t *count) __attribute__((weak));
 }
+#include "cpu_window.h"
 namespace cpu {
 struct Seen { int pid; uint32_t round; uint64_t mach, sys; };
 Seen seen[1024];
@@ -299,29 +302,38 @@ void report(uint32_t every, uint32_t round)
     // The span is the time since the last walk, measured: in a stall the report thread wakes late (the phone,
     // 2026-11-13 10:4x: the display's own 10 s line came after 30 s), and dividing by the nominal `every` gave a
     // 10 s line whose processes added up to 1,440% of a CPU on eight vCPUs. The line says the measured seconds.
-    static uint64_t last;
+    // "all" and each share are bounded by the CPUs' busy time (cpu_window.h says why: recount adds a thread's time to its
+    // task only when the thread changes state, so a long stretch lands in one window whole).
+    static uint64_t last, idle_last;
     const uint64_t walked = mach_absolute_time();
+    uint32_t ncpu = 0;
+    const uint64_t idle_now = hosted_processors_idle_mach ? hosted_processors_idle_mach(&ncpu) : 0;
     Walk w = {};
     w.round = round;
     proc_iterate(1 /* PROC_ALLPROCLIST */, visit, &w, nullptr, nullptr);
-    uint64_t span = 0;
+    uint64_t span = 0, idle = 0;
     absolutetime_to_nanoseconds(walked - last, &span);
-    const bool first = round < 2 || !last;
+    absolutetime_to_nanoseconds(idle_now - idle_last, &idle);
+    const bool first = round < 2 || !last || (ncpu && !idle_last);
     last = walked;
+    idle_last = idle_now;
     if (first) return;   // the first walk only records where each process was
-    if (span < 1000000000ull) span = uint64_t(every) * 1000000000ull;
+    span = oneios_cpu_span_ns(span, every);
     every = uint32_t((span + 500000000ull) / 1000000000ull);
+    const uint64_t busy = oneios_cpu_busy_ns(span, ncpu, idle);
     char text[220];
     size_t at = 0;
     for (unsigned i = 0; i < 8 && w.top[i].mach; i++) {
         uint64_t ns = 0;
         absolutetime_to_nanoseconds(w.top[i].mach, &ns);
-        at += snprintf(text + at, sizeof text - at, "%s%.20s[%d] %llu%%", at ? ", " : "", w.top[i].name, w.top[i].pid, ns * 100 / span);
+        at += snprintf(text + at, sizeof text - at, "%s%.20s[%d] %llu%%", at ? ", " : "", w.top[i].name, w.top[i].pid,
+                       oneios_cpu_percent(oneios_cpu_capped_ns(ns, busy, ncpu), span));
         if (at >= sizeof text - 1) break;
     }
     uint64_t all = 0;
     absolutetime_to_nanoseconds(w.all, &all);
-    IOLog("oneios-cpu: %u s: %s (all %llu%%)\n", every, at ? text : "idle", all * 100 / span);
+    // "all": the processors' busy time where the kernel gives it (hosted 0075), else the tasks' sum as before
+    IOLog("oneios-cpu: %u s: %s (all %llu%%)\n", every, at ? text : "idle", oneios_cpu_percent(ncpu ? busy : all, span));
     // The same processes' kernel time (TASK_POWER_INFO total_system): their system calls, faults and IOKit calls (a
     // swap's CPU copy or half-float conversion in the framebuffer's user client is backboardd's system time), against
     // their own code in user mode. A line of its own, so that the line above keeps its form for the log tools.
@@ -739,6 +751,40 @@ extern "C" void oneios_gpu_surface_lock(uint32_t id, uint32_t options)
 extern "C" void oneios_gpu_submit(uint32_t slot)
 {
     if (slot < 64) __atomic_fetch_add(&trail::slots[slot].submits, 1, __ATOMIC_RELAXED);
+}
+// The GPU's per-process policy on the host (runtime/xnuhost/drm2kgsl/oneios_gpu_policy.h, docs/gpu.md 2.2b): who submits.
+// The staged DroidVMVirtioGpu3D.cpp calls this on the client's own thread at its context's creation (CTX_CREATE's
+// context_init bits 8-23) and at each fenced execbuffer (the SUBMIT_3D header's three padding bytes):
+//   [0] 0x80 (the hint is there) | 0x40 if the thread is DarwinBG | the task's effective role (task_role_t, RunningBoard's);
+//   [1] the thread's effective QoS (THREAD_QOS_*);
+//   [2] the time to the frame's deadline in 250 us units (0 none, 255 for 63.75 ms or more).
+// The role and the deadline are the CPU agent's when its hosted CLPC (fix-host-overhead: thread groups, work intervals,
+// RunningBoard roles) defines the two functions below; until then the task's own role and no deadline (the host then
+// takes the frame cadence). Their weak defaults here say "not known".
+extern "C" int proc_get_effective_task_policy(task_t task, int flavor);
+extern "C" int proc_get_effective_thread_policy(thread_t thread, int flavor);
+// The thread group's role of `thread` as a task_role_t (0-9), or -1 when not known.
+extern "C" __attribute__((weak)) int oneios_clpc_thread_role(thread_t) {return -1;}
+// The deadline of the work interval `thread` is in (mach absolute time), or 0 when it is in none.
+extern "C" __attribute__((weak)) uint64_t oneios_clpc_frame_deadline(thread_t) {return 0;}
+extern "C" void oneios_gpu_hint(uint8_t *out)
+{
+    enum { PolicyDarwinBG = 0x21, PolicyRole = 0x2A, PolicyQoS = 0x35 };   // TASK_POLICY_DARWIN_BG, _ROLE, _QOS (policy_internal.h)
+    thread_t thread = current_thread();
+    int role = oneios_clpc_thread_role(thread);
+    if (role < 0 || role > 15) role = proc_get_effective_task_policy(current_task(), PolicyRole);
+    const int background = proc_get_effective_thread_policy(thread, PolicyDarwinBG);
+    const int qos = proc_get_effective_thread_policy(thread, PolicyQoS);
+    out[0] = uint8_t(0x80 | (background ? 0x40 : 0) | (role & 0xf));
+    out[1] = uint8_t(qos & 7);
+    out[2] = 0;
+    const uint64_t deadline = oneios_clpc_frame_deadline(thread), now = mach_absolute_time();
+    if (deadline > now) {
+        uint64_t ns = 0;
+        absolutetime_to_nanoseconds(deadline - now, &ns);
+        const uint64_t units = ns / 250000;
+        out[2] = uint8_t(units < 1 ? 1 : units > 255 ? 255 : units);
+    }
 }
 // A test switch, off by default: oneios-gpu-read-wait=1 makes the render server's command buffers wait, as they name the
 // surfaces they sample, for other processes' GPU work begun before them that writes those surfaces (the driver's

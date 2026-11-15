@@ -129,6 +129,12 @@ void xhd_rect_union(struct xhd_rect *into, const struct xhd_rect *r)
   into->x = x0; into->y = y0; into->w = (uint32_t)(x1 - x0); into->h = (uint32_t)(y1 - y0);
 }
 
+int xhd_hold_first(const char *ready)
+{
+  struct stat st;
+  return ready && *ready && stat(ready, &st) && errno == ENOENT;
+}
+
 int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
 {
   // A bound on one round: a guest that floods flushes must not keep the frame from being posted.
