@@ -136,7 +136,8 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
 - `br_cpu_plan_make(&t, nvcpu, pin, &plan)`: the guest's vCPUs, **E first** (an iPhone's boot CPU is an E core), then P.
   8 vCPUs: 2 E + 6 P. Fewer: one E per four vCPUs, at least one. Each vCPU carries `type`, `cluster_id` (0 E, 1 P),
   the host CPUs it may use (`affinity`: all cores of its kind; with `pin` one core each, the X4 first), the frequency
-  table and cache sizes of the fastest core in the mask.
+  table and cache sizes of the core cpu-pin gives it (the rank-th of its kind, vCPU *i* on CPU *i* here; before
+  2026-11-15 the fastest core in the mask), the boost frequencies included (`scaling_boost_frequencies`).
 - `br_cpu_place(tid, &plan, vcpu)`: `sched_setaffinity`. For the vCPU thread, and for the Linux thread of the iOS
   thread a vCPU runs (iOS threads are threads of other processes; booter's `xh_thread_run`).
 - `br_cpufreq_*`: the register window. A write of a frequency sets the utilisation clamp

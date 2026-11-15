@@ -117,7 +117,9 @@ clock, a sustained animation at 60 a second or more as upstream, and anything sl
 rule's hysteresis (it stays on down to half its rate) follows the rate rule's own answer, not a burst's, or a burst would have
 kept a 45 fps redraw constrained. `MIN_RATE=0` still constrains every submission; `BURST=0` is upstream's rule alone. Only
 queues that ask are constrained (the render server's: `context N: constrained ...` in the log). drm2kgsl's matching vCPU
-clamp looks for threads named `crosvm_vcpu*`; xnuhost's are `xnu-cpuN`, so it does nothing here.
+clamp looked for threads named `crosvm_vcpu*` (xnuhost's are `xnu-cpuN`: `vCPU uclamp.min 1024: 0 of 0 threads`); since 2026-11-15 its
+patch 0008 hands the value to xnuhost (`drm2kgsl_vcpu_uclamp`), which sets it on the vCPU threads and, at each release, on
+the iOS threads they run (`docs/booter.md` 2.6a).
 
 ### 2.2a `drm2kgsl/patches/0005-clock-held-between-frames.patch` (2026-11-12)
 

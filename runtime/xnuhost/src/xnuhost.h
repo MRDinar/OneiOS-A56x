@@ -396,6 +396,9 @@ typedef struct {
   uint64_t unmaps_deferred, unmaps_ordered;   // task_unmap calls queued (no thread of the task ran) / sent as an order
   uint64_t timer_sets, timer_calls;       // the kernel's timer_set calls; those that reached timer_settime
   uint64_t ticks_user, ticks_idle;        // counter ticks spent inside thread_run (the iOS thread's turn) and cpu_idle
+  uint64_t ops_joined;                    // task_map/task_unmap calls joined to the queue's last entry (stub_abi.h xs_queue_join)
+  uint64_t uclamp_sets;                   // sched_setattr calls that gave an iOS thread its vCPU's uclamp.min (task.c)
+  uint64_t kicks, kicks_skipped;          // raises of another vCPU's line that signalled or woke it; those it had up already
   // thread_run's bookkeeping between two calls
   uint64_t ret_at, ret_idle;
   uint32_t ret_kind;
@@ -450,6 +453,13 @@ xh_vcpu *xh_cpu_self(void);                           // the calling vCPU, NULL 
 // Set before the vCPUs start: puts a Linux thread (0 = the caller) on the host CPUs of a vCPU. Called
 // by each vCPU thread for itself and for the iOS thread a vCPU runs, when that vCPU changes.
 extern void (*xh_cpu_place)(int tid, unsigned vcpu);
+// Set before the vCPUs start (main.c, with the CPU plan): the utilisation clamp (uclamp.min, 0-1024) the work on a vCPU
+// should carry now (the guest's cpufreq request for it, the GPU path's animation boost). thread_run gives it to the iOS
+// thread it releases when it differs from what that thread carries: the vCPU thread itself waits while user code runs,
+// so a clamp on it alone never reached iOS's own code (host-overhead, 2026-11-15).
+extern unsigned (*xh_cpu_uclamp)(unsigned vcpu);
+// drm2kgsl's vCPU clamp while a constrained queue animates (its patch 0008 calls drm2kgsl_vcpu_uclamp, cpu.c): 0 = none.
+extern unsigned xh_gpu_vcpu_boost;
 
 // ---- machine stop (main.c) ----------------------------------------------------------------------
 void xh_stop(uint32_t reason, uint32_t code, const char *why);     // any thread; returns

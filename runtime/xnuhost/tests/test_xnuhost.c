@@ -13,6 +13,8 @@
 #include "xnuhost/free_report.h"
 #include "xnuhost/free_report_runs.h"
 #include "stub_abi.h"
+// The oneios-cpu window's arithmetic, the kernel's own file (gpu/OneiOSAdreno.cpp includes it).
+#include "../../kernel/patches/oneios-hosted/gpu/cpu_window.h"
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <errno.h>
@@ -1525,6 +1527,86 @@ static void test_fault_access(void)
   CHECK(xs_fault_access(0, far, pc) == 0);                          // no syndrome: unknown
 }
 
+// ---- the oneios-cpu window (kernel/patches/oneios-hosted/gpu/cpu_window.h, host-overhead 2026-11-15) ----
+static void test_cpu_window(void)
+{
+  const uint64_t S = 1000000000ull;
+  // The phone's window: 8 vCPUs, the report on time (10 s), a stall's lump of 70 s of one task's time absorbed in it.
+  // Before: all = the tasks' sum, 144 s of 10 s = 1441%. Now: the busy time, at most 8 x 10 s.
+  const uint64_t span = oneios_cpu_span_ns(10 * S, 10);
+  CHECK(span == 10 * S);
+  const uint64_t busy = oneios_cpu_busy_ns(span, 8, 6 * S);            // the CPUs idled 6 s of their 80
+  CHECK(busy == 74 * S && oneios_cpu_percent(busy, span) == 740);
+  CHECK(oneios_cpu_percent(oneios_cpu_capped_ns(70 * S, busy, 8), span) == 700);   // a lump: within the busy time
+  CHECK(oneios_cpu_percent(oneios_cpu_capped_ns(90 * S, busy, 8), span) == 740);   // never more than the CPUs did
+  CHECK(oneios_cpu_percent(oneios_cpu_capped_ns(3 * S, busy, 8), span) == 30);
+  // all idle, or more idle than the span (a clock step): 0, never a wrapped number
+  CHECK(oneios_cpu_busy_ns(span, 8, 80 * S) == 0 && oneios_cpu_busy_ns(span, 8, 99 * S) == 0);
+  // the report thread woke late: the measured 30 s, not the nominal 10 (the 2026-11-13 cause)
+  CHECK(oneios_cpu_span_ns(30 * S, 10) == 30 * S && oneios_cpu_percent(oneios_cpu_busy_ns(30 * S, 8, 0), 30 * S) == 800);
+  // no measurement (under a second): the nominal span
+  CHECK(oneios_cpu_span_ns(0, 10) == 10 * S && oneios_cpu_span_ns(S / 2, 10) == 10 * S);
+  // a kernel without hosted 0075 (no processor count): shares are not capped
+  CHECK(oneios_cpu_capped_ns(90 * S, 0, 0) == 90 * S);
+  CHECK(oneios_cpu_percent(5, 0) == 0);
+}
+
+// ---- the deferred queue's joins (stub_abi.h xs_queue_join, host-overhead 2026-11-15) ---------------
+static struct xs_op qop(uint32_t kind, uint64_t va, uint64_t size, uint32_t prot, uint64_t offset)
+{
+  return (struct xs_op){ .op = kind, .prot = prot, .va = va, .size = size, .offset = offset };
+}
+
+static void test_queue_join(void)
+{
+  const uint64_t P = 0x4000;
+  struct xs_op last = qop(XS_OP_MAP, 0x100000, P, 3, 0x8000), op;
+  // the next page of the same file range, same protection: one map of two pages
+  op = qop(XS_OP_MAP, 0x100000 + P, P, 3, 0x8000 + P);
+  CHECK(xs_queue_join(&last, &op) && last.op == XS_OP_MAP && last.va == 0x100000 && last.size == 2 * P && last.offset == 0x8000);
+  // the next page with another protection, or another file page, or a gap: two entries
+  op = qop(XS_OP_MAP, 0x100000 + 2 * P, P, 1, 0x8000 + 2 * P);
+  CHECK(!xs_queue_join(&last, &op) && last.size == 2 * P);
+  op = qop(XS_OP_MAP, 0x100000 + 2 * P, P, 3, 0x40000);
+  CHECK(!xs_queue_join(&last, &op));
+  op = qop(XS_OP_MAP, 0x100000 + 3 * P, P, 3, 0x8000 + 3 * P);
+  CHECK(!xs_queue_join(&last, &op));
+  // the same range mapped again: the later map
+  last = qop(XS_OP_MAP, 0x200000, P, 1, 0x1000 * 4);
+  op = qop(XS_OP_MAP, 0x200000, P, 3, 0x40000);
+  CHECK(xs_queue_join(&last, &op) && last.prot == 3 && last.offset == 0x40000 && last.size == P);
+  // unmaps: adjacent below and above, overlapping, apart
+  last = qop(XS_OP_UNMAP, 0x300000, P, 0, 0);
+  op = qop(XS_OP_UNMAP, 0x300000 + P, P, 0, 0);
+  CHECK(xs_queue_join(&last, &op) && last.va == 0x300000 && last.size == 2 * P);
+  op = qop(XS_OP_UNMAP, 0x300000 - P, P, 0, 0);
+  CHECK(xs_queue_join(&last, &op) && last.va == 0x300000 - P && last.size == 3 * P);
+  op = qop(XS_OP_UNMAP, 0x300000, 4 * P, 0, 0);
+  CHECK(xs_queue_join(&last, &op) && last.va == 0x300000 - P && last.size == 5 * P);
+  op = qop(XS_OP_UNMAP, 0x300000 + 6 * P, P, 0, 0);
+  CHECK(!xs_queue_join(&last, &op) && last.size == 5 * P);
+  // unmap then map of the same page (a fault that changed the entry): the map alone, which replaces the old page
+  last = qop(XS_OP_UNMAP, 0x400000, P, 0, 0);
+  op = qop(XS_OP_MAP, 0x400000, P, 3, 0x10000);
+  CHECK(xs_queue_join(&last, &op) && last.op == XS_OP_MAP && last.offset == 0x10000 && last.prot == 3);
+  // map then unmap of the same page: the unmap alone; of another size: both
+  op = qop(XS_OP_UNMAP, 0x400000, P, 0, 0);
+  CHECK(xs_queue_join(&last, &op) && last.op == XS_OP_UNMAP && last.va == 0x400000 && last.size == P);
+  last = qop(XS_OP_MAP, 0x400000, P, 3, 0x10000);
+  op = qop(XS_OP_UNMAP, 0x400000, 2 * P, 0, 0);
+  CHECK(!xs_queue_join(&last, &op) && last.op == XS_OP_MAP);
+  // unmap then map of a part of it: both (the rest must still go)
+  last = qop(XS_OP_UNMAP, 0x500000, 2 * P, 0, 0);
+  op = qop(XS_OP_MAP, 0x500000, P, 3, 0);
+  CHECK(!xs_queue_join(&last, &op) && last.op == XS_OP_UNMAP && last.size == 2 * P);
+  // a protect or a clone never joins
+  last = qop(XS_OP_PROTECT, 0x600000, P, 1, 0);
+  op = qop(XS_OP_PROTECT, 0x600000 + P, P, 1, 0);
+  CHECK(!xs_queue_join(&last, &op));
+  op = qop(XS_OP_UNMAP, 0x600000, P, 0, 0);
+  CHECK(!xs_queue_join(&last, &op));
+}
+
 // ---- configuration ------------------------------------------------------------------------------
 static void test_config(const char *dir)
 {
@@ -2330,6 +2412,8 @@ int main(void)
   test_input_script();
   test_filter();
   test_fault_access();
+  test_queue_join();
+  test_cpu_window();
   test_perf();
   test_discard();
   test_ramfix();

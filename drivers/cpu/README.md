@@ -19,3 +19,11 @@ Device tree, from the host's plan (`runtime/bridges/cpu`, `br_cpu_plan_make`):
 | `/arm-io/cpufreq` | `reg` | base, `plan.nvcpu * 0x1000`; the region's reads and writes go to `br_cpufreq_read/write` |
 
 On the S24 Ultra with 8 vCPUs: cpu0-1 E (the two Cortex-A520), cpu2-7 P (five Cortex-A720 and the Cortex-X4).
+
+Since 2026-11-15 (fix-host-overhead) each vCPU's window of `/arm-io/cpufreq` (its frequency table, and the capacity its
+request is sized against) is the core cpu-pin puts it on (vCPU *i* on host CPU *i* on the S24 Ultra: vCPU 7 is the X4,
+vCPU 2-4 the 3.15 GHz A720s, 5-6 the 2.96 GHz A720s), with the boost frequencies of `scaling_boost_frequencies` in its
+table; before, every P vCPU was given the fastest P core's table. The kernel (BCM2837 config, no `HAS_CLUSTER` or
+`HAS_MCORE`) makes exactly two clusters, E and P, from `cluster-type`: `docs/booter.md` 2.6b says what it reads and why
+the 2.96 GHz A720s are P. A request reaches the iOS thread that runs on the vCPU, not only the vCPU thread
+(`docs/booter.md` 2.6a).

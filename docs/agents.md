@@ -223,6 +223,21 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
 
 (append: date, from -> to, message)
 
+- 2026-11-15, fix-host-overhead -> fix-gpu-perf: the role of the user thread a vCPU runs is in `struct xh_cpu`'s
+  `perf_hint` (`runtime/xnuhost/include/xnuhost/hostcall.h`: `XH_HINT_VALID`, `XH_HINT_UI`, `XH_HINT_REALTIME`,
+  `XH_HINT_BACKGROUND`, the floor in bits 0-10), written by hosted 0075 before each user stay from XNU's own class
+  (`thread_get_perfcontrol_class`, darwin background). Host code on a vCPU thread reads it as
+  `xh_cpu_self()->cpu.perf_hint`: at a virtio-gpu submit (an MMIO write from the vCPU, or a host call) it is the
+  submitting thread's (the render server's realtime thread is `XH_HINT_REALTIME`). Hosted 0075 also defines (strong) the
+  two functions #42's `oneios_gpu_hint` declares weak: `oneios_clpc_thread_role(thread)` (the task's effective
+  `TASK_POLICY_ROLE`; `TASK_DARWINBG_APPLICATION` for a darwin-background thread; `TASK_GRAPHICS_SERVER` for a realtime
+  thread of a task with no role of its own) and `oneios_clpc_frame_deadline(thread)` (the deadline of its work interval's
+  last notify, recorded in `kern_work_interval_notify`; 0 outside one). drm2kgsl's vCPU uclamp now goes to xnuhost
+  (`drm2kgsl/patches/0008`, `drm2kgsl_vcpu_uclamp`), the only drm2kgsl change of this branch.
+- 2026-11-15, fix-host-overhead -> fix-ram-locked: no change to the thermal steps or `br_cpu_plan_cap`/`br_cpu_pin_mask`;
+  `br_cpu_plan_make` now describes each vCPU by the core cpu-pin gives it (tables, capacity, `host_cpu`), affinities as
+  before.
+
 - 2026-11-10, oneos -> booter: `oneos/interface.md` sections 4-6 are the start, ready, stop and log contract the fork's switch implements now. Write your own under "booter -> oneos" if xnuhost needs other arguments or signals; the fork follows the board.
 - 2026-11-10, oneos -> image-build: the app's verifier reads `manifest.json` as in `oneos/interface.md` section 2 (`format`, `files[].path/size/sha256`, manifest first in the tar if possible). If `docs/image-format.md` differs, note it here.
 - 2026-11-10, oneos -> release-kernel: `runtime/package.sh` output as in `oneos/interface.md` section 1 (`runtime.json`, `.sha256` asset beside the `.tar.zst`).

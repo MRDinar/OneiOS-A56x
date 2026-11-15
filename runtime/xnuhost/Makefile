@@ -186,6 +186,15 @@ bench-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   --display none --no-input --width 64 --height 64 --boot-args testkernel-bench$(BENCH_SCALE:%==%) $(BENCH_SET) 2>&1 | \
 	   grep -E 'BENCH|perf:|TESTKERNEL: (all|FAIL)|hand-off'
 
+# The parallel test (docs/booter.md 2.6b): N threads of one task, one per vCPU, the same busy work at once; the speed-up
+# for 1, 2, 4 and 8 threads. PAR_CPUS=8 vCPUs; PAR_SET="--set cpu-pin=2" pins vCPU i (and its thread) on host CPU i.
+PAR_CPUS ?= 8
+parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
+	@rm -f $(A)/testdata/data.img
+	timeout 300 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus $(PAR_CPUS) --ram 256M --set ram-giveback=1 \
+	   --display none --no-input --width 64 --height 64 --boot-args testkernel-parallel$(PAR_SCALE:%==%) $(PAR_SET) 2>&1 | \
+	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
+
 # The tests create devices and never free them: leak detection off, the other checks on.
 test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost
@@ -197,4 +206,4 @@ test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_
 
 clean:
 	rm -rf build
-.PHONY: all test check-arm64 bench-arm64 clean
+.PHONY: all test check-arm64 bench-arm64 parallel-arm64 clean

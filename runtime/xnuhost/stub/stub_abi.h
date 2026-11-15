@@ -76,6 +76,41 @@ struct xs_trap_page {
 #define XS_OP_EXIT     5u              // exit_group
 #define XS_OPS_MAX     320             // the task's deferred maps and unmaps (up to 256) and the order itself
 
+// A map is mmap(MAP_SHARED | MAP_FIXED | XS_MAP_POPULATE): the page tables are filled in the same call, so the toucher's
+// retried instruction does not take a second (Linux) fault on the page it was just given.
+#define XS_MAP_POPULATE 0x8000u
+
+// The deferred queue (task.c, map-defer) joins `op` to `last`, the entry before it, where one host call does what the two
+// did, in the same order (host-overhead, 2026-11-15). Returns 1 and rewrites `last` when they join, else 0:
+//   map + map     the next page of the same file range with the same protection: one longer map;
+//                 the same range again: the later map (MAP_FIXED replaces);
+//   unmap + unmap adjacent or overlapping ranges: one unmap of both;
+//   unmap + map   of the same range: the map alone (MAP_FIXED replaces the old mapping in one step);
+//   map + unmap   of the same range: the unmap alone (nothing ran between them that could use the map).
+// Anything else (a protect, a clone, ranges that only overlap) stays as two entries.
+static inline int xs_queue_join(struct xs_op *last, const struct xs_op *op)
+{
+  const uint64_t end = last->va + last->size, op_end = op->va + op->size;
+  const int same = last->va == op->va && last->size == op->size;
+  if (op->op == XS_OP_MAP && last->op == XS_OP_MAP) {
+    if (same) { *last = *op; return 1; }
+    if (last->prot == op->prot && end == op->va && last->offset + last->size == op->offset) { last->size += op->size; return 1; }
+    return 0;
+  }
+  if (op->op == XS_OP_UNMAP && last->op == XS_OP_UNMAP) {
+    if (op->va > end || op_end < last->va) return 0;
+    const uint64_t lo = op->va < last->va ? op->va : last->va, hi = op_end > end ? op_end : end;
+    last->va = lo;
+    last->size = hi - lo;
+    return 1;
+  }
+  if (same && ((op->op == XS_OP_MAP && last->op == XS_OP_UNMAP) || (op->op == XS_OP_UNMAP && last->op == XS_OP_MAP))) {
+    *last = *op;
+    return 1;
+  }
+  return 0;
+}
+
 // One per task, shared: orders for the task's service thread (its first Linux thread).
 struct xs_service_page {
   uint32_t request;                    // futex: xnuhost sets 1 when ops are ready
