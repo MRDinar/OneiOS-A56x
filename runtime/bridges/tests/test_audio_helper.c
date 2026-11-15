@@ -701,7 +701,10 @@ int main(void)
   fprintf(stderr, "   probe: %u frames\n", answer.value);
   // A late host makes the silence's writes late, AAudio's xruns raise the target, and the probe says so (+5 ms each).
   CHECK(answer.kind == AU_LATENCY && answer.value >= 400 && answer.value <= 240 + MS_FRAMES(80) && out_opens == opens + 1);
-  if (host_on_time("the probe's figure")) CHECK(answer.value <= 700);
+  pthread_mutex_lock(&ring_lock);
+  unsigned probed_target = target;
+  pthread_mutex_unlock(&ring_lock);
+  CHECK(labs((long)answer.value - (long)(240 + probed_target)) <= 96);   // below the read + the level, as the helper holds it
   send_header(AU_TOLD, true, 0, answer.value);
   send_header(AU_START, true, 2, 48000);
   play(1.0, 0);

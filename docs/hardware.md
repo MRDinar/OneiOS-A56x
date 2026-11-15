@@ -1668,7 +1668,7 @@ yet: the audio test cycle adds it (below).
   latency per stage at six phases of the pulls (below), MMAP not refused (NONE) and MMAP in use anyway (opened again
   NONE), LOW_LATENCY only with `ONEIOS_AUDIO_PERF=low`, a clean stop when the socket closes: 11,101 checks (most are the guest's sends; timing checks are skipped, each with a line, when a loaded host runs the test late).
   Since 2026-11-15 the fake HAL can also give MMAP exclusive or shared, and the test checks the path choice, the MMAP
-  level, the end-to-end figure, the probe and the target's recovery on MMAP (20,211 checks; "Latency end to end"
+  level, the end-to-end figure, the probe and the target's recovery on MMAP (20,213 checks; "Latency end to end"
   below). `test_bridges.c` checks
   that virtio-snd takes each output period inside the guest's notify (0 in flight), and that the latency probe of a
   back end other than the helper is `-ENOTSUP`.
@@ -1854,7 +1854,7 @@ Each part, from iOS's mix to the speaker, its cause and the fix:
 | The guest's engine | handed a period on once it had passed (+240 frames) behind a safety offset of 480 | hands the period on as it starts; the safety offset is that period (240): the HAL has written it by then | 5 ms after the safety offset | 0 (the safety offset is in the row above) |
 | The ring's wrap (every device) | 8192 is not a whole number of 240-frame periods: once a ring (171 ms) the engine read and zeroed 208 frames past the ring's buffer (the microphone wrote them), and the ring's first 208 frames were never played; the zero time stamp moved only every 245760 frames (5.1 s), when a period happened to end on a wrap | a bounce buffer for a period over the end; the zero time stamp at each wrap | a 4.3 ms piece of the next allocation every 171 ms [I, from the code] | none |
 | virtio-snd, the socket, the helper's ring | (unchanged: 0 periods in flight) | | under 1 ms | under 1 ms |
-| The host: AAudio and Android after it | a normal mixer track (performance mode NONE; LOW_LATENCY cannot get a FAST track for a blocking writer) on `primary-out`: AAudio's queue (the target above a pull of 960-1600 frames) and the mixer, the HAL and the DSP after the read | LOW_LATENCY, MMAP exclusive (the DSP reads our buffer; a blocking SCHED_OTHER writer with uclamp.min 512); the level 5 ms above what the DSP takes before the guest's next period; AAudio's xruns raise it 5 ms (down again after 20 s) | 105-123 ms (8644ae9, phone) | [I] about 10-20 ms: the level 5-10 ms + what the HAL and DSP hold below the read (on the phone: the probe's `N ms below AAudio's read`) |
+| The host: AAudio and Android after it | a normal mixer track (performance mode NONE; LOW_LATENCY cannot get a FAST track for a blocking writer) on `primary-out`: AAudio's queue (the target above a pull of 960-1600 frames) and the mixer, the HAL and the DSP after the read | LOW_LATENCY, MMAP exclusive (the DSP reads our buffer; a blocking SCHED_OTHER writer with uclamp.min 512); the level 5 ms (at least a burst) above what the DSP takes before the guest's next period (on MMAP shared a burst more: the endpoint takes one at a time); AAudio's xruns raise it 5 ms (down again after 20 s) | 105-123 ms (8644ae9, phone) | [I] about 10-20 ms: the level 5-10 ms + what the HAL and DSP hold below the read (on the phone: the probe's `N ms below AAudio's read`) |
 | What iOS is told (`output latency`) | a fixed 6480 frames | the helper's probe before the boot (`oneios-audio-latency=` from xnuhost) | 135 ms told, about 121 ms true | measured each boot |
 
 So for a system sound (iOS at the cap): about 111 + 116 = 230 ms from iOS's mix to the speaker before [I], about
@@ -1891,13 +1891,15 @@ expected; the helper's `speaker open` line says it (`sharing exclusive, mmap 1, 
 - The phone check: `bridgectl audio-loop` (runtime/bridges/README.md, "On the phone"): clicks into the helper, heard
   by the microphone: the round trip bounds the speaker's part from above.
 
-**Tested on the PC** (`runtime/bridges/tests/test_audio_helper.c`, 20211 checks, 0 failed; the box had a load of 27-40
+**Tested on the PC** (`runtime/bridges/tests/test_audio_helper.c`, 20213 checks, 0 failed; the box had a load of 12-40
 on 4 CPUs from other agents' qemu boots and builds, so every timing check was skipped with its line and the figures
-below are under that load): a fake HAL with MMAP exclusive (burst 192, a timestamp 240 frames behind the read):
-one open, `sharing exclusive, mmap 1`, target 5 ms; the probe answered 480 frames (5 ms below the read + the 5 ms
-level), and the stream it opened was the one the next START used; the end-to-end of the six latency sounds 23-28 ms
-(the guest's lateness 1.5-2.1 ms: the test's own threads ran up to 200 ms late), AAudio's queue 16-22 ms, against
-the mixer track's 33-54 ms and end-to-end 27-77 ms in the same runs; MMAP shared without system_server closed before
+below are under that load): a fake HAL with MMAP exclusive (burst 192 taken at once every 4 ms, a timestamp 240
+frames behind the read): one open, `sharing exclusive, mmap 1`, target 5 ms; the probe answered 480 frames (5 ms
+below the read + the 5 ms level), and the stream it opened was the one the next START used; over six runs the six
+latency sounds' end-to-end was 16-42 ms (16.3 at the lowest load, 12-15; the guest's lateness 0.8-2.4 ms), AAudio's
+queue 13-34 ms, the target raised by the fake DSP's xruns when the loaded host ran the writer late (each +5 ms),
+against the mixer track's queue 22-41 ms and end-to-end 17-77 ms in the same runs (that fake presents a pull's frames
+from the pull on, so its end-to-end is under its queue); MMAP shared without system_server closed before
 its start and a mixer track opened, with it kept; AAudio_setMMapPolicy refused: a mixer track kept LOW_LATENCY;
 `ONEIOS_AUDIO_PERF=none` and `ONEIOS_AUDIO_MMAP=off`; a guest 40 ms late every 0.5 s on MMAP: 3 underruns, the
 target up to 10-15 ms and back to 5 ms 5 s after. `origin/main`'s helper and test under the same load failed 5

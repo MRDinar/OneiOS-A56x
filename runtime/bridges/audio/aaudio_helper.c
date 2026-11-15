@@ -359,8 +359,10 @@ static AAudioStream *open_stream(bool output, unsigned rate, unsigned channels)
   if (output) {
     // The level's floor: 5 ms above what an MMAP reader takes before the guest's next period, 20 ms above a
     // mixer's next pull (ONEIOS_AUDIO_TARGET_MS sets it for both).
+    // The DSP may take a burst at once: on MMAP exclusive the floor is at least a burst.
     continuous = out_path != PATH_LEGACY;
-    target_ms = target_env_ms ? target_env_ms : continuous ? 5 : 20;
+    unsigned burst_ms = burst > 0 ? (unsigned)(burst * 1000 + RATE - 1) / RATE : 0;
+    target_ms = target_env_ms ? target_env_ms : !continuous ? 20 : out_path == PATH_MMAP_EXCLUSIVE && burst_ms > 5 ? burst_ms : 5;
     target_max_ms = target_ms > 80 ? target_ms : 80;
   }
   // AAudio's own buffer: ONEIOS_AUDIO_BURSTS bursts, or (by default) a burst plus the target plus a chunk, as the
@@ -551,7 +553,8 @@ static void *writer(void *arg)
     pulls_saw(&pulls, read, now);
     // An MMAP reader (the DSP, or AAudio's endpoint every burst) takes frames all the time: what it takes before
     // the guest's next period comes in is a chunk, whatever the phase. A mixer takes a period at a time (its pulls).
-    int ahead = continuous ? (int)CHUNK : pulls_ahead(&pulls, now);
+    // AAudio's endpoint (MMAP shared) takes a burst at a time on top of that.
+    int ahead = continuous ? (int)CHUNK + (out_path == PATH_MMAP_SHARED ? (int)d->burst : 0) : pulls_ahead(&pulls, now);
     if (xruns > xruns_seen) {                            // AAudio ran dry (the writer was late): the level goes up
       ostat.xruns += (uint64_t)(xruns - xruns_seen);
       unsigned raised = target + MS_FRAMES(5);
@@ -583,8 +586,10 @@ static void *writer(void *arg)
       fprintf(stderr, "oneios-audio: speaker: target %u ms (%u s without an underrun)\n", FRAMES_MS(target), target_decay_s);
     }
     // The need: what the next pull takes from what came in since the last one, plus the target. Blind: a burst
-    // plus the target, at every moment.
-    const int64_t need = (int64_t)target + (phase ? ahead : (int64_t)d->burst);
+    // plus the target, at every moment. An MMAP reader: what it takes beyond the chunk a guest period brings (none
+    // for the DSP, a burst for AAudio's endpoint, which takes one at a time): priming to the whole of `ahead` left
+    // the level a chunk high when the guest's first period came in.
+    const int64_t need = (int64_t)target + (continuous ? ahead - (int64_t)CHUNK : phase ? ahead : (int64_t)d->burst);
     // About to run dry: below what the next pull takes; for AAudio's endpoint below its burst; for the DSP below
     // 2 ms (the writer's wait and a write).
     const int64_t low = out_path == PATH_MMAP_SHARED ? (int64_t)d->burst : continuous ? (int64_t)MS_FRAMES(2) : phase ? ahead : low_blind;
@@ -875,7 +880,7 @@ static unsigned probe(void)
   if (!n) { fprintf(stderr, "oneios-audio: probe: no timestamp from the speaker's stream in 1.5 s: not measured\n"); return 0; }
   qsort(samples, n, sizeof *samples, cmp_int);
   pthread_mutex_lock(&ring_lock);
-  unsigned level = target + (continuous ? 0 : (pulls.size ? pulls.size : out_dir.burst) / 2);
+  unsigned level = target + (out_path == PATH_MMAP_SHARED ? out_dir.burst : continuous ? 0 : (pulls.size ? pulls.size : out_dir.burst) / 2);
   pthread_mutex_unlock(&ring_lock);
   unsigned frames = (unsigned)samples[n / 2] + level;
   fprintf(stderr, "oneios-audio: probe: speaker latency %u frames (%u ms) on %s: %u ms below AAudio's read + %u ms of level when a period "
