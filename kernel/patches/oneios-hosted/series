@@ -231,6 +231,13 @@
 # and a user CM fault reaches XNU with CM and WnR kept and an access flag fault (XNU's own CM rule makes it a read).
 # The runtime's stub says XH_PROT_READ for it too (runtime/xnuhost/stub/stub_abi.h, xs_fault_access).
 0071-cache-maintenance-fault-read.patch
+# fix-host-overhead (2026-11-15): the trap path's counters per vCPU (every vCPU wrote the same lines on every user stay:
+# the stats, the audit tick's atomic, the perf report's per-call atomics); the fill's time without the time its thread
+# was switched out (the phone's "filled from the tables 11417628 us" was mostly preemption inside the fill); a kernel
+# entry made again unchanged maps nothing in the host (each such mmap took xnuhost's mmap_lock for writing); the hosted
+# CLPC's hint (hostcall.h perf_hint: the class of the user thread a vCPU runs, for the host's uclamp and the GPU path);
+# hosted_processors_idle_mach for the oneios-cpu window's bound (gpu/cpu_window.h). README.md, "0075".
+0075-host-overhead-per-cpu-stats-perf-hint.patch
 # radio2: no numbered patch for the Wi-Fi: net/ is an archive of this build (kernel/build-hosted.sh,
 # oneios-tool kernel gen net), started by oneios_drivers_start's oneios_net_start (weak in drivers/bridge/OneiOSBridge.c).
 # net/README.md: IO80211Controller/IO80211Interface under the collection's original IOEthernetController and

@@ -7,6 +7,7 @@
 
 pub mod adb;
 pub mod app;
+pub mod cpu;
 pub mod cycle;
 pub mod log;
 pub mod phone;
@@ -70,6 +71,16 @@ pub enum Command {
     Touch {
         #[command(subcommand)]
         command: TouchCommand,
+    },
+    /// Where iOS's CPU work can run, read only: each CPU's core, frequency domain, top and capped clocks, governor and
+    /// boost; Android's cpusets; in a session xnuhost's threads (CPU, nice, cpuset, uclamp) and the iOS threads by CPU
+    Cpu {
+        /// Also record a Perfetto trace (sched, freq, idle) of SECONDS and copy it here
+        #[arg(long, value_name = "SECONDS")]
+        trace: Option<u64>,
+        /// Where the trace goes (default oneios-cpu.pftrace)
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
     },
     /// Only during a session: the panel's level (/sys/class/backlight/panel0-backlight/brightness)
     Backlight {
@@ -245,6 +256,7 @@ pub fn main(cli: Cli) -> i32 {
         }
         Command::Touch { command: TouchCommand::Status } => Adb::connect(serial).and_then(|adb| session::touch_status(&adb)),
         Command::Touch { command: TouchCommand::Wake } => Adb::connect(serial).and_then(|adb| session::touch_wake(&adb)),
+        Command::Cpu { trace, out } => Adb::connect(serial).and_then(|adb| cpu::cpu(&adb, trace, out.as_deref())),
         Command::Backlight { command: BacklightCommand::Status } => Adb::connect(serial).and_then(|adb| session::backlight_status(&adb)),
         Command::Backlight { command: BacklightCommand::Set { level } } => Adb::connect(serial).and_then(|adb| session::backlight_set(&adb, level)),
         Command::Stage { kind, dir } => Adb::connect(serial).and_then(|adb| phone::stage(&adb, &kind, &dir)),

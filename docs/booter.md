@@ -588,6 +588,108 @@ of the vCPU's wall time outside `cpu_idle`; "C% of a core" is the vCPU thread's 
 The kernel's side of the same trips (which system calls, the fills, the TLB lock) is the hosted kernel's
 `oneios-perf:` report (patch 0041, `kernel/patches/oneios-hosted/README.md`).
 
+**Host overhead, 2026-11-15 (fix-host-overhead).** From the phone session of main 3233fed (30 s windows): 1,021,984 user
+stays, 684,514 system calls, 330,746 faults, 331,008 user maps and 414,758 user unmaps (each an mmap or munmap of one
+page in the task's process), and the host at 482 % of 800 with 212 % in Linux's own code. What changed in xnuhost:
+
+- **The deferred queue joins entries** (`stub/stub_abi.h` `xs_queue_join`, unit-tested in `test_xnuhost`): a map of the
+  next page of the same file range with the same protection extends the last map; adjacent or overlapping unmaps become
+  one; an unmap followed by a map of the same range is the map alone (`MAP_FIXED` replaces the old page in one step: the
+  pattern of a fault that changes an entry, the flush then the refill); a map followed by an unmap of the same range is
+  the unmap alone; the same range mapped twice keeps the later map. Only the last entry is looked at (one compare per
+  call). An unmap joined into the last entry that has to be taken back (a thread of the task was counted running) puts the
+  entry back as it was and is ordered, as before. The `perf:   queue:` line counts the joins (one host call less each).
+- **Maps are populated** (`MAP_POPULATE`, `XS_MAP_POPULATE`): the stub's maps of the RAM memfd, in the release and in an
+  order, and the kernel's `kernel_map` fill the page tables in the same call, so the faulting instruction's retry does
+  not take a second, Linux, fault on the page it was just given.
+- **The GIC tells only the CPU a change concerns** (`gic.c` `update_cpu`): an ack, an EOI of an SGI or PPI, an SGI, a
+  PPI or SPI level change recompute that CPU's line (an SPI's: its target's), not all eight under the one lock. Changes of
+  the distributor, an enable, the priority mask still recompute every line.
+- **A line that is up is not signalled again** (`cpu.c` `xh_cpu_line`): every GIC change used to send each other vCPU
+  whose line was up a `tgkill` (or a futex wake), even when the line had been up for a while (a vCPU running with
+  interrupts masked got a signal per interrupt step anywhere). The CPU takes a pending line when it unmasks, when a host
+  call returns, and in `thread_run` and `cpu_idle` before they wait, and only it lowers its line, by recomputing under the
+  GIC's lock after the raiser's change, so a raise skipped is never lost. `perf:   queue:` counts the raises signalled and
+  those skipped.
+- **The uclamp reaches iOS's own code** (`task.c` `xh_thread_run`, `xh_cpu_uclamp`): the guest's frequency request
+  (DroidVMCpufreq's `SET_PERF`, `br_cpufreq`) and drm2kgsl's animation boost used to set `uclamp.min` on the vCPU thread
+  only, which waits while the iOS thread runs on its task's own Linux thread: the host's governor never saw a request for
+  the core where the work ran. Now each release gives the iOS thread its vCPU's clamp (one `sched_setattr` per change,
+  none otherwise; SCHED_OTHER stays SCHED_OTHER, nice is kept). The kernel's hint (`hostcall.h` `perf_hint`, hosted 0075:
+  the thread's performance-control class) gives a UI, user-initiated or realtime thread its floor and a background or
+  utility one no floor and a ceiling (`uclamp.max` 512, `XH_HINT_BG_MAX`). drm2kgsl's own clamp looked for threads named
+  `crosvm_vcpu*` and logged `vCPU uclamp.min 1024: 0 of 0 threads`; its patch 0008 calls xnuhost's
+  `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `xh_gpu_vcpu_boost`, the iOS threads).
+- **Each vCPU is described as the core it runs on** (`runtime/bridges/cpu`, section 2.6b).
+- **The `perf: cpuN:` line ends with `last on host CPU N`** (`/proc/self/task/TID/stat`, a named file per vCPU).
+
+Before and after are in section 2.6b and `kernel/patches/oneios-hosted/README.md` ("0075"). What the phone shows: the
+`perf:   queue:` line (joins, uclamps given, raises skipped), `perf: task_map ... task_unmap ...` against the kernel's
+`oneios-perf:   pmap: user maps N, unmaps M` (fewer host calls than pmap operations), and `thermal: 30 s: host CPU ...
+sys ...` (the host's share in Linux).
+
+### 2.6b CPU placement, the topology iOS sees, and the parallel test (2026-11-15)
+
+**The topology.** `runtime/bridges/cpu` reads, per CPU by name (`/sys/devices/system/cpu/cpuN/...`, N = 0..15, never a
+directory walk): `cpu_capacity`, `cpufreq/cpuinfo_max_freq`, `cpuinfo_min_freq`, `related_cpus` (the frequency domain),
+`scaling_available_frequencies`, `scaling_boost_frequencies` (new), `scaling_max_freq` (new: a cap someone wrote, logged
+and never written), `regs/identification/midr_el1` (the core) and the caches. xnuhost logs at start one line per host
+CPU (`cpu: host CPU 7: Cortex-X4 (part 0xd82), P, frequency domain of CPU 7, capacity 1024, 480000-3398400 kHz (top as a
+boost frequency)`), one per vCPU (`cpu: vCPU 7 (P) is described to iOS as host CPU 7: ...`), and the cpuset it runs in
+with its CPUs and the `cpufreq/boost` switch (`cpu: xnuhost's cpuset /..., CPUs allowed 0-7; cpufreq boost 1`).
+
+- **What iOS 27's kernel reads** (xnu-12377, `osfmk/arm64/machine_routines.c` `ml_parse_cpu_topology`): each `/cpus/cpuN`
+  node's `cluster-type` (`E`, `M` or `P`), `reg`, `l2-cache-size`, `l3-cache-size`. The cluster of a CPU comes from
+  `MPIDR_CLUSTER_ID(reg)` only when the SoC config has `HAS_CLUSTER`; the hosted kernel is built on UniXNU's BCM2837
+  config (no `HAS_CLUSTER`, no `HAS_MCORE`), where the cluster is `cluster-type == P`: exactly two clusters, E and P,
+  whatever the tree says. `hw.nperflevels` is 2 (droidvm-amp.patch: `perflevel0` P, `perflevel1` E). The Edge scheduler
+  and DroidVMCpufreq's thread-group preferences (UI, above-UI and realtime classes on the P cluster) place the threads.
+  So three levels (X4, A720, A520) cannot be told to this kernel by the tree alone: that needs a kernel built with
+  per-cluster ids and `M` cores (not done; a guess that the Edge scheduler would take three cluster types on this config).
+- **The SM8650's four kinds** (cpu0-1 A520 2.27 GHz, cpu2-4 A720 3.15 GHz, cpu5-6 A720 2.96 GHz, cpu7 X4 3.39 GHz on the
+  S24 Ultra; read at run time, not coded): E = the A520s (the lowest capacity), P = the A720s and the X4. The 2.96 GHz
+  A720s are P on purpose: each is about twice an A520's work at the same clock, and as E they would take iOS's background
+  work while UI work queued on four P cores. They are the P cluster's slowest cores: cpu-pin puts vCPU 5-6 there, and
+  with the hint below a UI thread there still asks the host for its top clock.
+- **Each vCPU is described as its own core** (`br_cpu_plan_make`): cpu-pin puts the rank-th vCPU of a kind on the
+  rank-th CPU of the kind's mask, in CPU order (vCPU *i* on CPU *i* on the S24 Ultra), and the vCPU's clock table,
+  capacity and caches are now that core's. Before, every P vCPU was described as the fastest core of its kind (six X4s),
+  and a frequency request of a vCPU on an A720 was sized against the X4's table.
+- **The X4's top**: the guest's `DroidVMCpufreq: ... 480000-3052800 kHz (cpu7)` on the phone was the table of
+  `scaling_available_frequencies`, which leaves out boost frequencies (Linux lists `CPUFREQ_BOOST_FREQ` entries in
+  `scaling_boost_frequencies`; Qualcomm's cpufreq-hw marks the X4's 3.39 GHz that way [inference: not seen on this
+  phone's files yet]). The boost frequencies are now in the vCPU's table and its top. Whether Linux lets the core reach
+  them depends on `cpufreq/boost`, which xnuhost logs and never writes; `oneios-tool phone cpu` shows it, each domain's
+  `scaling_max_freq` and governor (a cap left by One UI's side would show there as `CAPPED`).
+
+**Priorities.** iOS's QoS reaches the host in two ways, both without realtime policies: the guest scheduler puts a
+thread on an E or P vCPU (the Edge scheduler with DroidVMCpufreq's preferences), and cpu-pin keeps the vCPU, and the
+iOS thread it runs, on its core; and the clamp of section 2.6a: the kernel's `perf_hint` (hosted 0075) says the class of
+the thread a vCPU is about to run, and the release gives that Linux thread `uclamp.min` 1024 for realtime, UI and
+above-UI, 768 for user-initiated, the vCPU's own request for default, and 0 with `uclamp.max` 512 for utility,
+background and darwin-background threads (RunningBoard's background and suspended roles clamp an app's threads to
+background QoS, so they never hold a fast core at its top clock). The same word is readable by host code on the vCPU
+(the GPU path: `xh_cpu_self()->cpu.perf_hint`, for fix-gpu-perf's per-context priority).
+
+**The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
+`sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's
+`switcher/assets/oneios_switch.sh` (branch `oneios`, read 2026-11-15): `--inner` moves the shell that execs xnuhost into
+the v2 cgroup `oneios_session` only; the v1 cpuset (`/dev/cpuset`) is changed only for the watcher and the key readers
+(`out_of_the_way`: the cpuset's root, every core). So xnuhost keeps the v1 cpuset of the root shell the app started
+[inference: top-app's or foreground's when the switch is tapped from the front app; never read on the phone yet]. If the
+`cpu: xnuhost's cpuset` line or `phone cpu` shows a cpuset of fewer CPUs, the fix belongs in the fork's `--inner` (a
+cpuset with `/dev/cpuset/cpus`, as its cgroup move), not in xnuhost, which never leaves its cgroup: not done in this
+change.
+
+**The parallel test** (`make -C runtime/xnuhost parallel-arm64`, the test kernel's `testkernel-parallel[=SCALE]`, 8
+vCPUs): N threads of one task, one per vCPU, each the same user-mode work (100 rounds of a 100,000-iteration loop and a
+system call), all at once, for N = 1, 2, 4 and 8; the wall time and the speed-up against one thread
+(`PARALLEL 8 threads: 555 ms, speed-up 3.67 (ideal 8)`). With nothing in xnuhost's path serialising the vCPUs it stays
+near N while the host has a core per thread. `PAR_SET="--set cpu-pin=2"` pins vCPU *i* and its thread on host CPU *i*.
+On the 4-CPU PC under qemu-aarch64 only up to 4 can show (the results are in section 2.6c). What it does not show: XNU's
+own scheduler and locks (the test kernel has none); a PC boot of iOS can show those only with qemu's 4 cores and its
+times.
+
 ### 2.7 Devices
 
 All devices are virtio-mmio version 2 windows (`virtio.c`: split queues, indirect descriptors, the status

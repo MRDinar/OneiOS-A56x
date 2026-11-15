@@ -25,6 +25,8 @@ typedef struct {
   uint32_t min_khz, max_khz;              // cpuinfo_min_freq, cpuinfo_max_freq
   uint32_t freq_khz[BR_MAX_FREQS];        // scaling_available_frequencies, ascending
   unsigned nfreq;
+  uint32_t boost_khz;                     // the highest of scaling_boost_frequencies (also in freq_khz), 0 = none listed
+  uint32_t scaling_max_khz;               // scaling_max_freq when read (a cap someone set: logged, never written)
   unsigned part;                          // MIDR part number (0xd80 A520, 0xd81 A720, 0xd82 X4), 0 = unknown
   uint32_t l1d_bytes, l1i_bytes, l2_bytes, l3_bytes;
   char     type;                          // 'P' or 'E', set by br_cpu_read
@@ -44,7 +46,8 @@ typedef struct {
   char     type;                          // 'P' or 'E': the ADT cluster-type of this vCPU
   unsigned cluster_id;                    // 0 = E cluster, 1 = P cluster (E first, as on Apple SoCs)
   uint64_t affinity;                      // host CPUs its thread (and the iOS thread it runs) may use
-  unsigned capacity;                      // of the fastest host CPU in the mask
+  unsigned host_cpu;                      // the core it is described as: its own with pin, else the one cpu-pin gives it
+  unsigned capacity;                      // of host_cpu
   uint32_t min_khz, max_khz;
   uint32_t freq_khz[BR_MAX_FREQS];
   unsigned nfreq;

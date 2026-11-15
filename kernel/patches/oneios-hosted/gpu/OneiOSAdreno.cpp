@@ -264,7 +264,10 @@ task_t proc_task(proc_t);
 int proc_pid(proc_t);
 kern_return_t task_info(task_t, task_flavor_t, task_info_t, mach_msg_type_number_t *);
 void absolutetime_to_nanoseconds(uint64_t, uint64_t *);
+// hosted 0075 (hosted_user.c): the time all processors have idled since boot, up to now, and how many there are
+uint64_t hosted_processors_idle_mach(uint32_t *count) __attribute__((weak));
 }
+#include "cpu_window.h"
 namespace cpu {
 struct Seen { int pid; uint32_t round; uint64_t mach, sys; };
 Seen seen[1024];
@@ -299,29 +302,38 @@ void report(uint32_t every, uint32_t round)
     // The span is the time since the last walk, measured: in a stall the report thread wakes late (the phone,
     // 2026-11-13 10:4x: the display's own 10 s line came after 30 s), and dividing by the nominal `every` gave a
     // 10 s line whose processes added up to 1,440% of a CPU on eight vCPUs. The line says the measured seconds.
-    static uint64_t last;
+    // "all" and each share are bounded by the CPUs' busy time (cpu_window.h says why: recount adds a thread's time to its
+    // task only when the thread changes state, so a long stretch lands in one window whole).
+    static uint64_t last, idle_last;
     const uint64_t walked = mach_absolute_time();
+    uint32_t ncpu = 0;
+    const uint64_t idle_now = hosted_processors_idle_mach ? hosted_processors_idle_mach(&ncpu) : 0;
     Walk w = {};
     w.round = round;
     proc_iterate(1 /* PROC_ALLPROCLIST */, visit, &w, nullptr, nullptr);
-    uint64_t span = 0;
+    uint64_t span = 0, idle = 0;
     absolutetime_to_nanoseconds(walked - last, &span);
-    const bool first = round < 2 || !last;
+    absolutetime_to_nanoseconds(idle_now - idle_last, &idle);
+    const bool first = round < 2 || !last || (ncpu && !idle_last);
     last = walked;
+    idle_last = idle_now;
     if (first) return;   // the first walk only records where each process was
-    if (span < 1000000000ull) span = uint64_t(every) * 1000000000ull;
+    span = oneios_cpu_span_ns(span, every);
     every = uint32_t((span + 500000000ull) / 1000000000ull);
+    const uint64_t busy = oneios_cpu_busy_ns(span, ncpu, idle);
     char text[220];
     size_t at = 0;
     for (unsigned i = 0; i < 8 && w.top[i].mach; i++) {
         uint64_t ns = 0;
         absolutetime_to_nanoseconds(w.top[i].mach, &ns);
-        at += snprintf(text + at, sizeof text - at, "%s%.20s[%d] %llu%%", at ? ", " : "", w.top[i].name, w.top[i].pid, ns * 100 / span);
+        at += snprintf(text + at, sizeof text - at, "%s%.20s[%d] %llu%%", at ? ", " : "", w.top[i].name, w.top[i].pid,
+                       oneios_cpu_percent(oneios_cpu_capped_ns(ns, busy, ncpu), span));
         if (at >= sizeof text - 1) break;
     }
     uint64_t all = 0;
     absolutetime_to_nanoseconds(w.all, &all);
-    IOLog("oneios-cpu: %u s: %s (all %llu%%)\n", every, at ? text : "idle", all * 100 / span);
+    // "all": the processors' busy time where the kernel gives it (hosted 0075), else the tasks' sum as before
+    IOLog("oneios-cpu: %u s: %s (all %llu%%)\n", every, at ? text : "idle", oneios_cpu_percent(ncpu ? busy : all, span));
     // The same processes' kernel time (TASK_POWER_INFO total_system): their system calls, faults and IOKit calls (a
     // swap's CPU copy or half-float conversion in the framebuffer's user client is backboardd's system time), against
     // their own code in user mode. A line of its own, so that the line above keeps its form for the log tools.

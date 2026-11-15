@@ -212,7 +212,7 @@ void xs_handler(int signo, struct k_siginfo *info, struct k_ucontext *uc)
   if (nops) {
     struct xs_op *ops = (struct xs_op *)((uint8_t *)tp + XS_OPS_OFF);
     for (uint32_t i = 0; i < nops && i < XS_THREAD_OPS; i++) {
-      long r = ops[i].op == XS_OP_MAP ? sys(NR_mmap, ops[i].va, ops[i].size, ops[i].prot & 7, MAP_SHARED | MAP_FIXED, config->ram_fd, ops[i].offset) :
+      long r = ops[i].op == XS_OP_MAP ? sys(NR_mmap, ops[i].va, ops[i].size, ops[i].prot & 7, MAP_SHARED | MAP_FIXED | XS_MAP_POPULATE, config->ram_fd, ops[i].offset) :
                ops[i].op == XS_OP_UNMAP ? sys(NR_munmap, ops[i].va, ops[i].size) : -38;
       ops[i].result = r > 0 ? 0 : r;
     }
@@ -297,7 +297,7 @@ static __attribute__((noreturn)) void service(struct xs_config *config, struct x
     for (uint32_t i = 0; i < sp->count && i < XS_OPS_MAX; i++) {
       struct xs_op *op = &sp->ops[i];
       if (op->op == XS_OP_MAP)
-        op->result = sys(NR_mmap, op->va, op->size, op->prot & 7, MAP_SHARED | MAP_FIXED, config->ram_fd, op->offset);
+        op->result = sys(NR_mmap, op->va, op->size, op->prot & 7, MAP_SHARED | MAP_FIXED | XS_MAP_POPULATE, config->ram_fd, op->offset);
       else if (op->op == XS_OP_UNMAP) op->result = sys(NR_munmap, op->va, op->size);
       else if (op->op == XS_OP_PROTECT) op->result = sys(NR_mprotect, op->va, op->size, op->prot & 7);
       else if (op->op == XS_OP_CLONE) op->result = new_thread(config, op->va, op->offset);

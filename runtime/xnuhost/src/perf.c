@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -100,6 +101,30 @@ static uint64_t thread_cpu_ns(const xh_vcpu *v)
 #endif
 }
 
+// The host CPU a thread last ran on (/proc/self/task/TID/stat field 39, "processor"), -1 if unknown. A named file per
+// known thread: no directory walk (the phone's rule).
+static int thread_psr(int tid)
+{
+#if defined(__linux__)
+  char path[64], line[1024];
+  snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
+  FILE *f = fopen(path, "r");
+  if (!f) return -1;
+  size_t n = fread(line, 1, sizeof line - 1, f);
+  fclose(f);
+  line[n] = 0;
+  char *p = strrchr(line, ')');
+  if (!p) return -1;
+  // after ") ": field 3 (state) onwards; the processor is field 39
+  int field = 2;
+  for (; *p && field < 39; p++) if (*p == ' ') field++;
+  return field == 39 ? atoi(p) : -1;
+#else
+  (void)tid;
+  return -1;
+#endif
+}
+
 void xh_perf_log(bool since_start)
 {
   static const char *const names[XP_COUNT] = { "up (trap->vCPU)", "down (vCPU->task)", "kernel: syscall", "kernel: fault",
@@ -115,7 +140,7 @@ void xh_perf_log(bool since_start)
     for (unsigned k = 0; k < XP_COUNT; k++) hist_delta(&sum.h[k], &p->h[k], then ? &then->h[k] : NULL);
     for (unsigned k = 0; k < 16; k++) sum.traps[k] += p->traps[k] - (then ? then->traps[k] : 0);
 #define D(f) sum.f += p->f - (then ? then->f : 0)
-    D(host_sleeps); D(task_sleeps); D(host_wakes); D(task_wakes); D(maps_deferred); D(maps_ordered); D(unmaps_deferred); D(unmaps_ordered); D(timer_sets); D(timer_calls);
+    D(host_sleeps); D(task_sleeps); D(host_wakes); D(task_wakes); D(maps_deferred); D(maps_ordered); D(unmaps_deferred); D(unmaps_ordered); D(timer_sets); D(timer_calls); D(ops_joined); D(uclamp_sets); D(kicks); D(kicks_skipped);
 #undef D
   }
   uint64_t traps = 0;
@@ -129,6 +154,10 @@ void xh_perf_log(bool since_start)
        (unsigned long long)sum.host_wakes, (unsigned long long)sum.task_wakes, (unsigned long long)sum.maps_deferred,
        (unsigned long long)sum.maps_ordered, (unsigned long long)sum.unmaps_deferred, (unsigned long long)sum.unmaps_ordered,
        (unsigned long long)sum.timer_sets, (unsigned long long)sum.timer_calls);
+  // host-overhead (2026-11-15): what the queue joined, the clamps given to iOS threads, the cross-vCPU signals.
+  LOGI("perf:   queue: %llu maps and unmaps joined to the one before (one host call less each); uclamp: %llu given to iOS threads; "
+       "interrupt lines raised on other vCPUs: %llu signalled or woken, %llu already up (no signal)", (unsigned long long)sum.ops_joined,
+       (unsigned long long)sum.uclamp_sets, (unsigned long long)sum.kicks, (unsigned long long)sum.kicks_skipped);
   for (unsigned k = 0; k < XP_COUNT; k++) hist_line(names[k], &sum.h[k]);
   for (unsigned i = 0; i < g_ncpu; i++) {
     xh_vcpu *v = &g_vcpu[i];
@@ -138,9 +167,10 @@ void xh_perf_log(bool since_start)
     for (unsigned k = 0; k < 16; k++) t += p->traps[k] - (then ? then->traps[k] : 0);
     double w = (double)wall, kern = w - (double)user - (double)idle;
     if (v->started && w > 0)
-      LOGI("perf: cpu%u: %.0f%% of a core; of its wall time %.0f%% kernel, %.0f%% an iOS thread's turn, %.0f%% idle; %.0f traps/s", i,
+      LOGI("perf: cpu%u: %.0f%% of a core; of its wall time %.0f%% kernel, %.0f%% an iOS thread's turn, %.0f%% idle; %.0f traps/s; "
+           "last on host CPU %d", i,
            cpu >= cpu_then ? (double)(cpu - cpu_then) / 1e7 / seconds : 0.0, kern > 0 ? 100.0 * kern / w : 0.0,
-           100.0 * (double)user / w, 100.0 * (double)idle / w, (double)t / seconds);
+           100.0 * (double)user / w, 100.0 * (double)idle / w, (double)t / seconds, thread_psr(v->tid));
     if (!since_start) { last[i] = *p; last_cpu_ns[i] = cpu; }
   }
   if (!since_start) last_report = now;

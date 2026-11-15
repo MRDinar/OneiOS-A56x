@@ -18,6 +18,8 @@ unsigned g_ncpu;
 struct xh_upcalls g_upcalls;
 bool g_upcalls_set;
 void (*xh_cpu_place)(int tid, unsigned vcpu);
+unsigned (*xh_cpu_uclamp)(unsigned vcpu);
+unsigned xh_gpu_vcpu_boost;
 
 // XH_HOST_TEST: the host unit tests (tests/test_xnuhost.c) take the stand-ins at the end, also on an arm64 Linux host.
 #if defined(__aarch64__) && defined(__linux__) && !defined(XH_HOST_TEST)
@@ -72,8 +74,20 @@ void xh_cpu_line(unsigned index, bool line)
     }
     return;
   }
-  __atomic_store_n(&v->cpu.irq_pending, 1, __ATOMIC_RELEASE);
+  // A line that is up already was signalled when it rose (host-overhead, 2026-11-15). The GIC tells every CPU its line at
+  // each change (an ack, an EOI, an SGI on any vCPU), so a vCPU with an interrupt pending while it runs masked got a
+  // signal per change elsewhere: each a tgkill here and a signal delivery there that only returned (the kernel takes a
+  // pending line when it unmasks, hosted_irq_unmask; a host call when it returns; thread_run and cpu_idle look at the
+  // word before they wait). The line goes down only by the CPU itself, which then recomputes it under the GIC's lock,
+  // after this raise's change (the caller holds that lock), so a raise skipped here is never lost.
+  xh_vcpu *me = self_vcpu;
+  if (self_vcpu != v && __atomic_load_n(&v->cpu.irq_pending, __ATOMIC_ACQUIRE)) {
+    if (me) me->perf.kicks_skipped++;
+    return;
+  }
+  __atomic_store_n(&v->cpu.irq_pending, 1, __ATOMIC_SEQ_CST);
   if (self_vcpu == v || !v->started) return;
+  if (me) me->perf.kicks++;
   if (__atomic_load_n(&v->idle, __ATOMIC_ACQUIRE)) futex(&v->cpu.irq_pending, FUTEX_WAKE_PRIVATE, 1, NULL);
   else syscall(SYS_tgkill, getpid(), v->tid, SIG_KICK);
 }
@@ -105,6 +119,22 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   if (spec.it_value.tv_nsec >= 1000000000l) { spec.it_value.tv_sec++; spec.it_value.tv_nsec -= 1000000000l; }
   timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
   xh_cpu_line(v->cpu.index, false);
+}
+
+// drm2kgsl (its patch 0008) while a constrained queue animates: the clamp goes on the vCPU threads (their kernel work) and,
+// through xh_cpu_uclamp, on each iOS thread at its next release (thread_run). Returns the vCPU threads set.
+int drm2kgsl_vcpu_uclamp(uint32_t value);
+int drm2kgsl_vcpu_uclamp(uint32_t value)
+{
+  __atomic_store_n(&xh_gpu_vcpu_boost, value > 1024 ? 1024 : value, __ATOMIC_RELAXED);
+  int set = 0;
+  for (unsigned i = 0; i < g_ncpu; i++) {
+    if (!g_vcpu[i].started || g_vcpu[i].tid <= 0) continue;
+    struct { uint32_t size, policy; uint64_t flags; int32_t nice; uint32_t priority; uint64_t runtime, deadline, period;
+             uint32_t util_min, util_max; } attr = { .size = sizeof attr, .flags = 0x18 | 0x20, .util_min = value > 1024 ? 1024 : value };
+    if (syscall(SYS_sched_setattr, g_vcpu[i].tid, &attr, 0) == 0) set++;
+  }
+  return set;
 }
 
 void xh_cpu_idle(xh_vcpu *v)

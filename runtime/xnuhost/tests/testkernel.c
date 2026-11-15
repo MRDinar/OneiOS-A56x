@@ -687,6 +687,93 @@ static void bench(unsigned scale)
   put("BENCH done\n");
 }
 
+// ---- the parallel test (boot argument testkernel-parallel; `make parallel-arm64`, host-overhead 2026-11-15) ----------
+// N threads of one task, one per vCPU, each the same busy work in user mode (a loop of `spin` iterations, then a system
+// call, `rounds` times), all at once: the wall time for 1, 2, 4 and 8 threads. With nothing in xnuhost's path that
+// serialises the vCPUs (a lock per task, the GIC's lock, the hand-off) the time stays flat while the host has a core per
+// thread, and the speed-up is N. Each vCPU runs its own thread; vCPU 0 starts the others with an SGI and takes part.
+static volatile struct { uint32_t go, n, done; uint64_t rounds, spin; uint64_t thread[16]; uint32_t bad; } par;
+static struct xh_user_state par_st[16];
+static uint64_t par_code_va;
+
+static void par_work(struct xh_cpu *cpu)
+{
+  struct xh_trap trap;
+  for (uint64_t r = 0; r < par.rounds; r++) {
+    struct xh_user_state *st = &par_st[cpu->index];
+    st->pc = par_code_va;
+    st->x[1] = par.spin;
+    int64_t rc;
+    while ((rc = H->thread_run(cpu, par.thread[cpu->index], st, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) irq_upcall(cpu, NULL);
+    if (rc || trap.kind != XH_TRAP_SYSCALL) __atomic_add_fetch(&par.bad, 1, __ATOMIC_RELAXED);
+  }
+}
+
+static void par_entry(struct xh_cpu *cpu, uint64_t arg)
+{
+  (void)arg;
+  H->irq_enable(cpu, 6, 1);
+  uint32_t seen = 0;
+  for (;;) {
+    uint32_t go = __atomic_load_n(&par.go, __ATOMIC_ACQUIRE);
+    if (go != seen) {
+      seen = go;
+      if (cpu->index < par.n) { par_work(cpu); __atomic_add_fetch(&par.done, 1, __ATOMIC_ACQ_REL); }
+      continue;
+    }
+    H->cpu_idle(cpu);
+    if (cpu->irq_pending) irq_upcall(cpu, NULL);
+  }
+}
+
+static void parallel_bench(struct xh_cpu *cpu, unsigned scale)
+{
+  static volatile struct xh_upcalls upcalls;
+  upcalls.irq = irq_upcall;
+  upcalls.cpu_entry = par_entry;
+  H->set_upcalls(cpu, (const struct xh_upcalls *)&upcalls);
+  cpu->irq_masked = 1;
+  H->timer_set(cpu, UINT64_MAX);
+  unsigned ncpu = H->info->ncpu > 16 ? 16 : H->info->ncpu;
+  uint64_t task = 0;
+  if (H->task_create(cpu, &task) < 0) { put("PARALLEL skipped: no task layer\n"); return; }
+  uint64_t code_pa = page_alloc();
+  uint32_t *code = (uint32_t *)(uintptr_t)kva(code_pa);
+  code[0] = 0xf1000421;   // subs x1, x1, #1
+  code[1] = 0x54ffffe1;   // b.ne 0
+  code[2] = 0xd4001001;   // svc #0x80
+  code[3] = 0x14000000;   // b .
+  H->text_fixup(cpu, code, 4 * 4);
+  par_code_va = 0x100000000ull;
+  H->task_map(cpu, task, par_code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa);
+  for (unsigned i = 0; i < ncpu; i++)
+    if (H->thread_create(cpu, task, (uint64_t *)&par.thread[i])) { put("PARALLEL skipped: no thread\n"); return; }
+  for (unsigned i = 1; i < ncpu; i++) H->cpu_start(cpu, i, 0, 0);
+  par.spin = 100000;
+  par.rounds = 100ull * scale;
+  uint64_t hz = H->info->timebase_hz, one = 0;
+  put("PARALLEL: "); dec(ncpu); put(" vCPUs; each thread "); dec(par.rounds); put(" rounds of "); dec(par.spin);
+  put(" iterations and a system call\n");
+  for (unsigned n = 1; n <= ncpu; n *= 2) {
+    par.n = n;
+    par.done = 0;
+    uint64_t start = now();
+    __atomic_add_fetch(&par.go, 1, __ATOMIC_ACQ_REL);
+    for (unsigned i = 1; i < n; i++) H->ipi(cpu, i, 6);
+    par_work(cpu);
+    while (__atomic_load_n(&par.done, __ATOMIC_ACQUIRE) < n - 1) __asm__ volatile("yield");
+    uint64_t took = now() - start;
+    if (n == 1) one = took;
+    uint64_t us = took * 1000000 / hz, x100 = took ? one * n * 100 / took : 0;
+    put("PARALLEL "); dec(n); put(" threads: "); dec(us / 1000); put(" ms, speed-up "); dec(x100 / 100); put(".");
+    if (x100 % 100 < 10) put("0");
+    dec(x100 % 100); put(" (ideal "); dec(n); put(")\n");
+    if (n < ncpu && n * 2 > ncpu) n = ncpu / 2;      // 1, 2, 4, then all of them (a count that is no power of two too)
+  }
+  if (par.bad) { put("PARALLEL   (failed runs or other traps: "); dec(par.bad); put(")\n"); }
+  put("PARALLEL done\n");
+}
+
 __attribute__((noreturn)) void kernel_main(const struct boot_args *args, const struct xh_vector *vector, struct xh_cpu *cpu);
 void kernel_main(const struct boot_args *args, const struct xh_vector *vector, struct xh_cpu *cpu)
 {
@@ -699,6 +786,17 @@ void kernel_main(const struct boot_args *args, const struct xh_vector *vector, s
     unsigned i = 0;
     while (want[i] && c[i] == want[i]) i++;
     if (!want[i]) { put("TESTKERNEL: restart\n"); H->halt(cpu, XH_HALT_RESTART, 0); }
+  }
+  // boot-args "testkernel-parallel[=SCALE]": only the parallel test (any number of vCPUs), then off.
+  for (const char *c = args->command_line; *c; c++) {
+    static const char want[] = "testkernel-parallel";
+    unsigned i = 0;
+    while (want[i] && c[i] == want[i]) i++;
+    if (!want[i]) {
+      next_page = (args->top_of_kernel_data + 0x3fff) & ~0x3fffull;
+      parallel_bench(cpu, c[i] == '=' && c[i + 1] >= '1' && c[i + 1] <= '9' ? (unsigned)(c[i + 1] - '0') : 1);
+      H->halt(cpu, XH_HALT_OFF, 0);
+    }
   }
   // 1. What the loader handed over.
   check(args->revision == 2 && args->version == 2, "boot_args revision and version");

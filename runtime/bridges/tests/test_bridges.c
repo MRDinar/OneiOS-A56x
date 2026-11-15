@@ -111,7 +111,7 @@ static void make_sm8650(const char *root)
     { 792, 3148800, 499200, 2, 0x411fd811, "499200 614400 729600 844800 960000 1075200 1190400 1286400 1401600 1497600 1612800 1708800 1824000 1920000 2035200 2131200 2188800 2246400 2323200 2380800 2438400 2515200 2572800 2630400 2707200 2764800 2841600 2899200 2956800 3014400 3072000 3148800" },
     { 792, 3148800, 499200, 2, 0x411fd811, NULL }, { 792, 3148800, 499200, 2, 0x411fd811, NULL },
     { 790, 2956800, 499200, 5, 0x411fd811, "499200 2956800" }, { 790, 2956800, 499200, 5, 0x411fd811, NULL },
-    { 1024, 3398400, 480000, 7, 0x411fd821, "480000 3398400" },
+    { 1024, 3052800, 480000, 7, 0x411fd821, "480000 3052800" },   // the top (3398400) only as a boost frequency, below
   };
   for (unsigned i = 0; i < 8; i++) {
     char rel[128], text[512];
@@ -121,6 +121,7 @@ static void make_sm8650(const char *root)
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/related_cpus", i); snprintf(text, sizeof text, "%u %u\n", cpus[i].policy, i); put_file(root, rel, text);
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/regs/identification/midr_el1", i); snprintf(text, sizeof text, "0x%016x\n", cpus[i].midr); put_file(root, rel, text);
     if (cpus[i].table) { snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/scaling_available_frequencies", i); snprintf(text, sizeof text, "%s \n", cpus[i].table); put_file(root, rel, text); }
+    if (i == 7) { snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/scaling_boost_frequencies", i); put_file(root, rel, "3398400 \n"); }
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cache/index0/level", i); put_file(root, rel, "1\n");
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cache/index0/type", i); put_file(root, rel, "Data\n");
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cache/index0/size", i); put_file(root, rel, i < 2 ? "32K\n" : "64K\n");
@@ -143,6 +144,9 @@ static void test_cpu(const char *tmp)
   CHECK(t.cpu[0].nfreq == 18 && t.cpu[0].freq_khz[0] == 364800 && t.cpu[0].freq_khz[17] == 2265600);
   CHECK(t.cpu[1].nfreq == 2 && t.cpu[1].freq_khz[1] == 2265600);          // no table: the two ends
   CHECK(t.cpu[7].l2_bytes == 2048 * 1024 && t.cpu[0].l1d_bytes == 32 * 1024 && t.cpu[5].policy == 5);
+  // the X4's boost frequency joins its table and its top (scaling_boost_frequencies, host-overhead 2026-11-15)
+  CHECK(t.cpu[7].nfreq == 3 && t.cpu[7].freq_khz[2] == 3398400 && t.cpu[7].max_khz == 3398400 && t.cpu[7].boost_khz == 3398400);
+  CHECK(t.cpu[2].boost_khz == 0 && t.cpu[2].max_khz == 3148800);
 
   br_cpu_plan plan;
   CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0);
@@ -150,7 +154,10 @@ static void test_cpu(const char *tmp)
   CHECK(plan.v[0].type == 'E' && plan.v[1].type == 'E' && plan.v[2].type == 'P' && plan.v[7].type == 'P');
   CHECK(plan.v[0].affinity == 0x03 && plan.v[2].affinity == 0xfc);
   CHECK(plan.v[0].cluster_id == 0 && plan.v[7].cluster_id == 1);
-  CHECK(plan.v[2].max_khz == 3398400 && plan.v[2].capacity == 1024);      // the P cluster's fastest core
+  // each vCPU described as the core cpu-pin puts it on (vCPU i on CPU i), not as the fastest of its kind
+  CHECK(plan.v[2].max_khz == 3148800 && plan.v[2].capacity == 792 && plan.v[2].host_cpu == 2);
+  CHECK(plan.v[7].max_khz == 3398400 && plan.v[7].capacity == 1024 && plan.v[7].host_cpu == 7 && plan.v[7].freq_khz[plan.v[7].nfreq - 1] == 3398400);
+  CHECK(plan.v[5].max_khz == 2956800 && plan.v[0].max_khz == 2265600 && plan.v[0].host_cpu == 0);
   CHECK(br_cpu_plan_make(&t, 8, true, &plan) == 0);
   CHECK(plan.v[0].affinity == 0x01 && plan.v[1].affinity == 0x02 && plan.v[2].affinity == 0x80 && plan.v[3].affinity == 0x04);
   CHECK(plan.v[2].max_khz == 3398400 && plan.v[3].max_khz == 3148800);
@@ -159,17 +166,17 @@ static void test_cpu(const char *tmp)
   CHECK(br_cpu_plan_make(&t, 9, false, &plan) == -1 && br_cpu_plan_make(&t, 0, false, &plan) == -1);
 
   CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0);
-  CHECK(br_cpu_util_for(&plan, 2, 3398400) == 1024 && br_cpu_util_for(&plan, 2, 1699200) == 512 && br_cpu_util_for(&plan, 2, 0) == 0);
+  CHECK(br_cpu_util_for(&plan, 7, 3398400) == 1024 && br_cpu_util_for(&plan, 7, 1699200) == 512 && br_cpu_util_for(&plan, 7, 0) == 0);
   CHECK(br_cpu_util_for(&plan, 0, 2265600) == 325);
   br_cpufreq *d = br_cpufreq_create(&plan, NULL);
   CHECK(br_cpufreq_read(d, 0x08, 4) == 18);                                // vCPU 0: the E table
   br_cpufreq_write(d, 0x0c, 4, 17);
   CHECK(br_cpufreq_read(d, 0x10, 4) == 2265600);
-  CHECK(br_cpufreq_read(d, 2 * BR_CPUFREQ_WINDOW + 0x08, 4) == 2 && br_cpufreq_read(d, 2 * BR_CPUFREQ_WINDOW + 0x14, 4) == 1);
-  br_cpufreq_write(d, 2 * BR_CPUFREQ_WINDOW + 0x04, 4, 3398400);
-  CHECK(br_cpufreq_requested(d, 2) == 3398400 && br_cpufreq_read(d, 2 * BR_CPUFREQ_WINDOW, 4) == 3398400);
-  br_cpufreq_write(d, 2 * BR_CPUFREQ_WINDOW + 0x04, 4, 480000);            // the lowest entry drops the request
-  CHECK(br_cpufreq_requested(d, 2) == 0);
+  CHECK(br_cpufreq_read(d, 7 * BR_CPUFREQ_WINDOW + 0x08, 4) == 3 && br_cpufreq_read(d, 7 * BR_CPUFREQ_WINDOW + 0x14, 4) == 1);
+  br_cpufreq_write(d, 7 * BR_CPUFREQ_WINDOW + 0x04, 4, 3398400);
+  CHECK(br_cpufreq_requested(d, 7) == 3398400 && br_cpufreq_read(d, 7 * BR_CPUFREQ_WINDOW, 4) == 3398400);
+  br_cpufreq_write(d, 7 * BR_CPUFREQ_WINDOW + 0x04, 4, 480000);            // the lowest entry drops the request
+  CHECK(br_cpufreq_requested(d, 7) == 0);
   CHECK(br_cpufreq_read(d, 9 * BR_CPUFREQ_WINDOW + 0x08, 4) == 0);
   br_cpufreq_destroy(d);
 

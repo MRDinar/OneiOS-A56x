@@ -515,6 +515,8 @@ $T phone touch status              # /sys/class/sec/tsp/enabled: 1 on, 0 off
 $T phone touch wake                # 2,0 then 2,1 to it (the touch IC sleeps after iOS's brightness was 0), then reads it back
 $T phone backlight status          # the panel's level, max_brightness, and One UI's own value (control/base/backlight)
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
+$T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
+$T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
 $T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots and checks. In chunks
                                    #   (--chunk 256 MiB), each checked against the phone's sha256 and tried again when its
                                    #   stream breaks (--retries 5); after a stop, the same command again goes on (OUT.part,

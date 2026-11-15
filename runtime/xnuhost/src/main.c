@@ -302,6 +302,64 @@ static void thermal_step(void *ctx, const br_thermal_state *state)
   LOGI("thermal: step %u (%s): P vCPUs on host CPUs 0x%llx%s", state->cap, br_thermal_level_name(state->level), (unsigned long long)p,
        state->cap ? "" : " (all of their kind)");
 }
+// The host's cores as read at start (named files only, runtime/bridges/cpu), what each vCPU is described as to iOS, and the
+// cpuset xnuhost runs in: a cpuset of fewer CPUs (Android's background or system-background) would keep the vCPUs off the
+// X4 and the A720s whatever cpu-pin asks, so its CPUs are said here (host-overhead, 2026-11-15).
+static const char *core_name(unsigned part)
+{
+  return part == 0xd80 ? "Cortex-A520" : part == 0xd81 ? "Cortex-A720" : part == 0xd82 ? "Cortex-X4" : part == 0xd46 ? "Cortex-A510" :
+         part == 0xd4d ? "Cortex-A715" : part == 0xd4e ? "Cortex-X3" : part ? "an Arm core" : "unknown";
+}
+static void read_line(const char *path, const char *key, char *out, size_t size)
+{
+  out[0] = 0;
+  FILE *f = fopen(path, "r");
+  if (!f) return;
+  char line[512];
+  while (fgets(line, sizeof line, f)) {
+    if (key && strncmp(line, key, strlen(key))) continue;
+    const char *v = key ? line + strlen(key) : line;
+    while (*v == ' ' || *v == '\t') v++;
+    snprintf(out, size, "%s", v);
+    out[strcspn(out, "\n")] = 0;
+    break;
+  }
+  fclose(f);
+}
+static void log_cpu_layout(const br_cpu_topology *host)
+{
+  for (unsigned c = 0; c < host->ncpu; c++) {
+    const br_host_cpu *h = &host->cpu[c];
+    if (!h->present) continue;
+    LOGI("cpu: host CPU %u: %s (part 0x%x), %c, frequency domain of CPU %u, capacity %u, %u-%u kHz%s%s%.0u", c, core_name(h->part), h->part,
+         h->type, h->policy, h->capacity, h->min_khz, h->max_khz, h->boost_khz ? " (top as a boost frequency)" : "",
+         h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? "; capped now: scaling_max_freq " : "",
+         h->scaling_max_khz && h->scaling_max_khz < h->max_khz ? h->scaling_max_khz : 0);
+  }
+  for (unsigned i = 0; i < cpu_plan.nvcpu; i++)
+    LOGI("cpu: vCPU %u (%c) is described to iOS as host CPU %u: %u-%u kHz, %u table entries, capacity %u", i, cpu_plan.v[i].type,
+         cpu_plan.v[i].host_cpu, cpu_plan.v[i].min_khz, cpu_plan.v[i].max_khz, cpu_plan.v[i].nfreq, cpu_plan.v[i].capacity);
+  char boost[32], cpuset[128], allowed[128];
+  read_line("/sys/devices/system/cpu/cpufreq/boost", NULL, boost, sizeof boost);
+  read_line("/proc/self/cpuset", NULL, cpuset, sizeof cpuset);
+  read_line("/proc/self/status", "Cpus_allowed_list:", allowed, sizeof allowed);
+  LOGI("cpu: xnuhost's cpuset %s, CPUs allowed %s; cpufreq boost %s", cpuset[0] ? cpuset : "(none)", allowed[0] ? allowed : "?",
+       boost[0] ? boost : "(no switch)");
+}
+
+// The clamp of the work on a vCPU (xnuhost.h xh_cpu_uclamp): what the guest's CLPC stand-in asks for it (DroidVMCpufreq's
+// SET_PERF, br_cpufreq_requested) or the GPU path's animation boost (xh_gpu_vcpu_boost), the higher one. thread_run gives it to
+// the iOS thread it releases.
+static br_cpufreq *cpu_freq;
+static unsigned vcpu_uclamp(unsigned vcpu)
+{
+  unsigned want = __atomic_load_n(&xh_gpu_vcpu_boost, __ATOMIC_RELAXED);
+  if (cpu_freq && vcpu < cpu_plan.nvcpu) {
+    unsigned asked = br_cpu_util_for(&cpu_plan, vcpu, br_cpufreq_requested(cpu_freq, vcpu));
+    if (asked > want) want = asked;
+  }
+  return want > 1024 ? 1024 : want;
+}
 static uint64_t cpufreq_read(void *opaque, uint64_t offset, unsigned size) { return br_cpufreq_read(opaque, offset, size); }
 static void cpufreq_write(void *opaque, uint64_t offset, unsigned size, uint64_t value) { br_cpufreq_write(opaque, offset, size, value); }
 
@@ -452,11 +510,14 @@ static int boot(void)
                                                     .opaque = cpufreq, .read = cpufreq_read, .write = cpufreq_write }) == 0) {
         machine.cpufreq_base = XL_BOARD_CPUFREQ;
         machine.cpufreq_size = (uint64_t)config.ncpu * BR_CPUFREQ_WINDOW;
+        cpu_freq = cpufreq;
       }
+      xh_cpu_uclamp = vcpu_uclamp;
       LOGI("cpu: %u E + %u P vCPUs on the host's %u E + %u P cores%s", cpu_plan.n_e, cpu_plan.n_p, host.n_e, host.n_p,
            config.cpu_pin ? "; each vCPU and the iOS thread it runs on one core (cpu-pin=1)" : " (cpu-pin=0: a vCPU on any core of its kind)");
       if (config.cpu_pin)
         for (unsigned i = 0; i < config.ncpu; i++) LOGI("cpu%u: host CPU mask 0x%llx", i, (unsigned long long)place_mask(i));
+      log_cpu_layout(&host);
     } else LOGI("cpu: no host topology under /sys: vCPUs are not placed");
   }
   if (!cpu_planned && config.cpu_pin == 2) {
