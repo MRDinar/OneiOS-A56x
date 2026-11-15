@@ -18,7 +18,7 @@ Found there and fixed since (all on `main`, built and host-tested, **not run on 
 | #31 | no CLI for the session's by-hand fixes | `phone display-restart [--lib --dex]`, `phone touch status\|wake`, `phone backlight status\|set N` |
 | #29 | the slider reads 0 (IOKit truncates floats); a brightness of 0 slept the touch IC | the slider's 16.16 `DisplayBrightnessSliderPosition` and `brightness-nits-cap` read; hosted **0069** passes iOS's real display power (`IOMobileFramebufferRequestPowerChange`) so the IC sleeps only at a real off and wakes at every on and power-key press; the bridge's close always writes One UI's level |
 | #26 | the power key does nothing (LockButton reaches UISensor, then nothing) | off by default: `oneios-hid-buttons-builtin=1` (buttons published Built-In, Consumer Control: backboardd listed them as an external keyboard), `oneios-button-haptics=1` (a stand-in `AppleSPUHapticsAudioDriver`) |
-| #30 | the host swapped 2.1 GiB of iOS's RAM (Settings watchdog-killed, heat) | `ram=auto` fits: (MemAvailable at start − 1 GiB − 256 MiB) / 1.08; hosted **0067** in the series; the warning `the host swaps iOS's RAM: N MiB ...`; `ram-giveback=0` stays opt-in |
+| #30 | the host swapped 2.1 GiB of iOS's RAM (Settings watchdog-killed, heat) | `ram=auto` fits: (MemAvailable at start − 1 GiB − 256 MiB) / 1.08; hosted **0067** in the series; the warning `the host swaps iOS's RAM: N MiB ...`; `ram-giveback=0` stays opt-in (the default since fix-ram-locked, 2026-11-15: item 5) |
 | #27 | "it runs damn hot" | a `thermal: 30 s:` line (host CPU, swap rates, battery temperature and current, xnuhost's CPU); `oneios-cpu-sys:` kernel time per process |
 | #33 | every WebContent process died in `sys_icache_invalidate` (a cache-maintenance fault taken as a write) | the stub and hosted **0071**: a fault with ISS.CM is a read; `test_jit_icache` |
 | #34 | Wi-Fi never joins: auto-join "disabled by user" (a client's request, likely Control Center's Wi-Fi button) | PHY_MODE and AGE in the scan record; hosted **0070** `oneios-log-persist=` keeps a subsystem's info-level log |
@@ -34,7 +34,8 @@ Integration of #26-#34 (one tree): kernel `xnu.macho` fe21f390, prelink audit 0 
   virtual transport).
 - `ram=auto` (it now fits; or keep `ram=6G`); `ram-giveback` at its default first, then one session with
   `ram-giveback=0` (look for `CAP_IPC_LOCK yes`, `locked (mlock: the host cannot swap it)`, no `the host swaps iOS's
-  RAM` line, and `stopping:` right after the return's SIGTERM).
+  RAM` line, and `stopping:` right after the return's SIGTERM). (2026-11-15: the 3233fed session ran the default and
+  Linux swapped iOS's RAM; since fix-ram-locked `ram-giveback=0` with the lock is the default: item 5.)
 - `oneios-log-persist=com.apple.WiFiManager` (writes a file in the kept Data store: delete it later).
 - `oneios-hid-buttons-builtin=1 oneios-button-haptics=1` for the power key (boot B in `docs/hardware.md` 5; split
   them if it works), with `oneios-ubt=SpringBoard,backboardd,configd,wifid oneios-ubt-at=240 oneios-ubt-every=60
@@ -120,8 +121,22 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
    `ram=auto` now takes no more than what fits beside the session's needs (MemAvailable at the start less 1 GiB
    headroom, 256 MiB for KGSL and 8 % of the guest for page tables: about 6.4-7.2 GiB on this phone, by its start
    MemAvailable); an error line when `ram=` by hand is more than fits; `memory: the host swaps iOS's RAM: N MiB ...` with
-   the host's swap rates when it happens; kernel 0067 in the series; no prefault without the lock (the PC boot B swapped 841 MiB of a prefaulted, unlocked guest). Next phone boot: `ram=6G` on main before fix-ram-fit; with it, `ram=auto` and one try of `ram-giveback=0` (whether `locked (mlock: ...)` shows). PC results and the lines to read:
+   the host's swap rates when it happens; kernel 0067 in the series; no prefault without the lock (the PC boot B swapped 841 MiB of a prefaulted, unlocked guest). PC results and the lines to read:
    `docs/booter.md` 2.2 "What fits". GPU memory is the guest's own RAM, so no separate pool is needed (`docs/gpu.md` 2).
+   **2026-11-15 (main `3233fed` on the phone):** with `ram-giveback=1` at a fitted 6,656 MiB (start MemAvailable
+   8,561 MiB) Linux still swapped iOS's RAM (138 -> 370 -> 604 MiB, swap-outs up to 37.9 MB/s) with about 1.9 GB of
+   other page cache there (Samsung's swappiness); the SoC went 59.4 -> 70.6 -> 83.8 C with host sys 200 %. Only the
+   lock stops that. **fix-ram-locked (this PR): the default flips to fixed, locked RAM** (`ram-giveback=0`,
+   `ram-prefault=1`, `ram-lock=1`; `ram-giveback=1` flips it back); `ram=auto` takes the most that fits with the lock
+   (the headroom 768 MiB where the lock can work, so (8,561 - 768 - 256) / 1.08 -> **6,912 MiB** on this phone, else
+   1 GiB as before); a lock that fails part way keeps what it locked (EPERM or the PC's 8 MiB RLIMIT_MEMLOCK at the first
+   step: nothing prefaulted, a clean line); the valve runs in the main loop at nice 0, is never under 128 MiB with the
+   lock, and what fits leaves it 256 MiB more; the prefault stops if MemAvailable falls under the valve's level; the 5 s
+   swap check reads nothing while all is locked and the mincore covers only the unlocked part; the thermal step only at
+   a critical temperature (the case or the cell at 50 C), all cores otherwise. The next boot (the owner's `ram=auto
+   ram-giveback=0 ram-prefault=1 ram-lock=1`, now the defaults) should show `CAP_IPC_LOCK yes`, `memory: the guest's RAM
+   is held: N MiB prefaulted in T ms, locked`, no `the host swaps iOS's RAM`, `oneios-mem: free pages given back to the
+   host: no`, the `thermal: 30 s:` line without swap traffic, and `stopping:` right after the return's SIGTERM.
 6. **Haptics and the power key** (`docs/hardware.md` 5, PR #17): the counters show where a tap stops. PC boot with
    `--set haptics=sim`; phone: `Actuator: user client N opened by audiomxd`, audiomxd's `actuator port` lines; the
    power-key boot with `oneios-actuator=0`. **Power key (fix-power-key, 2026-11-14; confirmed broken in the 9f6dc38
@@ -201,7 +216,8 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
      `oneios-mem:`'s in-use figures; if `host MemAvailable` still falls under ~300 MiB, lower `ram-percent` in the
      image's `xnuhost.conf`; check `/sys/kernel/mm/transparent_hugepage/shmem_enabled` (a shmem huge page setting
      may keep punched pages).
-   - **Fixed RAM (fix-fixed-memory, 2026-11-13): built and host-tested, OFF by default (`ram-giveback=0` turns it on),
+   - **Fixed RAM (fix-fixed-memory, 2026-11-13; the default since fix-ram-locked, 2026-11-15, item 5 above; this note
+     is as written then): built and host-tested, OFF by default (`ram-giveback=0` turns it on),
      not run in a PC boot of iOS or on the phone.** The owner's requirement: RAM and GPU memory set once at the start.
      xnuhost prefaults the whole memfd on a nice-19 thread, `mlock`s it where Linux allows and it fits in MemAvailable
      less `ram-session-reserve` (1 GiB; `ram=auto` gets the same bound), refuses `ram_discard`, unlocks once if the host's

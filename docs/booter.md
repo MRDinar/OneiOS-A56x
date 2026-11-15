@@ -60,10 +60,10 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set host-mem-log=SECONDS` | 30 | a `memory: host MemAvailable` line every so often; 0 = only at the start and the stop |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |
-| `--set ram-giveback=0\|1` | 1 | 0: the RAM is **held fixed for the session** (section 2.2, "Fixed RAM": prefaulted, locked where Linux allows, no free pages given back). 1: 0058's way (faulted in as used, free pages given back). Off by default until it has run on a PC boot of iOS and on the phone |
-| `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes (all or nothing); if the lock fails or does not fit, the prefault stops (nothing is prefaulted unlocked unless `ram-lock=0`) |
-| `--set ram-session-reserve=SIZE` | 1G | the headroom what fits leaves the host (surfaceflinger, the helpers, zram's own working set, the kernel); with `ram-giveback=0` the lock is tried only if the RAM is within what fits |
-| `--set ram-unlock-below=SIZE` | 256M | with the RAM locked: the host's `MemAvailable` under this (read once a second) unlocks it once for the rest of the session; 0 = never |
+| `--set ram-giveback=0\|1` | **0** (since fix-ram-locked, 2026-11-15) | 0: the RAM is **held fixed and locked for the session** (section 2.2, "Fixed RAM": prefaulted, `mlock`ed, no free pages given back; the owner's rule: iOS's RAM is never swapped). 1: 0058's way again (faulted in as used, free pages given back, the host may swap it); one setting flips it back |
+| `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes; at the first `mlock` that fails the prefault stops and what is locked stays locked (where it fails at the first step, EPERM or an RLIMIT_MEMLOCK under 16 MiB, nothing is prefaulted); nothing is prefaulted unlocked unless `ram-lock=0`; neither if the RAM is more than fits |
+| `--set ram-session-reserve=SIZE` | 768M where the lock can work (CAP_IPC_LOCK, or no RLIMIT_MEMLOCK), else 1G | the headroom what fits leaves the host (section 2.2, "What fits"); with the lock never less than `ram-unlock-below` + 256 MiB; the lock is tried only if the RAM is within what fits |
+| `--set ram-unlock-below=SIZE` | 256M | with the RAM locked, the valve: the host's `MemAvailable` under this (read once a second by the main loop, and before each prefault step) unlocks it once for the rest of the session; with the lock at least 128M (0 or less is raised to 128M, with a line) |
 
 **The guest's RAM (`ram=auto`, the owner's decision of 2026-11-12: iOS gets at least 90% of the phone's RAM).**
 In a session One UI's apps and system_server are gone, but the host still needs memory beside the guest: the guest gets
@@ -71,9 +71,10 @@ In a session One UI's apps and system_server are gone, but the host still needs 
 (2026-11-14, section 2.2) is what MemAvailable at the start holds beside the session's needs outside the guest. On the
 phone (MemTotal 11,084 MiB) the first two gave 9,472 MiB, and Linux swapped 2,126 MiB of it out (section 2.2, "What
 fits"). A host where that leaves the guest less than 1 GiB is refused (exit 2, "give --ram SIZE"); a host
-with no `/proc/meminfo` gets the old 4 GiB. By default the RAM is a memfd that is never populated or locked (`ram-giveback=0` holds it fixed instead: section 2.2, "Fixed RAM"): the host gives it
-pages only as the guest touches them (`ram_discard` gives them back). The log says what was chosen, and then what the
-host has left:
+with no `/proc/meminfo` gets the old 4 GiB. By default (since fix-ram-locked, 2026-11-15) the RAM is held fixed and
+locked for the session (section 2.2, "Fixed RAM"); with `ram-giveback=1` it is a memfd that is never populated or
+locked: the host gives it pages only as the guest touches them (`ram_discard` gives them back). The log says what was
+chosen, and then what the host has left:
 
 ```text
 memory: ram=auto: host MemTotal M MiB, MemAvailable A MiB; the guest gets G MiB: the least of 90% (.. MiB), MemTotal less the host's floor of 1536 MiB (.. MiB) and what fits beside the session's needs: F MiB (MemAvailable A MiB less 1024 MiB headroom, 256 MiB for the GPU and 8% of the guest for page tables), in 256 MiB steps (what fits decides)
@@ -83,7 +84,9 @@ memory: the guest's RAM: R MiB in the host's RAM, W MiB swapped out by the host;
 ```
 
 The second line (2026-11-13): `R` is the memfd's pages in the host's RAM (`mincore` over xnuhost's mapping,
-`xh_ram_resident` in `src/discard.c`, 64 MiB per call), `W` = `H` - `R`: pages the guest touched that Linux swapped
+`xh_ram_resident` in `src/discard.c`, 64 MiB per call; since fix-ram-locked only over the part that is not locked: the
+locked part is resident while the process's `VmLck` covers it, so with the whole RAM locked there is no `mincore` at
+all), `W` = `H` - `R`: pages the guest touched that Linux swapped
 out (zram on the phone; `st_blocks` counts them as held). A guest page that is swapped out costs a fault and a
 decompression in whichever vCPU or task touches it next. `S`, `Z` and `P` are `/proc/meminfo`'s SwapTotal - SwapFree,
 SwapTotal and PageTables (every iOS task is a Linux process with its own page tables over the memfd). First seen on the
@@ -222,32 +225,58 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   - The GPU: KGSL's own memory for xnuhost (contexts, ringbuffers, the import tables and IOMMU tables of the blobs, about
     1 % of the blobs' bytes [estimate]): 256 MiB. The `memory: fixed RAM` line prints KGSL's per-process files, so the
     next phone boot gives the steady figure.
-  - The headroom (`ram-session-reserve`, 1 GiB): surfaceflinger and the composer, the helpers, the iOS tasks' kernel
-    memory (each iOS thread is a Linux thread), zram's own working set, the kernel's free watermarks.
-  - **For this phone:** the session's start MemAvailable is not in the notes. For 8.5 GiB at the start [assumed] what
+  - The headroom (`ram-session-reserve`): 768 MiB where the lock can work (the default since fix-ram-locked, below), else
+    1 GiB: surfaceflinger and the composer, the helpers, the iOS tasks' kernel memory (each iOS thread is a Linux thread),
+    a working page cache for the host, the way back; unlocked also zram's pool and working set for the guest's pages.
+  - **For this phone** (as written on 2026-11-14; the 2026-11-15 session measured 8,561 MiB at the start, and the lock's
+    figure is below): the session's start MemAvailable is not in the notes. For 8.5 GiB at the start [assumed] what
     fits is (8,704 - 1,024 - 256) / 1.08 = 6,874 -> **6,656 MiB**; for 8 GiB, 6,400; for 9 GiB, 7,168. The check from the
     other side, the session itself: without swap the host's use outside the guest is about 5,087 - 1,000 (zram's pool
     [guess]) = 4,087 MiB at a 9.2 GiB guest, so a guest that is never swapped is at most about 11,084 - 4,087 - 512
     (the kernel's watermarks and a working page cache) = 6,485 MiB, which agrees within one 256 MiB step. The next phone
     boot's `ram=auto` line prints the real figure (`what fits beside the session's needs: F MiB (MemAvailable A MiB ...)`).
-  - **The next phone boot.** With main before this change: `ram=6G` in the image's `xnuhost.conf` (what fits is about
-    6.4-6.6 GiB by both estimates above; 6 GiB keeps one more 256 MiB step for the unknowns), `ram-giveback` left at 1
-    (main's `ram-giveback=0` prefaults the rest unlocked when the lock fails, which the PC showed is worse). With this
-    change: `ram=auto` (or keep `ram=6G`: an error line says if it is more than fits) and `ram-giveback=0` for one try.
-    Whether the phone can lock [inference]: xnuhost runs as root in KernelSU's domain with its full capability set, so
-    CAP_IPC_LOCK lifts RLIMIT_MEMLOCK, and KernelSU's policy allows the `ipc_lock` capability; at a fitted size the
-    lock also leaves the headroom. The lines to read: the facts line's `CAP_IPC_LOCK yes`, then `memory: the guest's RAM
-    is held: N MiB prefaulted in T ms, locked (mlock: the host cannot swap it)`, `memory: fixed RAM: held and locked;
-    ... locked N MiB`, no `memory: the host swaps iOS's RAM` line, the kernel's `oneios-mem: free pages given back to the
-    host: no`, host MemAvailable staying above 256 MiB (no `unlocked for the rest of the session`), and `stopping:`
-    promptly after the return's SIGTERM.
+  - The session of 2026-11-15 (main `3233fed`, `ram=auto`, `ram-giveback=1`) gave the start figure: `ram=auto ...
+    MemAvailable 8561 MiB; the guest gets 6656 MiB` ((8,561 - 1,024 - 256) / 1.08 = 6,741 -> 6,656). Linux still swapped
+    iOS's RAM: `the host swaps iOS's RAM: 138 MiB (host MemAvailable 2452 MiB) ... swap-outs 37.9 MB/s`, then 370 MiB
+    (1,485) and 604 MiB (873). The host's `/proc/meminfo` at 370 MiB: MemAvailable 2,298,532 kB, Cached 7,278,352,
+    Shmem 5,379,532, AnonPages 100,192, Mlocked 4,596, SwapFree 11,711,604 of 12,582,908. So Linux swapped the shmem
+    memfd while about 1.9 GB of other page cache (Cached - Shmem) was there, by Samsung's swappiness
+    (`/proc/sys/vm/swappiness` is not readable even as root): a size that fits is not enough, only the lock stops it.
+    The heat came with it: SoC 59.4 C at the start, 70.6 C at the first swap, 83.8 C later (host sys 200 %, swap in 179
+    out 2,364 KiB/s, xnuhost 171 %). Hence the next point.
+  - **With the lock (fix-ram-locked, 2026-11-15; the default).** A locked RAM is neither swapped nor reclaimed, so the
+    bound is MemAvailable at the start less what the session needs outside the guest; the page cache in MemAvailable is
+    taken (the host reclaims cache, never the locked RAM). The terms: page tables 8 % of the guest (575 MiB for 7,263 MiB
+    held on 2026-11-14, 7.9 %); KGSL 256 MiB [estimate]; the headroom 768 MiB = the valve's 256 MiB and 512 MiB for what
+    else grows (the iOS threads' kernel stacks and task structures, the tasks' mappings, surfaceflinger's and the display
+    helper's buffers, a working page cache for the host's own code and the image files, the fork's watcher and the stop).
+    No zram term: the guest's pages are never in zram. What the 2026-11-15 meminfo says about the rest [estimate]: at
+    the start the host used 11,084 - 8,561 = 2,523 MiB that MemAvailable does not count; at 370 MiB swapped it was
+    11,084 - 2,245 - 5,253 (Shmem, the guest's resident pages and a little other shmem) = 3,586 MiB, of which zram's pool
+    for 851 MiB of swap is about 300 MiB [guess at about 3:1] and the page tables of a 5.6 GiB mapped guest about 445 MiB
+    [7.9 %], which leaves about 320 MiB for KGSL, the kernel and surfaceflinger: inside the 256 + 512 MiB the fit leaves.
+    **On this phone:** (8,561 - 768 - 256) / 1.08 = 6,978 -> **6,912 MiB** (one 256 MiB step more than 6,656). With it
+    locked, at a like point of the session the host keeps about 8,561 - 6,912 - 553 (page tables) - 320 = 776 MiB of
+    MemAvailable, 520 MiB above the valve. Where the lock cannot work (no CAP_IPC_LOCK and a finite RLIMIT_MEMLOCK: the
+    PC) the headroom stays 1 GiB and `ram=auto` gives what it did. The `ram=auto` line says which: `less 768 MiB headroom
+    with the lock` or `(the lock is not expected to work here)`.
+  - **The next phone boot** (the owner's: `ram=auto ram-giveback=0 ram-prefault=1 ram-lock=1`, which is now also the
+    default). Whether the phone can lock [inference]: xnuhost runs as root in KernelSU's domain with its full capability
+    set, so CAP_IPC_LOCK lifts RLIMIT_MEMLOCK, and KernelSU's policy allows the `ipc_lock` capability. The lines to read:
+    the facts line's `CAP_IPC_LOCK yes`; `ram=auto: ... the guest gets 6912 MiB ... less 768 MiB headroom with the lock`
+    (for a start MemAvailable of about 8.5 GiB); `memory: the guest's RAM is held: N MiB prefaulted in T ms, locked
+    (mlock: the host cannot swap it)`; `memory: fixed RAM: held and locked; ... locked N MiB`; no `memory: the host swaps
+    iOS's RAM` line; the kernel's `oneios-mem: free pages given back to the host: no`; host MemAvailable staying above
+    256 MiB (no `unlocked for the rest of the session`); the `thermal: 30 s:` line with `swap in 0 out 0 KiB/s` or near
+    it; and `stopping:` right after the return's SIGTERM.
   - A size given by hand (`ram=`) is used as given; if it is more than fits, an error line says so: `memory: ram=N MiB is
     more than this host can hold without swapping it (F MiB fit): the host will swap iOS's RAM; give ram=auto or ram=..M`.
   - When the host does swap iOS's RAM (held less resident, every 5 s), a plain line, once past 64 MiB and again at each
     further 256 MiB: `memory: the host swaps iOS's RAM: N MiB (host MemAvailable M MiB); host swap-ins I pages/s (X MB/s),
     swap-outs O pages/s (Y MB/s)` (the rates are the host's, all processes, `/proc/vmstat` pswpin and pswpout over the
     last 5 s). Heat has its own line (fix-thermal-log); this one is only about iOS's RAM.
-- **Fixed RAM (`ram-giveback=0`, `src/ramfix.c`, fix-fixed-memory, 2026-11-13; off by default).** The owner's requirement:
+- **Fixed RAM (`ram-giveback=0`, `src/ramfix.c`, fix-fixed-memory, 2026-11-13; the default since fix-ram-locked,
+  2026-11-15, the owner's rule that iOS's RAM is never swapped; `ram-giveback=1` turns it off).** The owner's requirement:
   iOS's RAM must not grow and shrink during a session. The phone's c2d281a session showed why: the memfd was faulted in
   bit by bit (4,904 -> 6,010 -> 6,254 MiB), 527 MiB of free pages given back in 22,688 calls, then 669 MiB of it swapped
   out by the host (zram) with the host's MemAvailable at 842 MiB: every step a fault in a vCPU or a task. With
@@ -257,17 +286,28 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     since 2026-11-14) never asks and keeps 0058's free-queue order (freed pages first: it costs nothing, and where the
     lock fails it keeps iOS on pages the host has kept resident).
   - A thread `xnuhost-ram` (SCHED_OTHER, nice 19, never realtime) prefaults the whole memfd in 16 MiB steps from the
-    moment it is mapped, while the boot goes on: `mlock` of each step (which faults it in and locks it). The lock is
-    all or nothing: on the first failure (EPERM: no CAP_IPC_LOCK; ENOMEM: RLIMIT_MEMLOCK or no memory) what was locked is
-    unlocked, the errno is logged, **the prefault stops** and the rest is faulted in as iOS uses it; the boot goes on. The
+    moment it is mapped, while the boot goes on: `mlock` of each step (which faults it in and locks it). On the first
+    failure (EPERM: no CAP_IPC_LOCK; ENOMEM: RLIMIT_MEMLOCK or no memory) the errno is logged, **the prefault stops**
+    and the rest is faulted in as iOS uses it; the boot goes on. What was locked before the failure stays locked
+    (fix-ram-locked, re-checked: until then it was unlocked again, "all or nothing", which only made those pages
+    prefaulted and unlocked, the very pages the host swaps first; the valve covers a partial lock as a whole one). Where
+    the lock fails at the first step (EPERM, or an RLIMIT_MEMLOCK under one 16 MiB step: the PC's 8 MiB) nothing is
+    locked and nothing is prefaulted, the clean fallback: `not locked (mlock: ...), so not prefaulted: the guest's RAM is
+    faulted in as iOS uses it`. Before each step the prefault reads MemAvailable: under `ram-unlock-below` it stops there
+    (`stopped at N MiB: host MemAvailable M MiB is under ram-unlock-below`). The
     lock is tried only if the RAM is within what fits (above); if it is not, nothing is prefaulted. Why not prefault
     without the lock (fix-ram-fit, 2026-11-14): a prefaulted page iOS has not used is the coldest page there is and the
     first the host swaps; the PC boot B below swapped 841 MiB of a prefaulted, unlocked 4 GiB guest in 15 minutes, boot A
     (faulted in as used) 6 MiB. Only `ram-lock=0` with `ram-prefault=1` still prefaults unlocked (one read per host page:
     a read of a hole through the shared mapping allocates a zeroed page; not `fallocate`, whose pages stay "not up to
     date" and are not counted by `mincore`).
-  - The valve: while locked, the thread reads MemAvailable once a second; under `ram-unlock-below` (256 MiB) it unlocks
-    the RAM once (the host may swap it again, today's way; nothing is given back) and logs it.
+  - The valve: while locked, the main loop reads MemAvailable once a second; under `ram-unlock-below` (256 MiB) it
+    unlocks the RAM once (the host may swap it again, 0058's way; nothing is given back) and logs it. On the main thread
+    (nice 0) since fix-ram-locked: before, the prefault's thread ran it at nice 19, which eight busy vCPUs at nice 0 can
+    starve for seconds, exactly when the valve is wanted; the thread now ends with the prefault (and no longer wakes ten
+    times a second). With the lock the valve is always on: `ram-unlock-below` under 128 MiB (0 included) is raised to
+    128 MiB with a line, and what fits leaves at least the valve's level plus 256 MiB (`ram-session-reserve` is raised
+    to that), so the valve does not open in a normal session and the way back still fits when it does.
   - **The way back (safety).** xnuhost runs as root in cgroup `oneios_session` with `oom_score_adj` 500 (unchanged). If
     the host runs short with the RAM locked, the kernel first reclaims the other processes (file cache, then their
     anonymous pages to zram: surfaceflinger, the HALs, the fork's watcher may slow down; daemons at -1000 are never
@@ -280,18 +320,31 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     file (`memory.swap.max` of `oneios_session` would be a fork-side backup), no sysctl.
   - Log: `memory: the guest's RAM is held for the session: N MiB, prefaulted on a thread at nice 19 ..., locked as it goes
     (mlock)|why not; RLIMIT_MEMLOCK .., CAP_IPC_LOCK .., cgroup .. (memory.max .., memory.high .., memory.swap.max ..)`,
-    then `memory: the guest's RAM is held: N MiB prefaulted in T ms, locked (mlock: the host cannot swap it)|not locked
-    (mlock: ERRNO; the host may swap it)`, and every host-mem-log seconds a third `memory:` line: `memory: fixed RAM:
-    held and locked; prefaulted N of N MiB, locked L MiB (VmLck; host Mlocked M MiB); give-back refused C calls; since the
+    then `memory: the guest's RAM is held: N MiB prefaulted in T ms, locked (mlock: the host cannot swap it)|L MiB of it
+    locked (mlock: ERRNO past that; ...)|not locked (mlock: ERRNO), so not prefaulted: ...`, and every host-mem-log
+    seconds a third `memory:` line: `memory: fixed RAM:
+    held and locked|held, locked in part|...; prefaulted N of N MiB, locked L MiB (VmLck; host Mlocked M MiB); give-back refused C calls; since the
     last line: host swap-ins +I, swap-outs +O pages, xnuhost major faults +F[; KGSL: name value, ...]` (KGSL's files under
     `/sys/class/kgsl/kgsl/proc/PID`, as KGSL prints them: the host's own GPU memory for xnuhost). At the stop:
     `memory: the guest's RAM: N MiB held to the end, L MiB of it locked; the exit gives all of it back to the host`.
-  - Tested: the host tests (`test_ramfix`: prefault keeps every byte, a lock failing part way with ENOMEM and at once
-    with EPERM falls back and unlocks, a real lock within the PC's 8 MiB RLIMIT_MEMLOCK shows in VmLck and the valve
-    undoes it, past the limit a clean fallback, the thread, the refusal, the return; the sizing in `test_config`), and
-    the test kernel under qemu-aarch64 (`make check-arm64`'s second boot runs with `ram-giveback=0`: the refusal, the
-    prefault, the sizing line; on the PC mlock fails with ENOMEM: RLIMIT_MEMLOCK 8 MiB, no root). **Not run:** the
-    phone (where xnuhost is root: the lock itself).
+  - **Cheap checks (fix-ram-locked).** The 5 s swap check and the host-mem-log lines read nothing they do not need:
+    while the whole RAM is locked the 5 s check reads nothing at all (before: `/proc/self/status`, `/proc/meminfo`,
+    `/proc/vmstat` twice, `/proc/self/stat`, an `fstat` and a `mincore` over the whole RAM, every 5 s); the mincore
+    covers only the part that is not locked, in both places (none while all of it is locked and `VmLck` covers it);
+    the host-mem-log lines read `/proc/meminfo` once (before five times) and `/proc/vmstat` once (before twice).
+    Measured on the PC: a `mincore` over 2 GiB of resident memfd 4.8 ms, so about 16 ms for 6.9 GiB (more on the
+    phone's cores [inference]), every 5 s and again every 30 s; a read of `/proc/meminfo` 9.5 us.
+  - Tested: the host tests (`test_ramfix`: prefault keeps every byte; a lock failing part way with ENOMEM keeps what is
+    locked and stops, and the valve then unlocks it; at once with EPERM a clean fallback with nothing prefaulted; the
+    valve as the main loop runs it (not before the prefault is done, once, from a meminfo file); the prefault stopping
+    short when MemAvailable is under the valve's level; a real lock within the PC's 8 MiB RLIMIT_MEMLOCK shows in VmLck
+    and the valve undoes it; past the limit a clean fallback; the thread, the refusal, the return. `test_config`: the
+    new defaults, the lock's 768 MiB headroom where the lock can work and 1 GiB where it cannot, the fit with the
+    2026-11-15 numbers (8,561 MiB -> 6,912 MiB locked, 6,656 MiB unlocked), the valve's floor and margin, one setting
+    back to 0058's way; `xh_proc_values` on meminfo and vmstat files), and the test kernel under qemu-aarch64 (`make
+    check-arm64`'s second boot runs with the defaults: the refusal, the prefault, the sizing line, and on the PC the
+    clean fallback, `not locked (mlock: Out of memory), so not prefaulted`: RLIMIT_MEMLOCK 8 MiB, no root). **Not
+    run:** the phone (where xnuhost is root: the lock itself).
   - **PC boots, before and after** (fix-ram-fit, 2026-11-14; qemu-aarch64, 8 vCPUs, `--ram 4G`, `out/image-pc/24A446`, a
     fresh Data store each, the kernel of main `f7bb1c3` plus 0067 (`kernel.kc` `e128c27b`), boot arguments of
     `docs/building.md` 5, 960 s each through `/tmp/oneios-qemu.lock`, the PC shared with other agents). A is
@@ -315,8 +368,10 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     before the TERM with no `stopping:` line, and `timeout`'s KILL ended it 10 s later: cause not known (the PC was
     swapping 18 MB/s then); the fork's way back kills after 20 s either way, and a phone boot should check that
     `stopping:` follows the return's SIGTERM. What the PC shows: with no lock, holding the RAM fixed does not keep it
-    in RAM; hence the change above (no prefault without the lock), and `ram-giveback=0` stays off by default until the
-    phone shows `locked (mlock: the host cannot swap it)`.
+    in RAM; hence the change above (no prefault without the lock). `ram-giveback=0` became the default with
+    fix-ram-locked (2026-11-15, the owner's rule) before the phone has shown `locked (mlock: the host cannot swap it)`:
+    the owner's next boot sets the same settings explicitly, and the phone's 3233fed session showed that without the
+    lock Linux swaps iOS's RAM even at a size that fits.
 - **The kernel's own address space** outside the window (zones, kalloc, stacks, IOKit buffers) is a
   no-access reservation from the end of the RAM, rounded up to 1 GiB, to `0x3c00000000`
   (`xh_info.kva_base/kva_size`). `kernel_map(va, size, prot, phys)` maps RAM pages into it and
@@ -398,9 +453,11 @@ index, pairs, sign extension) and run against the device models.
 
 ### 2.5a The thermal step
 
-`runtime/bridges/thermal` reads the phone's temperatures every 5 s from the start. At heavy pressure and above it
-gives a step (1-3), and `main.c`'s `thermal_step` narrows the vCPU threads' affinity (`br_cpu_plan_cap`: first the X4
-is left out, then only the slowest P domain and the E cores, then the E cores only) and bumps `xh_cpu_place_epoch`, so
+`runtime/bridges/thermal` reads the phone's temperatures every 5 s from the start. Since fix-ram-locked (2026-11-15; the
+owner's rule: all CPU cores) it gives one step, at a critical temperature only: the case (lrp) at 50 C or the cell at
+50 C (before, steps 1-3 from heavy pressure up: the case at 44 C, the SoC at 95 C). Then `main.c`'s `thermal_step`
+narrows the vCPU threads' affinity (`br_cpu_plan_cap`, step 2: only the slowest P domain and the E cores, cpu0-1 and
+5-6 here) and bumps `xh_cpu_place_epoch`, so
 `xh_thread_run` places each iOS thread again at its next run (`task.c`). Only xnuhost's own threads and its tasks' are
 changed, nothing outside the process: a SIGKILL leaves nothing to restore. `ONEIOS_THERMAL_CAP=0` turns the step off.
 Since 2026-11-13 a step keeps the CPUs it adds of the other kind (step 2: the P vCPUs on cpu5-6 and the E cores, `0x63`;

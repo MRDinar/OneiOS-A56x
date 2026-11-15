@@ -76,7 +76,7 @@ static void test_rules(void)
   CHECK(prev.level == BR_THERMAL_LIGHT && prev.reason == BR_THERMAL_BY_SKIN && prev.cap == 0);
   r = raw_with(445, 500, 300);
   br_thermal_decide(&l, &r, &prev, &s);
-  CHECK(s.level == BR_THERMAL_HEAVY && s.cap == 1);
+  CHECK(s.level == BR_THERMAL_HEAVY && s.cap == 0);                   // heavy: no step of ours (all cores)
   // hysteresis: 43.0 C keeps HEAVY (on at 44, off below 42), 41.9 C drops to MODERATE (whose own threshold is 42, held to 40)
   r = raw_with(430, 500, 300);
   br_thermal_decide(&l, &r, &s, &prev);
@@ -94,7 +94,7 @@ static void test_rules(void)
   CHECK(s.level == BR_THERMAL_HEAVY && s.reason == BR_THERMAL_BY_SOC && s.skin_level == BR_THERMAL_NOMINAL);
   r = raw_with(350, 1055, 300);
   br_thermal_decide(&l, &r, &s, &prev);
-  CHECK(prev.level == BR_THERMAL_TRAPPING && prev.cap == 2);
+  CHECK(prev.level == BR_THERMAL_TRAPPING && prev.cap == 0);           // the SoC at 105 C: the kernel's own trips, no step
   r = raw_with(350, 1010, 300);
   br_thermal_decide(&l, &r, &prev, &s);
   CHECK(s.level == BR_THERMAL_TRAPPING);                   // held to 100 C
@@ -108,7 +108,13 @@ static void test_rules(void)
   // the battery
   r = raw_with(350, 500, 505);
   br_thermal_decide(&l, &r, NULL, &s);
-  CHECK(s.level == BR_THERMAL_TRAPPING && s.reason == BR_THERMAL_BY_BATTERY);
+  CHECK(s.level == BR_THERMAL_TRAPPING && s.reason == BR_THERMAL_BY_BATTERY && s.cap == BR_THERMAL_CAP_CRITICAL);   // the cell at 50 C: the step
+  r = raw_with(350, 500, 485);
+  br_thermal_decide(&l, &r, &s, &prev);
+  CHECK(prev.cap == BR_THERMAL_CAP_CRITICAL);                                  // held to 48 C
+  r = raw_with(350, 500, 475);
+  br_thermal_decide(&l, &r, &prev, &s);
+  CHECK(s.level == BR_THERMAL_HEAVY && s.cap == 0);
   // a missing reading keeps its rule's level
   r = raw_with(BR_THERMAL_UNKNOWN, BR_THERMAL_UNKNOWN, 300);
   br_thermal_decide(&l, &r, &prev, &s);
@@ -118,8 +124,20 @@ static void test_rules(void)
   // sleeping, and the steps
   r = raw_with(505, 500, 300);
   br_thermal_decide(&l, &r, NULL, &s);
-  CHECK(s.level == BR_THERMAL_SLEEPING && s.cap == 3);
-  CHECK(br_thermal_cap_for(BR_THERMAL_MODERATE) == 0 && br_thermal_cap_for(BR_THERMAL_HEAVY) == 1 && br_thermal_cap_for(BR_THERMAL_TRAPPING) == 2);
+  CHECK(s.level == BR_THERMAL_SLEEPING && s.cap == BR_THERMAL_CAP_CRITICAL);   // the case at 50 C: the one step
+  r = raw_with(485, 500, 300);
+  br_thermal_decide(&l, &r, &s, &prev);
+  CHECK(prev.level == BR_THERMAL_SLEEPING && prev.cap == BR_THERMAL_CAP_CRITICAL);   // held to 48 C
+  r = raw_with(475, 1060, 300);                                                // the case at 47.5 C, the SoC at 106 C
+  br_thermal_decide(&l, &r, &prev, &s);
+  CHECK(s.level == BR_THERMAL_TRAPPING && s.cap == 0);                         // all cores: the SoC is the kernel's
+  br_thermal_state at = { 0 };
+  at.skin_level = BR_THERMAL_TRAPPING; at.soc_level = BR_THERMAL_TRAPPING; at.battery_level = BR_THERMAL_HEAVY;
+  CHECK(br_thermal_cap_for(&at) == 0);
+  at.skin_level = BR_THERMAL_SLEEPING;
+  CHECK(br_thermal_cap_for(&at) == BR_THERMAL_CAP_CRITICAL);
+  at.skin_level = BR_THERMAL_NOMINAL; at.battery_level = BR_THERMAL_TRAPPING;
+  CHECK(br_thermal_cap_for(&at) == BR_THERMAL_CAP_CRITICAL);
   CHECK(!strcmp(br_thermal_level_name(BR_THERMAL_TRAPPING), "trapping") && !strcmp(br_thermal_level_name(7), "?"));
   // what is worth a message
   br_thermal_state a = s, b = s;
@@ -247,24 +265,27 @@ static void test_worker(void)
   CHECK(seen.caps == 0 && seen.reports == 0);            // nothing changed: no message before BR_THERMAL_REPORT_MS
   put("/sys/class/power_supply/battery/lrp", "447\n");
   wait_ms(200);
-  CHECK(seen.caps == 1 && seen.last_cap == 1);
+  CHECK(seen.caps == 0);                                  // heavy: iOS is told, no step of ours (all cores)
   CHECK(seen.reports == 1 && seen.last_level == BR_THERMAL_HEAVY);
   put("/sys/class/power_supply/battery/lrp", "462\n");
   wait_ms(200);
-  CHECK(seen.caps == 2 && seen.last_cap == 2 && seen.last_level == BR_THERMAL_TRAPPING);
+  CHECK(seen.caps == 0 && seen.reports == 2 && seen.last_level == BR_THERMAL_TRAPPING);
+  put("/sys/class/power_supply/battery/lrp", "505\n");
+  wait_ms(200);
+  CHECK(seen.caps == 1 && seen.last_cap == BR_THERMAL_CAP_CRITICAL && seen.last_level == BR_THERMAL_SLEEPING);   // the case at 50 C
   put("/sys/class/power_supply/battery/lrp", "300\n");
   wait_ms(200);
-  CHECK(seen.caps == 3 && seen.last_cap == 0 && seen.last_level == BR_THERMAL_NOMINAL);
+  CHECK(seen.caps == 2 && seen.last_cap == 0 && seen.last_level == BR_THERMAL_NOMINAL);
   br_thermal_on_cap(t, NULL, NULL);
   br_thermal_on_report(t, NULL, NULL);
-  put("/sys/class/power_supply/battery/lrp", "470\n");
+  put("/sys/class/power_supply/battery/lrp", "510\n");
   wait_ms(150);
-  CHECK(seen.caps == 3 && seen.reports == 3);
+  CHECK(seen.caps == 2 && seen.reports == 4);
   br_thermal_get(t, &st);
-  CHECK(st.level == BR_THERMAL_TRAPPING);                 // still read with no listener: the next listener hears it
+  CHECK(st.level == BR_THERMAL_SLEEPING);                 // still read with no listener: the next listener hears it
   br_thermal_on_cap(t, on_cap, NULL);
   wait_ms(150);
-  CHECK(seen.caps == 4 && seen.last_cap == 2);
+  CHECK(seen.caps == 3 && seen.last_cap == BR_THERMAL_CAP_CRITICAL);
   br_thermal_close(t);
 }
 

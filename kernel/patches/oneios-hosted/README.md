@@ -1046,9 +1046,14 @@ host: no (the host holds the RAM fixed); the free queues take the pages iOS free
 - **Without it** xnuhost's `ram-giveback=0` still works: the first `ram_discard` of 0058/0066 gets -EPERM and the kernel
   stops for the boot (`oneios-mem: ram_discard(...) failed: -1; free pages are no longer given back`); one batch's pages
   go back to the head of the free queue.
-- **0058/0066 now:** give-back is xnuhost's default still (`ram-giveback=1`) until the fixed RAM has run on the phone;
-  then it becomes opt-in. Since fix-ram-fit `ram=auto` takes only what fits, so even with give-back the host need not
-  swap iOS's RAM.
+- **0058/0066 now (fix-ram-locked, 2026-11-15):** give-back is opt-in. xnuhost's default is `ram-giveback=0`, the RAM
+  prefaulted and locked (`docs/booter.md` 2.2, "Fixed RAM"), so with this patch the kernel starts with `oneios-mem: free
+  pages given back to the host: no (the host holds the RAM fixed)` and its reporting loop never runs (no CPU spent on
+  give-back rounds; the `oneios-mem:` lines stay). Why: the phone's session of main `3233fed` (`ram-giveback=1`,
+  `ram=auto` at a fitted 6,656 MiB) still had Linux swap iOS's RAM, 138 -> 604 MiB at up to 37.9 MB/s of swap-outs,
+  with about 1.9 GB of other page cache there: a size that fits is not enough under Samsung's swappiness, only the
+  lock is. `ram-giveback=1` gives 0058/0066's way back with one setting. No kernel change: 0067 already does what the
+  new default needs.
 
 ## 0071-cache-maintenance-fault-read.patch (fix-webkit-icache, 2026-11-14)
 

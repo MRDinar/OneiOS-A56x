@@ -331,21 +331,41 @@ int xh_config_finish(xh_config *c)
   // xnuhost.conf) turns it on. The host state machine itself is tested (docs/booter.md "The return").
   if (c->return_graceful_ms < 0) c->return_graceful_ms = from_image.return_graceful_ms < 0 ? 0 : from_image.return_graceful_ms;
   if (!*c->ram_meminfo) strcpy(c->ram_meminfo, *from_image.ram_meminfo ? from_image.ram_meminfo : "/proc/meminfo");
-  // The RAM held fixed for the session (ramfix.c) with ram-giveback=0; the default is still 0058's way (ram-giveback=1):
-  // the fixed RAM has run in the host tests and the test kernel only, not in a PC boot of iOS or on the phone.
-  if (c->ram_giveback < 0) c->ram_giveback = from_image.ram_giveback < 0 ? 1 : from_image.ram_giveback;
+  // The RAM held fixed and locked for the session (ramfix.c): the default since fix-ram-locked (2026-11-15; the owner's
+  // rule: iOS's RAM is never swapped). The phone's session of main 3233fed showed why: with ram-giveback=1 at a fitted
+  // 6656 MiB Linux still swapped iOS's RAM (shmem) with 1.9 GB of other page cache there, 138 -> 604 MiB at up to
+  // 37.9 MB/s of swap-outs, and only a lock stops that. ram-giveback=1 is 0058's way again (one setting).
+  if (c->ram_giveback < 0) c->ram_giveback = from_image.ram_giveback < 0 ? 0 : from_image.ram_giveback;
   if (c->ram_prefault < 0) c->ram_prefault = from_image.ram_prefault < 0 ? !c->ram_giveback : from_image.ram_prefault;
   if (c->ram_lock < 0) c->ram_lock = from_image.ram_lock < 0 ? !c->ram_giveback : from_image.ram_lock;
-  if (c->ram_session_reserve < 0) c->ram_session_reserve = from_image.ram_session_reserve < 0 ? (int64_t)XH_RAM_SESSION_RESERVE : from_image.ram_session_reserve;
-  if (c->ram_unlock_below < 0) c->ram_unlock_below = from_image.ram_unlock_below < 0 ? (int64_t)XH_RAM_UNLOCK_BELOW : from_image.ram_unlock_below;
   if (c->ram_giveback) c->ram_prefault = c->ram_lock = 0;        // a RAM that gives pages back is neither prefaulted nor locked
   if (!c->ram_prefault) c->ram_lock = 0;
+  if (c->ram_unlock_below < 0) c->ram_unlock_below = from_image.ram_unlock_below < 0 ? (int64_t)XH_RAM_UNLOCK_BELOW : from_image.ram_unlock_below;
+  // A locked RAM always has its valve: under it the host may swap the guest again rather than reclaim every other
+  // process's pages (the fork's watcher's, surfaceflinger's) on the way to its OOM killer. The way back must fit.
+  if (c->ram_lock && c->ram_unlock_below < (int64_t)XH_RAM_UNLOCK_MIN) {
+    fprintf(stderr, "xnuhost: ram-unlock-below=%lld MiB is under %llu MiB with the RAM locked: %llu MiB is used (the valve stays on)\n",
+            (long long)(c->ram_unlock_below >> 20), XH_RAM_UNLOCK_MIN >> 20, XH_RAM_UNLOCK_MIN >> 20);
+    c->ram_unlock_below = (int64_t)XH_RAM_UNLOCK_MIN;
+  }
+  // The headroom: smaller with a lock that can work (no zram pool or working set for the guest's pages), which is asked
+  // here, before the size is known (xh_ram_can_lock: CAP_IPC_LOCK, or no RLIMIT_MEMLOCK).
+  c->ram_lock_expected = c->ram_lock && xh_ram_can_lock();
+  if (c->ram_session_reserve < 0)
+    c->ram_session_reserve = from_image.ram_session_reserve >= 0 ? from_image.ram_session_reserve :
+                             (int64_t)(c->ram_lock_expected ? XH_RAM_SESSION_RESERVE_LOCKED : XH_RAM_SESSION_RESERVE);
+  // With the lock, what fits leaves at least the valve's level and a margin: else the valve would open as soon as the
+  // session is up.
+  if (c->ram_lock && c->ram_session_reserve < c->ram_unlock_below + (int64_t)XH_RAM_VALVE_MARGIN)
+    c->ram_session_reserve = c->ram_unlock_below + (int64_t)XH_RAM_VALVE_MARGIN;
   if (c->ram_fit_on < 0) c->ram_fit_on = from_image.ram_fit_on < 0 ? 1 : from_image.ram_fit_on;
   if (c->ram_gpu_reserve < 0) c->ram_gpu_reserve = from_image.ram_gpu_reserve < 0 ? (int64_t)XH_RAM_GPU_RESERVE : from_image.ram_gpu_reserve;
   if (c->ram_pagetable_percent < 0) c->ram_pagetable_percent = from_image.ram_pagetable_percent < 0 ? XH_RAM_PAGETABLE_PERCENT : from_image.ram_pagetable_percent;
   // What the host can hold for the guest without swapping it (2026-11-14, fix-ram-fit): MemAvailable now, after the fork
   // stopped One UI's zygote and before the guest takes anything (oneos/interface.md 4), less what the session needs
   // outside the guest: the iOS tasks' page tables (a share of the guest's RAM), KGSL's own memory, and a headroom.
+  // With the RAM locked the host can neither swap nor reclaim it, so this is the bound; the page cache MemAvailable
+  // counts is taken (the host reclaims cache, never the locked RAM).
   uint64_t total = 0, available = 0;
   bool known = xh_meminfo(c->ram_meminfo, &total, &available) == 0;
   c->ram_fit = known ? xh_ram_fit(available, (uint64_t)c->ram_session_reserve, (uint64_t)c->ram_gpu_reserve, (unsigned)c->ram_pagetable_percent) : 0;
@@ -448,6 +468,29 @@ int xh_meminfo_value(const char *path, const char *key, uint64_t *bytes)
   }
   fclose(f);
   return r;
+}
+
+unsigned xh_proc_values(const char *path, const char *const *keys, unsigned n, uint64_t *out)
+{
+  FILE *f = fopen(path, "r");
+  if (!f) return 0;
+  char line[160];
+  unsigned found = 0;
+  uint64_t seen = 0;                        // which keys were found (n <= 64)
+  while (found < n && fgets(line, sizeof line, f))
+    for (unsigned k = 0; k < n && k < 64; k++) {
+      size_t len = strlen(keys[k]);
+      if (seen >> k & 1 || strncmp(line, keys[k], len) || (line[len] != ':' && line[len] != ' ')) continue;
+      char *end;
+      unsigned long long v = strtoull(line + len + 1, &end, 10);
+      while (*end == ' ') end++;
+      out[k] = !strncmp(end, "kB", 2) ? (uint64_t)v << 10 : (uint64_t)v;
+      seen |= 1ull << k;
+      found++;
+      break;
+    }
+  fclose(f);
+  return found;
 }
 
 // ---- the display's mode ---------------------------------------------------------------------------

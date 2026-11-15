@@ -82,7 +82,8 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
   it. A host pool would be memory iOS cannot use unless the guest kernel driver carved its BOs from a host range
   (Droid-VM's `--pre-alloc drm-guest-mb` with a guest-side buddy allocator): a change in `DroidVMVirtioGpu3D.cpp`, the
   widgets agent's IOSurface path, a larger `0024` pool range (64 MiB today, and pool pages fail `copyin`), and nothing
-  of it runs on the PC (no KGSL). So the GPU's memory is held fixed by holding the RAM fixed (`ram-giveback=0`,
+  of it runs on the PC (no KGSL). So the GPU's memory is held fixed by holding the RAM fixed (`ram-giveback=0`, the
+  default since fix-ram-locked, 2026-11-15;
   [booter.md](booter.md) 2.2): the blobs' pages are prefaulted and locked with the rest and never given back. What stays
   per blob on the host is KGSL's and udmabuf's own kernel memory (page arrays, sg tables, IOMMU tables: about 1 % of the
   blob bytes [estimate]); the fixed-RAM `memory:` line prints KGSL's per-process files for xnuhost so the next phone boot
