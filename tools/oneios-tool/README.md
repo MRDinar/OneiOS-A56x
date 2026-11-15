@@ -903,6 +903,13 @@ the phone's command byte for byte). The stand-in answers it in one of two modes,
   `fake-xnuhost`) keeps `PID/cmdline` while it runs and removes it when it ends; `fake-adb.sh` drops the entry of
   a process that is gone, as the kernel does. macOS has no `/proc`, so this is its default; on Linux
   `FAKE_PROC=stand-in` runs the same path, and `modes.sh` runs the phone, app and cycle suites in both modes.
+- **Several runs at once** (several agents on one box): each `modes.sh` run has its own folder
+  (`out/rustport-modes/run.XXXXXX`, or `MODES_RUN=DIR`), gives each suite its own `WORK=` in it, and counts only its
+  own stand-in sessions; the cycle suite runs its stand-in build steps on a tmux server of its own (`TMUX_TMPDIR`
+  beside its work folder, `TMUX` unset) and stops only that server at its end. The cycle's `summary.md` check reads
+  the fork checkout's own `versionName`/`versionCode` (it moves with each upstream merge). Checked 2026-11-15: two
+  `modes.sh cycle` runs at once, against the fork's `oneios` (0.4.86) and PR #3's merge (0.5.14): both 103 ok in both
+  modes, no session left on the box's tmux server.
 
 Before this (the Mac, 2026-11-12) the stand-in on macOS read a `/proc` that is not there: the tool never saw a
 stand-in session (status said none, the refusals in a session did not come, a return found "no session"), and
