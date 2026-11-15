@@ -489,6 +489,10 @@ so and fix or extend the CLI. **The CLI has not run on the real phone yet** (wri
 phone on a box without one, 2026-11-12): until its first run there, the commands of "The same by hand" below are
 the ones that were run, and `scripts/phone/stage.sh` stays.
 
+The app's checkout is the submodule `app/` (section 7): clone with `git clone --recurse-submodules`, and
+`git submodule update --remote app` brings it to the head of the fork's branch `oneios` before an `app` or `cycle`
+build.
+
 ```sh
 T=tools/oneios-tool/target/release/oneios-tool        # cargo build --release --manifest-path tools/oneios-tool/Cargo.toml
 $T phone status                    # root, the installed app, the session, oneios_root.sh status (@@RESULT ready 1: a switch would start)
@@ -676,6 +680,25 @@ URLs are also in `logs/serve-urls.txt`; each tunnel's log is `logs/serve-tN.log`
 
 ## 7. The OneOS fork app
 
+### The checkout: the submodule `app/`
+
+The fork (`https://github.com/akshaynexus/OneOS`, branch `oneios`) is the submodule `app/` of this repository
+(`.gitmodules`: `branch = oneios`). Clone both at once, or add it to a checkout you have:
+
+```sh
+git clone --recurse-submodules https://github.com/akshaynexus/OneiOS     # app/ at the commit OneiOS recorded
+git submodule update --init app            # an existing checkout: the same
+git submodule update --remote app          # app/ at the head of the fork's branch oneios (what CI builds)
+git -C app switch oneios                   # to work on the fork in app/: a branch instead of a detached head
+```
+
+`--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
+`app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
+app`). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
+--remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
+`git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
+package takes `runtime/`, `kernel/` and `LICENSE` only, and the runtime job never checks it out.
+
 With `oneios-tool` (first choice; **not used for a real build or install yet**: the Linux PC builds no app and has no
 JDK 21 or Android SDK, by the owner's decision, so the tool was tested there with stand-ins only):
 
@@ -699,15 +722,20 @@ and looks further; with nothing found it ends with status 1 and lists the places
 which checkout and how it was found; `$T app dir` prints the path alone. `cycle` (section 6) uses the same lookup.
 By hand, and what the tool runs:
 
-Repo `akshaynexus/OneOS`, branch `oneios`. A push to `oneios` runs `.github/workflows/oneios-apk.yml`: it builds
-the full debug APK (the workflow's own `GITHUB_TOKEN` reads the SESL packages), runs the unit tests and publishes
-the prerelease `oneios-<version>` (0.4.75 is the first with the Hardware checks screen). Locally: a `read:packages` token in `~/.config/twidget/github.properties`
+Repo `akshaynexus/OneOS`, branch `oneios`. Every OneiOS pull request, push to `main` and release builds the APK
+from the head of that branch (`./gradlew test assembleFullDebug`, and `./gradlew test` on macOS; the job `apk` of
+`.github/workflows/release.yml`, [releases.md](releases.md)). A push to `oneios` itself runs the fork's own
+`.github/workflows/oneios-apk.yml`: it builds the full debug APK (the workflow's own `GITHUB_TOKEN` reads the SESL
+packages), runs the unit tests and publishes the prerelease `oneios-<version>` on the fork (0.4.75 is the first
+with the Hardware checks screen). Locally: a `read:packages` token in `~/.config/twidget/github.properties`
 (`ghUsername`, `ghAccessToken`), then `cd app-android && ./gradlew test assembleFullDebug`.
 
 ## 8. Releases
 
-A tag `vN.N.N` on `main` runs `.github/workflows/release.yml`, which builds the runtime package with the pinned NDK
-and attaches it and its `.sha256` to the release. No kernel, no image. See [releases.md](releases.md).
+A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/release.yml`, which builds the
+runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
+once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
+[releases.md](releases.md).
 The first release is [`v0.1.0`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.0) (2026-11-10).
 
 ## 9. iOS user-space code (executables, dylibs, bundles): Xcode on macOS, a cross toolchain on Linux

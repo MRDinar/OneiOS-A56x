@@ -26,6 +26,7 @@ command that no longer works, or a status that has moved on. If you are unsure w
 | The GPU path | `docs/gpu.md` |
 | The display helper | `runtime/display/README.md` |
 | The runtime package, `runtime.json`, releases, CI | `docs/releases.md` |
+| The fork submodule `app/` (its URL or branch, a new pin), the APK in releases, `.github/workflows/release.yml` | `docs/releases.md` "CI and releases", `docs/building.md` section 7, `oneos/interface.md` (and the fork's `docs/oneios.md` "CI") |
 | What the OneOS fork reads or does (session ABI, stage layout, start/stop) | `oneos/interface.md` (and the fork's `docs/oneios.md`) |
 | A new reference repo or pin | `docs/references.md`, `scripts/setup/get-references.sh` |
 | A phone check tool's commands or output | its `README.md` "On the phone" section |
