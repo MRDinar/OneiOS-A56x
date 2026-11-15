@@ -103,6 +103,8 @@ typedef struct {
                             // xh_pen_lookup) or the script's pen as the guest's pen device /arm-io/input-1, and oneios-pen=1
   char  pen_rotate[8];      // pen-rotate=auto|0|90|180|270: the digitizer's frame turned clockwise onto the panel's
   bool  pen_mirror;         // pen-mirror=1: then mirrored left to right
+  char  encoder[8];         // encoder=off (default, until the guest codec archive + pmap patch land) | auto: the video
+                            // encoder bridge (runtime/bridges/encoder), /arm-io/virtio-media-0 with a media-host-pool
   bool  tasks;              // start the task factory
   int   task_uid;           // uid of iOS task processes, -1 = xnuhost's own
   int   log_level;
