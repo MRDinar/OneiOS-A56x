@@ -36,6 +36,10 @@ typedef struct {
   char        cpu_cluster[XL_MAX_CPUS];   // 'P' or 'E'
   uint32_t    timebase_hz;                // CNTFRQ_EL0 of the host
   uint64_t    dram_base, dram_size;       // the kernel's memory window (physical)
+  // xnuhost's ram-view= (0 = off): the DRAM size the device is said to have. /defaults then carries the per-process
+  // memory limits of an iPhone18,2 (its own device tree's kern.*_task_pmem, scaled by view_size / 12 GiB); without it only
+  // kern.max_task_pmem, the iPhone's 3376 MB.
+  uint64_t    view_size;
   uint64_t    armio_base, armio_size;     // must not start at 0 (pexpert takes it as the SoC base)
   uint64_t    gic_dist, gic_dist_size, gic_redist, gic_redist_size, gic_redist_stride;
   uint64_t    uart_base, uart_size;       // PL011, node "uart0"; size 0 for none
@@ -67,6 +71,7 @@ typedef struct {
   // with model/product names from the strings below (which may be NULL).
   const xl_adt_node *identity;
   const char *model;                      // "iPhone18,2"
+  const char *target_type;                // the root's target-type without an identity tree ("V54"; NULL: none)
   const char *display_gamut;              // /product artwork-display-gamut, default "P3"
   // The guest's display (0 = say nothing): the mode in pixels, the UI scale (pixels per point, 2 or 3: /chosen
   // display-scale, which MobileGestalt answers main-screen-scale from, and /product artwork-scale-factor) and the

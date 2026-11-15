@@ -157,6 +157,10 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     }
   } else {
     xl_adt_set_str(root, "model", m->model ? m->model : "oneios-xnuhost");
+    // The board (24A446's DeviceTree: target-type "V54" for the iPhone18,2). iOS names its jetsam properties by it:
+    // without it runningboardd logs "Can't find jetsamproperties ('/System/Library/LaunchDaemons/com.apple.jetsamproperties'
+    // | '' | 'plist')" (a PC boot, 2026-11-15) and has none of com.apple.jetsamproperties.V54.plist's bands and limits.
+    if (m->target_type) xl_adt_set_str(root, "target-type", m->target_type);
   }
   memcpy(compatible + used, "oneios,xnuhost", sizeof "oneios,xnuhost");
   used += sizeof "oneios,xnuhost";
@@ -267,6 +271,21 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   // The vnode limit XNU sizes from memory, (bytes / 64 KiB) + 1024: without it the BCM2837
   // configuration clips it to 1024 and the vnode jetsam kills every idle process.
   xl_adt_set_u32(defaults, "kern.maxvnodes", (uint32_t)(m->dram_size / 0x10000 + 1024));
+  // ram-view= (xnuhost): the per-process memory limits an iPhone18,2 has, from its own device tree (24A446's
+  // DeviceTree /defaults: kern.max_task_pmem 3376, kern.entitled_max_task_pmem 6144, kern.entitled_dev_max_task_pmem
+  // 6656 MB, for its 12 GiB), scaled by the view. XNU reads them in task_init (max_task_footprint) and
+  // memorystatus_init (the entitled raise of apps with com.apple.developer.kernel.increased-memory-limit). A footprint
+  // counts the task's compressed pages too (phys_footprint), so these are limits on what the compressor holds as well.
+  // Without the view: the iPhone18,2's own default task limit (kern.max_task_pmem 3376 MB; before 2026-11-15 the tree had
+  // none, so a task with no limit of its own from launchd or RunningBoard had none at all) and no entitled raise, as before.
+  if (!m->view_size) xl_adt_set_u32(defaults, "kern.max_task_pmem", 3376);
+  else {
+    static const struct { const char *name; uint32_t mb; } limits[] = {
+      { "kern.max_task_pmem", 3376 }, { "kern.entitled_max_task_pmem", 6144 }, { "kern.entitled_dev_max_task_pmem", 6656 },
+    };
+    for (unsigned i = 0; i < sizeof limits / sizeof *limits; i++)
+      xl_adt_set_u32(defaults, limits[i].name, (uint32_t)((uint64_t)limits[i].mb * (m->view_size >> 20) / (12u << 10)));
+  }
   xl_adt_add(root, "options");
 
   // bluetoothd finds its controller by name; transport-encoding 10 is the virtual transport.

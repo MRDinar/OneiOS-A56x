@@ -520,6 +520,28 @@ static int boot(void)
   LOGI("memory: %llu MiB at 0x%llx, physical = virtual (slide 0x%llx); I/O aperture 0x%llx",
        (unsigned long long)(window >> 20), (unsigned long long)phys,
        (unsigned long long)((uintptr_t)g_mem.host - kernel.base), (unsigned long long)(uintptr_t)g_mem.io_host);
+  // ram-view=SIZE (docs/booter.md 2.2, "The memory view"): iOS is told SIZE of DRAM over this same RAM. XNU cannot
+  // manage more pages than the RAM has (hw.memsize is max_mem, every page of boot_args memSize goes on the free lists:
+  // arm_vm_init.c, vm_resident.c), and a page above the locked RAM would be the host's to swap. So the RAM stays what
+  // it is; the view is boot_args memSizeActual (max_mem_actual: hw.memsize_physical), the per-process limits of an
+  // iPhone18,2 of that size in /defaults (machine.c), and the compressor's room to hold that much in this RAM.
+  uint64_t view = config.ram_view > window ? config.ram_view : 0;
+  if (config.ram_view && !view)
+    LOGE("memory: ram-view=%llu MiB is not more than the guest's RAM (%llu MiB): off", (unsigned long long)(config.ram_view >> 20),
+         (unsigned long long)(window >> 20));
+  int view_multiplier = xh_view_boot_args(config.boot_args, sizeof config.boot_args, view, window);
+  if (view_multiplier < 0) { LOGE("no room in the boot arguments for ram-view's compressor setting"); return -1; }
+  // The view is meant over locked RAM (the owner's rule: iOS's RAM is never swapped): with ram=auto and the lock that is
+  // the most that fits locked (config.ram_lock_fit, config.c). A bigger or unlocked RAM under a view is said, not refused.
+  if (view && (!config.ram_lock || !config.ram_lock_fit || config.ram_bytes > config.ram_lock_fit))
+    LOGE("memory: ram-view over a RAM that is not all locked (%llu MiB asked, %llu MiB fits locked%s): the host may swap "
+         "iOS's RAM; ram=auto with the lock (the default) is the mode", (unsigned long long)(config.ram_bytes >> 20),
+         (unsigned long long)(config.ram_lock_fit >> 20), config.ram_lock ? "" : ", ram-lock off");
+  if (view)
+    LOGI("memory: ram-view: iOS is told %llu MiB of DRAM (hw.memsize_physical, and an iPhone18,2's per-process limits for "
+         "it) over %llu MiB of RAM (hw.memsize); its compressor may hold up to %d x the RAM's pages "
+         "(kern.compressor_pool_multiplier) in that RAM",
+         (unsigned long long)(view >> 20), (unsigned long long)(window >> 20), view_multiplier);
   ram_fix_start();
 
   // The board: GIC, console, disks, input, display.
@@ -780,7 +802,9 @@ static int boot(void)
   machine.timebase_hz = (uint32_t)g_info.timebase_hz;
   machine.dram_base = phys;
   machine.dram_size = window;
+  machine.view_size = view;
   machine.model = "iPhone18,2";
+  machine.target_type = "V54";           // its board: iOS finds com.apple.jetsamproperties.V54.plist by it (loader machine.c)
   machine.display_width = fb_width;
   machine.display_height = fb_height;
   machine.display_scale = config.scale;
@@ -874,7 +898,7 @@ static int boot(void)
   }
 
   xl_boot_request request = {
-    .image = { image, image_size }, .kernel = &kernel, .ram = g_mem.host, .window = window, .phys_base = phys,
+    .image = { image, image_size }, .kernel = &kernel, .ram = g_mem.host, .window = window, .phys_base = phys, .mem_size_actual = view,
     .virt_base = (uint64_t)(uintptr_t)g_mem.host, .tree = tree, .command_line = config.boot_args,
     .video = { boot_fb_pa, 1, (uint64_t)fb_width * 4, fb_width, fb_height, 32 },
     .legacy_boot_args = config.legacy_boot_args, .ramdisk = ramdisk, .trustcache = trust, .gpu_addon = addon, .root_policies = policies,

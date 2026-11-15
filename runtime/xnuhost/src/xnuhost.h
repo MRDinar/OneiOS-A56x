@@ -49,6 +49,11 @@ typedef struct {
   // ram_bytes is then the guest's size and ram_auto_total/available what was read (both 0: not auto).
   uint64_t ram_bytes;       // 0 = auto
   bool  ram_given;          // ram= was set here (the command line wins over the image set's xnuhost.conf)
+  // ram-view=SIZE|auto|off (off; auto = 12 GiB): the DRAM iOS is told it has (hw.memsize_physical, the per-process limits of /defaults) and
+  // the compressor's room for it, over the same locked RAM (main.c; docs/booter.md 2.2, "The memory view"). 0 = off.
+  uint64_t ram_view;
+#define XH_RAM_VIEW_AUTO (12ull << 30)   // ram-view=auto: an iPhone18,2's DRAM
+  bool  ram_view_given;
   int   ram_percent;        // ram-percent=: the guest's share of MemTotal for ram=auto, 10-100; -1 = unset (90)
   int64_t ram_host_floor;   // ram-host-floor=: what ram=auto always leaves the host, bytes; -1 = unset (1.5 GiB)
   char  ram_meminfo[256];   // ram-meminfo=FILE: where ram=auto reads MemTotal (tests); default /proc/meminfo
@@ -221,6 +226,9 @@ xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel);
 // offline-legacy-unit-scale=SCALE (/chosen display-scale) and sheng-vsync=HZ (the vsync tick and, above 60 Hz,
 // the refresh properties). -1: no room.
 int  xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, unsigned format);
+// ram-view=: kern.compressor_pool_multiplier for a view of `view` bytes over `window` bytes of RAM, added unless set (config.c).
+// Returns the multiplier, 0 for no view (view not over window), -1 with no room.
+int  xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window);
 // True when the boot arguments' owner-hide-vmm=NAME[,NAME...] (the kernel's per-process vmm-present switch) names
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);

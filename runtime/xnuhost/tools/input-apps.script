@@ -1,0 +1,94 @@
+# An app load for memory checks on the PC (xnuhost --input-script FILE; format: src/input_script.c): after the boot,
+# tap each place of the Home Screen's first page, give the app time to open under qemu, go Home, and the next one.
+# The same load for a before and an after run. The axes are input-demo.script's (a 1440 x 3120 panel); the places
+# are a 4 x 6 grid and the dock at the proportions of iOS's Home Screen on a 6.9-inch iPhone (not measured on a
+# screenshot: a place with no icon opens nothing, which costs only its wait).
+abs 0x2f 0 9             # ABS_MT_SLOT
+abs 0x39 0 65535         # ABS_MT_TRACKING_ID
+abs 0x35 0 1439 10       # ABS_MT_POSITION_X
+abs 0x36 0 3119 10       # ABS_MT_POSITION_Y
+wait 1080000            # 18 min: SpringBoard and the Home Screen under qemu (before `ready`: `repeat` does not wait again)
+ready
+swipe 720 3100 720 1500 300
+wait 5000
+tap 216 359
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 552 359
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 888 359
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 1224 359
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 216 702
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 552 702
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 888 702
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 1224 702
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 216 1045
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 552 1045
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 888 1045
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 1224 1045
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 216 1388
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 552 1388
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 888 1388
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 1224 1388
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 216 2870
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 552 2870
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 888 2870
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+tap 1224 2870
+wait 40000
+swipe 720 3100 720 1500 300
+wait 5000
+repeat

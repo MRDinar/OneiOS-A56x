@@ -239,6 +239,13 @@
 # CLPC's hint (hostcall.h perf_hint: the class of the user thread a vCPU runs, for the host's uclamp and the GPU path);
 # hosted_processors_idle_mach for the oneios-cpu window's bound (gpu/cpu_window.h). README.md, "0075".
 0075-host-overhead-per-cpu-stats-perf-hint.patch
+# fix-ios-compressor (2026-11-15): three more oneios-mem lines every 30 s (no behaviour changed by them): the compressor's own
+# counters (the pages it holds against the RAM it takes: the compression ratio; its room; low on space) and what jetsam
+# answers to (memorystatus available against the critical, idle, soft and reaper thresholds; the /defaults task limits
+# xnuhost's ram-view gives; hw.memsize and hw.memsize_physical; the kills since boot by cause); and a debugging tool,
+# oneios-compress-sweep=SECONDS (off): once, hand every anonymous page to the compressor (vm_pageout_anonymous_pages), for
+# its ratio on a boot that never runs short of file pages. README.md, "0076".
+0076-compressor-jetsam-report.patch
 # radio2: no numbered patch for the Wi-Fi: net/ is an archive of this build (kernel/build-hosted.sh,
 # oneios-tool kernel gen net), started by oneios_drivers_start's oneios_net_start (weak in drivers/bridge/OneiOSBridge.c).
 # net/README.md: IO80211Controller/IO80211Interface under the collection's original IOEthernetController and

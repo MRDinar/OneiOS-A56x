@@ -436,6 +436,10 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   ([the HID archive's README](../kernel/patches/oneios-hosted/hid/README.md)). The script also has a pen (a hover, two
   strokes, the side button), left out unless `--set pen=auto` is added: then the guest gets the pen device
   `/arm-io/input-1` and `oneios-pen=1`, and the `pen:` and `oneios-hid: pen:` lines follow it ([hardware.md](hardware.md) 7f).
+  An app load for memory checks: `--input-script runtime/xnuhost/tools/input-apps.script` (after 18 min, a tap on each
+  place of the Home Screen's first page and the dock, 40 s for the app, then Home; again and again), the same load for a
+  before and an after run ([booter.md](booter.md) 2.2, "iOS's own compressor and the memory view"). On a loaded PC give
+  the first wait more (a copy with `wait 2400000`).
 - What user space did, after the run has stopped: the Data volume is in `--data`'s `data.img` and launchd keeps
   its own log on it (every job spawned or refused, every exit with its reason).
   `apfs-fuse -o ro,vol=2 out/run/data/data.img MNT`, then `MNT/root/log/com.apple.xpc.launchd/launchd.log`, and
