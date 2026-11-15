@@ -1151,6 +1151,67 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0080-shared-region-protect.patch (fix-dyld-objc, 2026-11-15)
+
+The keyboard lagged everywhere (phone session 8644ae9-b: `oneios-cpu: Preferences[177] 102-104%, backboardd 34-44%,
+kbd[159] 12-16%`; `oneios-perf` per 30 s: 295,255 faults, 216,049 of them to vm_fault, 295,247 user maps and 281,109
+unmaps: map churn), and every process logged `triggered unnest of range ... of DYLD shared region` once, from launchd
+on. What was found, from the source and the PC's logs:
+
+- **The unnest.** The range is always the 32 MiB block that holds the start of `dyld_shared_cache_arm64e.25.dylddata`'s
+  `__DATA_CONST` (with the boot's slide: `0x1fd200000->0x1ff200000` at slide `0x1d130000`; that block holds the
+  `__DATA_CONST` of libobjc, dyld itself and the other first images). XNU logs an unnest only below the lowest writable
+  mapping, so the read-only `__DATA_CONST` is the one that shows; `__TPRO_CONST` and the `__AUTH_CONST` above it unnest
+  without a line. It comes from `vm_map_protect`: its exclusive range lock (`vm_range_lock_pmap_unnest_and_clip`,
+  `vm/vm_map_lock.c`) unnests the block and copies the constant submap's entries into the task's map before anything
+  looks at whether the protection changes. dyld 24A446 runs from the cache (`dyld MachO: 0x180482000`) and has two
+  shared-cache protect paths: `ProcessConfig::DyldCache::makeDataConstWritable` (`marking shared cache range ...`) and
+  `lsl::MemoryManager`'s protected memory (`__TPRO_CONST,__allocator`), which on a device whose kernel does not pass
+  `dyld_hw_tpro=1` (TPRO: per-thread write permission in hardware, which this host does not have) is made writable and
+  read-only again with `mach_vm_protect` around dyld's work. `mach_vm_protect` (-14) is the PC's top Mach trap while
+  processes start (7,375 per 30 s at 151 us each, about 90 per process launch).
+- **The map churn of those protects (ours).** `pmap_protect` flushed its whole range whatever changed, and here a flush
+  is an unmap of the task's host mappings (`hosted_pmap.h`): every page of the range is faulted in again at its next
+  use. `vm_map_protect` asks the pmap for the new protection minus write when it adds write, which changes no entry; so
+  each time dyld made its memory writable the whole range was unmapped for nothing, then each write went to vm_fault and
+  each read was filled again.
+- **The other slow paths of the phone's samples are iOS's own.** `objc::ObjectHashTable::forEachObject` under
+  `_dyld_for_each_objc_protocol` is the lookup in the cache's preoptimized protocol table (libobjc calls it only when
+  its shared-cache optimizations are on, so they are on); `DyldSharedCache::forEachImageTextSegment` under
+  `findImageMappedAt` is dyld's search of the cache's text segments for an address in a `r-x` mapping (the cache
+  header is valid and the cache is where dyld expects it); `lsl::Vector<dyld_image_info>::insert` is an image added to
+  the image list by a dlopen. Nothing of ours makes them slower than on an iPhone, except that each dyld API call that
+  makes its memory writable costs protects (above).
+
+What the patch changes:
+
+- **pmap_protect flushes only what changed** (`arm/pmap/pmap.c` `pmap_protect_options_internal`,
+  `hosted_protect_changes` in `hosted_pmap.h`): the span of the entries whose host mapping changed (the page or
+  `hosted_pte_prot`); entries that are the same keep their host mappings. `oneios-protect-flush-all=1` flushes the
+  whole range as before.
+- **A protect of the nested shared region that changes nothing leaves it nested** (`vm/vm_map.c`
+  `vm_map_protect_hosted_noop`): not the maximum, no `VM_PROT_COPY`, and every entry of the range (in the constant
+  submap, read under a shared range lock) already has the asked protection (no JIT or TPRO entry): `KERN_SUCCESS`, no
+  exclusive lock, no unnest. `oneios-sr-protect-noop=0` is the old way.
+- **`oneios-top=N`** (default 6, 0 off; printed with oneios-perf, each period): `oneios-top: shared region: V vm_protect
+  calls, N that changed nothing (left nested), U unnests; pmap_protect entries flushed F, kept mapped K (unchanged)`,
+  then the N processes the kernel's trap time went to most: `oneios-top: NAME[PID] cpu C%, T traps U us: vm_fault F (U
+  us), fills L, own unmaps M; calls NUMBER COUNT xMEAN_US ... (-N: Mach traps); vm_protect P (shared region S, unnests
+  X, last prot 0x.. from pc 0x.. lr 0x..)`. `cpu` is the process's user and system time since the report before
+  (TASK_POWER_INFO; -1 the first time it is listed), which the PC otherwise lacks (`oneios-cpu` comes from the GPU
+  archive, with 3D only). **`oneios-srprot:`** lines: the first 24 vm_protects of the shared region in a boot, with the
+  saved pc and lr and four return addresses (`oneios-tool sym` names them).
+
+**Status: WIP, not proven (work stopped by the owner, 2026-11-15 19:55).** Built (`HOSTED_OUT=dyldobjc`, 744 s; prelink
+audit 0 failures, `stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 5 of 5). The first PC boot of that build
+(`oneios-protect-flush-all=1 oneios-sr-protect-noop=0`, qemu-aarch64, 8 vCPUs, 2560 MiB) stopped 1 s into the kernel:
+the guest halted on cpu0 (reason 2) right after `VM bootstrap: 30 maps, 128 entries and 16 nodes available`, xnuhost
+exit 4. The cause was not looked into: the first thing to find before any other run (an early `vm_map_protect` through
+`hosted_top_note_protect`, or `vm_map_protect_hosted_noop` before the shared region exists, are the first suspects; a
+guess). No before/after numbers, not run on the phone. The plan: `runtime/xnuhost/tools/input-typing.script` (Search's
+keyboard, 100 keys per 70 s) on a before boot (the two switches above) and an after boot, `oneios-top` for kbd's
+faults, unmaps and protects, the `triggered unnest` count and `oneios-ubt=kbd` samples in dyld.
+
 ## 0049-wifi-association-event.patch (radio2, 2026-11-12)
 
 `kev_post_msg` (bsd/kern/kern_event.c) refuses an event that does not fit one mbuf without a cluster (`MLEN`), with

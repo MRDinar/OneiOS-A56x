@@ -459,6 +459,12 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   not published on a host without 3D unless asked). About ten seconds in: `droidvm-gpu: Metal accelerator stage 5
   status 0` and two `oneios-adreno: selftest:` lines (IOKit's match, the plug-in's open and one call;
   [gpu.md](gpu.md) 5.1). No 3D call can run here: qemu has no KGSL.
+- Typing on the PC: `--input-script runtime/xnuhost/tools/input-typing.script` (keep `--no-input`) goes Home after
+  18 minutes, opens Search with a swipe down (its keyboard comes up) and taps 100 keys in 70 s, again and again. Who the
+  kernel's time goes to while it types: the `oneios-top:` lines every oneios-perf period (hosted `0080`, `oneios-top=N`,
+  default 6): per process its CPU (`cpu C%`, which the PC's log otherwise lacks), its traps, faults to vm_fault, fills,
+  host unmaps and most used calls, and its vm_protects of the shared region; `oneios-srprot:` lines name the first 24
+  shared-region protects with where they came from (`oneios-tool sym`).
 - A user process that neither dies nor does its job: boot arguments `oneios-ubt=NAME[,NAME...]`
   (`oneios-ubt-at=SECONDS`, default 420; `oneios-ubt-every=SECONDS` to repeat; `oneios-ubt-count=N` to stop after N
   reports, each headed `oneios-ubt: report K at +S s`, `0061`) make the kernel print where every
