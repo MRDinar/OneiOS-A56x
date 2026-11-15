@@ -1033,6 +1033,16 @@ addresses are the binary's, unslid):
   client. (2) xnuhost logs `boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in
   its own process: nothing reaches the phone's controller (docs/hardware.md 4); take it out` (read as bluetoothd reads
   it: any word that contains the name, the value after its `=`, under 13, the last word wins; host-tested).
+- **PC boot (2026-11-15, kernel.kc 7261a00b from xnu.macho 948bb412 with both fixes; `--set bluetooth=sim`,
+  `bt-transport-override=10`; stopped after 27 minutes):** xnuhost logged the new `boot arguments:
+  bt-transport-override=10 ...` error line; the root mounted on the first try; `ONEIOS BT: on: ...` and `ONEIOS BT:
+  transport up 2620 ms after the start: ...` as before. bluetoothd[75] (one pid for the whole run): `transport override
+  from boot-arg: 10`, `HCI Transport is set to virtual`, `fStackStarted:0`; its `oneios-iokit:` lines are the device
+  tree (`marconi-bt`, `bluetooth`, `local-mac-address`, `transport-encoding`), the key store, `IOPMrootDomain`,
+  `/product` and `kern.hv_vmm_present -> 1`, with **no kernel control lookup** and no `ONEIOS BT: dev:`, `sk:` or
+  `ios:` line. As in every PC boot so far nothing asked bluetoothd to power on (no `Beginning asynchronous power init`),
+  so neither a power-on nor the phone's exit(1) can be seen on the PC; a power on would run BTVC, not the stand-in
+  controller.
 - **What would reach the controller [U, not tried]:** a chip for transport 1 outside the VM without changing the binary:
   `BT_CHIP=ACI BT` in bluetoothd's environment (chip 2000) with the VM hidden, or transport 9 (chip 3000, whose transport
   is Apple's PCIe Skywalk protocol, not H4). Each needs the VM hidden from bluetoothd and a PC boot that reads the
