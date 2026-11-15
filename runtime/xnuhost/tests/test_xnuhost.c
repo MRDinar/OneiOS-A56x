@@ -1228,6 +1228,200 @@ static void test_input_filter(void)
   xh_input_power_key = NULL;
 }
 
+// The pen (pen.c): which devices are taken, the evdev state as the guest's sample, the frames the guest's device gets.
+static test_ev pen_got[64];
+static unsigned pen_n;
+static void pen_capture(void *context, uint16_t type, uint16_t code, int32_t value)
+{
+  (void)context;
+  if (pen_n < 64) pen_got[pen_n++] = (test_ev){ type, code, value };
+}
+static int pen_find(uint16_t type, uint16_t code, int32_t *value)
+{
+  for (unsigned i = 0; i < pen_n; i++)
+    if (pen_got[i].type == type && pen_got[i].code == code) { if (value) *value = pen_got[i].value; return (int)i; }
+  return -1;
+}
+static xh_pen_state pen_fake_state;
+static int pen_fake_read(xh_pen_source *s, xh_pen_state *state) { (void)s; *state = pen_fake_state; return 0; }
+
+static void test_pen(void)
+{
+  // The lookup's test: a pen's bits; never a device with a side key or multitouch positions.
+  uint8_t keys[96] = { 0 }, abs[8] = { 0 };
+#define SETBIT(a, n) ((a)[(n) / 8] |= (uint8_t)(1 << ((n) % 8)))
+  const char *why = NULL;
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && why && strstr(why, "BTN_TOOL_PEN"));
+  SETBIT(keys, 0x140); SETBIT(abs, 0); SETBIT(abs, 1);
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "ABS_PRESSURE"));
+  SETBIT(abs, 0x18);
+  int plain = xh_pen_rank("digitizer", keys, sizeof keys, abs, sizeof abs, &why);
+  CHECK(plain == 1 && why == NULL);
+  SETBIT(abs, 0x1a); SETBIT(keys, 0x14b);
+  int full = xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why);
+  CHECK(full > plain && full == 1 + 2 + 4);                                     // tilt, the side button, a pen's name
+  uint8_t mt[8];
+  memcpy(mt, abs, sizeof mt);
+  SETBIT(mt, 0x35);
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, mt, sizeof mt, &why) == 0 && strstr(why, "multitouch"));
+  SETBIT(keys, 116);                                                            // KEY_POWER: never the pen's device
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "side keys"));
+#undef SETBIT
+  CHECK(xh_pen_lookup == xh_pen_lookup_evdev);                                  // the default lookup, replaceable
+
+  // The sample: a digitizer of 0..16000 x 0..34000, pressure 0..8191, height 0..255, tilt +-63 without a resolution.
+  xh_pen_device d = { .fd = -1, .stylus = true };
+  d.axis[XH_PEN_X] = (xh_pen_axis){ 0, 16000, 0, true };
+  d.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 34000, 0, true };
+  d.axis[XH_PEN_PRESSURE] = (xh_pen_axis){ 0, 8191, 0, true };
+  d.axis[XH_PEN_DISTANCE] = (xh_pen_axis){ 0, 255, 0, true };
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  d.axis[XH_PEN_TILT_Y] = (xh_pen_axis){ -63, 63, 0, true };
+  xh_pen_state st = { .tool = true };
+  st.value[XH_PEN_X] = 8000; st.value[XH_PEN_Y] = 34000; st.value[XH_PEN_DISTANCE] = 0; st.value[XH_PEN_PRESSURE] = 500;
+  st.value[XH_PEN_TILT_X] = 30; st.value[XH_PEN_TILT_Y] = -20;
+  xh_pen_sample s;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  // Hovering: in range, no pressure (the device's 500 is not a contact), a height of 1 at least (UIKit's hover needs Z > 0).
+  CHECK(s.in_range && !s.touch && !s.eraser && s.pressure == 0 && s.distance == 1 && s.x == 16383 && s.y == 32767 && s.tilt_x == 30 && s.tilt_y == -20);
+  st.touch = true; st.value[XH_PEN_PRESSURE] = 8191;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.touch && s.pressure == 4095 && s.distance == 0);
+  st.value[XH_PEN_PRESSURE] = 4096;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.pressure == 2047);                                                    // scaled to 0..4095
+  st.stylus = true;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.barrel);
+  // Turned a quarter clockwise: the digitizer's top left is the panel's top right; the tilt turns with it. Mirrored: back.
+  st.value[XH_PEN_X] = 0; st.value[XH_PEN_Y] = 0;
+  xh_pen_sample_of(&d, 90, false, &st, &s);
+  CHECK(s.x == 32767 && s.y == 0 && s.tilt_x == 20 && s.tilt_y == 30);
+  xh_pen_sample_of(&d, 90, true, &st, &s);
+  CHECK(s.x == 0 && s.y == 0 && s.tilt_x == -20 && s.tilt_y == 30);
+  xh_pen_sample_of(&d, 180, false, &st, &s);
+  CHECK(s.x == 32767 && s.y == 32767 && s.tilt_x == -30 && s.tilt_y == 20);
+  xh_pen_sample_of(&d, 270, false, &st, &s);
+  CHECK(s.x == 0 && s.y == 32767 && s.tilt_x == -20 && s.tilt_y == -30);
+  // Tilt by resolution (units per radian: 57 is about a degree a unit), and a wide range without one (its end is 90).
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -5000, 5000, 57, true };
+  st.value[XH_PEN_TILT_X] = 57;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.tilt_x == 57);
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -9000, 9000, 0, true };
+  st.value[XH_PEN_TILT_X] = 4500;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.tilt_x == 45);
+  st.value[XH_PEN_TILT_X] = -9000;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.tilt_x == -89);                                                        // kept short of flat
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  // The eraser end; a tip that touches without BTN_TOOL_PEN is in range; out of range is all zero.
+  xh_pen_state rubber = { .rubber = true };
+  xh_pen_sample_of(&d, 0, false, &rubber, &s);
+  CHECK(s.in_range && s.eraser);
+  xh_pen_state tip = { .touch = true };
+  xh_pen_sample_of(&d, 0, false, &tip, &s);
+  CHECK(s.in_range && s.touch);
+  xh_pen_state gone = { 0 };
+  gone.value[XH_PEN_X] = 500;
+  xh_pen_sample_of(&d, 0, false, &gone, &s);
+  CHECK(!s.in_range && !s.touch && s.x == 0 && s.pressure == 0 && s.distance == 0);
+  // A device with no height axis hovers half way up.
+  xh_pen_device flat = d;
+  flat.axis[XH_PEN_DISTANCE].present = false;
+  xh_pen_state hover = { .tool = true };
+  xh_pen_sample_of(&flat, 0, false, &hover, &s);
+  CHECK(s.distance == 127);
+
+  // The filter: frames to the guest's device, only what changed, nothing for a frame like the last.
+  xh_pen_source src;
+  xh_pen_source_init(&src, NULL, &d, 0, false);
+  src.emit = pen_capture;
+  src.read_state = pen_fake_read;
+  const int64_t t = 5000000000;
+  const xh_input_ev in[] = { { t, 1, 0x140, 1 }, { t, 3, 0, 8000 }, { t, 3, 1, 17000 }, { t, 3, 0x19, 128 }, { t, 0, 0, 0 } };
+  pen_n = 0;
+  xh_pen_feed(&src, in, 5, t);
+  int32_t v = 0;
+  int tool = pen_find(1, 0x140, &v);
+  CHECK(tool >= 0 && v == 1 && pen_find(3, 0, &v) >= 0 && v == 16383 && pen_find(3, 1, &v) >= 0 && v == 16383 && pen_find(3, 0x19, &v) >= 0 && v == 128);
+  CHECK(pen_n > 0 && pen_got[pen_n - 1].type == 0 && pen_find(3, 0, NULL) < tool);   // positions before the keys, then SYN_REPORT
+  pen_n = 0;
+  const xh_input_ev same[] = { { t + 1, 3, 0, 8000 }, { t + 1, 0, 0, 0 } };
+  xh_pen_feed(&src, same, 2, t + 1);
+  CHECK(pen_n == 0 && src.stats.unchanged == 1);                                 // a pen held still in the air: nothing new
+  pen_n = 0;
+  const xh_input_ev down[] = { { t + 2, 3, 0x18, 4096 }, { t + 2, 1, 0x14a, 1 }, { t + 2, 0, 0, 0 } };
+  xh_pen_feed(&src, down, 3, t + 2);
+  CHECK(pen_find(3, 0x18, &v) >= 0 && v == 2047 && pen_find(3, 0x19, &v) >= 0 && v == 0 && pen_find(1, 0x14a, &v) >= 0 && v == 1 && pen_find(1, 0x140, NULL) < 0 && pen_n == 4);
+  pen_n = 0;
+  const xh_input_ev button[] = { { t + 3, 1, 0x14b, 1 }, { t + 3, 0, 0, 0 } };
+  xh_pen_feed(&src, button, 2, t + 3);
+  CHECK(pen_n == 2 && pen_find(1, 0x14b, &v) >= 0 && v == 1 && src.stats.presses == 1 && src.stats.strokes == 1);
+  // SYN_DROPPED: the rest of the frame is dropped, the state read again (out of range now): tip up and the pen gone.
+  pen_n = 0;
+  memset(&pen_fake_state, 0, sizeof pen_fake_state);
+  const xh_input_ev drop[] = { { t + 4, 0, 3, 0 }, { t + 4, 3, 0, 1 }, { t + 4, 0, 0, 0 } };
+  xh_pen_feed(&src, drop, 3, t + 4);
+  CHECK(src.drops == 1 && pen_find(1, 0x14a, &v) >= 0 && v == 0 && pen_find(1, 0x140, &v) >= 0 && v == 0 && pen_find(1, 0x14b, &v) >= 0 && v == 0 &&
+        pen_find(3, 0x18, &v) >= 0 && v == 0 && pen_find(3, 0, NULL) < 0 && src.stats.frames == 0);   // the in-range summary was logged and reset
+  pen_n = 0;
+  xh_pen_feed(&src, same, 2, t + 5);                                             // out of range, still: nothing
+  CHECK(pen_n == 0);
+
+  // The guest's pen device: its name, keys and fixed ranges in its configuration.
+  driver g = { .dev = xh_virtio_input_create(0, 46) };
+  CHECK(g.dev != NULL);
+  xh_pen_guest_device(g.dev);
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 1);
+  CHECK(xh_virtio_mmio_read(g.dev, 0x102, 1) == 10 && xh_virtio_mmio_read(g.dev, 0x108 + 7, 1) == 'p');      // "OneiOS pen"
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 0x11);
+  xh_virtio_mmio_write(g.dev, 0x101, 1, 1);                                     // EV_KEY: BTN_TOOL_PEN 0x140, BTN_STYLUS 0x14b
+  CHECK((xh_virtio_mmio_read(g.dev, 0x108 + 40, 1) & 3) == 3 && (xh_virtio_mmio_read(g.dev, 0x108 + 41, 1) & 0x0c) == 0x0c &&
+        (xh_virtio_mmio_read(g.dev, 0x108 + 14, 1) & 0x1c) == 0);              // no side keys
+  xh_virtio_mmio_write(g.dev, 0x101, 1, 3);                                     // EV_ABS: X, Y, pressure, distance, tilt
+  CHECK((xh_virtio_mmio_read(g.dev, 0x108, 1) & 3) == 3 && (xh_virtio_mmio_read(g.dev, 0x108 + 3, 1) & 0x0f) == 0x0f);
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 0x12);
+  xh_virtio_mmio_write(g.dev, 0x101, 1, 0x1a);
+  CHECK((int32_t)xh_virtio_mmio_read(g.dev, 0x108, 4) == -90 && xh_virtio_mmio_read(g.dev, 0x108 + 4, 4) == 90);
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 0x10);                                  // INPUT_PROP_DIRECT, as the guest's transport needs
+  CHECK(xh_virtio_mmio_read(g.dev, 0x108, 1) == 2);
+  // The touch screen's device keeps its own name and keys.
+  driver touch = { .dev = xh_virtio_input_create(0, 47) };
+  xh_virtio_mmio_write(touch.dev, 0x100, 1, 1);
+  CHECK(xh_virtio_mmio_read(touch.dev, 0x102, 1) == 18);
+
+  // pen-rotate=auto: a landscape digitizer under a portrait panel is turned a quarter; a portrait one is not.
+  const char *how = NULL;
+  CHECK(xh_pen_rotation("auto", &d, 1440, 3120, &how) == 0 && how);
+  xh_pen_device wide = d;
+  wide.axis[XH_PEN_X] = (xh_pen_axis){ 0, 34000, 0, true };
+  wide.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 16000, 0, true };
+  CHECK(xh_pen_rotation("auto", &wide, 1440, 3120, &how) == 90 && xh_pen_rotation("270", &wide, 1440, 3120, &how) == 270);
+
+  // The script's pen lines: their steps are the pen's; a stroke is down, moves and up.
+  xh_input_step *steps = NULL;
+  unsigned n = 0, bad = 0;
+  CHECK(!xh_input_script_parse("pen-abs 0 0 16000\npen-hover 100 200 50 40\npen-stroke 0 0 160 0 32 100 900 10 -5\npen-button 1\npen-out\n", &steps, &n, &bad));
+  unsigned pens = 0, touches = 0, ups = 0;
+  for (unsigned i = 0; i < n; i++) {
+    pens += steps[i].pen;
+    if (steps[i].kind == XH_STEP_EVENT && steps[i].code == 0x14a) { if (steps[i].value) touches++; else ups++; }
+  }
+  CHECK(steps[0].kind == XH_STEP_ABS && steps[0].pen && steps[0].max == 16000 && pens == n - 3 && touches == 1 && ups == 2);   // 3 waits; pen-out lifts too
+  free(steps);
+  CHECK(xh_input_script_parse("pen-stroke 1 2 3\n", &steps, &n, &bad) == -1 && bad == 1);
+  CHECK(xh_input_script_parse("pen-button 2\n", &steps, &n, &bad) == -1);
+  // The demo script (the PC boot's) parses and has its pen (run from runtime/xnuhost, as make test does).
+  bool has_pen = false;
+  FILE *demo = fopen("tools/input-demo.script", "r");
+  if (demo) {
+    fclose(demo);
+    CHECK(xh_input_script_load("tools/input-demo.script", &has_pen) == 0 && has_pen);
+  }
+}
+
 // The scripted event source (input_script.c): the file's lines as steps.
 static void test_input_script(void)
 {
@@ -2125,6 +2319,7 @@ int main(void)
   test_virtio_gpu3d();
   test_virtio_input();
   test_input_filter();
+  test_pen();
   test_input_script();
   test_filter();
   test_fault_access();

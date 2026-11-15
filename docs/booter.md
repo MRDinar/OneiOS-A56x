@@ -805,6 +805,36 @@ Linux's page cache and a sparse file: the store is a raw image.
   rule and the new one were ready at the same frame there; the black frames before the logo are the phone's (its
   frames come through the GPU's blobs). The timeout path has run in the host tests only.
 
+- **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
+  session proves it) or `pen=auto`; `pen-rotate=auto|0|90|180|270` (the digitizer's frame turned clockwise onto the
+  panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess); `pen-mirror=1` (then mirrored
+  left to right). With `pen=auto`, xnuhost (with `input` on) calls `xh_pen_lookup`: the default, `xh_pen_lookup_evdev`,
+  opens each `/dev/input/event0..63` read only and takes the best device with `BTN_TOOL_PEN`, `ABS_X/Y` and
+  `ABS_PRESSURE` (more for `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a name with "pen" in it, such as Samsung's
+  `sec_e-pen`); never one with a side key or multitouch positions; never grabbed. Another hardware backend replaces the
+  lookup by setting `xh_pen_lookup` to its own function (same signature; nothing else names a Samsung device). When a pen
+  is found, or the input script has `pen-` lines, the board gets a **second virtio-input device, `/arm-io/input-1`**,
+  named "OneiOS pen" (`BTN_TOOL_PEN`, `BTN_TOOL_RUBBER`, `BTN_TOUCH`, `BTN_STYLUS`; `ABS_X/Y` 0..32767, `ABS_PRESSURE`
+  0..4095, `ABS_DISTANCE` 0..255, `ABS_TILT_X/Y` -90..90 degrees; `INPUT_PROP_DIRECT`), and `oneios-pen=1` is added to
+  the guest's command line unless it has an `oneios-pen=` (so `--boot-args "... oneios-pen=0"` keeps the guest's side
+  off). The pen's descriptor is read on input.c's thread beside the others; its filter (`xh_pen_feed`) turns each evdev
+  frame into one sample in those units (in range, tip, side button, eraser end; pressure only while the tip is down; a
+  hover height never 0, half way for a device without `ABS_DISTANCE`; tilt by its resolution in units per radian, else
+  as degrees within +-90, else its range's end as 90; at most +-89), sends only the fields that changed and nothing for
+  a frame like the last, and reads the state again after `SYN_DROPPED`. No `MSC_TIMESTAMP` on the pen's device (the
+  guest's scan-time code is the touch screen's). Log lines: `pen: /dev/input/eventN "NAME": read only, not grabbed; x
+  A..B, y ..., pressure ..., distance ..., tilt x ... (res R); keys: ...; turned D degrees (why)`, or `pen: none found:
+  why`; `pen: the guest's pen device is /arm-io/input-1 (the host's pen); oneios-pen=1`; `pen: the first event from
+  NAME`; per time in range `pen: in range T ms: F frames (H hovering, C touching), S strokes, pressure up to P/4095,
+  tilt x a..b y c..d degrees, the side button pressed B times; U unchanged frames not sent`. The script's lines
+  (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.c`) go
+  through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
+  the side button. Host test: `test_pen` in `tests/test_xnuhost.c`.
+- `session/ready` is created at the guest's first presented frame (or by the `ready` host call). The guest's
+  display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame drawn
+  there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but is not that
+  first frame (`virtio_gpu.c` `frame_shown`).
+
 ### 2.9 What xnuhost must never do in a session
 
 The OneOS fork's way back to One UI depends on these (`docs/agents.md`, "booter -> oneos"); they hold today

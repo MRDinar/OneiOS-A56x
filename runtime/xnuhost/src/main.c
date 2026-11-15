@@ -455,6 +455,39 @@ static int boot(void)
   }
   xh_virtio *input = xh_virtio_input_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev);
   kinds[ndev++] = XL_DEV_INPUT;
+  // The pen (pen.c, spen 2026-11-15; pen=off by default): a second input device, /arm-io/input-1, when the host has a pen
+  // digitizer (xh_pen_lookup: read only, never grabbed) or the input script has pen lines. The guest publishes it as
+  // iOS's pencil digitizer with oneios-pen=1, which is added to its command line here unless that already has one.
+  bool script_pen = false;
+  if (xh_input_script_load(config.input_script, &script_pen)) return -1;
+  static xh_input_pen pen;
+  memset(&pen, 0, sizeof pen);
+  pen.device.fd = -1;
+  if (strcmp(config.pen, "off")) {
+    char why[256] = "";
+    if (config.input && xh_pen_lookup(&pen.device, why, sizeof why) == 0) {
+      const char *how = "";
+      pen.rotate = xh_pen_rotation(config.pen_rotate, &pen.device, fb_width, fb_height, &how);
+      pen.mirror = config.pen_mirror;
+      char axes[256];
+      xh_pen_describe(&pen.device, axes, sizeof axes);
+      LOGI("pen: %s \"%s\": read only, not grabbed; %s; turned %u degrees (%s)%s%s%s", pen.device.path, pen.device.name, axes, pen.rotate, how,
+           pen.mirror ? ", mirrored" : "", *why ? "; " : "", why);
+    } else if (config.input) LOGI("pen: none found: %s", why);
+    if (pen.device.fd >= 0 || script_pen) {
+      pen.dev = xh_virtio_input_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev);
+      if (!pen.dev) return -1;
+      xh_pen_guest_device(pen.dev);
+      kinds[ndev++] = XL_DEV_INPUT;
+      if (!strstr(config.boot_args, "oneios-pen=")) {
+        size_t used = strlen(config.boot_args);
+        if (used + 13 >= sizeof config.boot_args) { LOGE("pen: no room in the boot arguments for oneios-pen=1"); return -1; }
+        snprintf(config.boot_args + used, sizeof config.boot_args - used, "%soneios-pen=1", used ? " " : "");
+      }
+      LOGI("pen: the guest's pen device is /arm-io/input-1 (%s)%s", pen.device.fd >= 0 ? "the host's pen" : "the input script's pen",
+           strstr(config.boot_args, "oneios-pen=1") ? "; oneios-pen=1" : "; the command line's oneios-pen= is kept");
+    }
+  } else if (script_pen) LOGI("pen: pen=off: the input script's pen lines are left out");
   // The GPU: the 2D scanout always; with it the 3D half on the phone's Adreno (drm2kgsl on KGSL), when the host has it.
   xh_gpu3d *gpu3d = NULL;
   if (pool_bytes) {
@@ -475,8 +508,8 @@ static int boot(void)
     LOGI("hw: touch: backend %s (%s); keys: backend %s (%s): the same lookup in both, /dev/input/event0..31 by their "
          "capabilities, read only, never grabbed", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why);
   }
-  if (config.input && xh_input_start(input, fb_width, fb_height)) LOGE("input: could not start; continuing without");
-  if (xh_input_script_start(input, config.input_script)) return -1;
+  if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL, fb_width, fb_height)) LOGE("input: could not start; continuing without");
+  if (xh_input_script_start(input, pen.dev && pen.device.fd < 0 ? pen.dev : NULL)) return -1;
 
   static xl_machine machine;
   machine.chip_id = 0x8150;

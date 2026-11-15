@@ -89,6 +89,10 @@ typedef struct {
   bool  input;              // read /dev/input
   bool  touch_sleep;        // touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
+  char  pen[8];             // pen=off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.c,
+                            // xh_pen_lookup) or the script's pen as the guest's pen device /arm-io/input-1, and oneios-pen=1
+  char  pen_rotate[8];      // pen-rotate=auto|0|90|180|270: the digitizer's frame turned clockwise onto the panel's
+  bool  pen_mirror;         // pen-mirror=1: then mirrored left to right
   bool  tasks;              // start the task factory
   int   task_uid;           // uid of iOS task processes, -1 = xnuhost's own
   int   log_level;
@@ -558,8 +562,10 @@ xh_display *xh_display_get(void);
 void  xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h);
 void  xh_display_close(void);
 
-// Input (input.c): /dev/input/event* into the virtio-input device.
-int   xh_input_start(xh_virtio *dev, unsigned width, unsigned height);
+// Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on
+// the same thread into its own guest device (pen.c).
+struct xh_input_pen;
+int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height);
 void  xh_input_stop(void);
 // The display showed a guest frame (display.c): the end of input.c's touch-to-frame measurement.
 void  xh_input_frame_shown(void);
@@ -594,14 +600,93 @@ void  xh_input_feed(xh_input_source *s, const xh_input_ev *ev, unsigned n, int64
 // virtio-input side
 void  xh_virtio_input_event(xh_virtio *dev, uint16_t type, uint16_t code, int32_t value);
 void  xh_virtio_input_set_abs(xh_virtio *dev, unsigned axis, int32_t min, int32_t max, int32_t res);
+// The device's name, serial and key codes (the default: "OneiOS touchscreen" with the side keys and BTN_TOUCH; at most 8 keys).
+void  xh_virtio_input_set_identity(xh_virtio *dev, const char *name, const char *serial, const uint16_t *keys, unsigned nkeys);
 unsigned xh_virtio_input_backlog(xh_virtio *dev);   // events still waiting for the guest's buffers
+
+// The pen (pen.c, spen 2026-11-15): the phone's pen digitizer as the guest's pen device (/arm-io/input-1).
+// One axis of the host's device as EVIOCGABS states it.
+typedef struct { int32_t min, max, res; bool present; } xh_pen_axis;
+enum { XH_PEN_X, XH_PEN_Y, XH_PEN_PRESSURE, XH_PEN_DISTANCE, XH_PEN_TILT_X, XH_PEN_TILT_Y, XH_PEN_AXES };
+// What the guest's pen device states: x and y 0..32767, pressure 0..4095, the height above the panel 0..255, tilt in degrees.
+#define XH_PEN_XY_MAX 32767
+#define XH_PEN_PRESSURE_MAX 4095
+#define XH_PEN_DISTANCE_MAX 255
+// The host's pen device, as a lookup found it: its node (or what a backend names it), name, open descriptor (read only,
+// never grabbed; -1 for a scripted pen), axes, and which of the eraser end and the side button it has.
+typedef struct {
+  char path[64], name[64];
+  int  fd;
+  xh_pen_axis axis[XH_PEN_AXES];
+  bool rubber, stylus;
+} xh_pen_device;
+// The lookup: 0 and *out filled (its descriptor open) when a pen is found; -1 and why not. One function, replaceable by
+// another hardware backend (xh_pen_lookup = its own) that finds the pen its own way; the default scans /dev/input by bits.
+typedef int (*xh_pen_lookup_fn)(xh_pen_device *out, char *why, size_t size);
+extern xh_pen_lookup_fn xh_pen_lookup;
+int   xh_pen_lookup_evdev(xh_pen_device *out, char *why, size_t size);
+// Whether a device with this name and these key and axis bits (EVIOCGBIT, byte arrays) is a pen: 0 if not (and why), else
+// its rank (the best rank is taken). A device with a side key or multitouch positions is never one.
+int   xh_pen_rank(const char *name, const uint8_t *keys, size_t nkeys, const uint8_t *abs, size_t nabs, const char **why);
+// The device's state in its own units, as its events (or its ioctls) give it.
+typedef struct {
+  bool     tool, rubber, touch, stylus;     // BTN_TOOL_PEN, BTN_TOOL_RUBBER, BTN_TOUCH, either side button
+  unsigned stylus_bits;                     // 1 BTN_STYLUS, 2 BTN_STYLUS2
+  int32_t  value[XH_PEN_AXES];
+} xh_pen_state;
+// One frame for the guest, in its pen device's units.
+typedef struct {
+  bool    in_range, eraser, touch, barrel;
+  int32_t x, y, pressure, distance, tilt_x, tilt_y;
+} xh_pen_sample;
+// The state's sample: x, y and the tilt turned clockwise by rotate (0, 90, 180, 270) onto the panel, then mirrored left to right.
+void  xh_pen_sample_of(const xh_pen_device *d, unsigned rotate, bool mirror, const xh_pen_state *state, xh_pen_sample *out);
+// One time in range, for its log line.
+typedef struct {
+  int64_t  since_ns;
+  unsigned frames, hover, touching, strokes, presses, unchanged;
+  int32_t  pressure_max, tilt_min[2], tilt_max[2];
+} xh_pen_stats;
+typedef struct xh_pen_source {
+  void   (*emit)(void *context, uint16_t type, uint16_t code, int32_t value);   // default: the guest's pen device's events
+  void    *context;
+  xh_pen_device device;
+  unsigned rotate;
+  bool     mirror, dropping, sent_any;
+  int      fd;
+  int    (*read_state)(struct xh_pen_source *s, xh_pen_state *state);   // after SYN_DROPPED; 0 when read
+  xh_pen_state  state;
+  xh_pen_sample sent;                       // the last sample the guest was sent
+  unsigned drops, frames_sent;
+  uint64_t events;
+  xh_pen_stats stats;
+} xh_pen_source;
+void  xh_pen_source_init(xh_pen_source *s, xh_virtio *dev, const xh_pen_device *d, unsigned rotate, bool mirror);
+void  xh_pen_feed(xh_pen_source *s, const xh_input_ev *ev, unsigned n, int64_t now_ns);
+int   xh_pen_read_state(xh_pen_source *s, xh_pen_state *state);   // by ioctl on s->fd
+// pen-rotate: "auto" (or "" ) from the digitizer's and the panel's aspect, else the number given; *why says which.
+unsigned xh_pen_rotation(const char *setting, const xh_pen_device *d, unsigned width, unsigned height, const char **why);
+// The guest's pen device: its name, keys and fixed ranges.
+void  xh_pen_guest_device(xh_virtio *dev);
+// "x 0..N, y 0..N, pressure 0..N, ...; keys: ..." for the log.
+void  xh_pen_describe(const xh_pen_device *d, char *text, size_t size);
+// What input.c and input_script.c get: the guest's pen device, the host's (its descriptor, or -1 for the script's), the turn.
+typedef struct xh_input_pen {
+  xh_virtio    *dev;
+  xh_pen_device device;
+  unsigned      rotate;
+  bool          mirror;
+} xh_input_pen;
 // Input script (input_script.c): touches and key presses from a text file (input-script=FILE), for a host with no
 // touchscreen and for repeatable checks. The file's format is at the top of input_script.c.
 typedef enum { XH_STEP_ABS, XH_STEP_READY, XH_STEP_WAIT, XH_STEP_EVENT, XH_STEP_REPEAT } xh_input_step_kind;
-typedef struct { xh_input_step_kind kind; uint16_t type, code; int32_t value, min, max; } xh_input_step;
+typedef struct { xh_input_step_kind kind; bool pen; uint16_t type, code; int32_t value, min, max; } xh_input_step;   // pen: a pen- line's
 // The file's text as steps (malloc'ed); -1 and the line's number for a line that is not understood.
 int   xh_input_script_parse(const char *text, xh_input_step **steps, unsigned *count, unsigned *bad_line);
-int   xh_input_script_start(xh_virtio *dev, const char *path);   // 0: running, or no path; -1: unreadable or a bad line
+// Read and parse the file before the board is made (*has_pen: it has pen- lines, so it wants a pen device): 0, or no
+// path; -1: unreadable or a bad line. Then start it on the touch screen's device and the pen's (NULL: pen lines left out).
+int   xh_input_script_load(const char *path, bool *has_pen);
+int   xh_input_script_start(xh_virtio *dev, xh_virtio *pen);
 void  xh_input_script_stop(void);
 
 // ---- iOS tasks (task.c; aarch64 Linux only) -----------------------------------------------------
