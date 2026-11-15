@@ -1183,6 +1183,7 @@ int main(int argc, char **argv)
       xh_stop(XH_HALT_OFF, 0, "graceful shutdown timed out");
     }
     xh_perf_tick();                         // "perf:" lines every perf-log seconds
+    xh_blk_tick();                          // "disk NAME: 30 s:" lines (blk.c)
     host_memory_tick(false);                // "memory: host MemAvailable" every host-mem-log seconds
     swap_watch();                           // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
     ram_valve_tick();                       // the lock's valve, once a second while locked
@@ -1233,6 +1234,7 @@ int main(int argc, char **argv)
          (unsigned long long)g_vcpu[i].stat_traps);
   xh_sysreg_stats_log();                    // which trapped instructions kept the vCPUs busy
   xh_perf_log(true);                        // what the trap path cost, step by step (perf.c)
+  xh_blk_report_all();                      // what each disk did, its flushes and their time (blk.c)
   // Debugging aid: XNUHOST_DUMP=FILE writes the first 64 MiB of the kernel's window at the stop (XNUHOST_DUMP_MB=N
   // for more: a kernel collection's data is past 64 MiB).
   if (getenv("XNUHOST_DUMP")) {

@@ -142,3 +142,11 @@ sheet is open".
 Built (`HOSTED_OUT=fixsw`; prelink audit 0 failures, `stubs-check` 666 good) and booted on the PC with `wifi=sim`: SCAN_DONE
 20 a minute before and after (one per request: locationd's), radio scans 20 a minute before and 5 after. Not run on the
 phone yet.
+
+## en0 up at its attach (fix-wifi-late-enable, 2026-11-15)
+
+`IO80211Interface::attachToDataLinkLayer` (after the family's) arms a thread call that sets `IFF_UP` with
+`ifnet_set_flags` and `ifnet_ioctl(SIOCSIFFLAGS)` 50 ms later, so en0 is up when it is named, not when configd's
+IPConfiguration gets to its service (49 s later on the phone of 8644ae9). `oneios-wifi-up=0` leaves it to configd. Line:
+`en0 brought up by the driver when attached, +S s after the driver's start -> E`, or `en0 is up already (by configd)`.
+Why and what the open source says: `docs/hardware.md` 3, "Wi-Fi off for three minutes".

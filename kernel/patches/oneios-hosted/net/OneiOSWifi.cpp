@@ -37,12 +37,14 @@
 #include <mach/kmod.h>
 #include <mach/mach_time.h>
 #include <net/ethernet.h>
+#include <net/if.h>
 #include <net/if_media.h>
 #include <net/kpi_interface.h>
 #include <pexpert/pexpert.h>
 #include <stdarg.h>
 #include <sys/kern_event.h>
 #include <sys/proc.h>
+#include <sys/sockio.h>
 #include "oneios_wifi_proto.h"
 
 extern kmod_info_t g_kernel_kmod_info;
@@ -886,6 +888,39 @@ static bool station_init() {
     return gLock && gScan && gFill && gScanTimeout && gJoinTimeout && gScanReuse && gRateCall && gRateLock;
 }
 
+// en0 up (IFF_UP) as soon as it is attached to the network stack, by the driver. Who else sets it (configd source,
+// bootp-534.120.2 and configd-1405.120.5, apple-oss-distributions): only IPConfiguration, in IFState_service_add ->
+// inet_attach_interface(ifname, TRUE) (IPConfiguration.bproj/ipconfigd.c), when it adds the interface's network
+// service; and IPConfiguration's start() and prime() run on configd's plugin thread after every plugin's load()
+// (configd.tproj/plugin_support.c), so en0 waits for all of configd's start-up. On the phone (8644ae9, 2026-11-15)
+// configd named en0 at +125.5 s after the driver's start and set IFF_UP 49 s later (+174.3 s); wifid had en0 and
+// scanned before, Settings showed Wi-Fi off and could not turn it on until IFF_UP (wifid holds auto-join with
+// "Interface not up" among its reasons). Up is only the administrative flag: IPConfiguration still attaches IPv4/IPv6
+// and runs DHCP when it gets to it, and sets IFF_UP again then (a no-op). oneios-wifi-up=0 leaves it to configd.
+static thread_call_t gUpCall;
+static ifnet_t gUpIf;
+static void bring_up(thread_call_param_t, thread_call_param_t) {
+    ifnet_t ifp = gUpIf;
+    if (!ifp) return;
+    if (ifnet_flags(ifp) & IFF_UP) { log("en0 is up already (by configd) when the driver would bring it up"); return; }
+    errno_t error = ifnet_set_flags(ifp, IFF_UP, IFF_UP);
+    // The flag alone does not start the controller: SIOCSIFFLAGS makes the family's syncSIOCSIFFLAGS enable it, as the
+    // socket ioctl (ifioctl) does after it sets the flag.
+    if (!error) error = ifnet_ioctl(ifp, 0, SIOCSIFFLAGS, nullptr);
+    const uint32_t ms = since_start_ms();
+    log("%s%u brought up by the driver when attached, +%u.%03u s after the driver's start -> %d (configd's IPConfiguration "
+        "sets IFF_UP only once its plugins have started)", ifnet_name(ifp), ifnet_unit(ifp), ms / 1000, ms % 1000, error);
+}
+static void attached(ifnet_t ifp) {
+    uint32_t on = 1;
+    PE_parse_boot_argn("oneios-wifi-up", &on, sizeof on);
+    if (!on || !ifp) return;
+    if (!gUpCall) gUpCall = thread_call_allocate(bring_up, nullptr);
+    if (!gUpCall) return;
+    gUpIf = ifp;
+    arm(gUpCall, 50);   // outside configd's naming call, which attached it
+}
+
 }  // namespace oneios_wifi
 
 // The classes configd and wifid know a Wi-Fi interface by; Apple's IO80211Family, which defines both, is not in
@@ -905,6 +940,12 @@ public:
         // on wifid can find it. The time says whether naming or what comes after it is the wait.
         oneios_wifi::first_time(oneios_wifi::kSeenNamed, "naming (en0 attached to the network stack)");
         return true;
+    }
+    // After the family's attach (IOEthernetInterface's, then IONetworkInterface's ifnet_attach): en0 up (above).
+    IOReturn attachToDataLinkLayer(IOOptionBits options, void *parameter) override {
+        const IOReturn result = super::attachToDataLinkLayer(options, parameter);
+        if (result == kIOReturnSuccess) oneios_wifi::attached(getIfnet());
+        return result;
     }
     SInt32 performCommand(IONetworkController *controller, unsigned long command, void *argument0, void *argument1) override {
         if (!oneios_wifi::gIf) oneios_wifi::gIf = getIfnet();
