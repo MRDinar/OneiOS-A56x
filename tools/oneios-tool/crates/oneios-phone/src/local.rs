@@ -274,6 +274,10 @@ mod tests {
         assert!(text.contains("23 threads") && text.contains("cpu6") && text.contains("nice 0"), "{text}");
         assert_eq!(cpu(root.to_str().unwrap(), stage.to_str().unwrap()).unwrap(), 2);
 
+        for d in [&root, &stage] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+
         // no session: a pid file of a process that is gone, or none
         let (root, stage) = (tmp("cpu-root2"), tmp("cpu-stage2"));
         phone(&root, &stage, false);
