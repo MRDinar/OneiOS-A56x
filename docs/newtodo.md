@@ -5,6 +5,71 @@ the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyO
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
 
+## Update 2026-11-15 (fix-gpu-perf): the GPU by deadline and by process, and the background storms
+
+Built and host-tested on the Linux PC, **not run on the phone**. Details: `docs/gpu.md` 2.2b.
+
+- **The GPU clock (the phone's `context 4: power constraint at the highest level`, `clock hold: the top level from the
+  render server's submissions to 150 ms after them`).** Cause: drm2kgsl 0005/0006 put every render-server submission at
+  KGSL's top level and held it 150 ms after each, and any client within a second extended it. Fix: xnuhost decides the
+  level per frame from its deadline (the work interval's, when the CPU agent's signal is there; else the cadence, 8.3 ms
+  at 120 Hz) and the frames' own GPU time from KGSL's timestamps: the top only for a frame that would miss at the
+  governor's clock, the governor's otherwise, background contexts at KGSL's lowest level at a still screen. drm2kgsl
+  patch 0008; `gpu-level=hold` is the old rule. The PC's model of it (`test_gpu_policy`): time held at the top, before ->
+  after: a still lock screen redrawing 100 % -> 3 %, typing 100 % -> 2 %, a light animation 100 % -> 3 %, a 120 Hz scroll of
+  3 ms frames 100 % -> 100 %, no frame later than before.
+- **Per-context priority.** Each queue's KGSL priority is its owner's class (render server and front 4, default 8,
+  background 12), from the name (`xnu:backboardd`; STOPGAP name list for WidgetRenderer, PosterBoard, the poster and photo
+  extensions, iconservicesagent, assetsd, searchd, analyticsd...) and the guest's hint (the task's RunningBoard role,
+  DarwinBG, the thread's QoS: `oneios_gpu_hint` in the GPU archive, sent in CTX_CREATE and every fenced SUBMIT_3D).
+  `gpu-priority=0` turns it off.
+- **The storms (iconservicesagent 89-98 %, PosterBoard 48 %, MercuryPosterExtension 38 %, assetsd 37 %, searchd,
+  analyticsd): what is ours, traced in the code.** No session folder was on this PC, so each candidate was read in the
+  code, not in the session's lines:
+  - Brightness: every request re-published `IODisplayParameters`/`brightness-nits` and sent the bridge a level, also the
+    same level again (a drag: ~550 a second, each restarting the host's fade). **Ours, fixed**: only a change goes on
+    (`drivers/brightness`, `docs/hardware.md` 7a). `setProperty` sends no IOKit notification, so this did not by itself
+    make iOS redraw.
+  - The display's mode, scale, layers and colour: set once at the display's start (`NativeLegacyDisplay::publishOneLayer`,
+    the probe's `/chosen display-scale`; the colour mode is fixed for the boot by `display-format=`); the 120 Hz vsync
+    tick runs only while iOS has a vsync client registered (Apple's own registration). Not a re-publish.
+  - The wallpaper's inputs: the EDR headroom is held at 1 by the plug-in (`debug_values[21]`), the backlight publishes no
+    `MaxNitsEDR`: nothing of ours changes them during a session.
+  - Battery: a change message only when a value changes, temperature, voltage and current at most every 30 s
+    (`br_battery_changed`, `oba_publish`). Thermal: `kIOMessageServicePropertyChange` only at a new level or step.
+  - The GPU's device properties: set once at the accelerator's registration (`DroidVMGpu.cpp`).
+  - IOSurface and memory pressure: the plug-in drops its imports at XNU's own pressure rises; nothing of ours raises the
+    pressure level by itself (0058 gives back free pages that stay counted free; `ram-giveback=0` is the owner's rule).
+  - Repeated Metal device or context creation: one device per process by Metal's discovery [I]; xnuhost now logs one
+    `gpu: context N xnu:NAME: CLASS ...` line per context, so a process making contexts again and again shows on the phone.
+  - So, from the code, the storm processes' CPU is iOS's own work (first-boot icon drawing, the photo library's and
+    Spotlight's indexing, analytics) [I: not proven without the session's lines]. What is ours now: their GPU work runs at
+    KGSL priority 12, never holds the clock, and at the lowest level once the screen is still. Their CPU placement is
+    the CPU agent's.
+- **Tests:** `make -C runtime/xnuhost test` (the new `test_gpu_policy` 116 checks; `test_xnuhost` with the hint checks;
+  `test_drm2kgsl`'s new priority scenario built, skipped here: `/dev/udmabuf` is root:kvm), `drivers/tests/host.sh`
+  (`test_bl_request` 2044), `cargo test -p oneios-kernel --test golden` (the staged hint edits), the hosted kernel
+  `HOSTED_OUT=fixgpu` built and prelinked, a PC boot (results in the PR). The Metal plug-in is not changed (the hint is
+  the kernel's), so the Mac builds nothing new for this.
+- **The phone test (the Mac).** The runtime and `kernel.kc` of this branch, the image's `xnuhost.conf` as the baseline
+  (`gpu-level` and `gpu-priority` at their defaults). In the session: the lock screen still for a minute, unlock, the
+  home screen still for a minute, scroll Settings for 30 s, type in a text field for 30 s, open and close three apps, then
+  return. Then one session with `gpu-level=hold` for the same steps (the before). Read and compare:
+  - xnuhost's log: `gpu: level:` (once: the clocks and the mode), `drm2kgsl: clock hold: ... only for frames that need
+    it`, `gpu: context N xnu:NAME: CLASS` (every context's class and priority; iconservicesagent, PosterBoard,
+    WidgetRenderer, MercuryPosterExtension background 12), `drm2kgsl: queue N of xnu:NAME: CLASS, KGSL priority P` (no
+    `refused` line), `gpu: 10 s level:` (frames, at the top, missed, over budget, background at the lowest), `gpu: 10 s
+    host:` (`clock held +N times, keep-alives +M`: far fewer at a still screen than with `hold`), `drm2kgsl: context N:
+    power constraint at the lowest level`, `ONEIOS BACKLIGHT: N requests repeated the level last sent` after a slider
+    drag, `thermal: 30 s:` (SoC and battery temperature), `oneios-cpu:` (the storm processes' share), the guest's
+    `oneios-gpu-report:` (frames' `<8/<16/<32 ms` buckets while scrolling and typing).
+  - GPU busy and clock, as root from One UI's side during each step (read-only nodes, no writes):
+    `cat /sys/class/kgsl/kgsl-3d0/gpubusy /sys/class/kgsl/kgsl-3d0/gpuclk` once a second (a loop in `adb shell su -c`),
+    and `/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies` once.
+  - Expect: at a still screen `gpuclk` at the governor's low levels (not the top) and `at the top` near 0 in the 10 s
+    line; while scrolling the top and `over budget` near 0; the SoC cooler than the `hold` session at the same steps.
+    `missed at the governor's` above a few per 10 s while typing would mean the model's ratio is too optimistic there.
+
 ## Update 2026-11-14 (the 9f6dc38 session on the phone, and the round that followed)
 
 **Proven on the phone** (main 9f6dc38, 2026-11-14): first frame at +135 s, no panic; USB adb held the whole boot

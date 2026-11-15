@@ -740,6 +740,40 @@ extern "C" void oneios_gpu_submit(uint32_t slot)
 {
     if (slot < 64) __atomic_fetch_add(&trail::slots[slot].submits, 1, __ATOMIC_RELAXED);
 }
+// The GPU's per-process policy on the host (runtime/xnuhost/drm2kgsl/oneios_gpu_policy.h, docs/gpu.md 2.2b): who submits.
+// The staged DroidVMVirtioGpu3D.cpp calls this on the client's own thread at its context's creation (CTX_CREATE's
+// context_init bits 8-23) and at each fenced execbuffer (the SUBMIT_3D header's three padding bytes):
+//   [0] 0x80 (the hint is there) | 0x40 if the thread is DarwinBG | the task's effective role (task_role_t, RunningBoard's);
+//   [1] the thread's effective QoS (THREAD_QOS_*);
+//   [2] the time to the frame's deadline in 250 us units (0 none, 255 for 63.75 ms or more).
+// The role and the deadline are the CPU agent's when its hosted CLPC (fix-host-overhead: thread groups, work intervals,
+// RunningBoard roles) defines the two functions below; until then the task's own role and no deadline (the host then
+// takes the frame cadence). Their weak defaults here say "not known".
+extern "C" int proc_get_effective_task_policy(task_t task, int flavor);
+extern "C" int proc_get_effective_thread_policy(thread_t thread, int flavor);
+// The thread group's role of `thread` as a task_role_t (0-9), or -1 when not known.
+extern "C" __attribute__((weak)) int oneios_clpc_thread_role(thread_t) {return -1;}
+// The deadline of the work interval `thread` is in (mach absolute time), or 0 when it is in none.
+extern "C" __attribute__((weak)) uint64_t oneios_clpc_frame_deadline(thread_t) {return 0;}
+extern "C" void oneios_gpu_hint(uint8_t *out)
+{
+    enum { PolicyDarwinBG = 0x21, PolicyRole = 0x2A, PolicyQoS = 0x35 };   // TASK_POLICY_DARWIN_BG, _ROLE, _QOS (policy_internal.h)
+    thread_t thread = current_thread();
+    int role = oneios_clpc_thread_role(thread);
+    if (role < 0 || role > 15) role = proc_get_effective_task_policy(current_task(), PolicyRole);
+    const int background = proc_get_effective_thread_policy(thread, PolicyDarwinBG);
+    const int qos = proc_get_effective_thread_policy(thread, PolicyQoS);
+    out[0] = uint8_t(0x80 | (background ? 0x40 : 0) | (role & 0xf));
+    out[1] = uint8_t(qos & 7);
+    out[2] = 0;
+    const uint64_t deadline = oneios_clpc_frame_deadline(thread), now = mach_absolute_time();
+    if (deadline > now) {
+        uint64_t ns = 0;
+        absolutetime_to_nanoseconds(deadline - now, &ns);
+        const uint64_t units = ns / 250000;
+        out[2] = uint8_t(units < 1 ? 1 : units > 255 ? 255 : units);
+    }
+}
 // A test switch, off by default: oneios-gpu-read-wait=1 makes the render server's command buffers wait, as they name the
 // surfaces they sample, for other processes' GPU work begun before them that writes those surfaces (the driver's
 // awaitWriters, at most droidvm_surface_read_wait_ms: 100 ms), which a newer plug-in asks for itself and this pin never

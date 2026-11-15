@@ -37,6 +37,7 @@ void xh_config_defaults(xh_config *c)
   c->scale_fixup = -1;
   c->setway_skip = -1;
   c->perf_log = c->spin_host = c->spin_task = c->map_defer = c->cpu_pin = -1;
+  c->gpu_priority = -1;
   strcpy(c->bluetooth, "auto");
   strcpy(c->haptics, "auto");
   strcpy(c->wifi, "auto");
@@ -99,6 +100,11 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     if (ok) c->display_format = !strcmp(value, "bgrx") ? XH_PIXELS_BGRX8 : XH_PIXELS_RGBA16F;
   }
   else if (!strcmp(key, "gpu")) { ok = !strcmp(value, "auto") || !strcmp(value, "3d") || !strcmp(value, "2d"); if (ok) return copy(c->gpu, sizeof c->gpu, value); }
+  else if (!strcmp(key, "gpu-level")) {
+    ok = !strcmp(value, "deadline") || !strcmp(value, "hold") || !strcmp(value, "governor");
+    if (ok) return copy(c->gpu_level, sizeof c->gpu_level, value);
+  }
+  else if (!strcmp(key, "gpu-priority")) { ok = number(value, 0, 1, &c->gpu_priority); }
   else if (!strcmp(key, "cpus")) { c->ncpu = (unsigned)atoi(value); ok = c->ncpu >= 1 && c->ncpu <= XH_MAX_CPUS; }
   else if (!strcmp(key, "ram")) {
     c->ram_bytes = strcmp(value, "auto") ? xh_parse_size(value, &ok) : 0;
@@ -267,6 +273,8 @@ int xh_config_finish(xh_config *c)
   if (c->setway_skip < 0) c->setway_skip = from_image.setway_skip < 0 ? 1 : from_image.setway_skip;
   if (c->perf_log < 0) c->perf_log = from_image.perf_log;
   if (c->spin_host < 0) c->spin_host = from_image.spin_host;
+  if (!*c->gpu_level) strcpy(c->gpu_level, *from_image.gpu_level ? from_image.gpu_level : "deadline");
+  if (c->gpu_priority < 0) c->gpu_priority = from_image.gpu_priority < 0 ? 1 : from_image.gpu_priority;
   if (c->spin_task < 0) c->spin_task = from_image.spin_task;
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;

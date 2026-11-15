@@ -78,6 +78,20 @@ int main(void)
   CHECK(obl_nits_level(0, 0, 500) == -1 && obl_nits_level(-65536, 0, 500) == -1 && obl_nits_level(100 << 16, 0, 0) == -1);
   CHECK(obl_nits_level(0x3b5c0000, 0, 500) >= 0);                                        // the phone's 27496 of 65535 came from such a value
 
+  // Only a change is sent (2026-11-15): a drag's repeats of one level are not, a new level, fade or flag is, and the same
+  // level again after OBL_RESEND_MS, or after a forget (a display power change), is.
+  struct obl_sent s = { 0 };
+  CHECK(obl_send_wanted(&s, 30000, 0, 0, 1000));
+  unsigned sent = 0;
+  for (unsigned i = 0; i < 550; i++) sent += (unsigned)obl_send_wanted(&s, i < 300 ? 30000 : 31000, 0, 0, 1000 + i * 2);
+  CHECK(sent == 1 && s.skipped == 549 && s.level == 31000);
+  CHECK(obl_send_wanted(&s, 31000, 250, 0, 2200) && obl_send_wanted(&s, 31000, 250, 1, 2201) && !obl_send_wanted(&s, 31000, 250, 1, 2202));
+  CHECK(!obl_send_wanted(&s, 31000, 250, 1, 2201 + OBL_RESEND_MS - 1) && obl_send_wanted(&s, 31000, 250, 1, 2201 + OBL_RESEND_MS));
+  obl_sent_forget(&s);
+  CHECK(obl_send_wanted(&s, 31000, 250, 1, 3300));
+  struct obl_published p = { 0 };
+  CHECK(obl_publish_wanted(&p, 100, 5000) && !obl_publish_wanted(&p, 100, 5000) && obl_publish_wanted(&p, 100, 5001) && obl_publish_wanted(&p, 101, 5001));
+
   printf("bl request: %d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

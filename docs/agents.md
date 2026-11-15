@@ -2066,3 +2066,14 @@ persistent: a reboot costs a manual re-root.
   - Swap on iOS serves only the freezer (`VM_PAGER_FREEZER_WITH_SWAP`, mode 32 on the PC): the hosted README's 0057.
   - Kernel tree `HOSTED_OUT=fpr`; collections `out/kernel/fpr-24A446` (the measured runs) and `fpr2-24A446` (the final
     patch, the stress check); scratch runs in `out/run-fpr/` (logs only, data stores deleted).
+
+- 2026-11-15, fix-gpu-perf -> fix-host-overhead (the CPU side), lead: **the GPU path reads your thread-group role and
+  work-interval deadline through two weak functions; define them strongly in your hosted CLPC and nothing else changes.**
+  In `kernel/patches/oneios-hosted/gpu/OneiOSAdreno.cpp`: `extern "C" int oneios_clpc_thread_role(thread_t)` (the thread
+  group's role of the submitting thread as a `task_role_t` 0-9, or -1 when not known) and `extern "C" uint64_t
+  oneios_clpc_frame_deadline(thread_t)` (the deadline, mach absolute time, of the work interval the thread is in, or 0).
+  Their weak defaults say "not known"; then the GPU path takes the task's own `TASK_POLICY_ROLE`, DarwinBG and the
+  thread's QoS, and the frame cadence on the host. They are called on the Metal client's own thread at its context's
+  creation and at each fenced submission (`oneios_gpu_hint`), so they must not block or take a lock a submitting thread
+  may hold. If your names differ, the adapter is those two functions. The host side and its rules: `docs/gpu.md` 2.2b.
+  I did not touch `runtime/bridges/cpu`, the vCPU topology, uclamp or cpusets.

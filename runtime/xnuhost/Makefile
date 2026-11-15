@@ -139,6 +139,10 @@ $(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_imageset.c src/imageset.c ../loader/src/adt.c ../loader/src/boot.c -lpthread -o $@
+# The GPU's per-process policy (drm2kgsl/oneios_gpu_policy.h): classes, priorities, the deadline level. No KGSL, no udmabuf.
+$(H)/test_gpu_policy: tests/test_gpu_policy.c drm2kgsl/oneios_gpu_policy.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Idrm2kgsl -fsanitize=address,undefined tests/test_gpu_policy.c -o $@
 
 # ---- the test kernel: our own freestanding AArch64 program wrapped as a Mach-O (no Apple files) ----
 KERNEL_FLAGS := --target=aarch64-unknown-none-elf -O2 -ffreestanding -fno-builtin -fno-stack-protector -fpie -fvisibility=hidden \
@@ -183,12 +187,13 @@ bench-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'BENCH|perf:|TESTKERNEL: (all|FAIL)|hand-off'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
+test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_display_mode
 	$(if $(TEST_DRM2KGSL),ASAN_OPTIONS=detect_leaks=0 $(TEST_DRM2KGSL))
 	$(if $(TEST_GPU_LEAKS),ASAN_OPTIONS=detect_leaks=1 $(TEST_GPU_LEAKS))
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_imageset
+	$(H)/test_gpu_policy
 
 clean:
 	rm -rf build
