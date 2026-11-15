@@ -32,3 +32,37 @@ so the path is Treble-correct and portable to other devices. Known concrete case
 **Why:** a HAL is the device-independent, vendor-maintained surface; a raw `/dev`/`/sys` node is device-specific
 and can be fed by a different subsystem on another SoC (the ALS-vs-sensor-hub case). Using the HAL where one is
 reachable makes OneiOS correct here and portable later.
+
+## Make the iOS image on the phone, and user docs to build and change it for their own phones
+
+The owner's request (2026-11-15). Today the image set and `kernel.kc` are made on a PC or a Mac and staged over USB.
+Apple's files can never be in a release (CLAUDE.md), so each user must make them from Apple's own IPSW. The tools
+that make them are already Rust (`oneios-tool`), so the OneOS app can run them on the phone. Do this when the kernel
+stops changing every day.
+
+- [ ] **`oneios-tool` for Android arm64.** Cross-build it with the NDK (the parts the phone needs: `remotezip`,
+  `image`, `prelink`, `package`'s Apple-file check), ship it in the runtime release, and run it as root from the app.
+  Check that its speed and memory fit on the phone (the Mac's prelink took 4 s).
+- [ ] **Release the kernel.** `kernel/publish.sh` releases our own `xnu.macho` (open-source XNU and our patches,
+  no Apple binaries), and `kernel/release-kernel.txt` names it (`docs/releases.md`, "The kernel in a release").
+  Also release the iOS-side plug-ins that only Xcode builds (Metal, camera), if their files are ours only.
+- [ ] **The app's "Make iOS image" step,** in the same flow as the Android systems' screens (fork #5):
+  1. download the runtime and `xnu.macho` from the OneiOS release (SHA-256 checked);
+  2. fetch only the needed parts of the iOS 27 IPSW from Apple's server for the user (`remotezip`, no full 10 GB),
+     or take an IPSW that the user gives;
+  3. unpack the volumes (`image apfs-copy`), apply the root tweaks and write `xnuhost.conf` for the phone;
+  4. prelink `kernel.kc` (`prelink`, then the audit and `stubs-check`);
+  5. stage as today, with the same checks.
+  Show the step, the space it needs, the time left and the reason when a step is refused. Keep the work and its
+  temporary files in the stage, and remove them on a cancel or a failure.
+- [ ] **What stays on a PC or Mac:** building `xnu.macho` (Apple's clang toolchain and the XNU build system) and
+  the Xcode plug-ins. Users do not need them, because those come from the release.
+- [ ] **User docs: build it and change it for your phone.** A short guide in plain steps, separate from the
+  developer docs:
+  - install the APK, download the runtime, make the iOS image in the app, switch, return;
+  - the same steps on a PC or a Mac for those who want to (`docs/building.md` shortened);
+  - change it for another phone: the hardware backends (`hw-backend=samsung|treble`, `docs/hardware.md` 7e), the
+    device profile (what a new phone needs: SoC, GPU, kernel features, the side keys, the touch screen), the
+    `xnuhost.conf` settings (RAM, the display, the S Pen), and how to report a session's logs (`oneios-tool phone
+    log`, `cycle --only collect`);
+  - what is safe to change and what must not change (the way back to One UI, CLAUDE.md's rules).
