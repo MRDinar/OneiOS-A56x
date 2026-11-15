@@ -172,6 +172,10 @@ impl job::Sink for ReqSink {
     fn heat(&self, state: &str, why: &str, text: &str, reading: &Reading) {
         self.out.send(&heat_fields(Ev::of("heat", &self.id).f("state", state).f("why", why).f("text", text), reading));
     }
+
+    fn event(&self, name: &str, fields: &[(&str, Value)]) {
+        self.out.send(&Ev::of(name, &self.id).fields(fields));
+    }
 }
 
 /// A request as its handler sees it.
@@ -297,6 +301,8 @@ extern "C" fn on_signal(_: libc::c_int) {
 struct Queue {
     waiting: VecDeque<Req>,
     running: Option<String>,
+    /// The running request takes `pause` and `resume` (a network request that has not come to its last event).
+    pausable: bool,
     /// Why the running request was told to stop (`cancelled`'s `by`).
     stop_by: Option<&'static str>,
     quit: bool,
@@ -402,6 +408,20 @@ fn run_one(shared: &Shared, req: Req) {
         for handle in handles.into_inner().unwrap() {
             let _ = handle.join();
         }
+        if spec.pausable {
+            // A request that is paused does not end before it is resumed, also when its work is done (a pause
+            // that came during its last step). Under the queue's lock a `pause` request finds it pausable or not:
+            // no `paused` is said after this.
+            loop {
+                let held = job::hold();
+                let mut q = shared.queue.lock().unwrap();
+                // (a stop ends the hold: the request then ends as its work did)
+                if held.is_err() || !job::paused() {
+                    q.pausable = false;
+                    break;
+                }
+            }
+        }
         match result {
             Ok(result) => result,
             Err(panic) => {
@@ -466,6 +486,7 @@ fn runner(shared: Arc<Shared>) {
                 }
                 if let Some(req) = q.waiting.pop_front() {
                     q.running = Some(req.id.clone());
+                    q.pausable = cmds::find(&req.cmd).is_some_and(|spec| spec.pausable);
                     q.stop_by = None;
                     // (under the lock: a cancel of this request can only come after this)
                     job::clear_cancel();
@@ -542,6 +563,34 @@ fn take_line(shared: &Shared, line: &str) {
             } else {
                 drop(q);
                 cx.out.send(&Ev::new("error").f("id", req.id.as_str()).f("code", "no-such-request").f("text", format!("cancel: no request {} is running or waiting", req.id)));
+            }
+        }
+        // Hold the running request's transfer, or let it go on (README "Downloads on a mobile network"). The answer
+        // is said under the queue's lock, so it comes before the request's last event, and under `job`'s hold, so
+        // no byte is counted after `paused`.
+        cmd @ ("pause" | "resume") => {
+            // (the numbers of the step that counts; between two steps there are none)
+            let said = |ev: &str, words: &str, now: Option<job::Snapshot>| {
+                let ev = Ev::of(ev, &req.id);
+                cx.out.send(&match now {
+                    Some(s) => ev.f("step", s.step.as_str()).f("done", s.done).f("total", s.total).f("unit", s.unit).f("text", format!("{words} {} of {}", size_text(s.done), size_text(s.total))),
+                    None => ev.f("text", words.trim_end_matches(" at").trim_end_matches(" from")),
+                });
+            };
+            let refusal = match () {
+                _ if q.running.as_deref() != Some(req.id.as_str()) && q.waiting.iter().any(|r| r.id == req.id) => Some(("not-running", "is waiting in the queue: there is nothing to pause yet")),
+                _ if q.running.as_deref() != Some(req.id.as_str()) => Some(("no-such-request", "is not running or waiting")),
+                _ if !q.pausable => Some(("not-pausable", "has no transfer to pause (download, zip-get and fetch have one, until their last step is done)")),
+                _ if cmd == "pause" => {
+                    job::pause(|now| said("paused", "paused at", now));
+                    None
+                }
+                _ if job::resume(|now| said("resumed", "going on from", now)) => None,
+                _ => Some(("not-paused", "is not paused")),
+            };
+            if let Some((code, why)) = refusal {
+                drop(q);
+                cx.out.send(&Ev::new("error").f("id", req.id.as_str()).f("code", code).f("text", format!("{cmd}: request {} {why}", req.id)));
             }
         }
         _ if live(&q, &req.id) => {
@@ -685,7 +734,7 @@ pub fn main(cli: Cli) -> i32 {
     };
     let cx = Cx { out: out.clone(), stage: cli.stage.clone(), roots, sys_root, jobs, limits };
     let (nice, realtime) = job::nice_now();
-    let mut cmds: Vec<&str> = vec!["ping", "health", "cancel"];
+    let mut cmds: Vec<&str> = vec!["ping", "health", "cancel", "pause", "resume"];
     cmds.extend(cmds::ALL.iter().map(|c| c.name));
     out.send(
         &Ev::new("hello")
@@ -783,7 +832,7 @@ pub fn main(cli: Cli) -> i32 {
         q.quit = true;
         if q.running.is_some() {
             q.stop_by.get_or_insert(by);
-            job::cancel();
+            job::cancel_at_the_end();
         }
         (q.waiting.drain(..).collect::<Vec<Req>>(), q.running.clone())
     };

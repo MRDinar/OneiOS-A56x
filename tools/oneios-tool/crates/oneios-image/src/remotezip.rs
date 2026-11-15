@@ -7,152 +7,25 @@
 //!   remotezip head SOURCE MEMBER BYTES              the first BYTES of a stored member on stdout
 //!
 //! SOURCE is an https URL (HTTP range requests) or a local file. `get` fetches a member's packed bytes in
-//! parallel chunks into NAME.part; finished chunks are listed in NAME.part.done, so an interrupted run
-//! resumes. Deflated members are inflated locally. The CRC-32 of the ZIP directory is checked before the
-//! file gets its final name. Linux and macOS.
+//! parallel pieces into NAME.part; the byte ranges that are there are listed in NAME.part.state, so an
+//! interrupted run resumes. Deflated members are inflated locally. The CRC-32 of the ZIP directory is checked
+//! before the file gets its final name. Linux and macOS.
 //!
-//! Connections try each address of the host for at most CONNECT_TRY seconds before the next one, and an address
-//! family that failed to connect is tried last from then on. Without that, a host whose IPv6 has no route (seen on
-//! a Linux PC on 2026-11-12: Apple's CDN answers AAAA first) waited the whole request timeout on each IPv6 address
-//! of every range request before it reached IPv4, about 1.6 MB/s instead of the line's speed.
+//! The requests themselves (the connections and their addresses, the tries after a drop and their waits, the
+//! pieces, the state file) are transfer.rs.
 //!
 //! Same idea as iOSPlus10's `op10tool ipsw-get` and UniXNU's scripts/unixnu/ipsw.py.
 //!
-//! Libraries: ureq (HTTP; its resolver hook carries the address rule above), flate2 (inflate), crc32fast, regex.
+//! Libraries: ureq (HTTP, in transfer.rs), flate2 (inflate), crc32fast, regex.
 //! The ZIP directory is read here (70 lines: the end record, its ZIP64 form, the entries): the reader needs the
 //! directory alone, from two range requests, and each member's own header only when that member is read.
 
+pub use crate::transfer::{download, Fetched, Frontier, Result, Source, CHUNK};
+use crate::transfer::Part;
 use oneios_common::job;
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
-
-pub const CHUNK: u64 = 8 << 20;
-const AGENT: &str = "oneios-image-build";
-const CONNECT_TRY: Duration = Duration::from_secs(5);
-
-/// The script's `Error`: one line for the caller.
-pub type Result<T> = std::result::Result<T, String>;
-
-/// The address families (true: IPv6) that failed to connect: tried last from then on.
-static FAILED_FAMILIES: Mutex<Vec<bool>> = Mutex::new(Vec::new());
-
-/// The host's addresses, with a short try of each: the first that connects is the one ureq gets.
-struct Resolver;
-
-impl ureq::Resolver for Resolver {
-    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
-        let mut addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-        let failed = |addr: &SocketAddr| FAILED_FAMILIES.lock().unwrap().contains(&addr.is_ipv6());
-        addrs.sort_by_key(failed);
-        let mut last = None;
-        for addr in &addrs {
-            match TcpStream::connect_timeout(addr, CONNECT_TRY) {
-                Ok(_) => {
-                    FAILED_FAMILIES.lock().unwrap().retain(|family| *family != addr.is_ipv6());
-                    return Ok(vec![*addr]);
-                }
-                Err(e) => {
-                    let mut families = FAILED_FAMILIES.lock().unwrap();
-                    if !families.contains(&addr.is_ipv6()) {
-                        families.push(addr.is_ipv6());
-                    }
-                    last = Some(e);
-                }
-            }
-        }
-        Err(last.unwrap_or_else(|| std::io::Error::other(format!("getaddrinfo returned nothing for {netloc}"))))
-    }
-}
-
-/// Random access to a local file or an https URL.
-pub struct Source {
-    pub spec: String,
-    pub size: u64,
-    remote: bool,
-    retries: u32,
-    agent: ureq::Agent,
-    /// The agent gives a silent connection up after `STALL` (a request of `serve`).
-    stall: bool,
-}
-
-/// How long a connection of a `serve` request may give no byte.
-const STALL: Duration = Duration::from_secs(5);
-
-impl Source {
-    pub fn open(spec: &str) -> Result<Source> {
-        let remote = spec.starts_with("http://") || spec.starts_with("https://");
-        // (no connect timeout of ureq's own: it would start before the resolver's tries, and end the request while
-        // they run; the resolver hands over an address that has just answered)
-        // For a request of `serve` (someone listens): a connection that gives no byte for STALL is given up and
-        // the range is asked again, where a command that runs alone waits out the whole request's time. So a stop
-        // of the request (a cancel, the end of the app's pipe) is seen within STALL, not within two minutes.
-        let stall = job::listening().then_some(STALL);
-        let mut builder = ureq::AgentBuilder::new().resolver(Resolver).user_agent(AGENT);
-        if let Some(stall) = stall {
-            builder = builder.timeout_read(stall).timeout_write(stall);
-        }
-        let agent = builder.build();
-        let size = if remote {
-            let head = agent.head(spec);
-            let head = if stall.is_some() { head } else { head.timeout(Duration::from_secs(60)) };
-            let answer = head.call().map_err(|e| format!("{spec}: {e}"))?;
-            answer.header("Content-Length").and_then(|v| v.parse().ok()).ok_or_else(|| format!("{spec}: no Content-Length"))?
-        } else {
-            std::fs::metadata(spec).map_err(|e| format!("{spec}: {e}"))?.len()
-        };
-        Ok(Source { spec: spec.to_string(), size, remote, retries: 6, agent, stall: stall.is_some() })
-    }
-
-    /// Bytes start..end inclusive.
-    pub fn read(&self, start: u64, end: u64) -> Result<Vec<u8>> {
-        if end < start {
-            return Ok(Vec::new());
-        }
-        let want = (end - start + 1) as usize;
-        if !self.remote {
-            let mut data = vec![0u8; want];
-            let file = File::open(&self.spec).map_err(|e| format!("{}: {e}", self.spec))?;
-            file.read_exact_at(&mut data, start).map_err(|_| format!("{}: short read at {start}", self.spec))?;
-            return Ok(data);
-        }
-        let mut last = String::new();
-        for attempt in 0..self.retries {
-            // (the wait before a retry ends at once when the running request is stopped: `serve`)
-            job::sleep(Duration::from_secs(if attempt > 0 { 2 * attempt as u64 } else { 0 })).map_err(|stop| stop.to_string())?;
-            match self.range(start, end, want) {
-                Ok(Ok(data)) => return Ok(data),
-                Ok(Err(refused)) => return Err(refused),
-                Err(e) => last = e,
-            }
-        }
-        Err(format!("{}: range {start}-{end} failed: {last}", self.spec))
-    }
-
-    /// One range request. The outer error is tried again; the inner one (a server without ranges) is final.
-    fn range(&self, start: u64, end: u64, want: usize) -> std::result::Result<Result<Vec<u8>>, String> {
-        let request = self.agent.get(&self.spec).set("Range", &format!("bytes={start}-{end}"));
-        // (ureq: a whole request's time comes before the agent's read time, so only one of the two is set)
-        let request = if self.stall { request } else { request.timeout(Duration::from_secs(120)) };
-        let answer = request.call().map_err(|e| e.to_string())?;
-        if answer.status() != 206 {
-            return Ok(Err(format!("{}: the server ignores range requests (status {})", self.spec, answer.status())));
-        }
-        let mut data = Vec::with_capacity(want);
-        answer.into_reader().take(want as u64 + 1).read_to_end(&mut data).map_err(|e| e.to_string())?;
-        if data.len() == want {
-            Ok(Ok(data))
-        } else {
-            Err(format!("range {start}-{end}: got {} bytes", data.len()))
-        }
-    }
-}
 
 /// One member of the archive, as its directory has it.
 #[derive(Clone, Debug)]
@@ -323,9 +196,15 @@ impl RemoteZip {
         }
         let stored = info.compress_type == 0;
         let part = format!("{out}{}", if stored { ".part" } else { ".deflate.part" });
-        let done_path = format!("{part}.done");
-        let parts: Vec<job::Temp> = if self.keep_parts { Vec::new() } else { vec![job::temp(&part), job::temp(&done_path), job::temp(format!("{out}.part"))] };
-        self.chunks(info, &part, &done_path, jobs, chunk, log).map_err(|e| format!("{}: download failed, run again to resume ({e})", info.filename))?;
+        let state_path = format!("{part}.state");
+        let parts: Vec<job::Temp> = if self.keep_parts { Vec::new() } else { vec![job::temp(&part), job::temp(&state_path), job::temp(format!("{state_path}.tmp")), job::temp(format!("{out}.part"))] };
+        if let Err(e) = self.packed(info, &part, jobs, chunk, log) {
+            // (a request that was paused when the process ended keeps its part: the user had it on hold)
+            if job::held_at_the_end() {
+                parts.into_iter().for_each(job::Temp::keep);
+            }
+            return Err(format!("{}: download failed, run again to resume ({e})", info.filename));
+        }
         let (tmp, crc) = if stored {
             (part.clone(), crc_file(&part)?)
         } else {
@@ -336,11 +215,11 @@ impl RemoteZip {
         };
         let size = std::fs::metadata(&tmp).map_err(|e| format!("{tmp}: {e}"))?.len();
         if crc != info.crc || size != info.file_size {
-            let _ = std::fs::remove_file(&done_path);
+            let _ = std::fs::remove_file(&state_path);
             return Err(format!("{}: CRC-32 {crc:08x}, the archive says {:08x}; chunk list reset, run again", info.filename, info.crc));
         }
         std::fs::rename(&tmp, out).map_err(|e| format!("{out}: {e}"))?;
-        let _ = std::fs::remove_file(&done_path);
+        let _ = std::fs::remove_file(&state_path);
         if !stored {
             let _ = std::fs::remove_file(&part);
         }
@@ -350,92 +229,14 @@ impl RemoteZip {
         Ok((info.file_size, info.crc))
     }
 
-    /// The member's packed bytes into `part`, in chunks, `jobs` at a time; each finished chunk is a line of
-    /// `done_path` (whose first line names what the list belongs to), so a later run fetches the others only.
-    fn chunks(&self, info: &Info, part: &str, done_path: &str, jobs: usize, chunk: u64, log: &(dyn Fn(String) + Sync)) -> Result<()> {
-        let (size, start) = (info.compress_size, self.data_start(info)?);
-        let title = format!("{:08x} {size} {chunk}", info.crc);
-        self.source.fetch(&info.filename, &title, start, size, part, done_path, jobs, chunk, log)
+    /// The member's packed bytes into `part`, in pieces of `chunk` bytes, `jobs` connections at a time. The part's
+    /// state file (`PART.state`, transfer.rs) lists what is there and names the member, so a later run fetches the
+    /// rest only.
+    fn packed(&self, info: &Info, part: &str, jobs: usize, chunk: u64, log: &(dyn Fn(String) + Sync)) -> Result<Fetched> {
+        let what = format!("member {:08x} {}", info.crc, info.filename);
+        let part = Part { name: &info.filename, what, offset: self.data_start(info)?, length: info.compress_size, path: part, connections: jobs, piece: chunk, whole: false, frontier: None };
+        self.source.fetch(&part, log)
     }
-}
-
-impl Source {
-    /// `size` bytes from `start` of the source into `part`, in chunks, `jobs` at a time; each finished chunk is a
-    /// line of `done_path`, whose first line (`title`) names what the list belongs to.
-    #[allow(clippy::too_many_arguments)]
-    fn fetch(&self, name: &str, title: &str, start: u64, size: u64, part: &str, done_path: &str, jobs: usize, chunk: u64, log: &(dyn Fn(String) + Sync)) -> Result<()> {
-        let source = self;
-        let mut done: HashSet<u64> = HashSet::new();
-        if std::fs::metadata(part).is_ok_and(|m| m.is_file() && m.len() == size) {
-            if let Ok(list) = std::fs::read_to_string(done_path) {
-                let mut lines = list.lines();
-                if lines.next().map(str::trim) == Some(title) {
-                    done = lines.filter_map(|line| line.trim().parse().ok()).collect();
-                }
-            }
-        }
-        let io = |e: std::io::Error| e.to_string();
-        let file = File::options().read(true).write(true).create(true).truncate(false).open(part).map_err(io)?;
-        file.set_len(size).map_err(io)?;
-        let todo: Vec<u64> = (0..size.div_ceil(chunk)).filter(|k| !done.contains(k)).collect();
-        let marks = if done.is_empty() {
-            let mut marks = File::create(done_path).map_err(io)?;
-            writeln!(marks, "{title}").map_err(io)?;
-            marks
-        } else {
-            File::options().append(true).open(done_path).map_err(io)?
-        };
-        // (the marks and the count of fetched bytes change together)
-        let state = Mutex::new((marks, (done.len() as u64 * chunk).min(size)));
-        // what an earlier run fetched counts as done in the running request's progress (`serve`)
-        job::count((done.len() as u64 * chunk).min(size));
-        let (next, failure) = (AtomicUsize::new(0), Mutex::new(None::<String>));
-        std::thread::scope(|scope| {
-            for _ in 0..jobs.max(1).min(todo.len().max(1)) {
-                scope.spawn(|| loop {
-                    let Some(&k) = todo.get(next.fetch_add(1, Ordering::SeqCst)) else { return };
-                    if failure.lock().unwrap().is_some() {
-                        return;
-                    }
-                    // between chunks: a cancel, the heat and battery limits of `serve` (nothing is asked of a command
-                    // that runs alone)
-                    if let Err(stop) = job::check() {
-                        failure.lock().unwrap().get_or_insert(stop.to_string());
-                        return;
-                    }
-                    let (st, en) = (k * chunk, ((k + 1) * chunk).min(size) - 1);
-                    let fetched = source.read(start + st, start + en).and_then(|data| file.write_all_at(&data, st).map_err(io));
-                    if let Err(e) = fetched {
-                        failure.lock().unwrap().get_or_insert(e);
-                        return;
-                    }
-                    let mut state = state.lock().unwrap();
-                    let _ = writeln!(state.0, "{k}").and_then(|()| state.0.flush());
-                    state.1 = (state.1 + en - st + 1).min(size);
-                    job::count(en - st + 1);
-                    log(format!("{name}: {}% ({}/{} MiB)", state.1 * 100 / size.max(1), state.1 >> 20, size >> 20));
-                });
-            }
-        });
-        match failure.into_inner().unwrap() {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-}
-
-/// A whole file from an https URL (or a local file) into `OUT.part`, in parallel range requests of `chunk` bytes,
-/// `jobs` at a time; the finished chunks are listed in `OUT.part.done`, so a later call goes on. Returns the size.
-/// The caller checks `OUT.part` (its SHA-256) and gives it its name (`serve`'s `download`).
-pub fn download(spec: &str, out: &str, jobs: usize, chunk: u64, begin: &dyn Fn(u64) -> Result<()>, log: &(dyn Fn(String) + Sync)) -> Result<u64> {
-    let source = Source::open(spec)?;
-    // (the caller learns the size before the first byte: the room it needs, its progress)
-    begin(source.size)?;
-    let part = format!("{out}.part");
-    let title = format!("url {} {chunk}", source.size);
-    let name = spec.rsplit('/').next().unwrap_or(spec);
-    source.fetch(name, &title, 0, source.size, &part, &format!("{part}.done"), jobs, chunk, log).map_err(|e| format!("{spec}: download failed ({e})"))?;
-    Ok(source.size)
 }
 
 /// Inflate a raw deflate stream from `part` into `tmp`; the CRC-32 of what came out.

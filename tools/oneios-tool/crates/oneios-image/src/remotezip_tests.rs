@@ -78,19 +78,49 @@ fn resume() {
     let tmp = Tmp::new("remotezip-resume");
     let (zip, stored, _) = make(&tmp);
     let z = RemoteZip::open(&zip).unwrap();
-    let (crc, chunk) = (z.find("big.dmg.aea").unwrap().crc, 4096usize);
+    let chunk = 4096usize;
     // an interrupted run: chunks 0 and 2 done, the rest zero
     let mut part = vec![0u8; stored.len()];
     for k in [0, 2] {
         part[k * chunk..(k + 1) * chunk].copy_from_slice(&stored[k * chunk..(k + 1) * chunk]);
     }
     tmp.write("big.part", &part);
-    tmp.write("big.part.done", format!("{crc:08x} {} {chunk}\n0\n2\n", stored.len()).as_bytes());
+    tmp.write("big.part.state", state_of(&z, "big.dmg.aea", &[(0, 4096), (8192, 12288)]).as_bytes());
     let log = Mutex::new(Vec::new());
     z.get("big.dmg.aea", &tmp.path("big"), 1, chunk as u64, &|line| log.lock().unwrap().push(line)).unwrap();
     let fetched = log.lock().unwrap().iter().filter(|line| line.contains('%')).count();
     assert_eq!(fetched, stored.len().div_ceil(chunk) - 2);
+    assert!(log.lock().unwrap().contains(&"big.dmg.aea: going on from 8192 of 20000 bytes".to_string()), "{:?}", log.lock().unwrap());
     assert_eq!(std::fs::read(tmp.path("big")).unwrap(), stored);
+    assert!(!std::path::Path::new(&tmp.path("big.part.state")).exists(), "the state file goes when the member has its name");
+}
+
+/// The state file an interrupted `get` of `member` leaves, with these ranges done.
+fn state_of(z: &RemoteZip, member: &str, done: &[(u64, u64)]) -> String {
+    let info = z.find(member).unwrap();
+    z.source.state_line(&format!("member {:08x} {}", info.crc, info.filename), z.data_start(info).unwrap(), info.compress_size, done)
+}
+
+#[test]
+fn a_part_of_another_member_or_without_its_state_starts_again() {
+    let tmp = Tmp::new("remotezip-other");
+    let (zip, stored, _) = make(&tmp);
+    let z = RemoteZip::open(&zip).unwrap();
+    // a part whose state says another member, then one with no state at all, then the list of the tool before
+    for (state, why) in [(Some(state_of(&z, "big.dmg.aea", &[(0, 4096)]).replace("big.dmg.aea", "other.aea")), "its part is of another download"), (None, "its part has no state file")] {
+        tmp.write("big.part", &vec![0u8; stored.len()]);
+        match &state {
+            Some(state) => drop(tmp.write("big.part.state", state.as_bytes())),
+            None => drop(tmp.write("big.part.done", b"00000000 20000 4096\n0\n")),
+        }
+        let log = Mutex::new(Vec::new());
+        z.get("big.dmg.aea", &tmp.path("big"), 2, 4096, &|line| log.lock().unwrap().push(line)).unwrap();
+        let said = log.lock().unwrap().join("\n");
+        assert!(said.contains(why) && said.contains("starting again from the first byte"), "{said}");
+        assert_eq!(std::fs::read(tmp.path("big")).unwrap(), stored);
+        assert!(!std::path::Path::new(&tmp.path("big.part.done")).exists());
+        std::fs::remove_file(tmp.path("big")).unwrap();
+    }
 }
 
 #[test]
@@ -98,12 +128,11 @@ fn bad_chunk_is_caught() {
     let tmp = Tmp::new("remotezip-bad");
     let (zip, stored, _) = make(&tmp);
     let z = RemoteZip::open(&zip).unwrap();
-    let crc = z.find("big.dmg.aea").unwrap().crc;
     // chunk 0 claimed done but holds zeros
     tmp.write("big.part", &vec![0u8; stored.len()]);
-    tmp.write("big.part.done", format!("{crc:08x} {} 4096\n0\n", stored.len()).as_bytes());
+    tmp.write("big.part.state", state_of(&z, "big.dmg.aea", &[(0, 4096)]).as_bytes());
     let error = z.get("big.dmg.aea", &tmp.path("big"), 8, 4096, &|_| ()).unwrap_err();
     assert!(error.contains("CRC-32") && error.ends_with("chunk list reset, run again"), "{error}");
     assert!(!std::path::Path::new(&tmp.path("big")).exists());
-    assert!(!std::path::Path::new(&tmp.path("big.part.done")).exists());
+    assert!(!std::path::Path::new(&tmp.path("big.part.state")).exists());
 }
