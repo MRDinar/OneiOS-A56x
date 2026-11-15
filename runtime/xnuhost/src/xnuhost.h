@@ -71,6 +71,9 @@ typedef struct {
                             // logged at the start and on every change; 0 = off; -1 = unset (3)
   int   return_graceful_ms; // return-graceful-ms: on a return (a stop signal), how long to let iOS shut itself down
                             // before the kill; 0 = the immediate kill (the default until the guest half is tested); -1 = unset (0)
+  int   ready_content_wait; // ready-content-wait=SECONDS: session/ready comes at the guest's first frame of its own with
+                            // content, or this long after its first frame of its own when all were black; 0 = at its
+                            // first frame (the rule before 2026-11-15); -1 = unset (XH_READY_CONTENT_WAIT)
   xh_disk_config disk[XH_MAX_DISKS];
   unsigned ndisk;
   char  display[16];        // "shm", "drm", "none"
@@ -173,6 +176,9 @@ const xh_usb_source *xh_usb_bionic(void);
 #define XH_PANEL_WIDTH  1440u          // the Galaxy S24 Ultra's panel, where the host's cannot be read
 #define XH_PANEL_HEIGHT 3120u
 #define XH_PANEL_HZ     120u
+// ready-content-wait's default: an iOS whose frames are all black is ready this many seconds after its first one
+// (ready.c). Under the switch's dead-man timer (600 s from the start; the phone's first frame came at +133 s).
+#define XH_READY_CONTENT_WAIT 120
 typedef struct { unsigned width, height, hz; } xh_panel_mode;
 // The panel's native mode among the modes of its connector: the largest, at its highest refresh rate. Not the
 // current one: One UI's resolution setting may run the panel at 1080x2340.
@@ -452,7 +458,27 @@ void xh_return_init(xh_return_state *st);
 xh_return_decision xh_return_on_signal(xh_return_state *st, int graceful_ms, bool guest_ready, uint64_t now_ms);
 bool     xh_return_expired(const xh_return_state *st, uint64_t now_ms);   // the deadline has passed
 uint64_t xh_return_elapsed_ms(const xh_return_state *st, uint64_t now_ms);
-void xh_guest_ready(void);
+
+// When the guest is up (ready.c; docs/booter.md 2.8): the first frame of its own with content (xh_pixels_lit), or
+// ready-content-wait seconds after its first frame of its own when every frame was black. Pure, unit-tested.
+typedef struct { uint64_t first_ms; uint64_t frames; bool ready; } xh_ready_state;
+typedef enum {
+  XH_READY_NOT,            // not yet
+  XH_READY_ALREADY,        // it was before
+  XH_READY_CONTENT,        // now: a frame of the guest's own with content
+  XH_READY_ANY_FRAME,      // now: the first frame of its own (ready-content-wait=0, the rule before 2026-11-15)
+  XH_READY_BLACK_TIMEOUT,  // now: ready-content-wait seconds after its first frame of its own, all black
+  XH_READY_CALL,           // now: the kernel's ready host call
+} xh_ready_why;
+void xh_ready_init(xh_ready_state *st);
+xh_ready_why xh_ready_on_frame(xh_ready_state *st, bool lit, int wait_s, uint64_t now_ms);   // a frame of the guest's own
+xh_ready_why xh_ready_on_tick(xh_ready_state *st, int wait_s, uint64_t now_ms);             // the clock
+xh_ready_why xh_ready_on_call(xh_ready_state *st);                                          // the ready host call
+void xh_guest_ready(void);                 // the kernel's ready host call (main.c)
+// A frame of the guest's own was shown (virtio_gpu.c calls it before the frame goes to the display helper, so that
+// session/ready is there first); lit: xh_pixels_lit of the display's frame. True once the guest is ready, after which
+// it need not be called again. main.c.
+bool xh_guest_frame(bool lit);
 
 // ---- host-call vector (hostcalls.c, arch thunks) ------------------------------------------------
 extern struct xh_info g_info;

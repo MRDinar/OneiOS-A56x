@@ -444,7 +444,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   `--display shm` instead of `none` and run, beside it,
   `kernel/patches/oneios-hosted/display/display-capture.py --session out/run/session --out out/run/frame`: it prints a
   line when the picture changed and writes `out/run/frame-NNN.png`. `out/run/session/ready` appears at the first
-  frame that is not the boot console's. Boot argument `oneios-display=0` leaves the display out. The frame is
+  frame of the guest's own that is not all black (never a frame of the boot console; with every frame black, `ready-content-wait` seconds, 120, after the first: [booter.md](booter.md) 2.8, "the ready rule"); the log's `display: the guest's first frame of its own: all black` line is where the rule before 2026-11-15 was ready. Boot argument `oneios-display=0` leaves the display out. The frame is
   1440x3120 at 120 Hz and @3x unless told otherwise: `--width W --height H`, `--hz N`, `--set scale=2`
   ([booter.md](booter.md) 2.8); the log's `display: shm, guest frame ...` line and the capture's `hello` say what it is.
   The frame's pixels: `display: the frame's pixels: B,G,R,X 8-bit sRGB, 4 bytes a pixel` (the default);

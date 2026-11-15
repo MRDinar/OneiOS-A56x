@@ -150,9 +150,16 @@ is gone, writes the hardware's range; the return writes One UI's values back bef
 `control/display.pid`. Every helper of the session, also one started again by hand, has its pid appended to
 `control/display.pid` and its output appended to `control/display.log` (`runtime/display/README.md` has the command).
 The fork's boot screen (z 2,000,000,000) ends when a helper in `control/display.pid` logs `oneios-display: first frame
-posted` (or `layer up` after `session/ready`); the helper's layer (z 2,147,483,646, opaque) is above it until then. The
+posted` (or `layer up` after `session/ready`); the helper's layer (z 2,147,483,646, opaque) is above it. The
 helper does not re-create its layer at a display off or on: iOS's display off is a black frame on the same layer, so
-the boot screen shows through only when no helper runs.
+once the helper has posted, the boot screen shows through only when no helper runs.
+**Since 2026-11-15 both markers mean "iOS shows something"** (the fix of the black screen between the boot screen
+and the Apple logo, phone, main 3233fed): `session/ready` comes at the guest's first frame of its own that is not
+all black (below, "Ready signal"), and a helper started with `--session` posts nothing, so logs no `first frame
+posted` and leaves the boot screen visible under its empty layer, until `session/ready` exists. Its line then reads
+`oneios-display: first frame posted (...; held T s for session/ready, N wakes for flushes not shown)`; the prefix the fork
+matches is unchanged. A helper started again in a session that is already ready posts at once. The fork's rule
+(`display_up`), its 30 s rule for a renderer that never drew and the dead-man timer need no change.
 
 ## 5. What xnuhost must do for the switch
 
@@ -161,8 +168,13 @@ the boot screen shows through only when no helper runs.
 - **Write only under `/data/data` and `/data/session`.** Never to anything of One UI's.
 - **Ready signal:** create the file `/data/session/ready` when the guest's first frame is on screen
   (or when it would be, while there is no display yet). With the guest's framebuffer driver
-  (`kernel/patches/oneios-hosted/display/`) that is `backboardd`'s first frame; the kernel console, which the
-  driver also shows, does not count. Until then the switch's dead-man timer runs: no
+  (`kernel/patches/oneios-hosted/display/`) that is the first frame of backboardd's **that is not all black**
+  (since 2026-11-15: its first frames are black, and iOS's Apple logo comes after them), or, when every frame is
+  black, `ready-content-wait` seconds (120) after its first one; the kernel console, which the driver also shows,
+  does not count, lit or not (`docs/booter.md` 2.8, "the ready rule"). The line with it still begins `xnuhost I
+  guest ready: first frame` (`... with content, T s and N frames after the guest's first (black) frame`, or `...,
+  all black: no frame with content in 120 s ...`); `display: the guest's first frame of its own: all black ...`
+  marks where the rule before 2026-11-15 was ready. Until then the switch's dead-man timer runs: no
   `ready` after `ONEIOS_RETURN_MAX` seconds (600) means an automatic return to One UI.
 - **Exit means return.** When the xnuhost process ends for any reason, the watcher returns to One UI.
   Exit code 0 = the guest shut down; anything else is logged as a failure.

@@ -248,6 +248,22 @@ static void test_panel_report(void)
   close(pair[1]);
 }
 
+// The first post waits for SESSION/ready (2026-11-15: the layer covers the OneOS boot screen, and the frames before
+// ready are black or the console): held while it is missing, not once it is there, never without a session.
+static void test_hold_first(const char *dir)
+{
+  char ready[300];
+  snprintf(ready, sizeof ready, "%s/ready", dir);
+  unlink(ready);
+  CHECK(xhd_hold_first(ready) == 1);
+  CHECK(xhd_hold_first(NULL) == 0 && xhd_hold_first("") == 0);                 // --socket: no hold
+  FILE *f = fopen(ready, "w");
+  CHECK(f && fputs("ready\n", f) >= 0 && fclose(f) == 0);
+  CHECK(xhd_hold_first(ready) == 0);                                           // xnuhost said ready
+  unlink(ready);
+  CHECK(mkdir(ready, 0700) == 0 && xhd_hold_first(ready) == 0 && rmdir(ready) == 0);   // whatever it is: there
+}
+
 static void test_protocol(const char *dir)
 {
   struct server s = { .delay_ms = 300, .width = 64, .height = 48 };
@@ -411,6 +427,7 @@ int main(int argc, char **argv)
   test_formats();
   test_copy_formats();
   test_panel_report();
+  test_hold_first(dir);
   test_protocol(dir);
   if (argc > 1) test_displayctl(argv[1], dir);
   rmdir(dir);

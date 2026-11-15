@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define FORMAT_BGRA_8888 XHD_BUFFER_BGRA_8888    // HAL_PIXEL_FORMAT_BGRA_8888: the guest's 8-bit bytes as they are
@@ -120,7 +121,17 @@ static const char *format_name(int format)
   return format == FORMAT_BGRA_8888 ? "BGRA_8888" : format == FORMAT_RGBX_8888 ? "RGBX_8888" : format == FORMAT_RGBA_FP16 ? "RGBA_FP16" : "other";
 }
 
-JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong handle, jobject surface, jint format, jint dataspace)
+static double seconds_since(const struct timespec *t0)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (double)(t.tv_sec - t0->tv_sec) + (double)(t.tv_nsec - t0->tv_nsec) / 1e9;
+}
+
+// ready_path: SESSION/ready (--session), or NULL (--socket): the first post waits for it (xhd_hold_first). Until the
+// first post the layer has no buffer and the OneOS boot screen under it shows.
+JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong handle, jobject surface, jint format, jint dataspace,
+                                               jstring ready_path)
 {
   (void)type;
   struct context *c = (struct context *)(intptr_t)handle;
@@ -129,15 +140,31 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   if (!window) { fprintf(stderr, "oneios-display: no native window for the layer\n"); return -1; }
   ANativeWindow_setBuffersGeometry(window, (int32_t)f->width, (int32_t)f->height, format);
   set_dataspace(window, dataspace);
+  char ready_file[600] = "";
+  if (ready_path) {
+    const char *p = (*env)->GetStringUTFChars(env, ready_path, NULL);
+    if (p) { snprintf(ready_file, sizeof ready_file, "%s", p); (*env)->ReleaseStringUTFChars(env, ready_path, p); }
+  }
   struct xhd_rect pending = { 0, 0, f->width, f->height };
-  unsigned long frames = 0;
+  unsigned long frames = 0, held_flushes = 0;
+  bool held = false;
+  struct timespec hold_start;
   int result;
   for (;;) {
+    // Held: the guest's frame is not shown yet, the damage adds up, and `ready` is looked for at every flush and
+    // every XHD_HOLD_POLL_MS between them (a guest that drew its frame with content and then nothing more).
+    bool hold = frames == 0 && xhd_hold_first(ready_file);
+    if (hold && !held) {
+      held = true;
+      clock_gettime(CLOCK_MONOTONIC, &hold_start);
+      fprintf(stderr, "oneios-display: the first frame waits for %s (xnuhost's first frame of the guest's own with content); the boot screen stays\n", ready_file);
+    }
     struct pollfd fds[2] = { { c->fd, POLLIN, 0 }, { signal_pipe[0], POLLIN, 0 } };
-    int ready = poll(fds, 2, pending.w ? 0 : -1);
+    int ready = poll(fds, 2, hold ? XHD_HOLD_POLL_MS : pending.w ? 0 : -1);
     if (ready < 0 && errno != EINTR) { result = -3; break; }
     if (stopping || (ready > 0 && fds[1].revents)) { result = 1; break; }
     if (xhd_drain(c->fd, f, &pending) < 0) { result = 0; break; }
+    if (hold) { if (ready > 0) held_flushes++; continue; }
     if (!pending.w) continue;
     // The first posts fill whole buffers; after that the window copies back what the last frame
     // had and hands out the rectangle that has to be drawn (it may be larger than what was asked).
@@ -174,10 +201,13 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
         xhd_copy(buffer.bits, (size_t)buffer.stride * bytes, layout, f->pixels, f->stride, f->format, r);
     }
     ANativeWindow_unlockAndPost(window);
-    if (frames++ == 0)
-      fprintf(stderr, "oneios-display: first frame posted (%dx%d buffer, stride %d, format %d %s, dataspace %#x %s; the guest's frame: %s)\n",
+    if (frames++ == 0) {
+      char waited[96] = "";
+      if (held) snprintf(waited, sizeof waited, "; held %.1f s for session/ready, %lu wakes for flushes not shown", seconds_since(&hold_start), held_flushes);
+      fprintf(stderr, "oneios-display: first frame posted (%dx%d buffer, stride %d, format %d %s, dataspace %#x %s; the guest's frame: %s%s)\n",
               buffer.width, buffer.height, buffer.stride, buffer.format, format_name(buffer.format), (unsigned)ANativeWindow_getBuffersDataSpace(window),
-              xhd_dataspace_name(ANativeWindow_getBuffersDataSpace(window)), xh_pixels_name(f->format));
+              xhd_dataspace_name(ANativeWindow_getBuffersDataSpace(window)), xh_pixels_name(f->format), waited);
+    }
     pending = (struct xhd_rect){ 0, 0, 0, 0 };
   }
   ANativeWindow_release(window);

@@ -13,6 +13,8 @@
 #ifndef XNUHOST_PIXELS_H
 #define XNUHOST_PIXELS_H
 #include <math.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -132,5 +134,35 @@ static inline void xh_pixels_rgba16f_to_8(uint8_t *to, const uint8_t *from, size
     uint8_t r = t[px[0]], g = t[px[1]], b = t[px[2]];
     to[0] = rgb ? r : b; to[1] = g; to[2] = rgb ? b : r; to[3] = 0xff;
   }
+}
+
+// Whether a frame shows anything: a sparse grid of its pixels (every XH_LIT_STEP-th pixel of every XH_LIT_STEP-th row,
+// starting half a step in) against black. A pixel is lit when one of R, G, B is above XH_LIT_LEVEL as an 8-bit sRGB
+// code (a half float through the clamp to sRGB). At 1440x3120 that is 90 x 195 = 17,550 pixels, one cache line each,
+// not the 18 MB of the frame; a lit area of XH_LIT_STEP x XH_LIT_STEP pixels or more is always seen (iOS's boot logo
+// is hundreds of pixels across). xnuhost's ready rule (session/ready: the first frame of the guest's own that is lit,
+// docs/booter.md 2.8) uses it. Stops at the first lit pixel.
+#define XH_LIT_STEP  16u
+#define XH_LIT_LEVEL 16u
+static inline bool xh_pixels_lit(const uint8_t *pixels, size_t stride, uint32_t width, uint32_t height, uint32_t format)
+{
+  if (!pixels || (format != XH_PIXELS_BGRX8 && format != XH_PIXELS_RGBA16F)) return false;
+  const uint8_t *half = format == XH_PIXELS_RGBA16F ? xh_half_to_srgb8() : NULL;
+  // (A frame smaller than a step is sampled in its middle: the tests' frames.)
+  uint32_t x0 = width >= XH_LIT_STEP ? XH_LIT_STEP / 2 : width / 2, y0 = height >= XH_LIT_STEP ? XH_LIT_STEP / 2 : height / 2;
+  for (uint32_t y = y0; y < height; y += XH_LIT_STEP) {
+    const uint8_t *row = pixels + (size_t)y * stride;
+    for (uint32_t x = x0; x < width; x += XH_LIT_STEP) {
+      if (!half) {
+        const uint8_t *p = row + (size_t)x * 4;
+        if (p[0] > XH_LIT_LEVEL || p[1] > XH_LIT_LEVEL || p[2] > XH_LIT_LEVEL) return true;
+      } else {
+        uint16_t p[3];
+        memcpy(p, row + (size_t)x * 8, sizeof p);
+        if (half[p[0]] > XH_LIT_LEVEL || half[p[1]] > XH_LIT_LEVEL || half[p[2]] > XH_LIT_LEVEL) return true;
+      }
+    }
+  }
+  return false;
 }
 #endif

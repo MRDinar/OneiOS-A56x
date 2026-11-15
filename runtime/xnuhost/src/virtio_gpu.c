@@ -193,13 +193,17 @@ static bool backing_read(const resource *r, uint64_t offset, uint8_t *out, uint6
 
 // The guest's display driver also scans out the boot framebuffer itself (DroidVMVirtioGpuDisplay.cpp's `boot`
 // resource: the kernel console until the compositor's first frame, and later whenever a blank or CPU-copied frame was
-// drawn there). That picture is shown like any other, but it is the console's: the guest is ready (session/ready)
-// at the first frame of a surface of its own.
+// drawn there). That picture is shown like any other, but it is the console's. A frame of a surface of the guest's
+// own goes to main.c's ready rule (ready.c) with whether the display's frame now shows anything: backboardd's first
+// frames are black, and the guest is ready (session/ready) at the first that is not (2026-11-15). Called before the
+// frame is posted to the display helper, so that session/ready is there when the helper sees the frame.
+// `ready` (g->first_frame) stops the calls once the rule has said yes.
 static void frame_shown(gpu_state *g, const gpu_entry *entries, unsigned n)
 {
   if (g->first_frame || (n && g_info.video[0] && entries[0].addr == g_info.video[0])) return;
-  g->first_frame = true;
-  xh_guest_ready();
+  xh_display *d = xh_display_get();
+  bool lit = d && xh_pixels_lit(d->pixels, d->stride, d->width, d->height, d->format);
+  if (xh_guest_frame(lit)) g->first_frame = true;
 }
 
 static bool rect_ok(const gpu_rect *r, uint32_t w, uint32_t h)
@@ -321,8 +325,8 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   }
   flush_note(flush_now_us() - t0, (uint64_t)w * hgt * gbpp);
   if (status == RESP_OK_NODATA && w && hgt) {
+    frame_shown(g, b->entries, b->nentries);     // first: session/ready before the helper is told of the frame
     xh_display_flush(rect->x, rect->y, w, hgt);
-    frame_shown(g, b->entries, b->nentries);
   }
   return status;
 }
@@ -646,8 +650,8 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
       for (uint32_t y = 0; y < hgt && w; y++)
         memcpy(d->pixels + (size_t)(rect.y + y) * d->stride + (size_t)rect.x * r->dbpp,
                r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * r->dbpp, (size_t)w * r->dbpp);
+      frame_shown(g, r->backing, r->nbacking);   // first: session/ready before the helper is told of the frame
       if (w && hgt) xh_display_flush(rect.x, rect.y, w, hgt);
-      frame_shown(g, r->backing, r->nbacking);
     }
     return RESP_OK_NODATA;
   }
