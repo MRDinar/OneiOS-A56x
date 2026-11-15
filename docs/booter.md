@@ -376,7 +376,23 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     before the TERM with no `stopping:` line, and `timeout`'s KILL ended it 10 s later: cause not known (the PC was
     swapping 18 MB/s then); the fork's way back kills after 20 s either way, and a phone boot should check that
     `stopping:` follows the return's SIGTERM. What the PC shows: with no lock, holding the RAM fixed does not keep it
-    in RAM; hence the change above (no prefault without the lock). `ram-giveback=0` became the default with
+    in RAM; hence the change above (no prefault without the lock).
+
+    **Boot C (fix-ram-locked, 2026-11-15)**: the same PC, `--ram 4G`, 8 vCPUs, a fresh Data store, the new defaults
+    before the fallback above, a kernel of main's series (`kernel.kc` `4fb7be43`, built from `1b5fb9f`; `e128c27b`
+    with today's runtime panicked at +62 s in `oneios_native_legacy_display_late_probe` -> `~NativeLegacyDisplay` ->
+    `OSMetaClass::~OSMetaClass`, a kernel and runtime of different days, not this change). The lock failed at the first
+    step, so the RAM was held fixed and faulted in as used: kernel `oneios-mem: free pages given back to the host: no
+    (the host holds the RAM fixed)`; launchd at +270 s, SpringBoard at +313 s; held 2,431 / 4,066 / 4,053 MiB at 300 /
+    600 / 900 s, swapped out by the host 0 / 0 / 910 MiB (`the host swaps iOS's RAM` at 82, 332, 579, 859 MiB from
+    +710 s, swap-outs 8.2-18.7 MB/s, host MemAvailable 3.9-4.6 GiB with other agents' jobs), page tables 323 MiB at
+    900 s; no panic. Hence the fallback: where the lock cannot be had, give-back (boot A's way). The log ends at the
+    TERM with no `stopping:` line, as boot B's did (`timeout` exit 124 in the same second: the process died of the
+    TERM rather than taking the stop path; cause not known; a SIGTERM to the test kernel under the same qemu, with
+    `ram-giveback=0` or 1, gives `stopping: signal 15` both ways). The phone's check stays: `stopping:` right after
+    the return's SIGTERM.
+
+    `ram-giveback=0` became the default with
     fix-ram-locked (2026-11-15, the owner's rule) before the phone has shown `locked (mlock: the host cannot swap it)`:
     the owner's next boot sets the same settings explicitly, and the phone's 3233fed session showed that without the
     lock Linux swaps iOS's RAM even at a size that fits.
