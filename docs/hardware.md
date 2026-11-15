@@ -775,6 +775,67 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   `Disabled` set: iOS will not join it by itself (a per-network setting). A known SSID in range, enabled, and user
   auto-join back at 1, but still no `sets 20`: a fault on our side; then the `Filtering based on` lines (0070) and the
   `AUTO-JOIN: Skipping` lines say why.
+
+### Settings uses a full core while the password sheet is open (fix-settings-wifi-cpu, 2026-11-15)
+
+**The phone** (main 3233fed, 2026-11-15): `oneios-cpu: 10 s: Preferences[181] 106-111%` for minutes (kernel share 20-25 %),
+backboardd 30-50 %, kbd 18 %, typing lags; touch is not it (`706 HID events queued ... 0 dropped`, 0.4-0.7 ms).
+Preferences' top messages in iOS's log: 724 pairs of `ProcessSignpostStart/End [com.apple.UIKit:TableView]`, 493
+`Create send gesture actions`, 17 `Error __WiFiManagerClientAddDevice: for device ... using server port`, 8 `WiFi
+Sharing functionality not available from Sharing`; 63 `AUTO-JOIN: Scan SUCCEEDED` in the session; `ONEIOS WIFI: event
+10 for en0` among the driver's first 24 events.
+
+**What our side sends, read in the code and in 24A446 (proven unless marked):**
+- **Event 10 is `APPLE80211_M_SCAN_DONE`** (1 POWER_CHANGED, 2 SSID_CHANGED, 3 BSSID_CHANGED, 4 LINK_CHANGED, 9
+  ASSOC_DONE). The driver posts it once per scan of the host's, and only for a scan a client asked for (`SCAN_REQ` 10 or
+  `SCAN_REQ_MULTIPLE` 86); a request while a scan runs gets that scan's one event. On the PC with main's driver
+  (`wifi=sim`, 2026-11-14) wifid asked for 33 scans in 102 s, in pairs 0.1 s apart every 6.1 s, and got 33 SCAN_DONE: the
+  event rate is wifid's request rate, one for one. On the phone the 63 auto-join scans match. No BSSID, RSSI or link
+  event is posted outside a join or a leave (SSID_CHANGED, BSSID_CHANGED and LINK_CHANGED only when the link was up,
+  ASSOC_DONE once per join), and the host's 2-second `OW_STATE` while joined posts nothing.
+- What a SCAN_DONE does in a client [F, IO80211.framework `_eventRead`]: a client with an asynchronous scan of its own
+  pending reads the records (`_getAsyncScanResults`: `SCAN_RESULT` until `EIO`, which is the expected end); any other
+  client that monitors the event gets its callback with code 10 and no data. The event goes to every client's event
+  socket (wifid, wifip2pd, ...).
+- **Fixed: one `SCAN_RESULT` cursor for every reader.** Two loops that ran together split the list between them, and a
+  loop that stopped early made the next one start in the middle, so a reader could get a different part of the same
+  scan each time. Now each reading thread has its own cursor (eight slots, freed at its `EIO`, the least recently used
+  taken when all are in use), reset when a new scan finishes. [I] On the PC only wifid read records; whether two readers
+  ever overlapped on the phone is not in its log.
+- **Fixed: `POWER_CHANGED` at every `POWER` set**, also a set to the state the driver already had. wifid reads the power
+  on that event and tells its clients (Settings' switch, Control Center), which redraw. Now the event (and `OW_POWER` to
+  the host) only when the state changes; the first four sets that change nothing say `power 1 (as it was: no event)`.
+  [I] How often wifid set it on the phone is not in the lines we have.
+- **Fixed: a scan with no radio got an empty SCAN_DONE at once** (power off, or the host not answered yet): an event for
+  a scan that never ran, which a daemon that scans again on an empty list answers at once. Now the request is refused
+  (`ENETDOWN`) and nothing is posted.
+- **A lasting rate line**: `ONEIOS WIFI: 60 s: events 10x6 4x1; scans asked 6 (started 6, joined 0, refused 0), done 6
+  (2 networks), timed out 0; records 18; power sets 0 (changed 0); by wifid 6/18` (scans asked / records read per
+  process), one a minute while anything happened. It says on the next phone boot whether iOS asks again and again and
+  who.
+- **`__WiFiManagerClientAddDevice` error** [F, MobileWiFi]: the client logs it when it is told a device is attached
+  that its own device table already has (`CFDictionaryContainsKey` on the interface name, then `.cold.3`); the calls
+  come from `WiFiManagerClientDispatchAttachmentEvent` (wifid's attach notice) and from the reconnect in
+  `__WiFiManagerClientGetOrReconnectServerPort` (after wifid's port died, the client copies the device list and adds
+  each again). Our interface is attached once (`attachInterface` at the controller's start, no detach) and the driver
+  has no path that publishes it again. [I] 17 such errors are 17 attach notices or reconnects (a wifid restart would
+  give one per client): the phone's launchd log (`wifid` exits) and `ioslog --proc wifid --grep 'attached'` decide.
+- [I] **Preferences' own load is not shown to come from Wi-Fi events.** 724 TableView signposts over the session are
+  about 60 list reloads of about 12 cells, close to the 63 scans (the Wi-Fi list redraws per scan, as on an iPhone);
+  `Create send gesture actions` is UIKit's `_UIGestureRecognizerSendActions` signpost (one per gesture action: the
+  typing). WiFiKit's own lines (`UI scan results updated: N networks`, `partial scan results`, `scanning did finish`)
+  were not among the top messages. The password sheet's Sharing query (`SFClient wifiPasswordSharingAvailability`, 8
+  answers "not available") is iOS's and not a loop at 8.
+
+**Auto-join "disabled by user"** (`UserAutoJoinState` 0): set only by a client's XPC request (#34). Settings' Wi-Fi page
+says so in words when it is: `New Wi‑Fi network connections have been turned off from Control Center.`
+(WiFiKitUI's `kWFLocUserAutoJoinDisabledWarning`). Nothing of ours reports Wi-Fi off: `POWER` answers on unless a client
+set it off, `STATE` follows the station, no power event is posted without a change (since this fix), and a link event
+is posted only around a join. A Control Center Wi-Fi button that shows off is turned on by a tap, which sets auto-join
+on, not off; the 0 comes from a tap on a button that showed on (Wi-Fi on, not joined: "disconnect until tomorrow").
+**To turn it on again: open Control Center and tap the Wi-Fi button once** (it turns blue; wifid logs `Set user auto
+join enabled requested by "..." enabled 1`). The Settings switch off and on, or a tap on a network, also works.
+
 ### Missing, unknown
 
 - Seen in a session (2026-11-12): wifid takes en0, scans, lists the networks, joins an open network through the
