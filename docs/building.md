@@ -743,20 +743,61 @@ packages), runs the unit tests and publishes the prerelease `oneios-<version>` o
 with the Hardware checks screen). Locally: a `read:packages` token in `~/.config/twidget/github.properties`
 (`ghUsername`, `ghAccessToken`), then `cd app-android && ./gradlew test assembleFullDebug`.
 
-**oneios-tool in the app (fork branch `app-oneios-tool`, 2026-11-15; not run on the phone yet).** The app runs the
-staged runtime's `bin/oneios-tool serve` as root, one process per flow (`oneios_root.sh tool work|read`, the fork's
-`docs/oneios.md` "oneios-tool in the app"): **Make iOS image** (Set up iOS 27's image step, and Tools on iOS 27's
-page), **Check every file** (Tools), **CPU, clocks and threads** (Hardware checks), and in Session logs **Analyse the
-last session**, **iOS's own log: boots** and **last boot**. The screen shows the tool's steps, progress, time left,
-space and refusal as the tool sends them (`tools/oneios-tool/README.md`, "serve"). On a PC the tests run the app's
-side against a stand-in `serve` (`OneiosToolSessionTest`, `OneiosToolScriptTest`). Make iOS image needs the tool's
-`make-image` command, which is not written yet: until then the tool refuses it (`unknown`) and the screen says so.
+**oneios-tool in the app (fork branch `app-oneios-tool`, PR akshaynexus/OneOS#10; not run on the phone yet).** The app
+runs the staged runtime's `bin/oneios-tool serve` as root, one process per flow (`oneios_root.sh tool work|read`, the
+fork's `docs/oneios.md` "oneios-tool in the app"): **Make iOS image** (Set up iOS 27's image step, and Tools on iOS
+27's page: the tool's `fetch` of the IPSW's members, then `make-image` and `tweaks`, which the tool still refuses),
+**Check every file** (Tools), **CPU, clocks and threads** (Hardware checks), and in Session logs **Analyse the last
+session**, **iOS's own log: boots** and **last boot**. The screen shows the tool's steps, progress, time left, space,
+pauses and refusals as the tool sends them (`tools/oneios-tool/README.md`, "serve"), with **Pause**/**Resume** when the
+tool takes them, "No network" while Android has none (the app then pauses the request and resumes it when the
+network is back), and "Resume: <flow>" after OneOS was ended in the middle of a flow. On a PC the tests run the app's
+side against a stand-in `serve` and the real one (`OneiosToolSessionTest`, `OneiosToolScriptTest`,
+`OneiosToolRealTest`).
 
-**Measuring each step on the phone (for the Mac, which has the phone; no numbers here are measured yet).** The same
-requests the app sends, one-shot (`--request`: standard input's end would cancel a request), as root with One UI
-up and the runtime of this branch staged (`oneios-tool phone stage runtime DIR`). Each request prints its lines and
-ends with its `ok` (`seconds` is the tool's own time); `time` gives the wall clock. The requests go in a small script
-that is pushed, so that no shell between the Mac and the tool takes the JSON's quotes:
+**The phone test plan (for the Mac, which has the phone; nothing of it has run yet).** One UI up, KernelSU granting
+root to OneOS, no iOS session. Save each step's screen (`adb exec-out screencap -p > step.png`) and what it says.
+
+1. *The APK and the runtime.* The APK of the fork's branch, from CI (the `oneos-apk` artifact of the draft that points
+   `app/` at it) or built here: `oneios-tool app build && oneios-tool app install` (same signing key, or the tool
+   refuses; never uninstall). The runtime of this branch with `bin/oneios-tool` and `lib/profiles/`:
+   `runtime/package.sh 0.1.10-dev`, then in the app iOS 27 → Set up iOS 27 → Get the runtime → I have the file
+   (the `.tar.zst` pushed with `adb push out/release/oneios-runtime-0.1.10-dev-arm64.tar.zst /sdcard/Download/`).
+   Expect: the runtime step done, "every file checked". `oneios-tool phone sums` lists `bin/oneios-tool`.
+2. *The notification permission.* Opening Set up iOS 27 the first time asks for notifications (Android 13+): allow it.
+3. *Check every file* (iOS 27 → Tools). Expect: Starting oneios-tool, then two `sums` requests, each with its steps
+   (Reading the list, Checking the files), progress and time left, and at the end Done with "N files, ... all as
+   listed". With no image set staged the second is refused `not-found` and the screen says so in the tool's words.
+   While it runs: `adb shell su -c 'ps -A -o PID,NI,CMD | grep oneios-tool'` shows one process at NI 10; after Done,
+   none.
+4. *CPU* (Hardware checks → With oneios-tool → CPU, clocks and threads): the tool's lines and its eight `cpu` rows.
+5. *Session logs* → With oneios-tool: Analyse the last session (`log-list`, then the xnuhost log's last 4000 lines),
+   iOS's own log: boots and last boot (`ioslog-*` on `data/data.img`; refused `not-found` before a first session).
+6. *Make iOS image* (Tools → Make iOS image; about 10.6 GiB from Apple's server into `/data/local/tmp/oneios/make/
+   inputs`: check `df -h /data` first). Expect: `fetch`'s steps (Reading the IPSW's directory, Downloading and checking
+   the members), its `space` (need and free), progress with speed and time left.
+   - *Pause, then Resume* after a minute: the progress stops and the line says Paused (or the tool's words); Resume
+     goes on from the same byte count, not from 0. (Needs the tool of `tool-download-resume`; a tool without `pause`
+     shows no Pause button.)
+   - *Airplane mode* on in the middle: the line says No network (and the tool's `net` words with its next try);
+     airplane mode off: it goes on by itself, without Resume. Airplane on, Pause, airplane off: it stays paused until
+     Resume.
+   - *OneOS ended in the middle*: `adb shell am force-stop com.fahadali.oneos` while it downloads. Expect: within
+     10 s no `oneios-tool` process (`ps` as above; the tool ends at the end of its input, or root's `untool` ends
+     it), the `.part` files kept under `make/inputs`. Open OneOS → iOS 27 → Tools → Make iOS image: the screen offers
+     "Resume: Make iOS image"; tapped, `fetch` says the members already done are "already complete" and the rest go
+     on from their parts.
+   - At the end of `fetch`: "Not done, as the tool says" with `make-image: unknown: ...` and `tweaks: not-ported:
+     The root tweaks are not in this tool yet ...`. Nothing is staged (`image/` unchanged).
+7. *Stop*: start Check every file, Stop: "Stopped: what it made for this was removed", no `oneios-tool` process.
+8. *No runtime*: Remove the iOS files (Manage), then Tools' rows are gone; Set up iOS 27 → Make iOS image says
+   "oneios-tool did not start" with root's reason; the app does not crash.
+9. Afterwards: `adb shell su -c 'rm -rf /data/local/tmp/oneios/make'` frees the 10.6 GiB (Apple's files: never copy
+   them off the phone into git or a release).
+
+The times of each request on the phone, without the app (`--request`: standard input's end would cancel a request),
+as root with the runtime of this branch staged. The requests go in a small script that is pushed, so that no shell
+between the Mac and the tool takes the JSON's quotes (the CLI has no command for this yet):
 
 ```sh
 cat > /tmp/oneios-measure.sh <<'EOF'
@@ -767,20 +808,18 @@ for r in \
   '{"id":"3","cmd":"cpu"}' \
   '{"id":"4","cmd":"log-list"}' \
   '{"id":"5","cmd":"log","file":"xnuhost","tail":4000}' \
-  '{"id":"6","cmd":"ioslog-boots","source":"/data/local/tmp/oneios/data/data.img"}'; do
+  '{"id":"6","cmd":"ioslog-boots","source":"/data/local/tmp/oneios/data/data.img"}' \
+  '{"id":"7","cmd":"fetch","profile":"/data/local/tmp/oneios/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml","indir":"/data/local/tmp/oneios/make/inputs","only":["trust-system"],"resume":true}'; do
   echo "== $r"; time "$T" serve --stage "$S" --request "$r" | grep -E '"ev":"(ok|refused|failed)"'
 done
-# Make iOS image, once the tool has make-image (its README gives the keys and steps): the step lines and the ok carry
-# each step's time. It needs root's `begin image` first, as the app runs it.
 EOF
 adb push /tmp/oneios-measure.sh /data/local/tmp/oneios-measure.sh
 adb shell su -c 'sh /data/local/tmp/oneios-measure.sh' 2>&1 | tee oneios-measure.txt
 adb shell su -c 'rm /data/local/tmp/oneios-measure.sh'
 ```
 
-Then through the app: install the APK of the fork's branch, open iOS 27 → Tools → Check every file (and the other
-rows), and compare the screen's lines with the one-shot runs; `adb shell su -c 'ps -A -o PID,NI,CMD | grep oneios-tool'`
-while a flow runs shows one process at nice 10, and none after the screen says Done or Stopped.
+Request 7 fetches one member of 3,191 bytes from Apple's server (on the Linux PC: 0.5 s, and "already complete" the
+second time).
 
 ## 8. Releases
 

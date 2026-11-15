@@ -123,6 +123,13 @@ if [ -e "$STAGE/bin/oneios-display" ]; then
     { echo "package: bin/oneios-display without bin/liboneios-display.so or lib/oneios-display.dex" >&2; exit 1; }
 fi
 
+# 1c. The IPSW profiles (profiles/*.toml: this repository's own text, the members' names, sizes and hashes, no
+# Apple file) as lib/profiles/, for the phone's `oneios-tool serve` `fetch` (the OneOS app's Make iOS image). A package path
+# has no comma (oneos/interface.md section 1): "iPhone18,2" is "iPhone18-2" there.
+mkdir -p "$STAGE/lib/profiles"
+for p in "$ROOT"/profiles/*.toml; do n=${p##*/}; cp "$p" "$STAGE/lib/profiles/$(echo "$n" | tr , -)"; done
+chmod 0644 "$STAGE"/lib/profiles/*.toml
+
 # 2. Scripts (0755 when they have a #! line).
 if [ -d "$ROOT/runtime/scripts" ] && [ -n "$(ls -A "$ROOT/runtime/scripts")" ]; then
   mkdir -p "$STAGE/scripts"
