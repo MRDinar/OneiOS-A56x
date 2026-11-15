@@ -37,6 +37,24 @@ The board (`docs/agents.md`) is for coordination between agents; it is **not** a
 
 ## Rules
 
+> **IMPORTANT (the owner's rule, 2026-11-15): fix, do not only probe.** Every attempt (a PR, a phone boot, an agent's
+> task) must be a **fix**, or a fix plus a debugging tool. A change that only adds log lines, traces or off-by-default
+> switches "to see on the next boot" is not enough on its own.
+> 1. Start from the logs and traces we already have: the session folders under `out/session-logs/`, iOS's own log
+>    (`oneios-tool ioslog`), the crash reports, `xnuhost.log`, the `oneios-cpu`, `oneios-mem` and `thermal` lines.
+>    Trace the fault to its cause in the code.
+> 2. Fix the cause in our code. Look in particular for memory leaks, forever or busy loops, polling without a sleep,
+>    the same event or result sent again and again (so that iOS redraws or asks again), and slow code paths in
+>    xnuhost, the bridges, the drivers and the kernel patches: these cause lag, heat, swapping and hangs.
+> 3. Say what the fix changes, how it was tested (host tests, a PC boot), and which lines on the phone prove it.
+>
+> A new trace or tool is allowed with a fix, or as a lasting debugging tool (an `oneios-tool` command, a cheap log
+> line that stays), never as a one-boot probe. Give this rule to every agent you start.
+>
+> **Also the owner's rule (2026-11-15): iOS's RAM is never swapped.** Boot with fixed, locked RAM (`ram-giveback=0`,
+> prefault and `mlock`) at the most that fits, all CPU cores, and no caps of ours on the GPU. Keep only the host's
+> headroom that the way back to One UI needs (`ram-session-reserve`).
+
 - **No Apple files in git or in releases.** IPSWs, cryptexes, kernelcaches, kexts, `kernel.kc`, the image set and
   anything built from them stay in `out/` and `inputs/` (git-ignored). Releases carry only this project's own code.
   `runtime/package.sh` refuses Apple files (`oneios-tool package`); never work around it.
