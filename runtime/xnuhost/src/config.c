@@ -40,6 +40,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->bluetooth, "auto");
   strcpy(c->haptics, "auto");
   strcpy(c->wifi, "auto");
+  br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
 
 uint64_t xh_parse_size(const char *text, bool *ok)
@@ -150,6 +151,12 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
   else if (!strcmp(key, "cpu-pin")) { if (!strcmp(value, "2")) c->cpu_pin = 2; else { bool on; if (flag(value, &on)) return -1; c->cpu_pin = on; } }
   else if (!strcmp(key, "map-defer")) { bool on; if (flag(value, &on)) return -1; c->map_defer = on; }
+  else if (!strncmp(key, "hw-backend", 10)) {
+    // hw-backend, hw-backend-<bridge>, hw-backend-fallback (bridges/hw_backend.h)
+    int taken = br_hw_setting(&c->hw, key, value);
+    if (taken > 0) return -1;
+    ok = taken == 0;
+  }
   else if (!strcmp(key, "log-level")) c->log_level = atoi(value);
   else if (!strcmp(key, "disk") || !strcmp(key, "disk-rw") || !strcmp(key, "data-store")) {
     // disk=FILE (read-only), disk-rw=FILE[,SEED], data-store=FILE[,SEED]
@@ -197,6 +204,7 @@ static void usage(void)
         "               [--session-abi 1] [--mode takeover|bench] [--cpus N] [--ram SIZE|auto]\n"
         "               [--boot-args TEXT] [--display shm|drm|none] [--gpu auto|3d|2d] [--width W --height H]\n"
         "               [--hz N] [--scale 2|3] [--display-format bgrx|rgba16f]\n"
+        "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
         "               [--no-input] [--input-script FILE] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
@@ -270,6 +278,7 @@ int xh_config_finish(xh_config *c)
   if (c->spin_task < 0) c->spin_task = from_image.spin_task;
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;
+  br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;

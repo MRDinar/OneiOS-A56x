@@ -3,6 +3,7 @@
 // conversion, and the session on a fake backlight device (a folder). No phone.
 #define _GNU_SOURCE
 #include "brightness.h"
+#include "bridges/hw_backend.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -339,12 +340,103 @@ static void test_session(void)
   CHECK(system(command) == 0);
 }
 
+// The treble backend (hw-backend-backlight=treble): the standard class names only, the whole range, the touch IC
+// and the light sensor left alone; a phone without one of those names: one line, then off, or samsung with fallback.
+static void test_treble(void)
+{
+  char tmp[] = "/tmp/oneios-treble-XXXXXX", qcom[300], other[300], sec[300], only[300], foo[340];
+  CHECK(mkdtemp(tmp) != NULL);
+  snprintf(qcom, sizeof qcom, "%s/panel0-backlight", tmp);
+  snprintf(other, sizeof other, "%s/panel", tmp);
+  snprintf(sec, sizeof sec, "%s/sec", tmp);
+  snprintf(only, sizeof only, "%s/only", tmp);
+  snprintf(foo, sizeof foo, "%s/vendor-bl", only);
+  mkdir(qcom, 0755); mkdir(other, 0755); mkdir(sec, 0755); mkdir(only, 0755); mkdir(foo, 0755);
+  put(qcom, "max_brightness", "4095\n"); put(qcom, "brightness", "2000\n");
+  put(other, "max_brightness", "51000\n"); put(other, "brightness", "9000\n");
+  put(foo, "max_brightness", "510\n"); put(foo, "brightness", "100\n");
+  touch_node(sec, "tsp", "sec_touchscreen", false);
+
+  // samsung (the default) and treble on the same sysfs: samsung takes Samsung's "panel" (halved range) and wakes the
+  // IC; treble takes the standard panel0-backlight first, its whole range, and never writes the IC's node.
+  br_bright_options o = { .backlight_dir = tmp, .touch_dir = sec, .no_als = true };
+  br_bright *b = br_bright_open(&o);
+  br_bright_info i;
+  CHECK(b != NULL);
+  if (b) {
+    br_bright_info_get(b, &i);
+    CHECK(i.backend == BR_HW_SAMSUNG && strstr(i.node, "/panel/brightness") && i.ceiling == 25500 && i.touch_nodes == 1);
+    br_bright_close(b);
+  }
+  CHECK(get(other, "brightness") == 9000);
+  put(sec, "tsp/enabled", "0,0\n");
+  o.backend = BR_HW_TREBLE;
+  b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) {
+    br_bright_info_get(b, &i);
+    CHECK(i.backend == BR_HW_TREBLE && i.panel && strstr(i.node, "/panel0-backlight/brightness") && i.max_brightness == 4095 && i.ceiling == 4095 && i.saved == 2000);
+    CHECK(i.touch_nodes == 0 && !i.als);
+    br_bright_set(b, BR_BRIGHT_FULL, true, 0);
+    usleep(100000);
+    CHECK(get(qcom, "brightness") == 4095);
+    br_bright_display(b, false, "test");                             // display off: the panel's floor, no IC write
+    usleep(100000);
+    CHECK(get(qcom, "brightness") == 1);
+    br_bright_display(b, true, "test");
+    usleep(100000);
+    CHECK(get(qcom, "brightness") == 4095);
+    br_bright_key(b);                                                // nothing to wake
+    br_bright_close(b);
+    CHECK(get(qcom, "brightness") == 2000 && get(other, "brightness") == 9000);   // One UI's value back; Samsung's node untouched
+  }
+  char text[400];
+  snprintf(text, sizeof text, "%s/tsp/enabled", sec);
+  FILE *f = fopen(text, "r");
+  char state[16] = "";
+  if (f) { if (!fgets(state, sizeof state, f)) state[0] = 0; fclose(f); }
+  CHECK(!strcmp(state, "0,0\n"));                                    // the treble session never wrote the IC's node
+
+  // A phone whose backlight has another name: samsung lists the folder and finds it; treble does not list folders,
+  // says so in one line and stays off; with hw-backend-fallback=1 it uses the samsung form.
+  o.backlight_dir = only;
+  o.backend = BR_HW_SAMSUNG;
+  b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) { br_bright_info_get(b, &i); CHECK(strstr(i.node, "/vendor-bl/brightness") && i.ceiling == 255); br_bright_close(b); }
+  o.backend = BR_HW_TREBLE;
+  CHECK(br_bright_open(&o) == NULL);
+  CHECK(get(foo, "brightness") == 100);
+  br_hw_settings s;
+  br_hw_settings_init(&s);
+  CHECK(br_hw_setting(&s, "hw-backend-fallback", "1") == 0);
+  br_hw_configure(&s);
+  b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) { br_bright_info_get(b, &i); CHECK(i.backend == BR_HW_SAMSUNG && strstr(i.node, "/vendor-bl/brightness")); br_bright_close(b); }
+  // The process's setting: hw-backend-backlight=treble with no forced choice.
+  br_hw_settings_init(&s);
+  CHECK(br_hw_setting(&s, "hw-backend-backlight", "treble") == 0);
+  br_hw_configure(&s);
+  o.backlight_dir = tmp;
+  o.backend = BR_HW_UNSET;
+  b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) { br_bright_info_get(b, &i); CHECK(i.backend == BR_HW_TREBLE && strstr(i.node, "/panel0-backlight/")); br_bright_close(b); }
+  br_hw_configure(NULL);
+
+  char command[400];
+  snprintf(command, sizeof command, "rm -rf %s", tmp);
+  CHECK(system(command) == 0);
+}
+
 int main(void)
 {
   test_curve();
   test_als();
   test_session();
   test_touch();
+  test_treble();
   printf("brightness: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

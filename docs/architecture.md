@@ -44,6 +44,24 @@ back stay exactly OneOS-shaped.
 | Runtime package | `runtime/package.sh`, `.github/workflows/` | `oneios-runtime-<ver>-arm64.tar.zst` with `runtime.json`: xnuhost, the helpers and the phone check tools. Published on GitHub releases. No kernel, nothing of Apple's. | [releases.md](releases.md) |
 | OneOS fork | `akshaynexus/OneOS`, branch `oneios` | The "iOS 27 (OneiOS)" card (S24 Ultra only): downloads the runtime, imports and verifies the image set, Hardware checks, and the session scripts: arm the way back, stop zygote, start xnuhost and the display helper, return in place or by reboot. | [oneos/interface.md](../oneos/interface.md), the fork's `docs/oneios.md` |
 
+## The backend layer: samsung and treble
+
+Each hardware bridge has two forms of its Linux or Android side, chosen at start by the setting `hw-backend`
+(`samsung`, the default, or `treble`) and, per bridge, `hw-backend-<bridge>` (`docs/booter.md` 1):
+
+- **samsung**: today's paths on the Galaxy S24 Ultra (Samsung's nodes and device names), unchanged;
+- **treble**: the vendor-neutral interfaces of any Treble/GSI phone: the stable AIDL HALs through servicemanager
+  (health, thermal, vibrator; the client is the Wi-Fi bridge's binder code, no Android library), evdev found by its
+  capabilities, the standard sysfs classes by named paths.
+
+The choice lives in one place, `runtime/bridges/include/bridges/hw_backend.h` (`hw/hw_backend.c`, pure, and
+`hw/hw_log.c`), which xnuhost's `config.c` fills and `main.c` hands to the bridges (`br_hw_configure`) before any
+opens. Each bridge asks it once at open (`br_hw_select`: one log line with the backend and why) and builds its
+samsung or treble source behind the same API, so the bridge device, the drivers and iOS do not know which one runs.
+A treble interface that is missing is one line (`br_hw_missing`); the bridge then stays off, or with
+`hw-backend-fallback=1` uses its samsung form. Touch and the side keys have one lookup for both (evdev by
+capabilities, never grabbed). The audit table of every path, and each bridge's status: [hardware.md](hardware.md) 7e.
+
 ## A session, step by step
 
 1. **Stage** (in the app, One UI running): the runtime package and the image set are verified against their

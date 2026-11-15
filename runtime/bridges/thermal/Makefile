@@ -6,8 +6,8 @@ include $(dir $(lastword $(MAKEFILE_LIST)))../../host.mk
 ANDROID_CC ?= $(TOOLS)/aarch64-linux-android30-clang
 WARN := -Wall -Wextra -Werror
 INC := -I. -I../include
-SRC := thermal.c ../cpu/topology.c
-HDR := thermal.h ../include/bridges/bridges.h
+SRC := thermal.c ../cpu/topology.c ../hw/hw_backend.c ../hw/hw_log.c ../hal/hal.c ../wifi/aidl_parcel.c ../wifi/aidl_binder.c
+HDR := thermal.h ../include/bridges/bridges.h ../include/bridges/hw_backend.h ../hal/hal.h ../wifi/aidl.h
 
 all: build/android/thermalctl
 build/android/thermalctl: thermalctl.c $(SRC) $(HDR)

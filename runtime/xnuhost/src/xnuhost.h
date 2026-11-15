@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include "xnuhost/hostcall.h"
 #include "xnuhost/pixels.h"
+#include "bridges/hw_backend.h"     // br_hw_settings: hw-backend, hw-backend-<bridge>, hw-backend-fallback (runtime/bridges)
 
 #define XH_MAX_CPUS 8
 
@@ -110,6 +111,8 @@ typedef struct {
   char  wifi[8];            // "auto" (the phone's wlan0 for iOS's en0 when the bridges are on), "off" (no network
                             // device), "tap" (the old route: a tap and bin/oneios-net.sh's NAT), "sim" (a made-up
                             // radio with two networks, for a boot with no phone; works with the bridges off)
+  br_hw_settings hw;        // hw-backend=samsung|treble, hw-backend-<bridge>=..., hw-backend-fallback=0|1: which form of the
+                            // phone's hardware each bridge uses (bridges/hw_backend.h; docs/hardware.md, "Hardware backends")
 } xh_config;
 
 void xh_config_defaults(xh_config *c);

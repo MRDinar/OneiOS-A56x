@@ -108,6 +108,10 @@ typedef struct br_haptic br_haptic;
 // Finds the force-feedback device under `dev_dir` ("/dev/input"; NULL = that) and starts the worker.
 // NULL when there is none or it cannot be opened (the reason is logged).
 br_haptic *br_haptic_open(const char *dev_dir);
+// The same with the backend chosen (BR_HW_SAMSUNG: the evdev device; BR_HW_TREBLE: the vibrator HAL on `binder`, NULL:
+// ONEIOS_BINDER or /dev/binder; BR_HW_UNSET: hw-backend-haptics, bridges/hw_backend.h). br_haptic_open is this with
+// BR_HW_UNSET.
+br_haptic *br_haptic_open_as(const char *dev_dir, int backend, const char *binder);
 // The same on a caller's back end (tests, another actuator).
 br_haptic *br_haptic_open_backend(const br_haptic_backend *backend, void *ctx);
 // Vibrate from now for on_ms (0 = stop) at intensity 0..1000 and frequency_hz (0 = resonance).

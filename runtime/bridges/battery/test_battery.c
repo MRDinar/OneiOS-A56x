@@ -2,6 +2,7 @@
 // Host tests of the battery bridge: a fake power_supply tree and the mapping.
 #define _GNU_SOURCE
 #include "battery.h"
+#include "../hal/hal.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -353,8 +354,60 @@ static void test_session_on_charger(const char *root)
   br_battery_close(b);
 }
 
+// The treble backend's parcel: HealthInfo as the health HAL writes it, read back; an older HAL's shorter parcelable
+// and a newer one's longer one; what the nodes would have said.
+static void test_health(void)
+{
+  hal_health_info in = { .usb = true, .status = HAL_BATTERY_FULL, .present = true, .level = 100, .voltage_mv = 4380, .temp_deci_c = 287,
+                         .current_ua = 12000, .cycles = 3, .full_uah = 4900000, .design_uah = 5000000, .time_to_full_s = -1 };
+  snprintf(in.technology, sizeof in.technology, "Li-ion");
+  ab_parcel p;
+  ab_init(&p);
+  hal_health_encode(&p, &in);
+  ab_put_i32(&p, 0x5a5a5a5a);                     // whatever follows the parcelable in the reply
+  ab_reader r;
+  ab_reader_init(&r, p.data, p.size, NULL, 0);
+  hal_health_info out;
+  CHECK(hal_health_decode(&r, &out) == 0 && ab_get_i32(&r) == 0x5a5a5a5a);
+  CHECK(out.usb && !out.ac && out.status == HAL_BATTERY_FULL && out.level == 100 && out.voltage_mv == 4380 && out.temp_deci_c == 287);
+  CHECK(out.current_ua == 12000 && out.cycles == 3 && out.full_uah == 4900000 && out.design_uah == 5000000 && out.time_to_full_s == -1 && !strcmp(out.technology, "Li-ion"));
+  br_battery_raw raw;
+  br_battery_from_health(&out, &raw);
+  CHECK(!strcmp(raw.status, "Full") && raw.capacity == 100 && raw.present == 1 && raw.plugged && raw.temp == 287 && raw.voltage == 4380);
+  CHECK(raw.current == 12000 && raw.charge_full == 4900000 && raw.charge_full_design == 5000000 && raw.cycles == 3);
+  br_battery_units units = { .current_ua = true, .current_fixed = true };
+  br_battery_sample s;
+  br_battery_map(&raw, &units, 0, &s);
+  CHECK(s.full && s.plugged && s.current_ma == 12 && s.full_mah == 4900 && s.design_mah == 5000);
+  // An older HAL: the parcelable ends after batteryCurrentAverageMicroamps. The rest stays 0, nothing is read past it.
+  size_t cut = 0;
+  for (size_t at = 8; at + 4 <= p.size; at += 4) { int32_t v; memcpy(&v, p.data + at, 4); if (v == 6 && !cut) cut = at; }   // "Li-ion"'s length
+  CHECK(cut != 0);
+  ab_parcel old = p;
+  old.size = cut + 4 + 16 + 4;                    // the string (6 chars + NUL in UTF-16, padded: 16 bytes), the average
+  int32_t size = (int32_t)(old.size - 4);
+  memcpy(old.data + 4, &size, 4);
+  ab_reader_init(&r, old.data, old.size, NULL, 0);
+  CHECK(hal_health_decode(&r, &out) == 0 && out.level == 100 && out.design_uah == 0 && out.time_to_full_s == 0 && r.position == old.size);
+  br_battery_from_health(&out, &raw);
+  CHECK(raw.charge_full_design == BR_BATTERY_ABSENT);
+  // A null parcelable or a size past the parcel: refused.
+  int32_t null = 0;
+  ab_reader_init(&r, &null, 4, NULL, 0);
+  CHECK(hal_health_decode(&r, &out) != 0);
+  ab_parcel bad = p;
+  size = 100000;
+  memcpy(bad.data + 4, &size, 4);
+  ab_reader_init(&r, bad.data, bad.size, NULL, 0);
+  CHECK(hal_health_decode(&r, &out) != 0);
+  // Each BatteryStatus as the nodes' text.
+  const char *names[] = { "Unknown", "Unknown", "Charging", "Discharging", "Not charging", "Full", "Unknown" };
+  for (int st = 0; st <= 6; st++) { out.status = st; br_battery_from_health(&out, &raw); CHECK(!strcmp(raw.status, names[st])); }
+}
+
 int main(void)
 {
+  test_health();
   char root[200];
   snprintf(root, sizeof root, "%s/oneios-battery-test.%d", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (int)getpid());
   mkdir(root, 0755);

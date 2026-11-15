@@ -3,6 +3,7 @@
 // Ultra's topology, the sysfs reader on a fake tree, and the worker's two listeners.
 #include "thermal.h"
 #include "bridges/bridges.h"
+#include "../hal/hal.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -333,6 +334,48 @@ static void test_load(void)
 
 static void quiet(int level, const char *line) { (void)level; (void)line; }
 
+// The treble backend's reading: the thermal HAL's Temperature[] as it is sent, read back, and made a reading.
+static void test_hal(void)
+{
+  hal_temperature in[] = {
+    { HAL_TEMP_CPU, "cpu-0-0", 51.24f, 0 }, { HAL_TEMP_CPU, "cpu-1-3", 63.06f, 0 }, { HAL_TEMP_GPU, "gpu", 58.0f, 0 },
+    { HAL_TEMP_SOC, "soc", 66.5f, 1 }, { HAL_TEMP_BATTERY, "battery", 31.0f, 0 }, { HAL_TEMP_SKIN, "skin", 38.96f, 0 },
+    { HAL_TEMP_SKIN, "skin-2", 36.0f, 0 }, { 4, "usb", 30.0f, 0 }, { HAL_TEMP_CPU, "cpu-off", -273.0f, 0 },
+  };
+  ab_parcel p;
+  ab_init(&p);
+  hal_temperatures_encode(&p, in, 9);
+  ab_reader r;
+  ab_reader_init(&r, p.data, p.size, NULL, 0);
+  hal_temperature out[HAL_TEMPS_MAX];
+  CHECK(hal_temperatures_decode(&r, out, HAL_TEMPS_MAX) == 9 && r.position == p.size);
+  CHECK(out[1].type == HAL_TEMP_CPU && !strcmp(out[1].name, "cpu-1-3") && out[1].celsius == 63.06f && out[3].throttling == 1);
+  br_thermal_raw raw;
+  br_thermal_from_hal(out, 9, &raw);
+  CHECK(raw.cpu == 631 && raw.gpu == 580 && raw.soc == 665 && !strcmp(raw.soc_zone, "soc") && raw.battery == 310 && raw.skin == 390);
+  CHECK(raw.ddr == BR_THERMAL_UNKNOWN && raw.xo == BR_THERMAL_UNKNOWN && raw.ap == BR_THERMAL_UNKNOWN && raw.lrp == BR_THERMAL_UNKNOWN);
+  // The policy is the same: a case at 39.0 C is LIGHT on the default limits, as lrp at 39.0 C is.
+  br_thermal_limits l;
+  br_thermal_limits_default(&l);
+  br_thermal_state st;
+  br_thermal_decide(&l, &raw, NULL, &st);
+  br_thermal_raw samsung = raw;
+  samsung.lrp = 390;
+  br_thermal_state st2;
+  br_thermal_decide(&l, &samsung, NULL, &st2);
+  CHECK(st.level == st2.level && st.skin_level == st2.skin_level);
+  // Fewer kept than sent, a short or bad array.
+  ab_reader_init(&r, p.data, p.size, NULL, 0);
+  CHECK(hal_temperatures_decode(&r, out, 2) == 2);
+  ab_reader_init(&r, p.data, p.size - 6, NULL, 0);
+  CHECK(hal_temperatures_decode(&r, out, HAL_TEMPS_MAX) < 0);
+  int32_t none[1] = { -1 };
+  ab_reader_init(&r, none, 4, NULL, 0);
+  CHECK(hal_temperatures_decode(&r, out, HAL_TEMPS_MAX) == 0);
+  br_thermal_from_hal(NULL, 0, &raw);
+  CHECK(raw.soc == BR_THERMAL_UNKNOWN && raw.skin == BR_THERMAL_UNKNOWN && raw.battery == BR_THERMAL_UNKNOWN);
+}
+
 int main(void)
 {
   br_log_sink = quiet;
@@ -344,6 +387,7 @@ int main(void)
   test_sysfs();
   test_worker();
   test_load();
+  test_hal();
   char cmd[300];
   snprintf(cmd, sizeof cmd, "rm -rf %s", base);
   if (system(cmd)) fprintf(stderr, "could not remove %s\n", base);

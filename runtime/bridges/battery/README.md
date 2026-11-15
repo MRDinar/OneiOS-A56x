@@ -29,6 +29,35 @@ Units are normalized, because drivers disagree. On the owner's phone (2026-11-11
 - `charge_full`, `charge_full_design`: >= 100000 is µAh, otherwise mAh. Neither there: 5000 mAh.
 - The level is `capacity`; `charge_counter` is not used. Remaining mAh is `charge_full` x level.
 
+## The two backends (hw-backend-battery, 2026-11-15)
+
+`hw-backend=samsung|treble` or `hw-backend-battery=...` (`bridges/hw_backend.h`, `docs/hardware.md` 7e);
+`br_battery_options.backend` forces one (tests), `br_battery_backend()` says which runs. The open logs
+`hw: battery: backend X (why)`.
+
+- **samsung** (the default): the nodes above, unchanged.
+- **treble**: the health HAL, `android.hardware.health.IHealth/default`, asked for by name from servicemanager on
+  `/dev/binder` (`hal/hal.c`: the Wi-Fi supplicant's binder client, no Android library), its descriptor checked and
+  its version logged. Each read is one `getHealthInfo()` (code 12 of the frozen `IHealth.aidl`) and its
+  `HealthInfo` (`hal_health_decode`: the fields up to `batteryFullChargeDesignCapacityUah`; an older HAL's shorter
+  parcelable leaves the rest 0, a newer one's extra fields are skipped) becomes what the nodes would have said
+  (`br_battery_from_health`): the level, the status's text, present, tenths of a degree, mV, µA (the unit fixed),
+  µAh, the cycles, plugged = any of `chargerAc/Usb/Wireless/DockOnline`. The same mapping, change rule and worker
+  follow. Read only, as before: `update()` and the callbacks are never called.
+- Not registered (or SELinux denies the lookup): `hw: battery: treble: missing:
+  android.hardware.health.IHealth/default (no service: ...); the bridge stays off (hw-backend-fallback=0)`, or the
+  nodes with `hw-backend-fallback=1`. A HAL that dies during the session: the read fails, iOS keeps the last level,
+  one error line (`battery: the health HAL's getHealthInfo failed ...`).
+
+`batteryctl` takes `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_BATTERY`, `ONEIOS_HW_FALLBACK`, and off the phone
+`ONEIOS_BATTERY_DIR` (the class folder) and `ONEIOS_BINDER`; it prints `backend: samsung|treble`. Tests:
+`test_battery.c` `test_health` (the parcel both ways, an older HAL's, a bad one, the mapping), `tests/test_hal_binder.c`
+(the bridge against a fake servicemanager and health HAL on a real binder driver: a read, a change, the HAL's death,
+not registered, the fallback; `make test-binder`), and the stand-in phone (`tools/oneios-tool/tests/phone/
+hw-backend.sh`: `batteryctl` on the S24's nodes and through the fake health HAL, on a phone with only the HAL).
+[I] until run on a phone: the code of `getHealthInfo` and the field order are AOSP's frozen AIDL; the open's
+descriptor check refuses any other object.
+
 ## When it reports
 
 One worker thread, SCHED_OTHER, which sleeps until the guest's first query and every 3 s reads the nodes. The query

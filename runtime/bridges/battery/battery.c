@@ -4,6 +4,8 @@
 #define _GNU_SOURCE
 #include "battery.h"
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
+#include "../hal/hal.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -140,9 +142,27 @@ int br_battery_read_raw(const char *dir, const char *const *supplies, br_battery
   return 0;
 }
 
+void br_battery_from_health(const struct hal_health_info *h, br_battery_raw *raw)
+{
+  memset(raw, 0, sizeof *raw);
+  static const char *const names[] = { "", "Unknown", "Charging", "Discharging", "Not charging", "Full" };
+  snprintf(raw->status, sizeof raw->status, "%s", h->status >= 1 && h->status <= 5 ? names[h->status] : "Unknown");
+  raw->capacity = h->level;
+  raw->present = h->present;
+  raw->temp = h->temp_deci_c;
+  raw->voltage = h->voltage_mv > 0 ? h->voltage_mv : BR_BATTERY_ABSENT;
+  raw->current = h->current_ua;
+  raw->charge_full = h->full_uah > 0 ? h->full_uah : BR_BATTERY_ABSENT;
+  raw->charge_full_design = h->design_uah > 0 ? h->design_uah : BR_BATTERY_ABSENT;
+  raw->cycles = h->cycles >= 0 ? h->cycles : BR_BATTERY_ABSENT;
+  raw->plugged = h->ac || h->usb || h->wireless || h->dock;
+}
+
 // ---- the session --------------------------------------------------------------------------------
 
 struct br_battery {
+  br_hal *hal;                            // treble: the health HAL (NULL: samsung, the nodes)
+  int32_t hal_version;
   char dir[200];
   char supply_text[120];
   const char *supplies[BR_BATTERY_MAX_SUPPLIES + 1];
@@ -165,12 +185,27 @@ static uint64_t now_ms(void)
   return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
 }
 
+static int take_health(void *ctx, ab_reader *r) { return hal_health_decode(r, ctx); }
+
+// The treble backend's read: one getHealthInfo call (healthd's HAL reads the same nodes on its side).
+static int health_read(br_battery *b, br_battery_raw *raw)
+{
+  ab_parcel p;
+  hal_health_info info;
+  br_hal_parcel(&p, HAL_HEALTH);
+  int rc = br_hal_call(b->hal, HAL_HEALTH_GET_INFO, &p, take_health, &info);
+  if (!rc) br_battery_from_health(&info, raw);
+  return rc;
+}
+
 // With the lock held. Keeps the last good sample in *out when the nodes cannot be read.
 static int sample_now(br_battery *b, br_battery_sample *out)
 {
   br_battery_raw raw;
-  if (br_battery_read_raw(b->dir, b->supplies, &raw)) {
-    if (!b->read_failed) br_log(0, "battery: %s/battery/capacity cannot be read: iOS keeps the last level", b->dir);
+  int rc = b->hal ? health_read(b, &raw) : br_battery_read_raw(b->dir, b->supplies, &raw);
+  if (rc) {
+    if (!b->read_failed && b->hal) br_log(0, "battery: the health HAL's getHealthInfo failed (%s): iOS keeps the last level", br_hal_error(rc));
+    else if (!b->read_failed) br_log(0, "battery: %s/battery/capacity cannot be read: iOS keeps the last level", b->dir);
     b->read_failed = true;
     *out = b->sent;
     return -1;
@@ -229,7 +264,18 @@ br_battery *br_battery_open(const br_battery_options *options)
   for (char *name = strtok_r(b->supply_text, ",", &save); name && n < BR_BATTERY_MAX_SUPPLIES; name = strtok_r(NULL, ",", &save)) b->supplies[n++] = name;
 
   br_battery_raw raw;
-  if (br_battery_read_raw(b->dir, b->supplies, &raw)) {
+  if (br_hw_select(BR_HW_BATTERY, options ? options->backend : BR_HW_UNSET) == BR_HW_TREBLE) {
+    char why[256];
+    b->hal = br_hal_open(options ? options->binder : NULL, HAL_HEALTH_INSTANCE, HAL_HEALTH, why, sizeof why);
+    if (b->hal) {
+      b->hal_version = br_hal_version(b->hal);
+      b->units.current_fixed = b->units.current_ua = true;     // HealthInfo's current is in microamps by definition
+      int rc = health_read(b, &raw);
+      if (rc) { snprintf(why, sizeof why, "%s: getHealthInfo: %s", HAL_HEALTH_INSTANCE, br_hal_error(rc)); br_hal_close(b->hal); b->hal = NULL; }
+    }
+    if (!b->hal && !br_hw_missing(BR_HW_BATTERY, why)) { free(b); return NULL; }
+  }
+  if (!b->hal && br_battery_read_raw(b->dir, b->supplies, &raw)) {
     br_log(1, "battery: off: no readable %s/battery/capacity", b->dir);
     free(b);
     return NULL;
@@ -244,15 +290,21 @@ br_battery *br_battery_open(const br_battery_options *options)
   pthread_condattr_destroy(&attr);
   if (pthread_create(&b->thread, NULL, worker, b)) {
     br_log(0, "battery: off: no thread");
+    br_hal_close(b->hal);
     pthread_cond_destroy(&b->wake);
     pthread_mutex_destroy(&b->lock);
     free(b);
     return NULL;
   }
-  br_log(1, "battery: on: %s, status \"%s\", %u%%, %s; read every %u ms while iOS listens", b->dir, raw.status, b->sent.percent,
+  if (b->hal)
+    br_log(1, "battery: on: the health HAL %s (version %d), status \"%s\", %u%%, %s; asked every %u ms while iOS listens", HAL_HEALTH_INSTANCE,
+           b->hal_version, raw.status, b->sent.percent, b->sent.plugged ? "plugged in" : "on battery", b->poll_ms);
+  else br_log(1, "battery: on: %s, status \"%s\", %u%%, %s; read every %u ms while iOS listens", b->dir, raw.status, b->sent.percent,
          b->sent.plugged ? "plugged in" : "on battery", b->poll_ms);
   return b;
 }
+
+int br_battery_backend(const br_battery *b) { return b->hal ? BR_HW_TREBLE : BR_HW_SAMSUNG; }
 
 int br_battery_query(br_battery *b, br_battery_sample *out)
 {
@@ -279,6 +331,7 @@ void br_battery_close(br_battery *b)
   pthread_cond_broadcast(&b->wake);
   pthread_mutex_unlock(&b->lock);
   pthread_join(b->thread, NULL);
+  br_hal_close(b->hal);
   pthread_cond_destroy(&b->wake);
   pthread_mutex_destroy(&b->lock);
   free(b);
