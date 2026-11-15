@@ -2,6 +2,8 @@
 // The battery bridge: the phone's real battery for iOS. Reads Android's power_supply class under
 // /sys/class/power_supply and hands a normalized sample to xnuhost's bridge device, which tells
 // drivers/battery (iOS's IOPMPowerSource). Read only. README.md here has the nodes and the mapping.
+// Two backends (bridges/hw_backend.h, hw-backend-battery): samsung, the power_supply nodes above (unchanged); treble,
+// the health HAL android.hardware.health.IHealth/default through servicemanager (getHealthInfo), the same sample.
 #ifndef ONEIOS_BRIDGE_BATTERY_H
 #define ONEIOS_BRIDGE_BATTERY_H
 
@@ -48,6 +50,12 @@ bool br_battery_changed(const br_battery_sample *sent, const br_battery_sample *
 // 0, or -1 when there is no readable capacity.
 int br_battery_read_raw(const char *dir, const char *const *supplies, br_battery_raw *raw);
 
+// ---- the treble backend: the health HAL (hal/hal.h) -----------------------------------------------
+// android.hardware.health.IHealth/default's HealthInfo as the nodes would give it: the level, the status's text,
+// present, tenths of a degree, mV, uA (br_battery_open fixes the unit), uAh, the cycles, plugged = any charger online.
+struct hal_health_info;
+void br_battery_from_health(const struct hal_health_info *h, br_battery_raw *raw);
+
 // ---- the session --------------------------------------------------------------------------------
 typedef struct {
   const char *dir;                        // NULL: /sys/class/power_supply
@@ -55,6 +63,8 @@ typedef struct {
   uint32_t poll_ms;                       // 0: BR_BATTERY_POLL_MS
   uint32_t default_mah;                   // 0: BR_BATTERY_DEFAULT_MAH (ONEIOS_BATTERY_MAH)
   char     current_unit;                  // 'u' or 'm' fixes current_now's unit; 0 learns it (ONEIOS_BATTERY_CURRENT_UNIT)
+  int      backend;                       // BR_HW_SAMSUNG, BR_HW_TREBLE (bridges/hw_backend.h); 0: the process's hw-backend
+  const char *binder;                     // treble: the binder device; NULL: ONEIOS_BINDER, else /dev/binder
 } br_battery_options;
 
 typedef void (*br_battery_fn)(void *ctx, const br_battery_sample *sample);
@@ -68,6 +78,8 @@ br_battery *br_battery_open(const br_battery_options *options);
 int br_battery_query(br_battery *b, br_battery_sample *out);
 // fn runs on the worker thread, without the bridge's locks, for each change. NULL stops the reads.
 void br_battery_listen(br_battery *b, br_battery_fn fn, void *ctx);
+// BR_HW_TREBLE when the health HAL is read, BR_HW_SAMSUNG for the nodes.
+int  br_battery_backend(const br_battery *b);
 void br_battery_close(br_battery *b);
 
 #endif

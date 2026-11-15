@@ -1933,6 +1933,8 @@ Volume Up + Volume Down chord that ends the session.
 ## 7c. Battery (battery bridge, 2026-11-11)
 
 Details and the phone test: `runtime/bridges/battery/README.md`, `drivers/battery/README.md`.
+Two backends since 2026-11-15 (section 7e): samsung, the `power_supply` nodes below (the default, unchanged); treble,
+the health HAL (`android.hardware.health.IHealth/default`, `getHealthInfo`).
 
 - **Before this**: iOS showed a near-empty battery with no charging state. [I] nothing published an `IOPMPowerSource`
   under the hosted kernel (none of the classes that do has its hardware here); no log or registry dump confirmed it.
@@ -2187,7 +2189,7 @@ who or what it waits for).
 | Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | **done** (this PR: test_brightness, hw-backend.sh) |
 | Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
 | Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
-| Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | next (this PR, step 3) |
+| Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | **done** (test_battery, test_hal_binder, hw-backend.sh) |
 | Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | next (this PR, step 4) |
 | Thermal load line | `bridges/thermal/thermal.c` (`br_host_load_read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
 | Thermal policy, CPU step | `thermal.c` (`br_thermal_decide`), `xnuhost/src/main.c` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
@@ -2222,6 +2224,23 @@ vendor's own name: treble's one missing line and NULL, samsung with the fallback
 `hw: backlight: backend samsung (the default)` followed by the same `brightness: panel on: ...` and `brightness:
 touch: 1 IC ...` lines as before; a treble boot (`--hw-backend-backlight treble`) by `brightness: panel on:
 /sys/class/backlight/panel0-backlight/brightness, 1..N of N` and the touch line `treble: no vendor-neutral power node`.
+
+**The HAL client** (`runtime/bridges/hal/`): `br_hal_open` opens `/dev/binder` (the Wi-Fi supplicant's client,
+`wifi/aidl_binder.c`), asks servicemanager for the instance by name (`getService`; no wait, no list walked), checks
+the object's descriptor (`_NTF`) and reads its version; then plain calls. A HAL that is not registered is the bridge's
+one missing line. The method codes are the order of AOSP's frozen AIDL files (stable AIDL only appends), [I] until a
+phone answers. The tests' fake servicemanager and HALs: `tests/fake_hal.c` (`build/host/fake-hal DIR`, values read
+from files at every call), used by `tests/test_hal_binder.c` and the stand-in phone.
+
+**Battery** (`runtime/bridges/battery`, README "The two backends"). Treble: the health HAL,
+`android.hardware.health.IHealth/default`, one `getHealthInfo()` per read; `HealthInfo` becomes what the nodes would
+have said and the same mapping follows. Read only (`update()` and callbacks never called). Tested: `test_battery.c`
+(the parcel both ways, an older HAL's shorter one, a bad one, the mapping; 83 checks, the 65 samsung ones unchanged),
+`test_hal_binder.c` (against the fake on a real binder driver: a read, a change, the HAL's death, not registered, the
+fallback), the stand-in phone (6 checks: `batteryctl` on the S24's nodes and through the fake health HAL, a phone
+with only the HAL). On the phone: `hw: battery: backend samsung (the default)` then the same `battery: on:
+/sys/class/power_supply, ...` line; a treble boot by `battery: on: the health HAL
+android.hardware.health.IHealth/default (version N), ...` and the same `ONEIOS BATTERY` line in iOS's log.
 
 ## 8. Sources
 
