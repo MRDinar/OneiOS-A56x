@@ -17,7 +17,7 @@ script before it may replace it; the commands and the results are below. What is
 | `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output ("debug", below) |
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | written; **not run on the phone** (none on the box) | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 106 checks pass (`tests/phone/run.sh`, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
 | `app` | the app lines of `docs/building.md` section 7 (new) | written; **the app was not built or installed with it** (the owner's decision for this box) | not applicable; 103 checks pass with a stand-in checkout (also as the submodule `app/` of a stand-in OneiOS checkout), gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
-| `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.5 MB, and was not run). Not in it yet: the root tweaks (Python), the image build's own script, the AEA decryption | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
+| `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.6 MB, and was not run). Not in it yet: the root tweaks (Python), the image build's own script, the AEA decryption | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
 | `cycle`, `phone log` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run on the phone or with real builds** | not applicable; 117 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
 
 **The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`, the root tweaks). The image scripts call `oneios-tool image`
@@ -42,10 +42,10 @@ with two jobs, 51 unit tests pass (`oneios-common` 3, `oneios-image` 29 + 1, `on
 (the numbers in [todo_rust.md](todo_rust.md)); `ioslog`, `prelink`, `image im4p` and the APFS file reader were not
 built on a Mac yet.
 
-2026-11-15, Linux x86_64, with `serve` (branch `tool-app-progress`): `cargo test --release`, **166 tests pass, none
+2026-11-15, Linux x86_64, with `serve` (branch `tool-app-progress`): `cargo test --release`, **175 tests pass, none
 fail** (`oneios-common` 15, of them `job` 8; `oneios-image` 34 and its `tests/` 5 + 1 + 1, the new one
 `apfs_copy.rs`; `oneios-ioslog` 4; `oneios-kernel` 5 + 12; `oneios-ksym` 4 + 9; `oneios-log` 8; `oneios-package` 6;
-`oneios-phone` 20, of them the local forms 3; `oneios-prelink` 3; `oneios-serve` 8; `oneios-sym` 7;
+`oneios-phone` 29, of them the local forms 3; `oneios-prelink` 3; `oneios-serve` 8; `oneios-sym` 7;
 `oneios-testkit` 2; `oneios-tool` 1 + `tests/serve.rs` 21). The box ran other agents' builds: a build took 10 to
 22 minutes.
 
@@ -69,8 +69,8 @@ for Android. Run as root on the S24 Ultra, on the staged files of `/data/local/t
 `package` check. Not built in CI or released yet.
 
 With `serve` (2026-11-15, "serve" below) the same lines build on the Linux PC (NDK r28c, `linux-x86_64`, API 30;
-`rustup target add aarch64-linux-android`): **14,547,216 bytes stripped** (13.9 MB before), a PIE for
-`/system/bin/linker64`; 22 min on that PC while other agents' builds ran (328 s of CPU). One change was needed:
+`rustup target add aarch64-linux-android`): **14,556,592 bytes stripped** (13.9 MB before), a PIE for
+`/system/bin/linker64`; 12 to 22 min on that PC while other agents' builds ran (270 to 480 s of CPU). One change was needed:
 bionic calls the time-sharing class `SCHED_NORMAL` (the libc crate for Android has no `SCHED_OTHER`). **This build
 was not run**: no phone on that box. On Android the tool puts itself at nice 10 (every command; `--nice` 10 to 19).
 The measurement to run on the phone, as root with One UI up and no session:
@@ -141,7 +141,7 @@ protocol, every way it ends and every command have tests on stand-in inputs
 (`crates/oneios-tool/tests/serve.rs`: 21 tests start the process and read its lines; `crates/oneios-serve`: 8 unit
 tests; `oneios-common`'s `job`: 8; `oneios-phone`'s local forms: 3; `tests/phone/serve.sh`: 12 checks on the
 stand-in phone's stage, in both of its /proc modes), and the heavy commands ran on the real image set and kernel
-there ("Measured on the Linux PC", below). The Android arm64 binary builds (14.5 MB stripped) and **was not run**.
+there ("Measured on the Linux PC", below). The Android arm64 binary builds (14.6 MB stripped) and **was not run**.
 The measurement for the phone: `tests/phone/serve-on-phone.sh` ("Build and tests", above).
 
 | Option | Default | Meaning |
@@ -304,7 +304,7 @@ stage.
 | `health` | | | | `ok` at once: `case`, `battery`, `level`, `charging` (each only when its file is there), `state` (`ok`, `pause`, `stop`; `unknown`: no file), `session` (true: one is open) |
 | `cancel` | | `id` of the request to stop | | that request's `cancelled` |
 | `wait` | | `seconds` (default 1), `heavy` (default false: true makes it a heavy request), `file` (a temporary file it writes and removes) | `wait` | counts to `seconds` in `jobs` threads with `progress` (unit `ms`): for the app's own tests of progress, cancel, the queue and the limits. `ok`: `threads` (how many ran), `nice`, `realtime` |
-| `download` | H | `url` (https, or a file's path), `out`, `sha256`, `bytes` (optional: the size expected), `resume` | `download`, `check`, `place` | a file in parallel range requests of 8 MiB into `out.part`; the SHA-256 is checked before it gets its name. An `out` that is there with this SHA-256 is not fetched again. `ok`: `out`, `bytes`, `sha256` |
+| `download` | H | `url` (https, or a file's path; `http://127.0.0.1` and `http://localhost` too, for tests), `out`, `sha256`, `bytes` (optional: the size expected), `resume` | `download`, `check`, `place` | a file in parallel range requests of 8 MiB into `out.part`; the SHA-256 is checked before it gets its name. An `out` that is there with this SHA-256 is not fetched again. `ok`: `out`, `bytes`, `sha256` |
 | `zip-ls` | | `source` (an https URL or a file), `match` (a regular expression, optional) | | `row` `member`: `name`, `bytes`, `packed`, `method`, `crc32`. `ok`: `members` |
 | `zip-get` | H | `source`, `outdir`, `members`: a list of `{"member":"...","name":"..."}` (`name`: the file's name in `outdir`, optional), `resume` | `directory`, `download` | members of a ZIP (an IPSW) without downloading it, in parallel range requests; each member's CRC-32 is checked before it gets its name. `row` `member`: `name`, `out`, `bytes`, `crc32`. `ok`: `members`, `bytes` |
 | `fetch` | H | `profile`, `indir`, `only` (a list of roles, optional), `source` (optional), `resume` | `directory`, `download` | `image fetch`: the members a profile names, checked against its pins (size, CRC-32, SHA-256, SHA-384), and `inputs.json`. `ok`: `indir`, `bytes` |
@@ -320,7 +320,7 @@ stage.
 | `stubs-check` | H | `kc` | `check` | `prelink stubs-check` alone; a bad stub: `refused`, `audit` |
 | `package-check` | H | `dir` | `check` | `package check`: no Apple file in a runtime folder (else `refused`, `apple-file`) |
 | `ioslog-boots` | H | `source` (the Data store's image, a `.logarchive`, a folder), `volume` | `read` | `ioslog boots`: `row` `boot`: `uuid`, `start`, `first`, `last`, `entries`; and the table as `line`s |
-| `ioslog-show` | H | `source`, `out` (a file; without it the entries come as `line`s), `format` (`text`, `csv`, `jsonl`), `boot`, `since`, `until`, `proc` (a list), `pid`, `subsystem`, `category`, `type`, `grep`, `sort`, `volume` | `read` | `ioslog show`. `ok`: `entries`, and with a file `out`, `bytes` |
+| `ioslog-show` | H | `source`, `out` (a file; without it the entries come as `line`s), `format` (`text`, `csv`, `jsonl`), `boot`, `since`, `until`, `proc` (a list), `pid`, `subsystem`, `category`, `type`, `grep`, `sort`, `volume` | `read` | `ioslog show`. `row` `shown`: `entries` (written), `of` (read). `ok`: `entries`, and with a file `out`, `bytes` |
 | `log-list` | | | | the stage's logs by name (`phone log --list` on the phone itself): `row` `log`: `name`, `path`, `bytes`, `changed`; a log that is not there: `"missing":true`. `ok`: `logs` |
 | `log` | | `file` (`xnuhost` (default), `switch`, `return`, `outcome`, `display`, `watchdog`, `usb`, or `logs/xnuhost-EPOCH.log`), `tail`, `grep` (a list), `filters` (a list of `panic`, `display`, `gpu`, `wifi`, `hid`, `mem`), `markers`, `since`, `out` (a file, optional) | | `phone log` on the phone itself: the named file of the stage, read once (no follow), filtered; the lines as `line`s or into `out`. `ok`: `lines`, `matched`, `bytes` |
 | `cpu` | | | | `phone cpu` on the phone itself, from named files only (the CPUs 0 to 7 by name, Android's four cpusets, in a session xnuhost's own `cmdline`, `status`, `cpuset` and `stat`; the per-thread list stays with the adb form, which asks `ps`). `row` `cpu`: `n`, `core`, `capacity`, `related`, `governor`, `max_khz`, `scaling_max_khz`, `cur_khz`, `capped`; the report as `line`s. `ok`: `cpus` |

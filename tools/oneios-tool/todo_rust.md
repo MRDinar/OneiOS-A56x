@@ -633,7 +633,7 @@ Done:
 | `image apfs-copy` in threads | done: the same tree as before (README "image") |
 | `prelink build`: `build.sh`'s steps in one process, independent steps at the same time; the kexts' scans of `hosted` and `emit` in threads | done: the same `kernel.kc` and work files (README "prelink build") |
 | `oneios-tool --jobs N --nice N TOOL ...` for the commands that run alone | done |
-| The Android arm64 build | builds on the Linux PC with the NDK (r28c, API 30): 14,547,216 bytes stripped; **not run** (README "For the phone itself") |
+| The Android arm64 build | builds on the Linux PC with the NDK (r28c, API 30): 14,556,592 bytes stripped; **not run** (README "For the phone itself") |
 
 Open, in the order they matter for "make the iOS image on the phone":
 

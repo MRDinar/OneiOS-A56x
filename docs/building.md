@@ -923,7 +923,7 @@ tools/oneios-tool/tests/prelink/compare-build.sh                  # KERNEL=...: 
 adb shell su -c 'sh /data/local/tmp/serve-on-phone.sh'            # the measurement on the phone (tests/phone/serve-on-phone.sh; not run yet)
 ```
 
-For Android arm64 it builds with the NDK (README "For the phone itself": 14.5 MB stripped). **Nothing of it has run
+For Android arm64 it builds with the NDK (README "For the phone itself": 14.6 MB stripped). **Nothing of it has run
 on the phone**: tested on stand-in inputs (21 tests that start the process, 12 checks on the stand-in phone) and,
 on the Linux PC, on the real image set and kernel. There, with 4 CPUs: the APFS copy of 486 MB onto tmpfs 1.39 s
 with one thread and 0.59 s with four (the same tree); the stage's SHA-256 check of eight 150 MB files 5.39 s and
