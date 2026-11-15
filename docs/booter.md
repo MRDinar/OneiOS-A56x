@@ -702,7 +702,44 @@ times.
 
 ### 2.6c Before and after (fix-host-overhead, 2026-11-15), and the phone test
 
-RESULTS-PLACEHOLDER
+**The PC** (x86_64, 4 CPUs, qemu-aarch64 user mode, so times are qemu's, about ten times the phone's, and the box ran other
+agents' kernel builds and boots throughout: load 5-20). Two boots of iOS with 8 vCPUs, `--ram 4G`, a fresh Data store
+each, 2,400 s each (`timeout`, exit 124 both): before = main 1b5fb9f (xnuhost and kernel.kc 4fb7be43), after = this branch
+(kernel.kc 0b1dad07, hosted 0075 without the two GPU-path functions added after the boot; the final kernel.kc bffa13ad
+was built and prelinked, not booted). Totals of all 30 s windows (`oneios-perf:` and `perf:`):
+
+| | before | after |
+|---|---|---|
+| SpringBoard started (s after xnuhost's start) | 872 | 349 |
+| user stays / system calls / faults | 1,679,239 / 612,881 / 985,102 | 4,348,990 / 1,948,793 / 2,224,827 |
+| vCPU threads' CPU (`perf: cpuN`, core-seconds) | 4,021 | 3,687 |
+| the same per user stay | 2.39 ms | 0.85 ms |
+| pmap user maps + unmaps | 1,763,898 | 4,419,042 |
+| of them joined in the queue (one host call less each) | - | 1,421,798 (32 %) |
+| raises of another vCPU's line / signalled / skipped (already up) | not counted (all signalled) | 1,426,233 / 806,462 / 619,771 (43 % saved) |
+| timer sets / to `timer_settime` | 4,822,253 / 4,822,253 | 6,090,227 / 5,898,001 (3 % saved) |
+| fill time per attempt (`filled from the tables` us / faults) | 398 us | 54 us (14,628 fills switched out, not timed) |
+| kernel entries made again unchanged (no host map) | - | 0 |
+
+What this shows and what it does not: the counts (joins, skipped raises and timer calls, the fills' honest time) are
+properties of the code and carry over to the phone. The times and the boot's progress do not compare cleanly: the before
+boot ran while the box was loaded about twice as much, so the 2.6 times as many stays in the same 2,400 s, SpringBoard 523
+s earlier and a third of the vCPU time per stay are partly the box. The unchanged-entry skip never fired here: the PC's
+kernel maps are new entries (a different cause than the guess in hosted 0075's README; the skip stays, cheap, for the
+phone to say). `oneios-cpu` lines are not printed on the PC (the GPU archive's report runs with 3D only); the window's
+bound is the host test's (`test_cpu_window`). uclamp: 0 on the PC (no CPU plan without the bridges).
+
+**`make bench-arm64 BENCH_SET="--set cpu-pin=2"`** on the same PC, alternated, two rounds each (p50, us): null system call
+19.0/19.0 before, 19.0/20.0 after; a fault filled by `task_map` 38.0/37.0 before, 38.0/37.0 after; timer interrupt of a
+running thread 29.0/28.0 before, 28.0/27.0 after (the means fell, 21.6-20.1 against 20.4-65.0 for the null call, but the
+box's load moved them more than the code did). The single-thread trip did not change, as expected: the fixes are in
+what runs between trips (queue, GIC, timers) and in what several vCPUs share.
+
+**The parallel test** (`parallel-arm64`, 8 vCPUs, scale 3, after the warm-up round; same box and load): 8 threads took
+357-573 ms after and 418-474 ms before against 92-270 ms for one thread: speed-ups 2.2-4.4 (after) and 1.6-5.2 (before)
+of an ideal 8, where the PC has 4 cores and other agents' jobs on them. The 2-thread and 4-thread runs are within the
+same spread. So on this box nothing shows a serialisation in xnuhost's path (8 threads never took 8 times one thread),
+and the PC cannot show more than its 4 cores; the phone's run (below) is the measurement that counts.
 
 **The phone test (for the Mac; one session before, on main, and one after, on this branch, the same image set).**
 

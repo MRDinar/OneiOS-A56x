@@ -1124,7 +1124,8 @@ From the phone session of main 3233fed (30 s): `1021984 user stays; 684514 sysca
   `hosted_kernel_enter` when the entry was made, and a flush maps a still valid entry again at once), so no `kernel_map`:
   each one is an mmap in xnuhost with its mmap_lock taken for writing, which holds every vCPU's page faults meanwhile. The
   PC's idle boot made 220,270 kernel maps per 30 s with 1,468 kernel unmaps. The count: `kernel entries made again
-  unchanged N (no host map)`.
+  unchanged N (no host map)`. Measured on the PC boot (2,900,519 kernel maps in 2,400 s): 0, so there the kernel maps are
+  new entries and the guess was wrong; the check stays (one walk per kernel enter) for the phone's count.
 - **The hosted CLPC's hint** (`hostcall.h` `perf_hint`, ABI unchanged: a reserved word of `struct xh_cpu`): before each
   user stay the kernel writes the class of the thread (`thread_get_perfcontrol_class`, darwin background from the task's
   policy): realtime, UI and above-UI floor 1024, user-initiated 768, utility and background (and darwin-background) no
