@@ -43,9 +43,16 @@ stops changing every day.
 - [ ] **`oneios-tool` for Android arm64.** Cross-build it with the NDK (the parts the phone needs: `remotezip`,
   `image`, `prelink`, `package`'s Apple-file check), ship it in the runtime release, and run it as root from the app.
   Check that its speed and memory fit on the phone (the Mac's prelink took 4 s).
-- [ ] **Release the kernel.** `kernel/publish.sh` releases our own `xnu.macho` (open-source XNU and our patches,
-  no Apple binaries), and `kernel/release-kernel.txt` names it (`docs/releases.md`, "The kernel in a release").
-  Also release the iOS-side plug-ins that only Xcode builds (Metal, camera), if their files are ours only.
+- [ ] **Build the kernel on the phone too.** The default is to download our released `xnu.macho` (`kernel/publish.sh`,
+  `kernel/release-kernel.txt`; open-source XNU and our patches, no Apple binaries). The phone must also build it
+  itself, fast: port the Linux build (`kernel/build-linux.sh`: clang, lld, the XNU build system, MIG) to arm64
+  Android (the NDK's or a bundled clang and lld), all 8 cores, ccache and incremental builds so that one patch
+  rebuilds in minutes. Guess: a full build about 10-20 min on the S24 Ultra (the 4-CPU PC took 800 s, the Mac 186 s);
+  measure it. Keep the phone cool: nice 19, never realtime, stop on the thermal line.
+- [ ] **Build the iOS-side plug-ins on the phone (Metal, camera).** Today they need Xcode. On the phone: clang for
+  arm64-apple-ios, `ld64.lld`, and the SDK's stubs made from the user's own IPSW (the dyld cache's exports as
+  `.tbd` files, the headers we write or the open-source ones). Apple's SDK is never shipped. Not proven: check
+  first that the plug-ins link and load this way on a PC.
 - [ ] **The app's "Make iOS image" step,** in the same flow as the Android systems' screens (fork #5):
   1. download the runtime and `xnu.macho` from the OneiOS release (SHA-256 checked);
   2. fetch only the needed parts of the iOS 27 IPSW from Apple's server for the user (`remotezip`, no full 10 GB),
@@ -55,8 +62,8 @@ stops changing every day.
   5. stage as today, with the same checks.
   Show the step, the space it needs, the time left and the reason when a step is refused. Keep the work and its
   temporary files in the stage, and remove them on a cancel or a failure.
-- [ ] **What stays on a PC or Mac:** building `xnu.macho` (Apple's clang toolchain and the XNU build system) and
-  the Xcode plug-ins. Users do not need them, because those come from the release.
+- [ ] **Nothing has to stay on a PC or a Mac** (the owner, 2026-11-15): every step above runs on the phone itself,
+  and fast. A PC or a Mac stays an option for developers, never a need.
 - [ ] **User docs: build it and change it for your phone.** A short guide in plain steps, separate from the
   developer docs:
   - install the APK, download the runtime, make the iOS image in the app, switch, return;
