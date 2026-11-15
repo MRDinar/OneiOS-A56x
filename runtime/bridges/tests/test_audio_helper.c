@@ -653,9 +653,9 @@ int main(void)
   helper_down();
   stages mmap_x = latency_case("MMAP exclusive, burst 192", 1600, 1600);
   if (host_on_time("the MMAP latency bounds")) {
-    CHECK(mmap_x.aaudio_ms < 5 + 2.5 + 4 + 3);          // the target, half a chunk, a burst, a little
+    CHECK(mmap_x.aaudio_ms < 10 + 2.5 + 4 + 3);         // the start's target (10 ms), half a chunk, a burst, a little
     CHECK(mmap_x.ring_ms < 3);
-    CHECK(mmap_x.e2e_n > 100 && mmap_x.e2e_ms > 5 && mmap_x.e2e_ms < 5 + 5 + 4 + 6);   // below the read 5 ms + the level + lateness
+    CHECK(mmap_x.e2e_n > 100 && mmap_x.e2e_ms > 5 && mmap_x.e2e_ms < 5 + 10 + 4 + 6);  // below the read 5 ms + the level + lateness
   }
 
   // 9. MMAP shared offered: without system_server closed before its start, a mixer track instead; with it kept.
@@ -732,8 +732,12 @@ int main(void)
   pthread_mutex_unlock(&ring_lock);
   fprintf(stderr, "   %llu underruns while late; the target up to %u ms, %u ms after 5 s on time\n",
           (unsigned long long)late_underruns, FRAMES_MS(peak), FRAMES_MS(settled));
-  CHECK(late_underruns >= 1 && peak > MS_FRAMES(5));
-  if (host_on_time("the MMAP target back at its floor")) CHECK(settled == MS_FRAMES(5));
+  CHECK(late_underruns >= 1 && peak > MS_FRAMES(10));     // the stream starts at 10 ms; the late guest raised it
+  // On time again it comes down as far as the guest's lateness allows (5 ms needs periods within 2 ms).
+  if (host_on_time("the MMAP target back down")) {
+    CHECK(settled < peak && settled <= MS_FRAMES(10));
+    if (host_late_max < 0.0015) CHECK(settled == MS_FRAMES(5));
+  }
   send_header(AU_STOP, true, 0, 0);
   helper_down();
   unsetenv("ONEIOS_AUDIO_TARGET_DECAY_S");

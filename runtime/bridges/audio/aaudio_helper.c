@@ -142,6 +142,9 @@ static struct out_stats ostat;
 // The guest's schedule (guarded by ring_lock): the frames since its START and the earliest arrival less their
 // time (CLOCK_MONOTONIC_RAW, s; -1: none yet).
 static struct { uint64_t frames; double anchor; } guest_clock = { 0, -1 };
+// The latest guest period (its lateness, s) and the periods since the target last moved or held (ring_lock).
+static double window_late_max;
+static unsigned window_periods;
 
 // The server's pulls, as AAudioStream_getFramesRead shows them (the writer's own; read by out_report).
 typedef struct {
@@ -438,8 +441,11 @@ static void guest_period(unsigned frames, int ahead)
   double now = (double)t.tv_sec + t.tv_nsec / 1e9, at = (double)guest_clock.frames / RATE;
   if (guest_clock.anchor < 0 || now - at < guest_clock.anchor) guest_clock.anchor = now - at;
   guest_clock.frames += frames;
+  double late = now - at - guest_clock.anchor;
+  if (late > window_late_max) window_late_max = late;      // what the target may come down to (the writer)
+  window_periods++;
   if (ahead < 0) return;
-  double late = now - at - guest_clock.anchor, e2e = late + (double)ahead / RATE;
+  double e2e = late + (double)ahead / RATE;
   ostat.e2e_sum += e2e;
   ostat.late_sum += late;
   ostat.e2e_n++;
@@ -560,7 +566,7 @@ static void *writer(void *arg)
       unsigned raised = target + MS_FRAMES(5);
       target = raised > MS_FRAMES(target_max_ms) ? MS_FRAMES(target_max_ms) : raised;
       if (target > ostat.target_peak) ostat.target_peak = target;
-      quiet_since = now;
+      quiet_since = now; window_late_max = 0; window_periods = 0;
       level = reference = -1;
       settled = 0;
     }
@@ -578,12 +584,20 @@ static void *writer(void *arg)
       if (keep < allowance) allowance = keep;
     }
     if (seen != generation) { seen = generation; level = reference = -1; settled = 0; ring_average = 0; }
-    // The target back toward its floor after a quiet while.
+    // The target back toward its floor after a quiet while. On MMAP the target is the slack the guest's periods
+    // have before the reader runs dry (the target less the 2 ms of `low`): it comes down only when the latest guest
+    // period of the quiet while came within that slack less 1 ms (on the CI runner, a VM, the guest's periods were
+    // late by 3 ms at times, and a 5 ms target then cost a gap of silence in 9 s).
     if (target > MS_FRAMES(target_ms) && now - quiet_since >= target_decay_s) {
-      target = target > MS_FRAMES(target_ms + 5) ? target - MS_FRAMES(5) : MS_FRAMES(target_ms);
+      unsigned lowered = target > MS_FRAMES(target_ms + 5) ? target - MS_FRAMES(5) : MS_FRAMES(target_ms);
+      // (a quiet while with no guest period says nothing: the target stays.)
+      if (!continuous || (window_periods && window_late_max * 1e3 + 3 < FRAMES_MS(lowered))) {
+        target = lowered;
+        level = reference = -1; settled = 0;
+        fprintf(stderr, "oneios-audio: speaker: target %u ms (%u s without an underrun)\n", FRAMES_MS(target), target_decay_s);
+      }
       quiet_since = now;
-      level = reference = -1; settled = 0;
-      fprintf(stderr, "oneios-audio: speaker: target %u ms (%u s without an underrun)\n", FRAMES_MS(target), target_decay_s);
+      window_late_max = 0; window_periods = 0;
     }
     // The need: what the next pull takes from what came in since the last one, plus the target. Blind: a burst
     // plus the target, at every moment. An MMAP reader: what it takes beyond the chunk a guest period brings (none
@@ -606,7 +620,10 @@ static void *writer(void *arg)
     else if (priming) {
       // Before the guest's first chunk (and while it is stopped) AAudio is kept at the need with silence: a track
       // left empty is disabled by the mixer, and the level the guest's audio starts on is that.
-      if (ring_count >= CHUNK && (int64_t)ring_count + queued >= need) priming = false;
+      // An MMAP reader takes frames all the time: the guest's first chunk goes in only on top of the whole need in
+      // AAudio (counting the chunk let it start on whatever the reader had left of the silence, up to a burst
+      // under the target, and the first gap between periods ran dry: one underrun at each stream's start).
+      if (ring_count >= CHUNK && (int64_t)(continuous ? 0 : ring_count) + queued >= need) priming = false;
       else if (queued < need) {                                                       // silence, as much as is missing
         play = true;
         int64_t missing = need - queued;
@@ -627,7 +644,9 @@ static void *writer(void *arg)
         // leave 20-40 ms; a backlog), one more while 5 ms below.
         if (level > target + MS_FRAMES(10)) { length = CHUNK - 3; ostat.slips_down += 3; level -= 3; }
         else if (level > target + MS_FRAMES(5)) { length = CHUNK - 1; ostat.slips_down++; level -= 1; }
-        else if (level + MS_FRAMES(5) < target) { length = CHUNK + 1; ostat.slips_up++; level += 1; }
+        // An MMAP reader's target is only a few ms: a level 1 ms under it already comes up (a 5 ms band would let
+        // it sit at nothing).
+        else if (level + (continuous ? MS_FRAMES(1) : MS_FRAMES(5)) < target) { length = CHUNK + 1; ostat.slips_up++; level += 1; }
       } else {
         // Blind (the pulls not seen yet): the level's reference is its value 1 s after the start; fewer frames
         // while the ring holds more than it needs (after a stall or a burst of late periods: that is latency),
@@ -651,7 +670,7 @@ static void *writer(void *arg)
       unsigned raised = target + MS_FRAMES(5);
       target = raised > MS_FRAMES(target_max_ms) ? MS_FRAMES(target_max_ms) : raised;
       if (target > ostat.target_peak) ostat.target_peak = target;
-      quiet_since = now;
+      quiet_since = now; window_late_max = 0; window_periods = 0;
       level = reference = -1;
       settled = 0;
     }
@@ -785,7 +804,10 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
   if (!d->stream) return EIO;
   if (output) {                                          // the path's floor (open_stream)
     pthread_mutex_lock(&ring_lock);
-    target = MS_FRAMES(target_ms);
+    // On MMAP a new stream starts 5 ms above its floor: it comes down once a quiet while shows the guest's periods
+    // on time (the writer's decay), not on the guest's first sound.
+    target = MS_FRAMES(target_ms + (continuous && !target_env_ms ? 5 : 0));
+    window_late_max = 0; window_periods = 0;
     pthread_mutex_unlock(&ring_lock);
   }
   int32_t burst = AAudioStream_getFramesPerBurst(d->stream);
@@ -905,7 +927,7 @@ int main(int argc, char **argv)
   if (buffer_bursts) snprintf(buffer, sizeof buffer, "%u bursts", buffer_bursts);
   else snprintf(buffer, sizeof buffer, "a burst + the target + 5 ms");
   if (target_env_ms) snprintf(target_text, sizeof target_text, "%u ms", target_env_ms);
-  else snprintf(target_text, sizeof target_text, "5 ms on MMAP, 20 ms on a mixer");
+  else snprintf(target_text, sizeof target_text, "5 ms on MMAP (a new stream at 10), 20 ms on a mixer");
   fprintf(stderr, "oneios-audio: ready: performance mode %s, MMAP %s (a blocking writer at SCHED_OTHER, uclamp.min %u: no data callback, "
           "no realtime thread), AAudio buffer %s, ring %u ms, target %s (at most 80, down 5 ms per %u s without an underrun), linger %u s\n",
           perf_name(perf_mode), perf_mode != AAUDIO_PERFORMANCE_MODE_LOW_LATENCY || mmap_want == MMAP_OFF ? "off" :
