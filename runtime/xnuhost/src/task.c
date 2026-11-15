@@ -568,6 +568,12 @@ int64_t xh_task_destroy(uint64_t handle)
     struct timespec began, step = { 0, 2 * 1000 * 1000 };
     clock_gettime(CLOCK_MONOTONIC, &began);
     while (!t->dead && !seconds_passed(&began, 20)) nanosleep(&step, NULL);
+    // A lasting line for a slow death (fix-widget-kill-loop): the vCPU waits here, and iOS's own exit watchdogs
+    // (WidgetKit's "Extension process termination watchdogged pid (N) after Ns" gives an extension 5 s) count it.
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    int64_t waited_ms = (int64_t)(end.tv_sec - began.tv_sec) * 1000 + (end.tv_nsec - began.tv_nsec) / 1000000;
+    if (waited_ms >= 250) LOGI("tasks: pid %d took %lld ms to die (the kill to the factory's report; its vCPU waited)", t->pid, (long long)waited_ms);
   }
   pthread_mutex_lock(&T.lock);
   if (t->dead) task_release(t);

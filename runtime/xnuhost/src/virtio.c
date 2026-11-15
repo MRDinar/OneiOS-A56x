@@ -129,6 +129,14 @@ void xh_virtio_push(xh_virtio *d, unsigned qi, uint16_t head, uint32_t written)
   pthread_mutex_unlock(&d->lock);
 }
 
+uint64_t xh_virtio_driver_features(xh_virtio *d)
+{
+  pthread_mutex_lock(&d->lock);
+  uint64_t features = d->driver_features;
+  pthread_mutex_unlock(&d->lock);
+  return features;
+}
+
 bool xh_virtio_ready(xh_virtio *d)
 {
   pthread_mutex_lock(&d->lock);
