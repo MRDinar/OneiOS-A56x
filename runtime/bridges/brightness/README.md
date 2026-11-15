@@ -27,6 +27,25 @@ panel's device; `panel0-backlight`, Qualcomm's name, is tried next, then any dev
 What is not known until `brightctl info` runs on the phone: the device's name and `max_brightness`. Nothing is
 assumed: the node is found and its range is read at open.
 
+## The two backends (hw-backend-backlight, 2026-11-15)
+
+`hw-backend=samsung|treble` or `hw-backend-backlight=...` (`bridges/hw_backend.h`, `docs/hardware.md` 7e) picks the
+form; `br_bright_options.backend` forces one (the tests). The open logs `hw: backlight: backend X (why)`.
+
+| | samsung (the default, unchanged) | treble |
+|---|---|---|
+| Panel | `panel`, then `panel0-backlight`, then the class folder listed | the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness` (`BR_BRIGHT_TREBLE_NAMES`): named files only, no folder listed |
+| Range | Samsung's doubled ranges (510, 51000) end at the manual maximum | `max_brightness` whole (`ONEIOS_BRIGHT_MAX` caps it) |
+| Touch IC power | `sec_touchscreen`'s `tsp*/enabled`, asleep with iOS's display | left alone: no vendor-neutral node (`brightness: touch: treble: no vendor-neutral power node ...`) |
+| Light sensor | evdev `als_rear` | not yet: the vendor-neutral one is the sensors HAL (an FMQ). One line; with `hw-backend-fallback=1` the samsung lookup |
+
+No treble name there: one line, `hw: backlight: treble: missing: no backlight class device ... under DIR; the bridge
+stays off (hw-backend-fallback=0)` and `br_bright_open` returns NULL (iOS gets no backlight service's level from us),
+or with `hw-backend-fallback=1` the whole samsung form. Both write the same node the same way, restore One UI's value
+at the close and grab nothing. Tests: `test_brightness.c`'s `test_treble` (both backends on one fake sysfs, a phone
+with another name, the fallback, the process's setting), and the stand-in phone (`tools/oneios-tool/tests/phone/
+hw-backend.sh`: `brightctl info` and `levels` with `ONEIOS_HW_BACKEND=treble`).
+
 ## The curve
 
 - The channel's level is 0..65535. A level from iOS's `brightness` property is the slider's position (perceived):

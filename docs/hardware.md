@@ -1839,6 +1839,9 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
 - Route: the backlight sysfs node as root (no system_server, no surfaceflinger, no binder). Slider squared over
   `1..ceiling`; never 0; One UI's value written back at the stop.
 - `als_rear` read by evdev without a grab; clear counts x `ONEIOS_ALS_SCALE` millilux.
+- Two backends (section 7e): samsung, the above; treble, the standard backlight class by named paths
+  (`panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel`), the whole range, the touch IC left
+  alone, no light sensor yet. `runtime/bridges/brightness/README.md`, "The two backends".
 
 ### Missing, unknown
 
@@ -2181,8 +2184,8 @@ who or what it waits for).
 | Path | Where | Samsung form (default) | Treble form | How treble finds it (no walk) | Status |
 |---|---|---|---|---|---|
 | Backend choice | `bridges/hw/`, `xnuhost/src/config.c` | - | - | settings above | **done** (this PR) |
-| Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | next (this PR, step 2) |
-| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | next (this PR, step 2) |
+| Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | **done** (this PR: test_brightness, hw-backend.sh) |
+| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
 | Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
 | Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | next (this PR, step 3) |
 | Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | next (this PR, step 4) |
@@ -2191,7 +2194,7 @@ who or what it waits for).
 | Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | next (this PR, step 5) |
 | Touch screen | `xnuhost/src/input.c` | `/dev/input/event0..31`: multitouch X/Y with `INPUT_PROP_DIRECT`, the first one | the same | eventN by ioctl capabilities | same (spen owns the lookup function) |
 | Side keys | `xnuhost/src/input.c` | `/dev/input/event0..31` with `KEY_POWER`, `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN`, read only, never grabbed | the same | eventN by ioctl capabilities | same |
-| Power key -> touch IC | `xnuhost/src/main.c`, `br_bright_key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | next (with the backlight) |
+| Power key -> touch IC | `xnuhost/src/main.c`, `br_bright_key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | **done** (br_bright_key wakes nothing in treble) |
 | CPU topology, placement | `bridges/cpu/topology.c` | `/sys/devices/system/cpu/...` (standard) | the same | named files | same (fix-host-overhead's) |
 | Audio | `bridges/audio/aaudio_helper.c` | AAudio (NDK, `libaaudio.so`) | the same | - | same |
 | Camera | `bridges/camera/backend_hal.c`, `backend_ndk.c` | AIDL `android.hardware.camera.provider.ICameraProvider/internal/0`; Camera2 NDK | the same; another vendor may name its provider otherwise [I]: from servicemanager's list (`listServices`) | servicemanager | same; the instance name next |
@@ -2208,6 +2211,17 @@ who or what it waits for).
 
 The sections below say, per bridge, what the treble form reads or calls, how it maps to what the bridge gives iOS, and
 how it was tested. Until a bridge's step is done its row above says next.
+
+**Backlight** (`runtime/bridges/brightness`, README "The two backends"). Treble: the backlight class device by its
+standard names, `/sys/class/backlight/{panel0-backlight,panel1-backlight,backlight,lcd-backlight,panel}/max_brightness`
+read in that order (named files), the whole range, One UI's value back at the close; the touch IC's power is left
+alone and the light sensor is off (one line each). Tested: `test_brightness.c` (both backends on one fake sysfs:
+samsung takes `panel` and halves 51000, treble takes `panel0-backlight` whole and never writes `tsp/enabled`; a
+vendor's own name: treble's one missing line and NULL, samsung with the fallback; 105 checks), the stand-in phone
+(`tests/phone/hw-backend.sh`: an S24, another phone, an odd one; 9 checks). On the phone the default proves itself by
+`hw: backlight: backend samsung (the default)` followed by the same `brightness: panel on: ...` and `brightness:
+touch: 1 IC ...` lines as before; a treble boot (`--hw-backend-backlight treble`) by `brightness: panel on:
+/sys/class/backlight/panel0-backlight/brightness, 1..N of N` and the touch line `treble: no vendor-neutral power node`.
 
 ## 8. Sources
 

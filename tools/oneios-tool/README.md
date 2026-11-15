@@ -875,7 +875,9 @@ What each does:
 
 ```sh
 tools/oneios-tool/tests/phone/run.sh          # 200 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
-                                              #   30 of them usb.sh: ONEOS_DIR=a fork checkout with --usb-watch); ALL OK
+                                              #   30 of them usb.sh: ONEOS_DIR=a fork checkout with --usb-watch;
+                                              #   hw-backend.sh: the bridges' samsung and treble backends on stand-in
+                                              #   phones, their host-built tools; docs/hardware.md 7e); ALL OK
 tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 95 checks; ALL OK
 tools/oneios-tool/tests/phone/modes.sh        # phone, app and cycle in each /proc mode this host has (below); ALL OK
 FAKE_PROC=stand-in tools/oneios-tool/tests/phone/run.sh   # one suite with the stand-in's own /proc (macOS's way)
