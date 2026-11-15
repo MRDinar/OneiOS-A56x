@@ -28,8 +28,9 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
+| Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.c` (evdev, no grab) and `virtio_input.c`; `input_script.c` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
-| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7e); never run on the phone (section 7e) |
+| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); never run on the phone (section 7f) |
 
 Common pieces:
 
@@ -948,10 +949,9 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   do not have), logs zeros for it, then asks for `bluetooth`. On the PC the same two `marconi-bt:` lines come, and
   0062 shows `property "local-mac-address" (IODeviceTree, recursive) of IOPlatformDevice "bluetooth" -> found`, with no
   `bluetooth: Not a valid MAC address` line. The phone's next boot's `oneios-iokit:` lines confirm it.
-- **[I] Power init waits on the virtual-machine path:** with `vmm-present` bluetoothd takes chip `APPLE_VIRTUAL` and
-  skips chip initialization, then its power state is never set (DEADBEEF looks like an unset value). Apple's VMs have
-  a virtual Bluetooth controller of their own (transport-encoding 10); with H4 the VM path probably waits for
-  something only that controller gives. Not proven.
+- **Power init fails on the virtual-machine path [F since 2026-11-15, read in 24A446's bluetoothd: next section]:**
+  with `vmm-present` bluetoothd takes chip `APPLE_VIRTUAL`, and its chip initialisation in a VM succeeds only when the
+  transport is 10; with H4 (1) it fails and power init sets PowerState 3, the line above.
 - **Tried and dropped (2026-11-14): hiding the VM from bluetoothd** with `owner-hide-vmm=bluetoothd,BlueTool` (the
   kernel's per-process `kern.hv_vmm_present` switch of Droid-VM-UniXNU's `zzyd-owner-hide-vmm.patch`). bluetoothd then
   leaves the virtual-controller path and **crashes at its start, in a loop** [F]: on the phone (main 9f6dc38) 18 pids in
@@ -961,13 +961,9 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   binary and its own library, `native-ios27.md`); the project does not change Apple's binaries, so **the VM path stays**
   and its power init is what to fix. Never put bluetoothd in `owner-hide-vmm`: no default does, and xnuhost now says
   so in its log when the boot arguments do (`boot arguments: owner-hide-vmm names bluetoothd: ...`).
-- **Next step: the VM path's own transport.** In a VM bluetoothd expects Apple's virtual controller, transport-encoding
-  10 ("virtual"). Its boot argument `bt-transport-override=10` selects it without a new build. On the PC
-  (`--set bluetooth=sim --boot-args "... bt-transport-override=10"`) and on the phone (in `xnuhost.conf`'s boot-args):
-  read the `oneios-iokit: bluetoothd[...]` lines that follow power init (what service or user client the virtual
-  transport looks for), then publish that service in `drivers/bluetooth` over the same H4 core and host bridge.
-  On the PC nothing asks bluetoothd to power on within a run (no `Beginning asynchronous power init` there), so this
-  is a phone test; a PC boot for it was queued on 2026-11-14 and cancelled (the queue was over an hour).
+- **Tried on the phone (main 3233fed, 2026-11-15) and a dead end: the VM path's own transport**,
+  `bt-transport-override=10`. The virtual transport is a simulated controller inside bluetoothd's own process, not a
+  service to publish: next section. Do not use it; xnuhost now says so in its log when the boot arguments carry it.
 - **0062 now also says how a process saw the VM:** `oneios-iokit: bluetoothd[N] sysctl kern.hv_vmm_present -> 1 (a
   virtual machine)` or `-> 0 (the virtual machine hidden by owner-hide-vmm)` (kernel.kc bc81badb, built, not yet in a
   boot).
@@ -975,6 +971,88 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
   BlueTool[...]` lines (what it looks up, whether a `kernel control "com.apple.uart.sk.bluetooth"` lookup ever comes);
   in iOS's log `oneios-tool ioslog show data.img --proc bluetoothd --grep "power|Power|chip|Chip|Virtual|BlueTool|OLYHAL|HWIdentifiers|StackManager|core stack|transport|MAC"`
   and `--proc BlueTool`.
+
+### The virtual transport is bluetoothd's own (fix-bt-virtual, 2026-11-15)
+
+The phone session of main 3233fed (2026-11-15) had `bt-transport-override=10` and no `owner-hide-vmm`: no crash loop,
+but Bluetooth never powered on. bluetoothd[73] `exited due to exit(1), ran for 56223ms`, then pids 168, 190, 245; 42
+`Returning bluetooth power state: FFFFFFFFFFFFFFFF`, 17 `... FFFFFFFFCAFEBABE`, 51 `manager state not powered on`; 128
+`BTVirtual transport send packet type: 0x00000001`, 128 `-[BTVCPacketControl didSendPacket:error:] no completion
+function`, 116 `send HCI event to virtual transport size 6`; no `.ips`. Read in 24A446's `/usr/sbin/bluetoothd` on the
+PC (`oneios-tool image apfs-copy` from `os.img`, `llvm-objdump -d`, the `adrp`/`add` pairs matched to its strings; the
+addresses are the binary's, unslid):
+
+- **Transport 10 never leaves bluetoothd's process [F].** `BTVirtualTransportRegisterCBs` (0x1003c42a0) stores five
+  callbacks, and `BTVirtual transport init` (0x1003c4384) creates its HCI, ACL and LMP transports through them. Its
+  only caller (0x100899d78, logged `registerCallbacks`) hands it bluetoothd's own `TransportCreate`, `TransportFree`
+  and `TransportWrite` (0x100899e00 on); `TransportWrite` (0x10089a3d4) sends the packet, by `objc_msgSend`, to a
+  `BTVCHciManager` that bluetoothd allocates itself (0x100899d2c): `-[BTVCHciManager
+  transportWriteCmd:length:amountWritten:dtor:]`. That object is a simulated LE controller ("BTVC", sources
+  `MobileBluetooth_base/Server/Platforms/Darwin/VirtualController/`): `handleHciCmd: opCode 0x%04X`,
+  `handleHciResetCmd`, `handleHciReadLocalVerInfoCmd`, ... `handleHciLeExtendedCreateConnectionCmd`, and its events go
+  back with `%s send HCI event to virtual transport size %d`. Its "radio" is Bonjour (`_btvc._tcp`,
+  `BTVCBonjourService`) to other virtual devices. So there is no IOKit service, kernel control or XPC service to publish:
+  the 128 commands and the 6-byte events (a Command Complete with only a status: Reset, Set Event Mask, LE Set Event
+  Mask, the filter accept list, ...) are bluetoothd talking to itself, and nothing reaches `drivers/bluetooth`, the
+  bridge or the phone's controller. A boot with it has no `oneios-iokit: bluetoothd[...] kernel control
+  "com.apple.uart.sk.bluetooth"` line and no `ONEIOS BT: dev:`, `sk:` or `ios:` line.
+- **"no completion function" is not a missing answer [F].** `-[BTVCPacketControl didSendPacket:error:]` (0x1006f08xx)
+  logs `%s completion function` and calls the block when the packet was queued with one, and `%s no completion
+  function` when it was queued with none: BTVC's own pacing of its own packets. Nothing outside is asked for a
+  completion, a credit or a Number of Completed Packets.
+- **In a VM only transport 10 powers on [F].** The chip initialisation of power init (0x10062941c) asks whether it runs
+  in a VM; if so it logs `Bluetooth is running inside a Virtual Machine, so skipping chip initialization` and returns
+  `transport == 10` (0x1006294b4: the transport is the device tree's `transport-encoding`, or the boot argument's,
+  kept at 0x100c1ce28 by 0x10030901c). Power init (0x100628730) sets PowerState 3 when that is false. So with
+  `/defaults/vmm-present` and H4 (1), power init always fails before any transport is opened: the c1223f8 session's
+  `PowerState:3 managerState:2` and no `/dev/btwake` open. The VM answer is `kern.hv_vmm_present`, read once and kept
+  (0x10056a164); four places use it: `main`'s check for `/dev/cu.bluetooth` (skipped), the chip factory (chip
+  `APPLE_VIRTUAL`), this chip initialisation, and CloudPairing.
+- **So an unchanged 24A446 bluetoothd cannot reach the phone's controller while it sees a VM**: transport 10 is its own
+  simulation, every other transport fails power init. With the VM hidden (`owner-hide-vmm`) it crashes at its start
+  (above). [I, from the code and the crash's address] The chip factory (0x10050a08c) picks the chip by the environment
+  (`BT_CHIP=ACI BT`: chip 2000), by transport 9 (APPLE PCIE: chip 3000), by the VM (chip 6000, `APPLE_VIRTUAL`), or by
+  the product's type (`MGIsDeviceOneOfType`, a table of products); none matches transport 1 on iPhone18,2 (whose own
+  tree says transport 9, so it is not in the table), the factory logs the fault `Unknown platform 0x%08x detected` and
+  leaves the chip null, and the chip's field at 0x350 (read right after `getChip()`, 0x1000071f0, in many places) is
+  the `SIGSEGV at 0x350` of the 9f6dc38 session. The fault line in that session's iOS log would prove it.
+- **The exit(1) [F for the paths, U for which one].** bluetoothd calls `_exit(1)` in two places: its fatal-error path,
+  which first logs `Bluetooth error - restarting { build=release, reason=%d, context="%s" }`, and the chip
+  initialisation's restart (`timed out booting the chip, restarting`, `hardware is unhealthy, restarting`, `Unknown
+  platform/chipset/manufacturer combination, restarting`). Fatal errors with BTVC's code among their callers: `Filter
+  Accept List add error`, `... remove error`, `... clear error`, `Policy enforcement timeout`, `BT VSC init failed`.
+  Which one ended pid 73 after 56 s is in 3233fed's iOS log: `oneios-tool ioslog show data.img --proc bluetoothd
+  --grep "Bluetooth error - restarting|restarting|Filter Accept List|Policy enforcement|VSC init|Unknown platform"`.
+  It does not matter for the controller: transport 10 is not a way to it.
+- **Nothing of ours stays busy for the next bluetoothd [F, from the code].** In a transport-10 boot nothing of ours is
+  opened (no control, no node; the HAL stays closed). With H4 a client's disconnect (`sk_ctl_disconnect`,
+  `ctl_disconnect`, the nodes' close) frees the core's client slot, destroys the Skywalk pipe and closes the HAL
+  (`obt_ios_release`); a new pid connects to a free slot, and a failed controller is opened again by the bridge.
+- **Fixed in our code:** (1) `oneios_bt_ios.c`'s pump thread woke every 20 ms from the root mount to the end of the
+  session with no client and nothing queued (50 wakeups a second of a vCPU, in every session, and with the VM
+  visible bluetoothd never connects). It now sleeps until it is kicked (a packet for the client, bluetoothd's bytes in
+  the Skywalk FIFO, `ctl_rcvd`'s room again, which kicks it now) and looks every 20 ms only while bytes wait for the
+  client. (2) xnuhost logs `boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in
+  its own process: nothing reaches the phone's controller (docs/hardware.md 4); take it out` (read as bluetoothd reads
+  it: any word that contains the name, the value after its `=`, under 13, the last word wins; host-tested).
+- **PC boot (2026-11-15, kernel.kc 7261a00b from xnu.macho 948bb412 with both fixes; `--set bluetooth=sim`,
+  `bt-transport-override=10`; stopped after 27 minutes):** xnuhost logged the new `boot arguments:
+  bt-transport-override=10 ...` error line; the root mounted on the first try; `ONEIOS BT: on: ...` and `ONEIOS BT:
+  transport up 2620 ms after the start: ...` as before. bluetoothd[75] (one pid for the whole run): `transport override
+  from boot-arg: 10`, `HCI Transport is set to virtual`, `fStackStarted:0`; its `oneios-iokit:` lines are the device
+  tree (`marconi-bt`, `bluetooth`, `local-mac-address`, `transport-encoding`), the key store, `IOPMrootDomain`,
+  `/product` and `kern.hv_vmm_present -> 1`, with **no kernel control lookup** and no `ONEIOS BT: dev:`, `sk:` or
+  `ios:` line. As in every PC boot so far nothing asked bluetoothd to power on (no `Beginning asynchronous power init`),
+  so neither a power-on nor the phone's exit(1) can be seen on the PC; a power on would run BTVC, not the stand-in
+  controller.
+- **What would reach the controller [U, not tried]:** a chip for transport 1 outside the VM without changing the binary:
+  `BT_CHIP=ACI BT` in bluetoothd's environment (chip 2000) with the VM hidden, or transport 9 (chip 3000, whose transport
+  is Apple's PCIe Skywalk protocol, not H4). Each needs the VM hidden from bluetoothd and a PC boot that reads the
+  chip's first commands (`ONEIOS BT: bluetoothd: command 0x....`); UniXNU instead patches the binary, which this project
+  does not.
+- **The next phone session:** take `bt-transport-override=10` out of `xnuhost.conf` (and keep `owner-hide-vmm` without
+  bluetoothd). Read the 3233fed session's `--grep` above for the exit's reason, and the 9f6dc38 session's
+  `oneios-tool ioslog show data.img --proc bluetoothd --grep "Unknown platform|getChip|SIGSEGV"` for the null chip.
 
 ### Missing, unknown
 
@@ -1308,6 +1386,9 @@ backlight drivers see that as a brightness of 0 and then a brightness above 0, o
 
 ### The bridge (`runtime/bridges/haptics/haptic.c`)
 
+- Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the
+  vibrator HAL `android.hardware.vibrator.IVibrator/default` (`on(ms)`, then `setAmplitude(level / 255)` when its
+  capabilities have amplitude control, `off()`; `br_haptic_open_as`).
 - Finds the device by its EV_FF bits (`sec_vibrator_inputff` first), sets `FF_GAIN` 10000 once.
 - One effect, updated for every request: `FF_PERIODIC` / `FF_SINE`, period = 1000 / frequency clamped to 4..10 ms
   (6 ms when iOS names none), magnitude = 40 + 215 x intensity / 1000 (an LRA does not move below a floor), length
@@ -1840,6 +1921,9 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
 - Route: the backlight sysfs node as root (no system_server, no surfaceflinger, no binder). Slider squared over
   `1..ceiling`; never 0; One UI's value written back at the stop.
 - `als_rear` read by evdev without a grab; clear counts x `ONEIOS_ALS_SCALE` millilux.
+- Two backends (section 7e): samsung, the above; treble, the standard backlight class by named paths
+  (`panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel`), the whole range, the touch IC left
+  alone, no light sensor yet. `runtime/bridges/brightness/README.md`, "The two backends".
 
 ### Missing, unknown
 
@@ -1926,12 +2010,14 @@ Volume Up + Volume Down chord that ends the session.
   is stopped, palm rejection, the feel of the edge band.
 - [U] whether iOS 27 reads Ring Enable = 1 as "ring"; nothing sets it on this phone.
 - A guest frame that does not fill the panel (letterboxed) needs an offset in the transport's scaling; not written.
-- No trackpad, no motion sensors (the transport's code for them is compiled and finds no such device). The S Pen: section 7e
+- No trackpad, no motion sensors (the transport's code for them is compiled and finds no such device). The S Pen: section 7f
   (off by default, `pen=auto`).
 
 ## 7c. Battery (battery bridge, 2026-11-11)
 
 Details and the phone test: `runtime/bridges/battery/README.md`, `drivers/battery/README.md`.
+Two backends since 2026-11-15 (section 7e): samsung, the `power_supply` nodes below (the default, unchanged); treble,
+the health HAL (`android.hardware.health.IHealth/default`, `getHealthInfo`).
 
 - **Before this**: iOS showed a near-empty battery with no charging state. [I] nothing published an `IOPMPowerSource`
   under the hosted kernel (none of the classes that do has its hardware here); no log or registry dump confirmed it.
@@ -1994,6 +2080,9 @@ Details and the phone test: `runtime/bridges/battery/README.md`, `drivers/batter
 ## 7d. Thermal (thermal, 2026-11-12)
 
 Details: `runtime/bridges/thermal/README.md` (sensors, levels, the step, `thermalctl`), `drivers/thermal/README.md`.
+The sensors have two backends since 2026-11-15 (section 7e): samsung, the files below (the default, unchanged);
+treble, the thermal HAL (`android.hardware.thermal.IThermal/default`, `getTemperatures`). The levels and the step are
+the same for both.
 
 ### "It runs damn hot, why" (9f6dc38 session, 2026-11-14; fix-thermal-log)
 
@@ -2142,7 +2231,146 @@ it back last (fork 2nd commit; tested against a fake sysfs, not yet on the phone
 - The GPU: drm2kgsl's burst rule (`docs/gpu.md` 2.2) and its constraint are the gpu agent's; at heavy pressure they
   could stop constraining (a note on the board). The KGSL constraint stays under the thermal devfreq limit [inference].
 
-## 7e. S Pen (spen, 2026-11-15; off by default)
+## 7e. Hardware backends: samsung (the default) and treble (hw-backend, 2026-11-15)
+
+The owner's decision of 2026-11-15: the Samsung paths stay the default and keep working exactly as on the S24 Ultra;
+a second, vendor-neutral backend, `treble`, sits beside them so that the image can later run on other Android phones
+(other Samsung phones first). Device profiles (the fork's) come later: `oneos/interface.md`, "The hardware backend".
+
+**The settings** (`runtime/bridges/include/bridges/hw_backend.h`; xnuhost's `config.c`; `docs/booter.md` 1):
+
+| Setting | Values | What |
+|---|---|---|
+| `hw-backend` | `samsung` (default), `treble` | every bridge |
+| `hw-backend-<bridge>` | `samsung`, `treble` | one bridge, over `hw-backend`: `backlight`, `battery`, `thermal`, `haptics`, `touch`, `keys`, `audio`, `camera`, `wifi`, `bluetooth`, `display` (for tests, or a phone whose one part is Samsung's) |
+| `hw-backend-fallback` | `0` (default), `1` | a treble bridge whose interface is missing uses its samsung form (1) or stays off (0) |
+
+In xnuhost.conf (the image set's or the overlay's), with `--set KEY=VALUE`, or as `--hw-backend treble`,
+`--hw-backend-battery treble`; the command line wins per setting. The ctl tools (`brightctl`, `batteryctl`,
+`thermalctl`, `bridgectl`) read `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_<BRIDGE>` and `ONEIOS_HW_FALLBACK`.
+
+**The log** names each bridge's backend and why, one line each: `hw: battery: backend treble (hw-backend=treble)`,
+`hw: thermal: backend samsung (the default)`, `hw: touch: backend samsung (the default); keys: backend samsung (the
+default): the same lookup in both ...`. A treble interface that is missing is one line:
+`hw: battery: treble: missing: android.hardware.health.IHealth/default (no service: ...); the bridge stays off
+(hw-backend-fallback=0)` or `...; falling back to samsung (hw-backend-fallback=1)`.
+
+**The way back applies to both.** No treble path grabs an input device (the side keys are found by their capabilities
+and read only), starts a realtime thread, leaves xnuhost's cgroup, writes under `/sys/power` or restarts anything.
+Treble lookups never walk a directory of sysfs or /proc: a HAL is asked for by name from servicemanager
+(`IServiceManager.getService`, handle 0 of `/dev/binder`), a sysfs class device by a named path, an evdev device as
+`/dev/input/eventN` for N = 0..31 probed by its ioctl capabilities. The binder client is the Wi-Fi supplicant's
+(`wifi/aidl_binder.c`, `aidl_parcel.c`): no Android library.
+
+### The audit table
+
+Every hardware path of xnuhost, the bridges, the phone tools and the fork's session scripts (read only here), its
+Samsung form (today's, the default) and its Treble form. Status: **done** (both backends in code, host-tested and
+tested on the stand-in phone), **same** (one form, already vendor-neutral: both backends use it), **next** (not yet;
+who or what it waits for).
+
+| Path | Where | Samsung form (default) | Treble form | How treble finds it (no walk) | Status |
+|---|---|---|---|---|---|
+| Backend choice | `bridges/hw/`, `xnuhost/src/config.c` | - | - | settings above | **done** (this PR) |
+| Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | **done** (this PR: test_brightness, hw-backend.sh) |
+| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
+| Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
+| Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | **done** (test_battery, test_hal_binder, hw-backend.sh) |
+| Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | **done** (test_thermal, test_hal_binder, hw-backend.sh) |
+| Thermal load line | `bridges/thermal/thermal.c` (`br_host_load_read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
+| Thermal policy, CPU step | `thermal.c` (`br_thermal_decide`), `xnuhost/src/main.c` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
+| Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | **done** (test_hal_binder, hw-backend.sh) |
+| Touch screen | `xnuhost/src/input.c` | `/dev/input/event0..31`: multitouch X/Y with `INPUT_PROP_DIRECT`, the first one | the same | eventN by ioctl capabilities | same (spen owns the lookup function) |
+| Side keys | `xnuhost/src/input.c` | `/dev/input/event0..31` with `KEY_POWER`, `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN`, read only, never grabbed | the same | eventN by ioctl capabilities | same |
+| Power key -> touch IC | `xnuhost/src/main.c`, `br_bright_key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | **done** (br_bright_key wakes nothing in treble) |
+| CPU topology, placement | `bridges/cpu/topology.c` | `/sys/devices/system/cpu/...` (standard) | the same | named files | same (fix-host-overhead's) |
+| Audio | `bridges/audio/aaudio_helper.c` | AAudio (NDK, `libaaudio.so`) | the same | - | same |
+| Camera | `bridges/camera/backend_hal.c`, `backend_ndk.c` | AIDL `android.hardware.camera.provider.ICameraProvider/internal/0`; Camera2 NDK | the same; another vendor may name its provider otherwise [I]: from servicemanager's list (`listServices`) | servicemanager | same; the instance name next |
+| Wi-Fi | `bridges/wifi/` | `wlan0` (AF_PACKET, nl80211), AIDL `android.hardware.wifi.supplicant.ISupplicant/default` | the same interfaces; the interface's name from nl80211 instead of `wlan0` | nl80211 | next (after fix-settings-wifi-cpu merges) |
+| Bluetooth | `bridges/bt/hci_hidl.c` | HIDL `android.hardware.bluetooth@1.1::IBluetoothHci/default` on `/dev/hwbinder` | AIDL `android.hardware.bluetooth.IBluetoothHci/default` (Android 13+), HIDL as before | servicemanager, hwservicemanager | next (after fix-bt-virtual merges) |
+| Display (drm mode) | `xnuhost/src/display.c` | `/dev/dri/card0` | the DRM card found at run time: `/dev/dri/card0..7` by `DRM_IOCTL_VERSION` and a connected connector | eventN-style probe of named nodes | next (after fix-boot-black merges) |
+| Display (shm mode) | `runtime/display` (the helper) | SurfaceControl (Java, app_process) | the same | - | same |
+| GPU 3D | `xnuhost/src/gpu3d_kgsl.c`, drm2kgsl | KGSL (`/dev/kgsl-3d0`), `/dev/dma_heap/system`, `/dev/udmabuf` | KGSL when present (Qualcomm), else 2D | named nodes | next (Qualcomm only today) |
+| RAM fix, KGSL memory | `xnuhost/src/ramfix.c` | `/sys/class/kgsl/kgsl/proc/PID`, the session cgroup | the same on Qualcomm | named files | same (fix-ram-locked's) |
+| Phone tool: backlight, touch | `oneios-tool phone backlight`, `phone touch` | `/sys/class/backlight/panel0-backlight`, `/sys/class/sec/tsp/enabled` | the backlight names above; no touch IC | named paths | next (the tool) |
+| Session scripts (the fork's; read only) | `switcher/assets/oneios_switch.sh`, `oneios_return.sh`, `oneios_root.sh` | `/sys/class/backlight/*/brightness` (glob), `/sys/kernel/gpu/gpu_max_clock` and `/sys/devices/system/cpu/cpufreq_limit/*` (Samsung's), `/sys/class/kgsl/kgsl-3d0/max_gpuclk`, `/sys/class/power_supply/usb/online`, `/sys/class/udc/*/state`, watchdogs, `/sys/class/input/event*/device/enable` | cpufreq `policy*/scaling_max_freq` (standard), the KGSL devfreq, the backlight names above, `/sys/class/udc` | the fork's device profiles | next (the fork) |
+
+### What each treble form does
+
+The sections below say, per bridge, what the treble form reads or calls, how it maps to what the bridge gives iOS, and
+how it was tested. Until a bridge's step is done its row above says next.
+
+**Backlight** (`runtime/bridges/brightness`, README "The two backends"). Treble: the backlight class device by its
+standard names, `/sys/class/backlight/{panel0-backlight,panel1-backlight,backlight,lcd-backlight,panel}/max_brightness`
+read in that order (named files), the whole range, One UI's value back at the close; the touch IC's power is left
+alone and the light sensor is off (one line each). Tested: `test_brightness.c` (both backends on one fake sysfs:
+samsung takes `panel` and halves 51000, treble takes `panel0-backlight` whole and never writes `tsp/enabled`; a
+vendor's own name: treble's one missing line and NULL, samsung with the fallback; 105 checks), the stand-in phone
+(`tests/phone/hw-backend.sh`: an S24, another phone, an odd one; 9 checks). On the phone the default proves itself by
+`hw: backlight: backend samsung (the default)` followed by the same `brightness: panel on: ...` and `brightness:
+touch: 1 IC ...` lines as before; a treble boot (`--hw-backend-backlight treble`) by `brightness: panel on:
+/sys/class/backlight/panel0-backlight/brightness, 1..N of N` and the touch line `treble: no vendor-neutral power node`.
+
+**The HAL client** (`runtime/bridges/hal/`): `br_hal_open` opens `/dev/binder` (the Wi-Fi supplicant's client,
+`wifi/aidl_binder.c`), asks servicemanager for the instance by name (`getService`; no wait, no list walked), checks
+the object's descriptor (`_NTF`) and reads its version; then plain calls. Each treble bridge has its own connection (one
+binder looper thread each, SCHED_OTHER, idle: no HAL calls back into it); samsung opens none. A HAL that is not registered is the bridge's
+one missing line. The method codes are the order of AOSP's frozen AIDL files (stable AIDL only appends), [I] until a
+phone answers. The tests' fake servicemanager and HALs: `tests/fake_hal.c` (`build/host/fake-hal DIR`, values read
+from files at every call), used by `tests/test_hal_binder.c` and the stand-in phone.
+
+**Battery** (`runtime/bridges/battery`, README "The two backends"). Treble: the health HAL,
+`android.hardware.health.IHealth/default`, one `getHealthInfo()` per read; `HealthInfo` becomes what the nodes would
+have said and the same mapping follows. Read only (`update()` and callbacks never called). Tested: `test_battery.c`
+(the parcel both ways, an older HAL's shorter one, a bad one, the mapping; 83 checks, the 65 samsung ones unchanged),
+`test_hal_binder.c` (against the fake on a real binder driver: a read, a change, the HAL's death, not registered, the
+fallback), the stand-in phone (6 checks: `batteryctl` on the S24's nodes and through the fake health HAL, a phone
+with only the HAL). On the phone: `hw: battery: backend samsung (the default)` then the same `battery: on:
+/sys/class/power_supply, ...` line; a treble boot by `battery: on: the health HAL
+android.hardware.health.IHealth/default (version N), ...` and the same `ONEIOS BATTERY` line in iOS's log.
+
+**Thermal sensors** (`runtime/bridges/thermal`, README "The two backends of the sensors"). Treble: the thermal HAL,
+`android.hardware.thermal.IThermal/default`, one `getTemperatures()` per reading: cpu, gpu, soc (CPU, GPU, SOC), the
+battery, and the case from the HAL's SKIN sensor (samsung: Samsung's `lrp`). The policy is untouched and the same for
+both: a SKIN of 41.2 C gives the level `lrp` 41.2 C gives. Tested: `test_thermal.c` (81 checks, the 72 samsung ones
+unchanged), `test_hal_binder.c` (a reading, a hotter one to HEAVY, the HAL's death, not registered, no
+temperature), the stand-in phone (4 checks: `thermalctl` on the S24's zones and through the fake HAL, another
+phone's CPU/SOC/skin). On the phone: `hw: thermal: backend samsung (the default)` then the same `thermal: on: N zones;
+case ... (lrp)` line; a treble boot by `thermal: on: the thermal HAL android.hardware.thermal.IThermal/default
+(version N), K temperatures; case ... (SKIN)`.
+
+**Vibrator** (`runtime/bridges/haptics/haptic.c`). Treble: the vibrator HAL,
+`android.hardware.vibrator.IVibrator/default`, behind the same worker, mapping and counters: an effect is `on(length)`
+(no callback) then, when `getCapabilities()` has `CAP_AMPLITUDE_CONTROL`, `setAmplitude(level / 255 x gain)` (AOSP's
+vibrator service orders them so); a stop and the close are `off()` (the close always sends one: the motor is stopped
+whatever the worker believed). The period has no place in `on()`: the HAL plays at its own resonance. Not registered:
+one missing line and no actuator for iOS, or the evdev search with `hw-backend-fallback=1`. Tested: `test_hal_binder.c`
+(on and amplitude for two intensities, a stop, the close, no amplitude control, not registered, the fallback), the
+stand-in phone (3 checks: `bridgectl haptic 40` with the fake HAL's call log). The samsung tests (`test_bridges.c`)
+unchanged. On the phone: `hw: haptics: backend samsung (the default)` then the same `haptics: on: /dev/input/eventN
+...` line; a treble boot by `haptics: on: the vibrator HAL android.hardware.vibrator.IVibrator/default (version N,
+capabilities 0x...)` and `haptics: effect N played on the vibrator HAL`.
+
+### Tested (2026-11-15, the hw-backend branch) and what is next
+
+- `runtime/host-tests.sh`: all pass (loader, xnuhost incl. the config checks, display, bridges incl. test-binder,
+  camera, links, package). One run on a box at load 17 failed one timing check of the virtio-gpu lanes
+  (`test_xnuhost.c` 951, a 2 s wait; nothing of this branch), which passed in two runs alone and in `make -C
+  runtime/xnuhost test` (13883 checks, the test kernel booted). The bridges: `hw_backend` 55, brightness 105, battery 83, thermal 81, `hal binder` 37,
+  bridges 295, wifi 162 checks, 0 failures; the samsung checks that were there before are unchanged.
+- The stand-in suites (`tests/phone/modes.sh`, both `/proc` modes): phone 222 (22 of them `hw-backend.sh`), app 65,
+  cycle 103, all ok. The cycle suite needs a short run folder in a worktree with a long path (`MODES_RUN=/tmp/...`):
+  its tmux socket path is longer than a Unix socket allows otherwise (`File name too long`), a fault of the suite
+  (main a591c08), not of this branch.
+- Not run on a phone (no phone on the build box). With nothing set the phone is samsung everywhere; the only new
+  lines are the `hw: <bridge>: backend samsung (the default)` ones.
+- Next: the light sensor's treble form (the sensors HAL: events through an FMQ); Wi-Fi (the interface's name from
+  nl80211), Bluetooth (the AIDL `IBluetoothHci`) and the display (the DRM card found at run time) after
+  fix-settings-wifi-cpu, fix-bt-virtual and fix-boot-black merge; the camera provider's instance from
+  servicemanager's list; `oneios-tool phone backlight` with the treble names; the fork's device profiles
+  (`oneos/interface.md` 6b). The first phone boot with `--hw-backend treble` checks the HALs' codes ([I] above).
+
+## 7f. S Pen (spen, 2026-11-15; off by default)
 
 The S24 Ultra's S Pen (a Wacom EMR digitizer under the panel; writing needs no battery and no Bluetooth link) as an
 Apple Pencil in iOS: hover, contact, pressure, tilt, the side button. **Off by default** until a phone session shows it:

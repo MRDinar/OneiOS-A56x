@@ -140,7 +140,7 @@ backboardd was first. On the phone: the `N dropped` of the state line should sta
 
 ## Pen (spen, 2026-11-15; off by default)
 
-The S Pen as iOS's pencil digitizer (`docs/hardware.md` 7e has what 24A446 needs and where it was read). Published only
+The S Pen as iOS's pencil digitizer (`docs/hardware.md` 7f has what 24A446 needs and where it was read). Published only
 with the boot argument **`oneios-pen=1`** and when the transport found xnuhost's pen device (`/arm-io/input-1`, xnuhost
 `pen=auto`, which adds `oneios-pen=1` itself; `runtime/xnuhost/src/pen.c`). Otherwise one line says why not:
 `oneios-hid: pen: xnuhost has a pen device; not published (oneios-pen=0)`, or `... oneios-pen=1, but xnuhost gave no pen
@@ -189,7 +189,7 @@ oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus
 In iOS's log (`oneios-tool ioslog show DATA.img --proc backboardd --grep 'pencil digitizer'`): `*** acquired pencil
 digitizer`.
 
-Tested: the kernel with these edits builds (`HOSTED_OUT=spen`), its `kernel.kc` prelinks (audit 0 failures; `oneios-tool prelink stubs-check`: 666 good, 0 bad); the PC boot of 2026-11-15 with the demo script's pen (`--set pen=auto`): every line above came (`edge wrapper 0` is printed before the first report; the wrapper is put on at the first report), `6141 HID reports ... 6055 stylus events given the pencil's angles, pressure and height, 0 of a layout not known`, `3780 HID events queued ..., 0 dropped`, and in iOS's log backboardd's `*** acquired pencil digitizer` and `touchstats 100000216 ... pencil: 2` (`docs/hardware.md` 7e, "Tested"). Not on the phone.
+Tested: the kernel with these edits builds (`HOSTED_OUT=spen`), its `kernel.kc` prelinks (audit 0 failures; `oneios-tool prelink stubs-check`: 666 good, 0 bad); the PC boot of 2026-11-15 with the demo script's pen (`--set pen=auto`): every line above came (`edge wrapper 0` is printed before the first report; the wrapper is put on at the first report), `6141 HID reports ... 6055 stylus events given the pencil's angles, pressure and height, 0 of a layout not known`, `3780 HID events queued ..., 0 dropped`, and in iOS's log backboardd's `*** acquired pencil digitizer` and `touchstats 100000216 ... pencil: 2` (`docs/hardware.md` 7f, "Tested"). Not on the phone.
 
 ## Which event driver (lead, 2026-11-11)
 

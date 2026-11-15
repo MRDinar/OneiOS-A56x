@@ -66,12 +66,63 @@ static void session_file(const char *name, const char *content)
   close(fd);
 }
 
-// The guest's first frame is on screen (or the kernel said so): the switch's dead-man timer stops.
-void xh_guest_ready(void)
+// The guest is up: session/ready (the switch's dead-man timer stops; the OneOS boot screen hands over to the display
+// helper) and the `guest ready: first frame` line, which the fork's boot stages and oneios-tool look for. When, is
+// ready.c's rule: the first frame of the guest's own with content, or ready-content-wait seconds after its first one.
+// The device's thread (xh_guest_frame), the main loop's tick and the ready host call all come through here.
+static xh_ready_state ready_rule;
+static pthread_mutex_t ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool guest_drawing;                  // a frame of the guest's own has been shown: the console's copy stops
+
+static void ready_now(xh_ready_why why, uint64_t now)
 {
+  if (why == XH_READY_NOT || why == XH_READY_ALREADY) return;
   if (__atomic_exchange_n(&guest_ready, true, __ATOMIC_ACQ_REL)) return;
   session_file("ready", "ready\n");
-  LOGI("guest ready: first frame");
+  double after = (double)(now - ready_rule.first_ms) / 1000.0;
+  unsigned long long frames = (unsigned long long)ready_rule.frames;
+  if (why == XH_READY_CONTENT && frames <= 1) LOGI("guest ready: first frame (it has content)");
+  else if (why == XH_READY_CONTENT)
+    LOGI("guest ready: first frame with content, %.1f s and %llu frames after the guest's first (black) frame", after, frames - 1);
+  else if (why == XH_READY_BLACK_TIMEOUT)
+    LOGI("guest ready: first frame, all black: no frame with content in %d s after the guest's first (%llu frames); ready all the same (ready-content-wait)",
+         config.ready_content_wait, frames);
+  else if (why == XH_READY_ANY_FRAME) LOGI("guest ready: first frame (ready-content-wait=0: content not waited for)");
+  else LOGI("guest ready: first frame (the kernel's ready call)");
+}
+
+void xh_guest_ready(void)
+{
+  pthread_mutex_lock(&ready_lock);
+  ready_now(xh_ready_on_call(&ready_rule), xh_mono_ms());
+  pthread_mutex_unlock(&ready_lock);
+}
+
+bool xh_guest_frame(bool lit)
+{
+  uint64_t now = xh_mono_ms();
+  pthread_mutex_lock(&ready_lock);
+  bool first = !ready_rule.frames && !ready_rule.ready;
+  xh_ready_why why = xh_ready_on_frame(&ready_rule, lit, config.ready_content_wait, now);
+  if (first) {
+    __atomic_store_n(&guest_drawing, true, __ATOMIC_RELEASE);
+    // The marker of the rule before 2026-11-15 (ready at this frame), kept for the timings.
+    if (!lit && why == XH_READY_NOT)
+      LOGI("display: the guest's first frame of its own: all black; session/ready waits for one with content (up to %d s)", config.ready_content_wait);
+  }
+  ready_now(why, now);
+  bool ready = ready_rule.ready;
+  pthread_mutex_unlock(&ready_lock);
+  return ready;
+}
+
+static void ready_tick(void)
+{
+  if (__atomic_load_n(&guest_ready, __ATOMIC_ACQUIRE)) return;
+  uint64_t now = xh_mono_ms();
+  pthread_mutex_lock(&ready_lock);
+  ready_now(xh_ready_on_tick(&ready_rule, config.ready_content_wait, now), now);
+  pthread_mutex_unlock(&ready_lock);
 }
 
 static uint8_t *read_file(const char *path, size_t *size, size_t limit)
@@ -447,6 +498,16 @@ static int boot(void)
   }
   if (!input || !xh_virtio_gpu_create_3d(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, fb_width, fb_height, gpu3d)) return -1;
   kinds[ndev++] = XL_DEV_GPU;
+  // The hardware backend of each bridge (hw-backend, bridges/hw_backend.h): set before any of them opens.
+  br_hw_configure(&config.hw);
+  if (config.input) {
+    // Touch and the side keys: one lookup for both backends (input.c: event0..31 by their capabilities, never grabbed).
+    char touch_why[64], keys_why[64];
+    int touch_hw = br_hw_choose(&config.hw, BR_HW_TOUCH, BR_HW_UNSET, touch_why, sizeof touch_why);
+    int keys_hw = br_hw_choose(&config.hw, BR_HW_KEYS, BR_HW_UNSET, keys_why, sizeof keys_why);
+    LOGI("hw: touch: backend %s (%s); keys: backend %s (%s): the same lookup in both, /dev/input/event0..31 by their "
+         "capabilities, read only, never grabbed", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why);
+  }
   if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL, fb_width, fb_height)) LOGE("input: could not start; continuing without");
   if (xh_input_script_start(input, pen.dev && pen.device.fd < 0 ? pen.dev : NULL)) return -1;
 
@@ -963,9 +1024,17 @@ int main(int argc, char **argv)
   // The display driver's scale and refresh rate go on the kernel's command line (a value given there stays).
   if (xh_display_boot_args(config.boot_args, sizeof config.boot_args, config.scale, fb_hz, config.display_format)) { LOGE("no room in the boot arguments for the display's switches"); return EXIT_SETUP; }
   // 24A446's bluetoothd with the virtual machine hidden takes its chip path and dies (SIGSEGV at 0x350) in a loop that
-  // launchd then throttles for 1200 s (phone and PC, 2026-11-14; docs/hardware.md 4): said, not changed.
+  // launchd then throttles for 1200 s (phone and PC, 2026-11-14; docs/hardware.md 4): said, not changed. [I] Its chip
+  // factory finds no chip for transport-encoding 1 outside a VM (only transport 9 or a product of its table gives one),
+  // and 0x350 is a field of the chip object it then reads through a null pointer.
   if (xh_boot_args_hides_vmm_from(config.boot_args, "bluetoothd"))
     LOGE("boot arguments: owner-hide-vmm names bluetoothd: it crashes in a loop that way (docs/hardware.md 4); take it out");
+  // bt-transport-override=10 hands bluetoothd its own simulated controller (BTVC: the transport's write goes to an object
+  // in bluetoothd's own process, which answers the commands itself): nothing reaches the kernel's transport or the phone's
+  // controller, and on the phone (main 3233fed, 2026-11-15) bluetoothd then exited(1) after 56 s, again and again.
+  if (xh_boot_args_bt_transport(config.boot_args) == 10)
+    LOGE("boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: "
+         "nothing reaches the phone's controller (docs/hardware.md 4); take it out");
   xh_perf_init(&config);
   if (boot()) { xh_tasks_shutdown(); return EXIT_SETUP; }
 
@@ -1010,13 +1079,16 @@ int main(int argc, char **argv)
     host_memory_tick(false);                // "memory: host MemAvailable" every host-mem-log seconds
     swap_watch();                           // "memory: the host swaps iOS's RAM" when it does
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
-    // Until the guest's display driver presents, show what its kernel console draws.
+    ready_tick();                           // session/ready for an iOS that only draws black (ready-content-wait)
+    // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
+    // ready: between its first frame and ready the frames are the guest's, and the console must not be copied over them).
+    bool console = !guest_ready && !__atomic_load_n(&guest_drawing, __ATOMIC_ACQUIRE);
     xh_display *d = xh_display_get();
     uint8_t *fb = xh_ram(boot_fb_pa, (uint64_t)fb_width * fb_height * 4);
-    if (!guest_ready && d && fb && d->format == XH_PIXELS_BGRX8 && memcmp(d->pixels, fb, (size_t)d->stride * d->height)) {
+    if (console && d && fb && d->format == XH_PIXELS_BGRX8 && memcmp(d->pixels, fb, (size_t)d->stride * d->height)) {
       memcpy(d->pixels, fb, (size_t)d->stride * d->height);
       xh_display_flush(0, 0, d->width, d->height);
-    } else if (!guest_ready && d && fb && d->format == XH_PIXELS_RGBA16F && d->width == fb_width && d->height == fb_height) {
+    } else if (console && d && fb && d->format == XH_PIXELS_RGBA16F && d->width == fb_width && d->height == fb_height) {
       // A half-float frame (display-format=rgba16f): the console's B,G,R,X bytes are compared with the last ones seen
       // and decoded to linear light when they changed.
       static uint8_t *seen;

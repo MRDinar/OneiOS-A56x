@@ -30,14 +30,19 @@ void *xh_ram(uint64_t pa, uint64_t len) { return pa >= GUEST_PA && pa - GUEST_PA
 static uint32_t stop_reason = 99;
 void xh_stop(uint32_t reason, uint32_t code, const char *why) { (void)code; (void)why; stop_reason = reason; }
 bool xh_stopping(void) { return stop_reason != 99; }
-static int ready_count;
-void xh_guest_ready(void) { ready_count++; }
+// main.c's ready rule as the device sees it: ready_count counts the frames of the guest's own it was given, last_lit
+// the last one's xh_pixels_lit, frame_answer what main.c answers (true: ready, the device stops asking), and
+// frame_before_flush whether the last frame came to the rule before the display (and the helper) were told of it.
+static int ready_count, flushes, flushes_at_frame = -1;
+static bool last_lit, frame_answer = true;
+void xh_guest_ready(void) { }
+bool xh_guest_frame(bool lit) { ready_count++; last_lit = lit; flushes_at_frame = flushes; return frame_answer; }
 struct xh_info g_info;                       // main.c's: the device asks it where the boot framebuffer is
 const struct xh_vector *xh_vector(void) { return NULL; }
 static xh_display fake_display;
 static unsigned flush_rect[4];
 xh_display *xh_display_get(void) { return fake_display.pixels ? &fake_display : NULL; }
-void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; }
+void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; flushes++; }
 unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t text_hi, int ram_fd, int trap_fd);
 
 // ---- instructions -------------------------------------------------------------------------------
@@ -69,6 +74,97 @@ static void test_insn(void)
 static uint64_t reg_store[4], last_write_size;
 static uint64_t fake_read(void *o, uint64_t off, unsigned size) { (void)o; (void)size; return reg_store[off / 8 & 3] >> (off % 8 * 8); }
 static void fake_write(void *o, uint64_t off, unsigned size, uint64_t v) { (void)o; last_write_size = size; reg_store[off / 8 & 3] = v; }
+
+// Whether a frame shows anything (pixels.h xh_pixels_lit, the ready rule's test): an all-black 1440x3120 frame (the
+// X byte set or not), the boot console's kind of frame (a few rows of text), a few lit pixels on the sampled grid, a
+// lit 16x16 block anywhere, a lit pixel off the grid (not seen: the check is sparse), the level at the threshold, and
+// the same in half floats.
+static void test_pixels_lit(void)
+{
+  const uint32_t w = 1440, h = 3120;
+  size_t stride = (size_t)w * 4;
+  uint8_t *f = calloc(h, stride);
+  CHECK(f && !xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));                // black
+  for (size_t i = 3; i < (size_t)h * stride; i += 4) f[i] = 0xff;
+  CHECK(!xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));                      // black, X 0xff: not alpha, not content
+  CHECK(!xh_pixels_lit(f, stride, w, h, 99) && !xh_pixels_lit(NULL, stride, w, h, XH_PIXELS_BGRX8));
+  // A console's picture: grey text in the top rows of a black frame (glyphs 8 px wide, 16 rows each).
+  for (uint32_t y = 0; y < 48; y++)
+    for (uint32_t x = 0; x < 640; x++) if ((x / 2 + y) % 3 == 0) memset(f + y * stride + x * 4, 0xaa, 3);
+  CHECK(xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  memset(f, 0, (size_t)h * stride);
+  f[(8 * stride) + 8 * 4 + 2] = 0x80;                                           // one red pixel on the grid
+  CHECK(xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  memset(f, 0, (size_t)h * stride);
+  f[(9 * stride) + 9 * 4 + 1] = 0xff;                                           // one pixel off the grid: missed
+  CHECK(!xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  memset(f, 0, (size_t)h * stride);
+  f[(3000 * stride) + 1432 * 4] = XH_LIT_LEVEL;                                 // at the level: still black
+  CHECK(!xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  f[(3000 * stride) + 1432 * 4] = XH_LIT_LEVEL + 1;                             // above it: lit
+  CHECK(xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  // A lit 16x16 block (a logo is far larger) is seen wherever it lies.
+  bool all = true;
+  for (uint32_t by = 0; by + 16 <= h && all; by += 37)
+    for (uint32_t bx = 0; bx + 16 <= w && all; bx += 29) {
+      memset(f, 0, (size_t)h * stride);
+      for (uint32_t y = by; y < by + 16; y++) memset(f + y * stride + bx * 4, 0xc0, 16 * 4);
+      all = xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8);
+    }
+  CHECK(all);
+  free(f);
+  // Half floats: black (and negative values, which clamp to black), then one lit pixel on the grid.
+  size_t hstride = (size_t)w * 8;
+  uint16_t *hf = calloc(h, hstride);
+  CHECK(hf && !xh_pixels_lit((uint8_t *)hf, hstride, w, h, XH_PIXELS_RGBA16F));
+  for (size_t i = 0; i < (size_t)w * h; i++) { hf[i * 4] = 0xbc00; hf[i * 4 + 3] = 0x3c00; }          // R -1, alpha 1
+  CHECK(!xh_pixels_lit((uint8_t *)hf, hstride, w, h, XH_PIXELS_RGBA16F));
+  hf[(24 * w + 40) * 4 + 2] = xh_half_from_float(0.5f);                         // B 0.5 at (40,24)
+  CHECK(xh_pixels_lit((uint8_t *)hf, hstride, w, h, XH_PIXELS_RGBA16F));
+  free(hf);
+}
+
+// The ready rule (ready.c): ready at the first lit frame of the guest's own; black frames wait up to the wait, which
+// the frames and the tick both end; 0 is the rule before 2026-11-15 (the first frame); the host call; once only.
+static void test_ready_rule(void)
+{
+  xh_ready_state st;
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_tick(&st, 120, 1000000) == XH_READY_NOT);                   // no frame yet: never by the clock
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT && st.first_ms == 133000 && st.frames == 1);
+  CHECK(xh_ready_on_frame(&st, false, 120, 140000) == XH_READY_NOT);
+  CHECK(xh_ready_on_tick(&st, 120, 252999) == XH_READY_NOT);
+  CHECK(xh_ready_on_frame(&st, true, 120, 150000) == XH_READY_CONTENT && st.ready && st.frames == 3);
+  CHECK(xh_ready_on_frame(&st, true, 120, 151000) == XH_READY_ALREADY && xh_ready_on_tick(&st, 120, 999999) == XH_READY_ALREADY);
+  CHECK(xh_ready_on_call(&st) == XH_READY_ALREADY);
+  // The first frame lit: ready at once.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, true, 120, 5000) == XH_READY_CONTENT && st.frames == 1);
+  // All black: the tick ends the wait at 120 s after the first frame, or a black frame that late does.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT);
+  CHECK(xh_ready_on_tick(&st, 120, 253000) == XH_READY_BLACK_TIMEOUT && st.ready);
+  CHECK(xh_ready_on_tick(&st, 120, 253100) == XH_READY_ALREADY);
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT);
+  CHECK(xh_ready_on_frame(&st, false, 120, 253000) == XH_READY_BLACK_TIMEOUT);
+  // A clock behind the first frame (not expected) does not end it.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT && xh_ready_on_tick(&st, 120, 1000) == XH_READY_NOT);
+  // ready-content-wait=0: the first frame of its own, black or not (the rule before 2026-11-15).
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 0, 133000) == XH_READY_ANY_FRAME && st.ready);
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_tick(&st, 0, 133000) == XH_READY_NOT);
+  // The kernel's ready call, before any frame.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_call(&st) == XH_READY_CALL && xh_ready_on_frame(&st, true, 120, 1) == XH_READY_ALREADY);
+  // The key: unset until finished (then XH_READY_CONTENT_WAIT, checked with the RAM's defaults), 0 to 480 s.
+  xh_config c;
+  xh_config_defaults(&c);
+  CHECK(c.ready_content_wait == -1 && xh_config_set(&c, "ready-content-wait", "0") == 0 && c.ready_content_wait == 0 &&
+        xh_config_set(&c, "ready-content-wait", "480") == 0 && xh_config_set(&c, "ready-content-wait", "481") != 0);
+}
 
 // The return's graceful-shutdown state machine (return.c): graceful done, timeout, panic during the wait, a second
 // request, and the immediate kill when the window is 0 or iOS is not yet up.
@@ -357,7 +453,7 @@ static void test_virtio_blk(const char *dir)
 
 static void test_virtio_gpu(void)
 {
-  fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .pixels = calloc(4, 32) };
+  fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = calloc(4, 32) };
   driver d = { .dev = xh_virtio_gpu_create(0, 42, 8, 4) };
   CHECK(d.dev && R(&d, 8) == 16 && R(&d, 0x108) == 1 && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
   uint32_t *cmd = xh_ram(GUEST_PA + 0x30000, 4096), *resp = xh_ram(GUEST_PA + 0x31000, 4096);
@@ -418,34 +514,58 @@ static void test_virtio_gpu(void)
     cmd[0] = 0x102; cmd[6] = 5;
     CHECK(SEND(8, 24) == 24 && resp[0] == 0x1100);
     free(fake_display.pixels);
-    fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .pixels = eight };
+    fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = eight };
     memset(cmd, 0, 4096);
   }
   {
     // The boot framebuffer scanned out by the guest's display driver (the console) is shown but is not the guest's
-    // first frame; the first surface of its own is.
+    // first frame, even lit; the surfaces of its own go to the ready rule, with whether the display's frame is lit,
+    // before the frame is flushed to the helper, until the rule answers ready (2026-11-15: backboardd's first frames
+    // are black).
     xh_virtio *boot_dev = xh_virtio_gpu_create(0x1000, 43, 8, 4);
     driver b = { .dev = boot_dev };
     uint64_t video = g_info.video[0];
     int before = ready_count;
+    frame_answer = false;
     CHECK(boot_dev && driver_init(&b, 0, 2, GUEST_PA + 0x50000));
 #define SENDB(words) driver_send(&b, 0, (const uint64_t[][3]){ { GUEST_PA + 0x30000, (words) * 4, 0 }, { GUEST_PA + 0x31000, 24, 1 } }, 2, true)
     for (uint32_t id = 1; id <= 2; id++) {
       uint64_t backing = GUEST_PA + 0x40000 + (id - 1) * 0x1000;
       if (id == 1) g_info.video[0] = backing;                                  // resource 1 is the boot framebuffer
+      memset(xh_ram(backing, 8 * 4 * 4), id == 1 ? 0xff : 0, 8 * 4 * 4);       // the console white, the guest's surface black
       memset(cmd, 0, 4096);
       cmd[0] = 0x101; cmd[6] = id; cmd[7] = 2; cmd[8] = 8; cmd[9] = 4;         // RESOURCE_CREATE_2D, B8G8R8X8
       CHECK(SENDB(10) == 24 && resp[0] == 0x1100);
       cmd[0] = 0x106; cmd[6] = id; cmd[7] = 1; cmd[8] = (uint32_t)backing; cmd[9] = (uint32_t)(backing >> 32); cmd[10] = 8 * 4 * 4; cmd[11] = 0;
       CHECK(SENDB(12) == 24 && resp[0] == 0x1100);
       memset(cmd, 0, 4096);
+      cmd[0] = 0x105; cmd[8] = 8; cmd[9] = 4; cmd[12] = id;                    // TRANSFER_TO_HOST_2D, all of it
+      CHECK(SENDB(14) == 24 && resp[0] == 0x1100);
+      memset(cmd, 0, 4096);
       cmd[0] = 0x103; cmd[8] = 8; cmd[9] = 4; cmd[10] = 0; cmd[11] = id;       // SET_SCANOUT
       CHECK(SENDB(12) == 24 && resp[0] == 0x1100);
       cmd[0] = 0x104; cmd[10] = id; cmd[11] = 0;                               // RESOURCE_FLUSH
       flush_rect[2] = 0;
-      CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && flush_rect[2] == 8);
+      int flushed = flushes;
+      CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && flush_rect[2] == 8 && flushes == flushed + 1);
       CHECK(ready_count == before + (id == 2));
+      if (id == 1) CHECK(fake_display.pixels[0] == 0xff);                      // the console is shown, lit
+      if (id == 2) CHECK(!last_lit && flushes_at_frame == flushed);            // black, and asked before the flush
     }
+    // The rule said "not yet": the next black frame is asked again; then a lit pixel (at the 8x4 frame's one
+    // sample, its middle) is a frame with content; once the rule says ready, no more questions.
+    cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 0; cmd[8] = 8; cmd[9] = 4; cmd[10] = 2; cmd[11] = 0;
+    CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && ready_count == before + 2 && !last_lit);
+    uint8_t *surface = xh_ram(GUEST_PA + 0x41000, 8 * 4 * 4);
+    surface[(2 * 8 + 4) * 4 + 1] = 0x80;                                       // pixel (4,2): green 0x80
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x105; cmd[8] = 8; cmd[9] = 4; cmd[12] = 2;
+    CHECK(SENDB(14) == 24 && resp[0] == 0x1100);
+    frame_answer = true;
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 2;
+    CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && ready_count == before + 3 && last_lit);
+    CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && ready_count == before + 3);
 #undef SENDB
     g_info.video[0] = video;
     memset(cmd, 0, 4096);
@@ -1487,7 +1607,7 @@ static void test_config(const char *dir)
   // The default (ram-giveback=1, 0058's way: nothing prefaulted or locked) with what fits (2026-11-14): MemAvailable 7 GiB here.
   CHECK(xh_config_args(&c, 5, ram1) == 0 && xh_config_finish(&c) == 0 && c.ram_bytes == 5376 * M && c.ram_auto_total == phone &&
         c.ram_auto_available == 7ull * G && c.ram_percent == 90 && c.ram_host_floor == (int64_t)XH_RAM_AUTO_FLOOR && c.host_mem_log == 30 &&
-        c.usb_log == 3 &&
+        c.usb_log == 3 && c.ready_content_wait == XH_READY_CONTENT_WAIT &&
         c.ram_auto_bound == XH_RAM_BOUND_AVAILABLE && c.ram_fit_on == 1 && c.ram_fit / M == 5451 && c.ram_fit_available == 7 * G && c.ram_giveback == 1 && c.ram_prefault == 0 && c.ram_lock == 0 &&
         c.ram_session_reserve == (int64_t)XH_RAM_SESSION_RESERVE && c.ram_unlock_below == (int64_t)XH_RAM_UNLOCK_BELOW && c.ram_gpu_reserve == (int64_t)XH_RAM_GPU_RESERVE && c.ram_pagetable_percent == 8);
   // The RAM held fixed (ram-giveback=0): the same size; prefaulted and locked.
@@ -1567,6 +1687,16 @@ static void test_config(const char *dir)
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=audiomxd,com.apple.WebKit.GPU bluetoothd=1", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=bluetoothd2 xowner-hide-vmm=bluetoothd", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("", "bluetoothd"));
+  // bt-transport-override read as bluetoothd reads it: any word that contains the name, the value after its '=',
+  // under 13, the last word wins
+  CHECK(xh_boot_args_bt_transport("-v bt-transport-override=10 wdt=-1") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=10 bt-transport-override=1") == 1);
+  CHECK(xh_boot_args_bt_transport("xbt-transport-override=10") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=13") == -1);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=10 bt-transport-override=99") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override") == -1);
+  CHECK(xh_boot_args_bt_transport("-v wdt=-1 transport=10") == -1);
+  CHECK(xh_boot_args_bt_transport("") == -1);
   char *argv4b[] = { "xnuhost", "--image", image, "--mode", "bench", "--set", "bluetooth=sim" };   // the PC's stand-in
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 7, argv4b) == 0 && xh_config_finish(&c) == 0 && c.bridges == 0 && !strcmp(c.bluetooth, "sim"));
@@ -1575,6 +1705,32 @@ static void test_config(const char *dir)
   CHECK(!strcmp(c.haptics, "auto"));
   CHECK(xh_config_args(&c, 7, argv4c) == 0 && xh_config_finish(&c) == 0 && c.bridges == 0 && !strcmp(c.haptics, "sim"));
   CHECK(xh_config_set(&c, "haptics", "off") == 0 && !strcmp(c.haptics, "off") && xh_config_set(&c, "haptics", "evdev") != 0);
+  // hw-backend (bridges/hw_backend.h): samsung by default for every bridge; xnuhost.conf, --set and --hw-backend*;
+  // the command line wins per setting over the image set's file; a bad value or an unknown bridge refused.
+  xh_config_defaults(&c);
+  for (unsigned i = 0; i < BR_HW_NBRIDGE; i++) CHECK(br_hw_choose(&c.hw, i, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
+  CHECK(!br_hw_fallback_allowed(&c.hw));
+  f = fopen(path, "w");
+  fputs("boot-args=-v debug=0x8\nhw-backend=treble\nhw-backend-keys=samsung\nhw-backend-fallback=1\n", f);
+  fclose(f);
+  char *hw1[] = { "xnuhost", "--image", image, "--hw-backend-battery", "samsung", "--set", "hw-backend-fallback=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, hw1) == 0 && xh_config_finish(&c) == 0);
+  CHECK(br_hw_choose(&c.hw, BR_HW_BACKLIGHT, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE && br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
+  CHECK(br_hw_choose(&c.hw, BR_HW_BATTERY, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && !br_hw_fallback_allowed(&c.hw));
+  char *hw2[] = { "xnuhost", "--image", image, "--hw-backend", "samsung" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hw2) == 0 && xh_config_finish(&c) == 0 && br_hw_choose(&c.hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
+  CHECK(br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && br_hw_fallback_allowed(&c.hw));
+  char *hw3[] = { "xnuhost", "--image", image, "--hw-backend", "pixel" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hw3) == -1);
+  char *hw4[] = { "xnuhost", "--image", image, "--set", "hw-backend-toaster=treble" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hw4) == -1);
+  f = fopen(path, "w");
+  fputs("# settings of this image\nboot-args=-v debug=0x8\n", f);
+  fclose(f);
   char *argv5[] = { "xnuhost", "--image", image, "--set", "wifi=off" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, argv5) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.wifi, "off"));
@@ -2153,6 +2309,8 @@ int main(void)
   xh_virtio_translate = xh_ram;
   test_insn();
   test_return();
+  test_pixels_lit();
+  test_ready_rule();
   test_mmio();
   test_gic();
   test_sysreg();

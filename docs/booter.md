@@ -31,6 +31,7 @@ Command line (the first line is what the OneOS fork runs, `oneos/interface.md` s
 xnuhost --session-abi 1 --mode takeover --runtime DIR --image DIR --data DIR --session DIR
         [--kernel FILE] [--cpus N] [--ram SIZE|auto] [--boot-args TEXT] [--display shm|drm|none]
         [--width W --height H] [--hz N] [--scale 2|3] [--no-input] [--input-script FILE] [--no-tasks]
+        [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]
         [--config FILE] [--set KEY=VALUE] [-v]
 xnuhost --selftest            # on the phone: page size, address bits, PAC keys across fork, memfd, seccomp
 ```
@@ -42,7 +43,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
-| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`; the command line wins |
+| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ready-content-wait`; the command line wins |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
@@ -58,7 +59,11 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set ram-percent=N` | 90 | `ram=auto`'s share of `MemTotal`, 10 to 100 |
 | `--set ram-host-floor=SIZE` | 1.5G | what `ram=auto` always leaves the host |
 | `--set host-mem-log=SECONDS` | 30 | a `memory: host MemAvailable` line every so often; 0 = only at the start and the stop |
+| `--hw-backend samsung\|treble` (`hw-backend=`, also in `xnuhost.conf`) | `samsung` | which form of the phone's hardware every bridge uses: today's Samsung paths, or the vendor-neutral Treble interfaces (AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths). One line per bridge says which and why (`hw: battery: backend treble (hw-backend=treble)`). [hardware.md](hardware.md) 7e has the audit table |
+| `--hw-backend-BRIDGE samsung\|treble` (`hw-backend-backlight=`, `-battery`, `-thermal`, `-haptics`, `-touch`, `-keys`, `-audio`, `-camera`, `-wifi`, `-bluetooth`, `-display`) | unset (`hw-backend`'s) | one bridge's backend, over `hw-backend`; an unknown bridge name is refused |
+| `--hw-backend-fallback 0\|1` (`hw-backend-fallback=`) | 0 | a treble bridge whose interface is missing: 0 the bridge stays off, 1 it uses its samsung form; either way one line says what was missing |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
+| `--set ready-content-wait=SECONDS` | 120 | `session/ready` comes at the guest's first frame of its own that is not all black, or this long after its first frame of its own when all were black; 0 = at its first frame (the rule before 2026-11-15); 0 to 480 (section 2.8, "the ready rule") |
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |
 | `--set ram-giveback=0\|1` | 1 | 0: the RAM is **held fixed for the session** (section 2.2, "Fixed RAM": prefaulted, locked where Linux allows, no free pages given back). 1: 0058's way (faulted in as used, free pages given back). Off by default until it has run on a PC boot of iOS and on the phone |
 | `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes (all or nothing); if the lock fails or does not fit, the prefault stops (nothing is prefaulted unlocked unless `ram-lock=0`) |
@@ -176,7 +181,7 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   one number names a byte for the kernel's pointers, its physical addresses (DMA addresses in virtqueues,
   page tables it may still write) and, minus the base, the offset a task maps.
 - The top of the memfd, outside the kernel's window, is the boot framebuffer (`boot_args.Video`); the main
-  loop shows it until the guest is ready. The guest's display driver maps it too (`kernel_map` takes any page of
+  loop shows it until the guest presents a frame of its own (not later: from then on the frames are the guest's). The guest's display driver maps it too (`kernel_map` takes any page of
   the memfd; kernel `0020`) and presents it itself through the virtio GPU.
 - The board's device windows are a `PROT_NONE` reservation at their physical addresses
   (`0x08000000..0x0b000000`), so a device register's physical address is also its pointer and every access
@@ -632,7 +637,11 @@ bridge device that serves only it. One log line says which:
 `bluetooth: on: the phone's controller through its HAL 1.1, address ...`, `bluetooth: on: a stand-in controller
 (bluetooth=sim), address ...` or `bluetooth: off (...)` with the reason. Boot arguments whose `owner-hide-vmm=` list
 names bluetoothd get an error line (`boot arguments: owner-hide-vmm names bluetoothd: ...`) and are left as they are:
-24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4).
+24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4). So do boot
+arguments that give bluetoothd `bt-transport-override=10`, read as bluetoothd reads it (`boot arguments:
+bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: ...`; since 2026-11-15):
+that transport is a simulated controller inside bluetoothd, and nothing reaches the phone's
+([hardware.md](hardware.md) 4, "The virtual transport is bluetoothd's own").
 Haptics (`haptics=` in `xnuhost.conf`, `--set haptics=...`; 2026-11-13): `auto`, the default, opens the phone's
 force-feedback device (`haptics: on: /dev/input/eventN ...`) when the bridges are on; `off` gives iOS no actuator
 (`haptics: off (haptics=off)`: no Actuator audio device, no `/product/haptics`); `sim` (a boot with no vibrator,
@@ -757,7 +766,46 @@ Linux's page cache and a sparse file: the store is a raw image.
   (`xh_input_feed`): each frame's end gets `EV_MSC` / `MSC_TIMESTAMP` with the time it is sent, and each scripted
   gesture gets the `input: touch:` line with its touch-to-frame time, so the latency can be measured without a finger.
   The filter passes the three side keys, and Home (`KEY_HOMEPAGE`) and the ringer (`KEY_MUTE`) for a host that has them.
-- **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7e). Settings: **`pen=off`** (the default until a phone
+- **`session/ready` (the ready rule, since 2026-11-15)** is created at the guest's first frame of its own **that
+  shows something**, or `ready-content-wait` seconds (default 120, `--set ready-content-wait=N`, 0 to 480, or the
+  image's `xnuhost.conf`) after its first frame of its own when every frame was black, or by the `ready` host call.
+  The guest's display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame
+  drawn there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but never counts,
+  lit or not (`virtio_gpu.c` `frame_shown`). "Shows something" is `xh_pixels_lit` (`include/xnuhost/pixels.h`): a grid
+  of every 16th pixel of every 16th row (90 x 195 = 17,550 pixels at 1440x3120, not the 18 MB frame) with one of R, G,
+  B above 16 of 255 (half floats through the clamp to 8-bit sRGB); a lit 16x16 area is always seen. The check runs on
+  each frame of the guest's own until ready, on the device's thread, before the frame goes to the display helper (so
+  `session/ready` is there when the helper sees the frame); the timeout is checked by the main loop's 100 ms tick, so
+  an iOS that draws one black frame and nothing more is still ready. `ready-content-wait=0` is the rule before
+  2026-11-15 (ready at the first frame of its own).
+  **Why:** the first frames of the guest's own are backboardd's and black. On the phone (main 3233fed, 2026-11-15)
+  `guest ready: first frame` came at +133 s with such a frame, the OneOS boot screen ended, and the panel stayed
+  black, as if off, until iOS drew its Apple logo. Together with the display helper's hold (its first post waits for
+  `session/ready`: `runtime/display/README.md`, "The OneOS boot screen and this layer") the boot screen now stays
+  until iOS shows its logo.
+  Log lines: `display: the guest's first frame of its own: all black; session/ready waits for one with content (up
+  to N s)` (the time the old rule was ready), then one of `guest ready: first frame (it has content)`, `guest ready:
+  first frame with content, T s and N frames after the guest's first (black) frame`, `guest ready: first frame, all
+  black: no frame with content in N s after the guest's first (F frames); ready all the same (ready-content-wait)`,
+  `guest ready: first frame (ready-content-wait=0: content not waited for)`, `guest ready: first frame (the kernel's
+  ready call)`. All begin with `guest ready: first frame`, the marker the fork's boot stages, its Session logs
+  screen and `oneios-tool` look for. Host tests: `test_pixels_lit` (an all-black frame with and without the X byte,
+  a console's rows of text, one lit pixel on the grid, one off it, the level at and above 16, a 16x16 block at
+  every place, half floats), `test_ready_rule` (lit at once, black then lit, the timeout by a frame and by the tick,
+  0, the host call, once only, the key's range) and `test_virtio_gpu` (the console lit and not counted, the guest's
+  black frame asked before its flush and asked again, a lit pixel, no question once ready).
+  The main loop's copy of the boot framebuffer ends at the guest's first frame of its own, as before (it used to end
+  at ready, which was that frame).
+  **PC boot (2026-11-15, `--display shm`, qemu-aarch64, kernel.kc bf31eb0d, the PC image set, a seeded Data store,
+  `display-capture.py` beside it):** `display-capture.py`'s first picture, at +0.5 s, is the empty memfd, black: what
+  the display helper posted before this fix, a second after it connected, over the boot screen. Then 2742 flushes
+  of the black boot framebuffer (not counted). backboardd opened the framebuffer at +534.7 s, swap 1 at +576.2 s,
+  `guest ready: first frame (it has content)` at +576.3 s, and the capture's next picture (577.1 s after its hello,
+  26 colours) is the Apple logo on black. Under qemu the guest's first frame is already the logo, so the old
+  rule and the new one were ready at the same frame there; the black frames before the logo are the phone's (its
+  frames come through the GPU's blobs). The timeout path has run in the host tests only.
+
+- **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
   session proves it) or `pen=auto`; `pen-rotate=auto|0|90|180|270` (the digitizer's frame turned clockwise onto the
   panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess); `pen-mirror=1` (then mirrored
   left to right). With `pen=auto`, xnuhost (with `input` on) calls `xh_pen_lookup`: the default, `xh_pen_lookup_evdev`,

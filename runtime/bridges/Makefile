@@ -13,9 +13,9 @@ WARN := -Wall -Wextra -Werror
 INC := -Iinclude -I../../drivers/bridge -I../../drivers/net -I$(XNUHOST)/src -I$(XNUHOST)/include
 CFLAGS ?= -O2 -g
 WIFI := wifi/frames wifi/station wifi/wlan wifi/sim wifi/aidl_parcel wifi/aidl_binder wifi/supplicant
-CORE := cpu/topology haptics/haptic net/net bt/hci bt/hci_sim bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery thermal/thermal $(WIFI)
+CORE := cpu/topology hw/hw_backend hw/hw_log hal/hal haptics/haptic net/net bt/hci bt/hci_sim bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery thermal/thermal $(WIFI)
 DEVICES := devices/bridge_dev devices/virtio_net devices/virtio_snd
-HDR := $(wildcard include/bridges/*.h bt/*.h audio/*.h brightness/*.h battery/*.h thermal/*.h wifi/*.h ../../drivers/bridge/*.h ../../drivers/net/*.h $(XNUHOST)/src/xnuhost.h)
+HDR := $(wildcard include/bridges/*.h hal/*.h bt/*.h audio/*.h brightness/*.h battery/*.h thermal/*.h wifi/*.h ../../drivers/bridge/*.h ../../drivers/net/*.h $(XNUHOST)/src/xnuhost.h)
 A := build/android
 H := build/host
 
@@ -39,6 +39,10 @@ $(A)/oneios-audio: audio/aaudio_helper.c audio/audio_proto.h
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) -Iaudio audio/aaudio_helper.c -laaudio -o $@
 $(A)/bridgectl: tools/bridgectl.c $(CORE:%=$(A)/%.o)
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) -static tools/bridgectl.c $(CORE:%=$(A)/%.o) -lm -o $@
+# bridgectl on the build host, for the stand-in phone (tools/oneios-tool/tests/phone/hw-backend.sh: haptic).
+$(H)/bridgectl: tools/bridgectl.c $(CORE:%=%.c) $(HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tools/bridgectl.c $(CORE:%=%.c) -lpthread -lm -o $@
 # wifictl: the Wi-Fi bridge without xnuhost (status and scan read only; join takes wlan0 as a session does).
 $(A)/wifictl: tools/wifictl.c $(CORE:%=$(A)/%.o) devices/virtio_net.c
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) -static tools/wifictl.c $(CORE:%=$(A)/%.o) -lm -o $@
@@ -46,6 +50,11 @@ $(A)/wifictl: tools/wifictl.c $(CORE:%=$(A)/%.o) devices/virtio_net.c
 $(H)/test_bridges: tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c -lpthread -o $@
+
+# The backend layer (hw/): the settings, the choice, its log lines.
+$(H)/test_hw_backend: hw/test_hw_backend.c hw/hw_backend.c hw/hw_log.c cpu/topology.c $(HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined hw/test_hw_backend.c hw/hw_backend.c hw/hw_log.c cpu/topology.c -lpthread -o $@
 
 # The Wi-Fi bridge's pure parts: frames, the station against a fake radio, the AIDL parcels, the join's plan.
 WIFI_TEST := tests/test_wifi.c wifi/frames.c wifi/station.c wifi/sim.c wifi/aidl_parcel.c wifi/aidl_binder.c wifi/supplicant.c cpu/topology.c
@@ -68,13 +77,24 @@ $(H)/test_audio_helper: tests/test_audio_helper.c audio/aaudio_helper.c audio/au
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Itests/fake -Iaudio -fsanitize=address,undefined -rdynamic tests/test_audio_helper.c -ldl -lpthread -lm -o $@
 
+# The treble backend's HAL bridges (battery, thermal, haptics) against fake HALs (tests/fake_hal.c) on the same binderfs;
+# fake-hal alone serves the stand-in phone (tools/oneios-tool/tests/phone/hw-backend.sh).
+HAL_TEST := tests/test_hal_binder.c tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c hw/hw_backend.c hw/hw_log.c cpu/topology.c battery/battery.c thermal/thermal.c haptics/haptic.c
+$(H)/test_hal_binder: $(HAL_TEST) $(HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DFAKE_HAL_LIB -fsanitize=address,undefined $(HAL_TEST) -lpthread -o $@
+$(H)/fake-hal: tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c $(HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c -lpthread -o $@
+
 # The binderfs is mounted on build/host/binderfs inside the namespace only; it goes with the namespace.
-test-binder: $(H)/test_hidl_binder $(H)/test_aidl_binder
+test-binder: $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 	@if ! grep -qw binder /proc/filesystems; then echo "test-binder: skipped (no binderfs in this kernel)"; exit 0; fi; \
 	mkdir -p $(H)/binderfs; \
-	unshare -Urm sh -c 'mount -t binder binder "$$1" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_HWBINDER="$$1/hwbinder" "$$2" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$3"' sh $(H)/binderfs $(H)/test_hidl_binder $(H)/test_aidl_binder
+	unshare -Urm sh -c 'mount -t binder binder "$$1" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_HWBINDER="$$1/hwbinder" "$$2" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$3" && ASAN_OPTIONS=detect_leaks=0 ONEIOS_BINDER="$$1/binder" "$$4"' sh $(H)/binderfs $(H)/test_hidl_binder $(H)/test_aidl_binder $(H)/test_hal_binder
 
-test: $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper test-binder
+test: $(H)/test_bridges $(H)/test_wifi $(H)/test_audio_helper $(H)/test_hw_backend test-binder
+	$(H)/test_hw_backend
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_bridges   # the devices live as long as xnuhost: the transport has no destroy
 	$(H)/test_wifi
 	$(MAKE) -C brightness test
