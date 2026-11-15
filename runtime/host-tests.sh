@@ -12,7 +12,8 @@
 # The suite, one line each at the end (pass, FAIL or skipped):
 #   loader    make -C runtime/loader test
 #   xnuhost   make -C runtime/xnuhost test: the unit tests, drm2kgsl and its leak test (LeakSanitizer) when
-#             external/virglrenderer is there (both need /dev/udmabuf), and the Android xnuhost booting the test kernel
+#             external/virglrenderer is there (both need /dev/udmabuf; without it drm2kgsl runs only its GPU policy
+#             scenarios, on a stand-in), and the Android xnuhost booting the test kernel
 #             (under qemu-aarch64 on an x86_64 PC; as it is on an arm64 host, the container on a Mac)
 #   display   make -C runtime/display test
 #   bridges   runtime/bridges/tests/host.sh: the unit tests, test-binder (a binderfs in a user namespace: it says
