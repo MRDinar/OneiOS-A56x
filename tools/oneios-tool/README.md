@@ -17,6 +17,7 @@ script before it may replace it; the commands and the results are below. What is
 | `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output ("debug", below) |
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | written; **not run on the phone** (none on the box) | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 106 checks pass (`tests/phone/run.sh`, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
 | `app` | the app lines of `docs/building.md` section 7 (new) | written; **the app was not built or installed with it** (the owner's decision for this box) | not applicable; 65 checks pass with a stand-in checkout, gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
+| `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone | **the protocol is fixed ("serve", below); the code follows in the same pull request** | not applicable |
 | `cycle`, `phone log` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run on the phone or with real builds** | not applicable; 90 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
 
 **The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`, the root tweaks). The image scripts call `oneios-tool image`
@@ -78,6 +79,208 @@ for no subcommand (`prelink` also for an unknown one) and 1 for wrong arguments,
   clap then hands an option that follows a word over as a word, and `sym` reads it as the option it is.
 - `log`: every subcommand takes every option (one it has no use for is ignored).
 The help text is clap's now (`--help`); `image`'s old usage text is still what a wrong `image` command prints.
+
+## serve: one process for the app (the protocol)
+
+**State (2026-11-15): the protocol was written first, for the app's agent to build on; the code and its tests
+follow in the same pull request (branch `tool-app-progress`). Until this paragraph is replaced by the test counts,
+the code may be behind this text.**
+
+The OneOS app runs the iOS steps on the phone itself (the owner's design, 2026-11-15): **one executable, started once
+per flow as root, no JNI library.** `oneios-tool serve` is that process. The app writes one request per line to its
+standard input and reads progress and result lines from its standard output. Kotlin only starts it, sends requests
+and shows what comes back: every check and every decision is in the tool.
+
+```sh
+su -c 'oneios-tool serve'                      # the app: one su and one process start per flow
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"sums","dir":"DIR/image"}'    # a PC, a test: one-shot
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--stage DIR` | `/data/local/tmp/oneios` | the stage. Requests write only under it (and under each `--allow DIR`): a path outside is refused (`outside`). Its `control/` and `session/` files say whether an iOS session is open |
+| `--allow DIR` | none | one more folder requests may write under (repeatable) |
+| `--idle SECONDS` | 300 | the process ends when no request ran or waited and no line came for this long (0: never) |
+| `--jobs N` | the online CPUs, at most 8 | worker threads of a request (1 to 8). A request's own `"jobs"` may lower it |
+| `--nice N` | 10 | the process's nice value, 10 to 19. Set before any thread starts, so every thread has it. Never a realtime class: a process started with one (SCHED_FIFO, SCHED_RR) puts itself back to SCHED_OTHER |
+| `--thermal A,B,C,D` | `44,46,45,50` | degrees C: the case pauses the work at A and stops it at B, the battery pauses at C and stops at D (the thermal bridge's HEAVY and TRAPPING levels, `runtime/bridges/thermal`). A pause ends 2 C below its limit. `--thermal off`: no check |
+| `--battery-min PERCENT` | 10 | below this, and not charging, heavy requests are refused and a running one stops (0: no check) |
+| `--request JSON` | none | run this request (repeatable, in order) instead of reading standard input; then exit with the last one's status (below). For a PC and for measuring |
+| `--sys-root DIR` | none | read the phone's files (`/sys`, `/proc`) below DIR: for tests |
+
+### Why JSON lines, not `@@` lines
+
+The fork's root script answers with `@@RESULT`, `@@OK`, `@@REFUSED` and `@@FAILED` lines of plain words
+(`RootReply.kt`). `serve` uses **one JSON object per line** instead, in both directions, because:
+- a request has a name and several values, some of them lists (the members of an archive, the reviewed records of a
+  prelink) and paths, which may hold spaces. `@@` lines have no quoting;
+- several requests live in one process, so every answer line must carry its request's id;
+- progress has numbers of several kinds on one line (bytes, percent, ETA, files);
+- refusal reasons and log lines are free text and must not break the line format;
+- the tool has `serde_json`, and the fork has its own strict reader (`JsonRead` in `core/model`): no new dependency.
+
+What is kept from the root script: the four ways a request ends (`ok`, `refused`, `failed`, and `cancelled` in
+addition) and its exit statuses for the one-shot form (0 ok, 2 refused, 3 a wrong request, 4 failed, and 5
+cancelled).
+
+### The lines
+
+Every line is one JSON object in UTF-8, ended by `\n`, without a line break inside. The tool's lines all begin with
+`{"ev":`. A line on the tool's standard output that does not begin so is not the tool's (a banner of `su`): skip it.
+The tool's standard error stays empty: what a step prints there is sent as `line` events.
+
+**A request:** `{"id":"7","cmd":"NAME", ...}`. `id` is 1 to 64 characters of `A-Z a-z 0-9 . _ -`, chosen by the app,
+and not the id of a request that is still running or waiting. Every other key is the command's own (the table
+below). An unknown key is refused (`usage`), so that a typing mistake is not silently ignored.
+
+**One request runs at a time.** A request that comes while another runs **waits in a queue** (first in, first out,
+at most 32 waiting; a 33rd is refused with `busy`). `ping`, `health` and `cancel` do not wait: they are answered at
+once, also while a request runs.
+
+**The events of a request,** in this order:
+
+| Event | When | Fields |
+|---|---|---|
+| `queued` | the request was read and must wait | `id`, `cmd`, `ahead` (how many are before it, the running one included) |
+| `start` | it begins | `id`, `cmd`, `jobs`, `steps`: the list of its steps, each `{"step":"copy","text":"Copying the files"}`, in the order they run. A step is **done** when the next one's `step` event comes, or the request's last event; the ones after it are **next** |
+| `space` | before a request writes much | `id`, `path` (the folder it writes to), `need` and `free` in bytes, `reserve` (bytes that must stay free: 268,435,456). When `free < need + reserve` the request is refused with `space` |
+| `step` | a step begins | `id`, `step`, `n`, `of`, `text` |
+| `progress` | at most four times a second, and at the start and the end of a step | `id`, `step`, `done`, `total`, `unit` (`bytes`, `files`, `kexts`, `entries`, `seconds`), `percent` (one decimal), and when they are known `rate` (units per second), `eta` (whole seconds left in this step), `items_done`, `items_total` (files, when `unit` is bytes). `total` 0: not known, and no `percent` |
+| `row` | one item of the result | `id`, `kind`, and the command's own fields |
+| `line` | a line the step printed | `id`, `stream` (`out` or `err`), `text` (cut at 4,000 characters, then `"cut":true`). At most `lines` of them per request (default 5,000; the request's own `"lines"`); the rest are counted in the last event's `lines_dropped` |
+| `heat` | the work pauses or goes on | `id`, `state` (`paused`, `resumed`), `why` (`case`, `battery`), `text`, and the reading: `case`, `battery` (degrees C), `level` (percent), `charging` |
+| **one of the four last events** | it ends | below |
+
+**The last event of a request** is exactly one of these, and nothing with its id comes after it:
+
+| Event | Meaning | Fields | Status of the one-shot form |
+|---|---|---|---|
+| `ok` | done | `id`, `cmd`, `seconds`, `text` (one line for the screen), the command's own result fields | 0 |
+| `refused` | the tool decided not to do it, or to stop it | `id`, `cmd`, `code` (a fixed word, below), `text` (the reason in plain words, for the screen) | 2 (`usage` and `unknown`: 3) |
+| `failed` | something broke | `id`, `cmd`, `code` (`io`, `internal`, `failed`), `text` | 4 |
+| `cancelled` | it was stopped from outside | `id`, `cmd`, `by` (`request`, `eof`, `sigterm`, `idle`), `removed` (how many temporary files and folders were removed), `text` | 5 |
+
+A request that is refused, fails or is cancelled **removes what it wrote**: its temporary files, and an output that
+was not complete. A download says when it keeps its part for a later run (`"resume":true`).
+
+**Refusal codes** (`code` of `refused`; the text says the same in plain words):
+
+| Code | Meaning |
+|---|---|
+| `usage` | the request is wrong: a key is missing, unknown or has a wrong value |
+| `unknown` | no such `cmd` |
+| `busy` | 32 requests are waiting already |
+| `duplicate` | a request with this id is running or waiting |
+| `outside` | a path to write is not under the stage or an `--allow` folder, is not absolute, has `..`, or goes through a link |
+| `not-found` | a file or a folder the request names is not there |
+| `exists` | the output is there already |
+| `space` | not enough free space (the `space` event has the numbers) |
+| `session` | an iOS session is open: return to One UI first (heavy requests only) |
+| `heat` | the case or the battery is at its stop limit |
+| `battery` | the battery is below `--battery-min` and not charging |
+| `mismatch` | a size or a SHA-256 is not the one expected (the text names the file) |
+| `apple-file` | the runtime folder holds a file of Apple's |
+| `audit` | the kernel collection's audit or stub check found a wrong binding |
+| `not-ported` | the step is not in the tool yet (the root tweaks: below) |
+
+**Lines without a request:**
+
+| Line | When |
+|---|---|
+| `{"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44,46,45,50],"battery_min":10,"cmds":[...]}` | the first line, before any request is read. `cmds`: every command this build knows |
+| `{"ev":"error","text":"..."}` | a line that is not a request: not JSON, not an object, no usable `id`, or a `cancel` of an id that is neither running nor waiting |
+| `{"ev":"bye","why":"eof","requests":3,"cancelled":0,"threads":1,"children":0}` | the last line. `why`: `eof` (the app closed the pipe), `idle`, `sigterm`, `requests` (the one-shot form is done), `stdout` (never read: the pipe is gone). `threads` and `children` are what the process still has at that moment: 1 and 0 (Linux and Android: `/proc/self/status` and `waitpid`) |
+
+### How it ends
+
+- **`{"cmd":"cancel","id":"7"}`** stops request 7. A waiting one is taken out of the queue; the running one stops at
+  its next check (between chunks, files, kexts or steps: at most a few seconds), removes what it wrote and ends
+  with `cancelled`, `by` `request`. The queue goes on with the next request.
+- **The app closes the pipe (EOF on standard input):** the running request is cancelled (`by` `eof`), the waiting
+  ones are dropped (each gets `cancelled`), then `bye` and the process exits. EOF with nothing running: `bye` at
+  once.
+- **SIGTERM, SIGINT, SIGHUP:** the same as EOF, `by` `sigterm`.
+- **Idle:** `bye` with `why` `idle` after `--idle` seconds without a request or a line.
+- **The reader went away** (a write to standard output fails): the same as EOF, without lines.
+- A request that does not stop within 10 seconds of its cancel is not waited for: the process removes the
+  registered temporary files itself and exits (`bye` then has `"forced":true`). An exit ends every thread.
+- **Nothing is left behind:** the tool starts no other process in `serve` (no `adb`, no shell, no `apfs-fuse`: the
+  commands that need one are not in `serve`), its worker threads belong to the request and are joined before the
+  request's last event, and `bye` reports the threads and children left (1 and 0).
+- The exit status of `serve` on standard input: 0 when it ended in order, 5 when the end cancelled a request, 3 for
+  a wrong command line of `serve` itself.
+
+### Threads, nice, heat
+
+- A request's work runs in `jobs` threads (rayon, or scoped threads for downloads): `--jobs`, default the online
+  CPUs, at most 8. The threads exist only while the request runs.
+- The process runs at nice 10 (`--nice` 10 to 19) and never in a realtime class.
+- **Heat and battery, from named files only** (never a folder list or a walk of `/sys` or `/proc`: a root tree walk
+  panicked the phone's kernel on 2026-11-12). The files are the thermal bridge's: the case
+  `/sys/class/power_supply/battery/lrp` (or `/sys/class/sec/sec-ap-thermistor/temperature` when there is no `lrp`),
+  the cell `/sys/class/power_supply/battery/temp` (tenths of a degree), and `/sys/class/power_supply/battery/capacity`
+  and `status`. Read at most every 2 seconds, by the worker threads' own checks. At a pause limit every worker waits
+  (`heat` `paused`, then `resumed`); at a stop limit the request ends with `refused`, `heat`. A phone without these
+  files (a PC) has no check.
+- **A session:** heavy requests are refused (`session`) while an iOS session is open: the stage's `control/boot`
+  equals `/proc/sys/kernel/random/boot_id` and `control/state` is `starting`, `running` or `returning`, or
+  `session/xnuhost.pid` names a live xnuhost. `ping`, `health`, `cpu`, `log` and `log-list` only read and run beside
+  a session.
+
+### The commands
+
+Heavy (H): checked for heat, battery and an open session, and counted in `jobs` threads. Paths are absolute.
+
+| `cmd` | H | Keys | Steps | Result (`ok`'s fields, `row`s) |
+|---|---|---|---|---|
+| `ping` | | | | `ok` at once |
+| `health` | | | | `ok` at once: `case`, `battery`, `level`, `charging`, `state` (`ok`, `pause`, `stop`, `unknown`), `session` (true: one is open) |
+| `cancel` | | `id` of the request to stop | | that request's `cancelled` |
+| `wait` | | `seconds`, `heavy` (default false), `file` (a temporary file it writes and removes) | `wait` | counts to `seconds` in `jobs` threads with `progress`: for the app's own tests of progress, cancel and the queue |
+| `download` | H | `url`, `out`, `sha256`, `bytes` (optional), `resume` (default false) | `download`, `check`, `place` | a file from an https URL in parallel range requests into `out.part`; the SHA-256 is checked before it gets its name. `ok`: `bytes`, `sha256` |
+| `zip-ls` | | `source` (an https URL or a file), `match` (a regular expression, optional) | | `row` `member`: `name`, `bytes`, `packed`, `method`, `crc32` |
+| `zip-get` | H | `source`, `outdir`, `members`: a list of `{"member":"...","name":"..."}` (`name` optional), `resume` | `directory`, `download`, `check` | members of a ZIP (an IPSW) without downloading it, in parallel range requests; each CRC-32 checked. `row` `member`: `name`, `out`, `bytes`, `crc32` |
+| `fetch` | H | `profile`, `indir`, `only` (a list of roles, optional), `source` (optional), `resume` | `directory`, `download`, `check` | `image fetch`: the members a profile names, with its pins (size, CRC-32, SHA-256, SHA-384) and `inputs.json` |
+| `im4p` | H | `in`, `out` | `decode` | `image im4p`: the payload of an IM4P (the kernelcache) |
+| `receive` | H | `from` (a file or a FIFO), `to`, `bytes`, `sha256`, `mode` (`0644` or `0755`), and optionally `name`, `sums_list`, `ids_list` | `copy`, `check`, `place` | the import's receive check: exactly `bytes` bytes of `from` into `to.part`, hashed as they are written; the size and the SHA-256 must be the ones given before the file gets its name and mode. With `sums_list`: the line `SHA256  NAME` is added to it, and to `ids_list` the line `DEV:INODE:SIZE:MTIME NAME`, as `oneios_root.sh receive` writes them |
+| `sums` | H | `dir`, `list` (default `DIR.sha256`), `strict` (default false: with it a file of `dir` that the list does not name is a mismatch) | `scan`, `hash` | the stage's SHA-256 check: every file of `list` (`SHA256  PATH` lines) hashed, the files in parallel. `row` `file`: `path`, `bytes`, `sha256`, `ok`. A difference: `refused`, `mismatch` |
+| `hashes` | H | `image`, `out`, `chunk` (default 1,048,576) | `hash` | `image hashes`: the chunk hash list of a file and its whole SHA-256 in one pass. `ok`: `bytes`, `sha256`, `chunks` |
+| `verify` | H | `set`, `quick` (default false) | `verify` | `image verify` of a set folder against its `manifest.json` |
+| `apfs-ls` | | `image`, `path`, `volume`, `newest`, `checkpoint` | | `row` `entry`: `name`, `mode`, `uid`, `gid`, `bytes` |
+| `apfs-copy` | H | `image`, `src`, `dst`, `volume`, `newest`, `checkpoint` | `scan`, `copy`, `place` | a file or a folder out of a raw APFS image, without a mount, the files in parallel, into `dst.part`, then renamed. `dst` must not exist. `ok`: `files`, `bytes`, `compressed`, `skipped` |
+| `tweaks` | H | | | **refused, `not-ported`:** the root tweaks are Python (`userland/roottweak`) and are not in the tool yet (todo_rust.md section 7, group 4) |
+| `prelink` | H | `kernel` (xnu.macho), `kernelcache`, `profile`, `reviewed`, `more_reviewed` (a list, optional), `pairs`, `stubs`, `xnuprelink` (the folder with XnuPrelink's reviewed fixtures), `reference` (optional), `out` (a folder) | `check`, `native-input`, `merge-reviewed`, `roots`, `hosted`, `match`, `align`, `kclasses`, `structors`, `vtables`, `emit`, `audit`, `stubs-check`, `record`, `hashes`, `place` | the steps of `kernel/prelink/build.sh` in this process, in `OUT/work`; `kernel.kc` and its files are put into `OUT` only when the audit and the stub check pass (else `refused`, `audit`). `ok`: `kc`, `bytes`, `sha256` |
+| `stubs-check` | H | `kc` | `check` | `prelink stubs-check` alone |
+| `package-check` | H | `dir` | `check` | `package check`: no Apple file in a runtime folder (else `refused`, `apple-file`) |
+| `ioslog-boots` | H | `source` (the Data store's image, a `.logarchive`, a folder), `volume` | `read` | `ioslog boots`: `row` `boot`: `uuid`, `start`, `first`, `last`, `entries`; and the text as `line`s |
+| `ioslog-show` | H | `source`, `out` (a file; without it the entries come as `line`s), `format` (`text`, `csv`, `jsonl`), `boot`, `since`, `until`, `proc` (a list), `pid`, `subsystem`, `category`, `type`, `grep`, `sort`, `volume` | `read` | `ioslog show`. `ok`: `entries`, and `out`, `bytes` with a file |
+| `log-list` | | | | the stage's logs by name (`phone log --list` on the phone itself): `row` `log`: `name`, `path`, `bytes`, `changed`; missing ones with `"missing":true` |
+| `log` | | `file` (`xnuhost`, `switch`, `return`, `outcome`, `display`, `watchdog`, `usb`, or `logs/xnuhost-EPOCH.log`), `tail`, `grep` (a list), `filters` (a list of `panic`, `display`, `gpu`, `wifi`, `hid`, `mem`), `markers`, `since`, `out` (a file, optional) | | `phone log` on the phone itself: the named file of the stage, read once (no follow), filtered; the lines as `line`s or into `out`. `ok`: `lines`, `matched`, `bytes` |
+| `cpu` | | | | `phone cpu` on the phone itself, from named files only (the CPUs 0 to 7 by name, Android's four cpusets, in a session xnuhost's own `status`, `cpuset`, `stat` and `sched`; the per-thread list stays with the adb form, which asks `ps`). `row` `cpu`: `n`, `core`, `capacity`, `related`, `governor`, `max_khz`, `scaling_max_khz`, `cur_khz`, `capped`; the report as `line`s |
+
+Not in `serve`: `phone` (the adb forms), `app`, `cycle` (they start `adb` or gradle), `--apfs fuse` (it starts
+`apfs-fuse`), `prelink hosted --x18` (it starts `llvm-mc`).
+
+### An example
+
+```
+<- {"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44,46,45,50],"battery_min":10,"cmds":["ping","health","cancel", ...]}
+-> {"id":"1","cmd":"apfs-copy","image":"/data/local/tmp/oneios/image/os.img","src":"/System/Library/CoreServices","dst":"/data/local/tmp/oneios/work/CoreServices"}
+<- {"ev":"start","id":"1","cmd":"apfs-copy","jobs":8,"steps":[{"step":"scan","text":"Reading the volume"},{"step":"copy","text":"Copying the files"},{"step":"place","text":"Putting the folder in place"}]}
+<- {"ev":"step","id":"1","step":"scan","n":1,"of":3,"text":"Reading the volume"}
+<- {"ev":"space","id":"1","path":"/data/local/tmp/oneios/work","need":183500800,"free":52000000000,"reserve":268435456}
+<- {"ev":"step","id":"1","step":"copy","n":2,"of":3,"text":"Copying the files"}
+<- {"ev":"progress","id":"1","step":"copy","done":41943040,"total":183500800,"unit":"bytes","percent":22.9,"rate":167772160,"eta":1,"items_done":310,"items_total":2315}
+-> {"id":"2","cmd":"sums","dir":"/data/local/tmp/oneios/image"}
+<- {"ev":"queued","id":"2","cmd":"sums","ahead":1}
+-> {"cmd":"cancel","id":"1"}
+<- {"ev":"cancelled","id":"1","cmd":"apfs-copy","by":"request","removed":1,"text":"stopped; /data/local/tmp/oneios/work/CoreServices.part was removed"}
+<- {"ev":"start","id":"2","cmd":"sums","jobs":8,"steps":[{"step":"scan","text":"Reading the list"},{"step":"hash","text":"Checking the files"}]}
+   ...
+<- {"ev":"ok","id":"2","cmd":"sums","seconds":9.4,"text":"12 files, 17,859,571,712 bytes: all as listed","files":12,"bytes":17859571712}
+   (the app closes the pipe)
+<- {"ev":"bye","why":"eof","requests":2,"cancelled":1,"threads":1,"children":0}
+```
 
 ## The rule for libraries
 
