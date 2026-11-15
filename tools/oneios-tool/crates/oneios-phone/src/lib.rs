@@ -9,6 +9,7 @@ pub mod adb;
 pub mod app;
 pub mod cpu;
 pub mod cycle;
+pub mod local;
 pub mod log;
 pub mod phone;
 pub mod pull;

@@ -916,3 +916,32 @@ together. File:line needs the kernel's DWARF: the object files of the build tree
 (as `kernel/build-hosted.sh` left them when `xnu.macho` was linked), or a dSYM (`--dsym`). Compared with
 `llvm-symbolizer` on three Linux-built kernels; **not yet run on a panic log from the phone** (README "sym
 kernel": the address rules, the comparison, what was not run).
+
+**On the phone itself: `oneios-tool serve` (2026-11-15).** The OneOS app runs the iOS steps on the phone through one
+process it starts as root once per flow: a request per line on standard input, JSON lines back (progress with
+bytes, percent and ETA, the room needed, a refusal's reason in plain words). One request runs at a time, the others
+wait; a request is stopped by a `cancel` request, by the end of the app's pipe, by SIGTERM or by the idle timeout,
+and a stop removes what the request wrote. The work runs in a bounded number of threads at nice 10 to 19, never in
+a realtime class, and pauses or stops at the case's and the battery's limits (the thermal bridge's named files).
+The protocol, every command and what is not in it yet (the root tweaks, the image build's own script, the AEA
+decryption): [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "serve". The same requests run from a
+command line (a PC, a test, a measurement on the phone):
+
+```sh
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"sums","dir":"DIR/image"}'     # the stage's SHA-256 check
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"apfs-copy","image":"DIR/image/os.img","src":"/usr","dst":"DIR/work/usr"}'
+oneios-tool serve --stage DIR --request '{"id":"1","cmd":"cpu"}' --request '{"id":"2","cmd":"log","markers":true}'   # phone cpu, phone log: the local forms
+oneios-tool --jobs 4 --nice 15 image apfs-copy IMAGE SRC DST      # every command that runs alone: its threads and its nice value
+oneios-tool prelink build --kernel K --kernelcache C --profile P --reviewed F --pairs F --stubs F --xnuprelink DIR --out DIR
+                                                                  # kernel/prelink/build.sh's steps in one process (the phone has no bash)
+tools/oneios-tool/tests/prelink/compare-build.sh                  # KERNEL=...: `prelink build` and serve's `prelink` against build.sh
+adb shell su -c 'sh /data/local/tmp/serve-on-phone.sh'            # the measurement on the phone (tests/phone/serve-on-phone.sh; not run yet)
+```
+
+For Android arm64 it builds with the NDK (README "For the phone itself": 14.6 MB stripped). **Nothing of it has run
+on the phone**: tested on stand-in inputs (21 tests that start the process, 12 checks on the stand-in phone) and,
+on the Linux PC, on the real image set and kernel. There, with 4 CPUs: the APFS copy of 486 MB onto tmpfs 1.39 s
+with one thread and 0.59 s with four (the same tree); the stage's SHA-256 check of eight 150 MB files 5.39 s and
+1.53 s (the sums are `sha256sum`'s); `prelink build` 11.65 s where `build.sh` takes 13.71 s (the same `kernel.kc`,
+`ffbe95f7...`, and the same 24 files). The disk and one large file's SHA-256 bound the rest (README "Measured on
+the Linux PC").

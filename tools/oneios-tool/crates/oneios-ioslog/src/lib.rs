@@ -302,13 +302,25 @@ fn cmd_boots(from: From) -> Result<()> {
     );
     println!("{:<32}  {:<27}  {:<27}  {:<27}  {:>9}", "boot", "start (logd's record)", "first entry", "last entry", "entries");
     for boot in boots(&source)? {
+        let start = boot.start.map(|t| time_text(t as f64));
         println!(
             "{:<32}  {:<27}  {:<27}  {:<27}  {:>9}",
             uuid_text(boot.uuid),
-            boot.start.map(|t| time_text(t as f64)).unwrap_or_else(|| "-".into()),
+            start.as_deref().unwrap_or("-"),
             time_text(boot.first),
             time_text(boot.last),
             boot.entries
+        );
+        // (`oneios-tool serve`: the same boot as a row; nothing without a listener)
+        oneios_common::job::row(
+            "boot",
+            &[
+                ("uuid", uuid_text(boot.uuid).into()),
+                ("start", start.into()),
+                ("first", time_text(boot.first).into()),
+                ("last", time_text(boot.last).into()),
+                ("entries", boot.entries.into()),
+            ],
         );
     }
     Ok(())
@@ -493,6 +505,14 @@ fn cmd_show(show: Show) -> Result<()> {
     let (mut seen, mut written) = (0u64, 0u64);
     visit_provider(&source, |entry| {
         seen += 1;
+        // every 4,096 entries: the running request's stop (`oneios-tool serve`; nothing is asked of a command that
+        // runs alone)
+        if seen % 4096 == 0 {
+            if let Err(stop) = oneios_common::job::check() {
+                failure = Some(stop.into());
+                return ControlFlow::Break(());
+            }
+        }
         if !filter.keeps(&entry) {
             return ControlFlow::Continue(());
         }
@@ -527,5 +547,6 @@ fn cmd_show(show: Show) -> Result<()> {
     if show.output.is_some() {
         eprintln!("ioslog: {written} of {seen} entries from {}", source.what);
     }
+    oneios_common::job::row("shown", &[("entries", written.into()), ("of", seen.into())]);
     Ok(())
 }

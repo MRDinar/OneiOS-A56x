@@ -144,6 +144,9 @@ python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [f["path"
 check "manifest DIR --stage: the files and their manifest, then the check" 0 "image: manifest.json and the 4 files it lists agree" phone manifest "$I" --stage
 check "image-check: the set agrees again" 0 "image: manifest.json and the 4 files it lists agree" phone image-check
 
+# ---- the app's one process on this stage (tests/phone/serve.sh): its local forms against the adb forms
+. "$HERE/serve.sh"; serve_checks_closed
+
 # ---- switch, the refusals in a session, return
 echo $$ > "$S/session/xnuhost.pid"   # a pid used again: a live process that is not an xnuhost
 check "a pid that is not an xnuhost's is no session" 0 "kernel.kc" phone sums
@@ -157,6 +160,7 @@ check "switch" 0 "switch started \(versionCode 116\)" phone switch
 grep -q "versionCode 116 ===$" "$S/switch.log" && ok "switch: the versionCode is the installed app's (116, not a fixed 115)" || bad "switch: versionCode" "$(tail -n 1 "$S/switch.log")"
 wait_for 5 has_session "$P" && ok "switch: a session is open" || bad "switch: no session"
 check "status in a session" 0 "session: open" sh -c "'$TOOL' phone status 2>&1; true"
+serve_checks_open
 for c in "switch" "sums" "stage image $I" "stage runtime $R" "pull-data $W/x.img"; do
   check "in a session: $c is refused" 1 "a session is open: return to One UI first" phone $c
 done
