@@ -620,6 +620,9 @@ page in the task's process), and the host at 482 % of 800 with 212 % in Linux's 
   utility one no floor and a ceiling (`uclamp.max` 512, `XH_HINT_BG_MAX`). drm2kgsl's own clamp looked for threads named
   `crosvm_vcpu*` and logged `vCPU uclamp.min 1024: 0 of 0 threads`; its patch 0008 calls xnuhost's
   `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `xh_gpu_vcpu_boost`, the iOS threads).
+- **The same timer deadline again is not a host call** (`cpu.c` `xh_cpu_timer_set`): a future deadline equal to the
+  armed one leaves the host timer as it is (`perf: ... timer_set N (M to the host timer)`: N - M saved; the PC's baseline
+  boot made 4.8 million timer sets in 2,400 s, every one a `timer_settime`).
 - **Each vCPU is described as the core it runs on** (`runtime/bridges/cpu`, section 2.6b).
 - **The `perf: cpuN:` line ends with `last on host CPU N`** (`/proc/self/task/TID/stat`, a named file per vCPU).
 
@@ -689,6 +692,35 @@ near N while the host has a core per thread. `PAR_SET="--set cpu-pin=2"` pins vC
 On the 4-CPU PC under qemu-aarch64 only up to 4 can show (the results are in section 2.6c). What it does not show: XNU's
 own scheduler and locks (the test kernel has none); a PC boot of iOS can show those only with qemu's 4 cores and its
 times.
+
+### 2.6c Before and after (fix-host-overhead, 2026-11-15), and the phone test
+
+RESULTS-PLACEHOLDER
+
+**The phone test (for the Mac; one session before, on main, and one after, on this branch, the same image set).**
+
+1. Before the switch and in the session: `oneios-tool phone cpu > cpu-before.txt` (then `cpu-after.txt`). Read: the X4's
+   top and boost (`cpu7 Cortex-X4 ... top ... boost ...`), any `CAPPED` domain, `cpufreq boost`, xnuhost's cpuset and
+   `allowed` CPUs (all 8 is right; `0-1` means the vCPUs cannot reach the big cores), one `xnu-cpuN` thread on each CPU.
+2. The parallel test on the phone's own cores, no session open: push `runtime/xnuhost/build/android/xnuhost` and the
+   folder `build/android/testimage` to a scratch folder (`/data/local/tmp/par`), and run there as root the command line
+   of the `parallel-arm64` target with `--set cpu-pin=2` (and once without): `PARALLEL N threads: ... speed-up` for 1,
+   2, 4, 8. Right: near N up to 8 (the A520s are slower, so 8 lands
+   between 6 and 8 by their share).
+3. Idle lock screen 2 minutes, then Settings scrolled for 60 s, then a text field typed into for 60 s (the keyboard), each
+   with `oneios-tool phone cpu --trace 30 --out scroll.pftrace` during the scroll. From `xnuhost.log` per 30 s window:
+   - `perf: ... task_map N carried by a release, ... task_unmap N queued, M ordered` and `perf:   queue: J ... joined`:
+     J is the host calls saved; the kernel's `oneios-perf:   pmap: user maps, unmaps` against xnuhost's counts;
+   - `perf:   queue: ... raises ... K already up (no signal)`: tgkills saved;
+   - `perf:   queue: uclamp: U given to iOS threads` (not 0 in a session), and `phone cpu`'s iOS threads by uclamp.min
+     (1024 on the P cores while scrolling, 0 for the background);
+   - the kernel's `oneios-perf:   0075: fills switched out N ...; kernel entries made again unchanged M`, and the fill time
+     per fill in the first `oneios-perf:` line (it should now be a few us, not 230);
+   - `thermal: 30 s: host CPU ...% of 800 (sys ...%, user ...%) ... xnuhost ...%`: the same work with less `sys`;
+   - `oneios-cpu: 10 s: ... (all N%)`: N never above 800;
+   - `display: ... flushes` and the frame times of `oneios-gpu-report` while scrolling and typing.
+4. The trace (`ui.perfetto.dev`): the CPU each `xnu-cpuN` and iOS thread ran on, the clocks of cpu7 (up to 3.39 GHz with
+   boost on) and of the A720s while scrolling.
 
 ### 2.7 Devices
 

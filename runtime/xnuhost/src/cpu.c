@@ -96,6 +96,13 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
 {
   struct itimerspec spec = { 0 };
   v->perf.timer_sets++;
+  // The same future deadline again (XNU sets it at each dispatch and idle exit, often unchanged): the host timer is armed
+  // for it already, so no timer_settime (host-overhead, 2026-11-15: the PC's boot made 2,000 a second, each a host call).
+  if (deadline != UINT64_MAX && __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE) &&
+      __atomic_load_n(&v->timer_deadline, __ATOMIC_ACQUIRE) == deadline && deadline > xh_counter()) {
+    xh_cpu_line(v->cpu.index, false);
+    return;
+  }
   v->perf.timer_calls++;
   if (deadline == UINT64_MAX) {
     __atomic_store_n(&v->timer_armed, false, __ATOMIC_RELEASE);
