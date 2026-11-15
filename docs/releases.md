@@ -1,15 +1,27 @@
 # Releases
 
-Owner: release-kernel. Scripts: `runtime/package.sh`, `runtime/package/`, `.github/workflows/`, `kernel/publish.sh`.
+Owner: release-kernel. Scripts: `runtime/package.sh`, `runtime/package/`, `.github/workflows/release.yml`,
+`.github/scripts/`, `kernel/publish.sh`.
 
 ## What a release is
 
-One asset and its checksum on a GitHub release of `akshaynexus/OneiOS`:
+Up to two assets and their checksums on a GitHub release of `akshaynexus/OneiOS`, from one run of
+`.github/workflows/release.yml` (below, "CI and releases"):
 
 ```
-oneios-runtime-<version>-arm64.tar.zst
+oneios-runtime-<version>-arm64.tar.zst             the runtime package (this repository's code)
 oneios-runtime-<version>-arm64.tar.zst.sha256      one sha256sum line: "<64 hex>  <file name>"
+OneOS-oneios-<versionName>-debug.apk               the OneOS app: the fork (submodule app/) at the head of its branch
+OneOS-oneios-<versionName>-debug.apk.sha256        one sha256sum line
 ```
+
+A tag push releases both. A dispatch can release the runtime only or the APK only; a release without the runtime is
+never marked latest, because the app's runtime download reads `releases/latest` and refuses a release that has no
+`oneios-runtime-*-arm64.tar.zst` (the fork's `OneiosReleases.parse`). The APK's names match none of the app's
+runtime patterns, so the app ignores them. The release notes name the OneiOS commit, the fork commit, the APK's
+versionName and versionCode, its SHA-256, the key it was signed with and the run that built it.
+
+The runtime package:
 
 The format is the one the OneOS fork reads (`oneos/interface.md` section 1): a zstd frame (level 19, 8 MiB
 window) around a ustar archive of regular files, `runtime.json` first, no top folder.
@@ -42,7 +54,28 @@ enforces this on every package, and `runtime/package/test.sh` tests it:
   (`MH_FILESET`) is refused with or without a record.
 
 A refusal ends with exit code 3 and no package. CI also refuses firmware-like names, Mach-O files and files over
-5 MiB in git (`.github/scripts/check-tracked-files.sh`).
+5 MiB in git (`.github/scripts/check-tracked-files.sh`), and a package with a member outside `runtime.json`,
+`NOTICE`, `LICENSE`, `bin/`, `lib/`, `scripts/` and `kernel/xnu.macho` with its record (the runtime job, which never
+checks out the fork's tree `app/`).
+
+**The APK** carries no package set, no system image and no firmware: nothing of Apple's, Samsung's, Google's or
+OPPO's. The build packs the Android package sets only with `-Poneos.packSets=true`, which CI never passes; the app
+downloads them by SHA-256, and the iOS image set is imported by its owner. `.github/scripts/check-apk.sh APK
+app/app-android/packages` (the apk job, before the upload) unpacks every entry of the APK, prints its `assets/`
+with their sizes, and refuses it (exit 3) when an entry:
+
+- has the SHA-256 of a package set's file (the fork's `app-android/packages/<set>.sha256` lists, 373 files on
+  2026-11-15; `OneOSGuest.apk`, the fork's own in-guest app, excepted);
+- has a firmware, image or OTA name: Apple's (as above), `.img`, `.simg`, `.erofs`, `.ext4`, `payload.bin`,
+  `.new.dat`, Samsung's `.tar.md5`, `.pit`, `.lz4`, `sboot*.bin`, OPPO's `.ozip`, `.ofp`, `.ops`, an image's
+  `.apex`, `.odex`, `.vdex`, `.oat`, or a `.tar`;
+- is a Mach-O, an IMG4 container, an AEA archive, a dyld cache or an Android sparse image, or from 1 MiB an ext4,
+  erofs or APFS volume or a `.dmg`;
+- is over 32 MiB (the largest real asset, `guest_vector.bundle`, is 14.5 MB).
+
+Tested on stand-in APKs (2026-11-15, Linux): one made of the fork's `switcher/assets` and root scripts passes; one
+each with a `system.img`, a sparse image, a Mach-O, an AEA file, an Odin `.tar.md5`, an `.ozip`, an ext4 volume, a
+40 MB file and a file whose hash a set list names is refused; `OneOSGuest.apk`'s hash passes.
 
 ## What a release must be able to load
 
@@ -125,37 +158,82 @@ runtime/package.sh 0.1.7-dev                           # -> out/release/oneios-r
 4. "I have the file" in the app takes the same `.tar.zst` from storage (a build before a release: `runtime/package.sh
    0.1.0-dev`, then `adb push`).
 
-## CI
+## CI and releases
 
-- `ci.yml` (pull requests, pushes to `main`), `ubuntu-24.04`: no firmware in git; `bash -n`, `py_compile` and
-  `shellcheck -S error`; NDK 28.2.13676358 through the SDK's `sdkmanager` and the `aarch64-linux-android` Rust
-  target, then **oneios-tool** (`.github/scripts/setup-build.sh`: a current stable Rust, `cargo build --release
-  --manifest-path tools/oneios-tool/Cargo.toml`, a few minutes): `runtime/package.sh` refuses Apple files with its
-  `package` command (and would build the tool itself when it were missing), and `kernel/tests/host.sh` runs its
-  `kernel series-check` and `kernel build-record --self-test`; the host tests (`runtime/package/elf-check-test.sh`: the link rule of shared objects and
-  the NEEDED and symbol check, above; `runtime/package/test.sh`, `kernel/tests/host.sh`, and any executable `*/tests/host.sh` of
-  another area); `runtime/package.sh 0.0.0-ci` (which runs the check on its stage), kept as an artifact for 14 days.
-- `release.yml` (a tag `v*`): checks that the tag is a version and its commit is on `main`, builds oneios-tool by the
-  same script, runs the tests (`runtime/package/elf-check-test.sh`, `runtime/package/test.sh`, `kernel/tests/host.sh`), packages,
-  unpacks the archive and runs `runtime/package/elf-check.sh` on it (and the drm2kgsl check below),
-  and uploads the asset and its `.sha256` to the release of the tag (created if missing; a pre-release when the
-  version has a suffix).
-- Neither downloads anything of Apple's. Actions are pinned by commit.
+One workflow, `.github/workflows/release.yml` ("build and release"; `ci.yml` and the runtime-only `release.yml` of
+before 2026-11-15 were merged into it). Its jobs:
 
-**The 3D GPU in a release.** `release.yml` fetches Droid-VM's virglrenderer (`scripts/setup/get-references.sh virglrenderer`) before packaging, and refuses to publish a package whose `xnuhost` or `gpuctl` was built without drm2kgsl. Without that checkout both build 2D-only and only say so at run time: runtime 0.1.1 was published that way and its GPU check failed on the phone with "this build has no drm2kgsl". 0.1.3 is the first release with the check (0.1.2's run failed to link: a stale 2D-only `gpu3d.o` from the host tests beside the real drm2kgsl; the fetch now runs before the host tests and `gpu3d.o` rebuilds when the drm2kgsl setting changes).
+```
+plan ──┬── runtime    ubuntu-24.04   the runtime package and its checks
+       ├── apk        ubuntu-24.04   the OneOS app (submodule app/) and its checks
+       ├── apk-macos  macos-15       ./gradlew test of the same app on a Mac
+       └───────────── release        needs runtime and apk; a tag or a dispatch only
+```
+
+`runtime`, `apk` and `apk-macos` start together after `plan` and run on their own runners.
+
+| Trigger | Builds | Releases |
+|---|---|---|
+| a pull request, a push to `main` | runtime, apk, apk-macos | nothing (the runtime package and the APK are artifacts for 14 days) |
+| a tag `vN.N.N` or `vN.N.N-suffix` on `main` | all three | the runtime and the APK on the release of the tag |
+| a dispatch on `main` (Actions, "build and release", Run workflow; inputs `version` and `both` / `runtime only` / `apk only`) | what was asked (apk-macos with the APK) | the release `v<version>`, its tag made at the dispatched commit when missing |
+
+- **plan**: whether the run releases, the version (`0.0.0-ci` when not), what it builds. A release's version must be
+  `N.N.N[-suffix]` and its commit on `main`.
+- **runtime**: what `ci.yml` and the old `release.yml` did, on every build. `app/` must be an empty submodule
+  folder (this job never checks the fork out); no firmware in git (`check-tracked-files.sh`); `bash -n`,
+  `py_compile`, `shellcheck -S error`; NDK 28.2.13676358, the `aarch64-linux-android` Rust target and
+  **oneios-tool** (`.github/scripts/setup-build.sh`: a current stable Rust, `cargo build --release --manifest-path
+  tools/oneios-tool/Cargo.toml`, a few minutes); Droid-VM's virglrenderer (below); the host tests
+  (`runtime/package/elf-check-test.sh`: the link rule of shared objects and the NEEDED and symbol check, above;
+  `runtime/package/test.sh`; `kernel/tests/host.sh`, which runs `kernel series-check` and `kernel build-record
+  --self-test`; every executable `*/tests/host.sh` of another area); the pinned kernel when
+  `kernel/release-kernel.txt` names one; `runtime/package.sh <version>` (the Apple-file refusal and the elf-check of
+  the stage); the drm2kgsl check and `runtime/package/elf-check.sh` on the unpacked archive; the members check
+  (above). Artifact `oneios-runtime`: the `.tar.zst`, its `.sha256` and `.runtime.json`.
+- **apk**: what the fork's `.github/workflows/oneios-apk.yml` does, from OneiOS. `git submodule update --init
+  --remote app` (the head of the branch `.gitmodules` names, `oneios`; the commit recorded in OneiOS is printed beside
+  it); the token for tribalfs' packages (below); JDK 21 (Temurin); Gradle (`setup-gradle`, its open-source `basic`
+  cache); Android SDK platform 37 and build-tools 37.0.0; the debug key of the secret `ONEIOS_DEBUG_KEYSTORE_B64`
+  when this repository has it (else a key of the run's own); `app/scripts/build-guest-manager.sh --debug`; mksh;
+  `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
+  APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
+  `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
+- **apk-macos**: the same checkout, token, JDK, SDK and guest app on `macos-15`, then `./gradlew --continue test`
+  with Homebrew's folders taken off `PATH`, so that core:root's script tests use the harness's stand-ins over
+  macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). On a failure the job summary lists the
+  failed tests; the reports are the artifact `oneos-tests-macos`. Not a gate of the release.
+- **release**: needs runtime and apk (each a success, or skipped because the dispatch asked for the other only).
+  Checks the commit is on `main` and that the tag, when it exists, is at the built commit (a tag is never moved);
+  downloads the artifacts, checks their `.sha256` (and that the APK is the file the apk job checked), writes the
+  notes, creates the release (a pre-release when the version has a suffix; `--latest=false` without a runtime), or
+  adds this run's notes to an existing one. Assets are added, never replaced: an asset already on the release with
+  the same SHA-256 (GitHub's `digest`) is left, one with other bytes stops the job.
+- Nothing of Apple's is downloaded. Actions are pinned by commit. A rerun needs Actions write, which the agents'
+  token may not have; a push starts a new run.
+
+**tribalfs' packages.** The SESL9 and oneui-design libraries come from GitHub Packages
+(`maven.pkg.github.com/tribalfs`), whose Maven registry wants a login even for public packages.
+`.github/scripts/packages-token.sh` (the fork's first step, shared by apk and apk-macos) tries the run's own
+`GITHUB_TOKEN` (`permissions: packages: read`) on one pom, prints GitHub's answer when it is a refusal, and then
+tries the optional repository secret `GH_PACKAGES_TOKEN` (a token with `read:packages`; `GH_PACKAGES_USER` with it,
+else the owner's login). The fork's runs read them with their `GITHUB_TOKEN` (HTTP 200, run 43149217074,
+2026-11-12). OneiOS's own `GITHUB_TOKEN`: RESULT_TOKEN.
+
+**The 3D GPU in a release.** The runtime job fetches Droid-VM's virglrenderer (`scripts/setup/get-references.sh virglrenderer`) before the host tests and the package, on every build, and refuses a package whose `xnuhost` or `gpuctl` was built without drm2kgsl. Without that checkout both build 2D-only and only say so at run time: runtime 0.1.1 was published that way and its GPU check failed on the phone with "this build has no drm2kgsl". 0.1.3 is the first release with the check (0.1.2's run failed to link: a stale 2D-only `gpu3d.o` from the host tests beside the real drm2kgsl; the fetch now runs before the host tests and `gpu3d.o` rebuilds when the drm2kgsl setting changes). Before 2026-11-15 only the tag's run fetched it; pull requests built 2D-only.
 
 ## The kernel in a release
 
-The kernel is not built in the release job. A build machine builds it (`kernel/README.md`), and:
+The kernel is not built in CI. A build machine builds it (`kernel/README.md`), and:
 
 1. `kernel/publish.sh` packs `out/kernel/current/` (`xnu.macho`, its build record, the series report) as
    `xnu-<build id>.tar.zst` and uploads it to the release `kernel-<build id>` of this repository. It runs the same
    Apple-file check first.
 2. `kernel/release-kernel.txt` gets one line, `kernel-<build id> <sha256 of the archive>`, in a commit.
-3. The release job downloads that archive, checks the SHA-256, and `runtime/package.sh` checks the build record
+3. The runtime job (of every build, not only a release) downloads that archive, checks the SHA-256, and `runtime/package.sh` checks the build record
    again before the kernel goes into the package.
 
-Without `kernel/release-kernel.txt` the release is runtime-only (`"kernel": null`).
+Without `kernel/release-kernel.txt` the runtime package has no kernel (`"kernel": null`).
 
 ## Released
 
@@ -163,6 +241,12 @@ Without `kernel/release-kernel.txt` the release is runtime-only (`"kernel": null
 |---|---|---|---|
 | [`v0.1.0`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.0) | 2026-11-10 | `ba306c5` | The first release, runtime only (`"kernel": null`, `"placeholder": false`): `bin/xnuhost`, the helpers (`oneios-audio`, `oneios-net.sh`, `oneios-camera`, `oneios-display` with `liboneios-display.so` and `lib/oneios-display.dex`) and the five phone checks (`gpuctl`, `bridgectl`, `brightctl`, `displayctl`, `camctl`). 13 files, 502,337 bytes packed, `min_oneos_fork` 0.4.74. Made for the fork's Hardware checks screen (fork 0.4.75). Nothing in it has run on the phone; without an image set and a kernel collection its xnuhost boots nothing |
 | [`v0.1.7`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.7) | 2026-11-12 | `8067cea` | Runtime only (`"kernel": null`): `bin/xnuhost` (deferred unmaps, `ram=auto`, the display helper's socket kept on transient send errors), the helpers and the eight phone checks (`thermalctl` and `batteryctl` beside the five of 0.1.0, and `wifictl`). 17 files, 745,405 bytes packed, `min_oneos_fork` 0.4.74. Tests before the tag on the Mac: `runtime/package/test.sh` 19 pass, `kernel/tests/host.sh` 5 pass; the release run (43269875806) passed the host tests and the drm2kgsl check. Staged on the phone with `oneios-tool phone stage runtime` from the downloaded asset (SHA-256 checked); `oneios-tool phone sums` equals every file. The first release staged on the phone; 0.1.1-0.1.6 were published (not listed here) and the phone ran local `-dev` builds until now. Not booted yet |
+| [`v0.1.8`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.8) | 2026-11-12 | `ea06d46` | Runtime only (`"kernel": null`, `"placeholder": false`): runtime.json and 16 files, 745,567 bytes packed, `min_oneos_fork` 0.4.74. Release run 43277047626 |
+| [`v0.1.9`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.9) | 2026-11-15 | `8644ae9` | Runtime only (`"kernel": null`, `"placeholder": false`): runtime.json and 16 files, 805,244 bytes packed, `min_oneos_fork` 0.4.74. Release run 43703261330, the last of the runtime-only `release.yml` |
+
+Every release above holds the runtime package only (the old `release.yml`); the fork's APK was published on the
+fork's own prereleases `oneios-<version>`. The first tag after the one workflow above is the first release with
+the APK beside the runtime.
 
 Checked after the workflow ran: the asset's SHA-256 against its `.sha256`, `runtime.json` first, regular files only.
 
@@ -174,8 +258,12 @@ runtime/package/elf-check-test.sh && runtime/package/test.sh && kernel/tests/hos
 runtime/host-tests.sh                                  # the runtime's other host tests (Apple's container on a Mac)
 runtime/package.sh 0.1.0                               # optional: look at out/release/*.runtime.json
 git tag -a v0.1.0 -m "OneiOS runtime 0.1.0" && git push origin v0.1.0
+# or, without a tag of your own: Actions, "build and release", Run workflow on main, with the version and what to build
+gh workflow run release.yml --ref main -f version=0.1.0 -f build=both      # "runtime only", "apk only"
 ```
 
-The `release` workflow does the rest. Check the release page for the two files, then tell the oneos agent the tag
-(`docs/agents.md`). To redo a broken release: delete the release and the tag, fix, tag again; never replace an
-asset under the same version once the fork may have downloaded it.
+The workflow does the rest: the runtime from this commit, the APK from the head of the fork's branch `oneios`
+(not from the commit recorded for `app/`). Check the release page for the four files (two with "runtime only" or
+"apk only") and the commits in the notes, then tell the oneos agent the tag (`docs/agents.md`). To redo a broken
+release: delete the release and the tag, fix, tag again; never replace an asset under the same version once the
+fork may have downloaded it (the workflow refuses to: an asset with other bytes under the same name stops it).

@@ -1,6 +1,8 @@
 # What the OneOS fork expects (session ABI 1)
 
-Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`).
+Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
+submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases").
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 
@@ -13,6 +15,11 @@ Anything below that the booter, release-kernel or image-build cannot meet: chang
   `oneios-runtime-<version>-arm64.tar.zst.sha256` holding one `sha256sum` line (`<64 hex>  <file name>`).
   `<version>` is `[0-9A-Za-z][0-9A-Za-z._-]*`. The app takes the latest release, or a pinned tag.
   The app can also import the same `.tar.zst` from a file ("I have the file"), for builds before a release.
+- The same release also carries the fork's APK, `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`, built from
+  the head of `oneios` by the same run (from 2026-11-15; `docs/releases.md`). Their names match no runtime pattern,
+  so the app's runtime download ignores them. A release built "apk only" has no runtime and is never marked latest:
+  the latest release always has the runtime asset. The notes name the fork commit and the APK's versionName and
+  versionCode.
 - zstd frame, window at most 2^27 (`zstd -19 --long=27` is fine), at most 512 MiB packed, 2 GiB unpacked.
 - Plain ustar/pax/GNU tar, regular files and directories only (no links, no devices), relative paths without
   `..`, either at the top level or under one top folder. Paths match `[A-Za-z0-9_][A-Za-z0-9._+-]*` per segment.
