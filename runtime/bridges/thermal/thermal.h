@@ -52,7 +52,7 @@ typedef struct {
   unsigned level;                         // BR_THERMAL_* (the highest of the three rules)
   unsigned reason;                        // BR_THERMAL_BY_* of the rules at that level
   unsigned skin_level, soc_level, battery_level;      // each rule's own level (its hysteresis follows it)
-  unsigned cap;                           // xnuhost's step for the level: br_thermal_cap_for
+  unsigned cap;                           // xnuhost's step: br_thermal_cap_for (0, or BR_THERMAL_CAP_CRITICAL)
   br_thermal_raw raw;
 } br_thermal_state;
 
@@ -62,9 +62,12 @@ void br_thermal_limits_default(br_thermal_limits *l);
 int br_thermal_limits_parse(const char *text, int32_t *out, unsigned count);
 // The next state from a reading and the previous state (NULL: nothing before).
 void br_thermal_decide(const br_thermal_limits *l, const br_thermal_raw *raw, const br_thermal_state *prev, br_thermal_state *out);
-// xnuhost's step for a level: 0 none; 1 (HEAVY) the fastest frequency domain left out; 2 (TRAPPING) only the slowest
-// P domain and the E cores; 3 (SLEEPING) the E cores only. br_cpu_thermal_mask (bridges.h) turns a step into CPUs.
-unsigned br_thermal_cap_for(unsigned level);
+// xnuhost's step (since fix-ram-locked, 2026-11-15): 0, all CPU cores, unless the temperature is critical: the case rule
+// at SLEEPING (50 C) or the battery rule at TRAPPING (50 C); then BR_THERMAL_CAP_CRITICAL, only the slowest P domain and
+// the E cores. The SoC is the kernel's (its own trips and LMh). br_cpu_thermal_mask (bridges.h) turns a step into CPUs
+// (it still knows steps 1 and 3: thermalctl prints them).
+#define BR_THERMAL_CAP_CRITICAL 2u
+unsigned br_thermal_cap_for(const br_thermal_state *s);
 const char *br_thermal_level_name(unsigned level);
 // Whether a new state is worth a message: a new level or cap at once, otherwise after BR_THERMAL_REPORT_MS.
 bool br_thermal_changed(const br_thermal_state *sent, const br_thermal_state *now, uint32_t ms_since_sent);

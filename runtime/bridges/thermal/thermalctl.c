@@ -100,11 +100,11 @@ decide:;
   char sys[200];
   snprintf(sys, sizeof sys, "%s/sys", root());
   if (br_cpu_read(sys, &topo) == 0)
-    for (unsigned cap = 0; cap <= 3; cap++) {
+    for (unsigned cap = 0; cap <= BR_THERMAL_CAP_CRITICAL; cap += BR_THERMAL_CAP_CRITICAL) {   // the two xnuhost uses
       char e[64], p[64];
       mask_text(e, sizeof e, br_cpu_thermal_mask(&topo, 'E', cap));
       mask_text(p, sizeof p, br_cpu_thermal_mask(&topo, 'P', cap));
-      printf("step %u: E vCPUs on cpu %s, P vCPUs on cpu %s\n", cap, e, p);
+      printf("step %u%s: E vCPUs on cpu %s, P vCPUs on cpu %s\n", cap, cap ? " (case or cell at 50 C)" : " (all cores)", e, p);
     }
   return 0;
 }

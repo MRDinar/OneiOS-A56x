@@ -77,16 +77,46 @@ not readable). Apple's meaning of the names [F, `ProcessInfo.ThermalState` docum
 
 ## xnuhost's step
 
-| Level | Step | P vCPUs on (this phone) | E vCPUs on |
-|---|---|---|---|
-| below heavy | 0 | cpu2-7 | cpu0-1 |
-| heavy | 1 | cpu2-6 (without the frequency domain of the highest top clock: the X4) | cpu0-1 |
-| trapping | 2 | cpu0-1, 5-6 (the P domain of the lowest top clock, 2.96 GHz, and the E cores) | cpu0-1 |
-| sleeping | 3 | cpu0-1 | cpu0-1 |
+**One step, at a critical temperature only (fix-ram-locked, 2026-11-15; the owner's rule: all CPU cores, no caps of
+ours beyond a true over-temperature guard).**
 
-`br_cpu_thermal_mask` (`cpu/topology.c`) works from the topology, not from these numbers. xnuhost's `thermal_step`
-(`main.c`) narrows the vCPU threads' affinity and bumps an epoch, and `xh_thread_run` (`task.c`) places each iOS thread
-again at its next run.
+| When (`br_thermal_cap_for`) | Step | P vCPUs on (this phone) | E vCPUs on |
+|---|---|---|---|
+| otherwise: every level up to "trapping" by the case, every SoC temperature, the cell under 50 C | 0 | cpu2-7 (one per core with cpu-pin) | cpu0-1 |
+| the case (lrp) at 50 C ("sleeping"), or the cell at 50 C (the battery rule's "trapping"); each held down to its 2 C hysteresis | 2 (`BR_THERMAL_CAP_CRITICAL`) | cpu0-1, 5-6 (the P domain of the lowest top clock, 2.96 GHz, and the E cores) | cpu0-1 |
+
+Until 2026-11-15 the steps began at "heavy": step 1 (the X4 left out) from the case at 44 C, the SoC at 95 C or the
+cell at 45 C, step 2 at "trapping" (the case at 46 C, the SoC at 105 C, the cell at 50 C), step 3 (the E cores only) at
+"sleeping". Why they went: the heat of the 2026-11-14 and 2026-11-15 sessions came mostly from the host swapping iOS's
+RAM (2026-11-15: SoC 59.4 C at the start, 70.6 C at the first swap, 83.8 C later with host sys 200 %, swap in 179 out
+2,364 KiB/s, xnuhost 171 %), which the locked RAM removes (`docs/booter.md` 2.2, "Fixed RAM"); and a step at 44 C on
+the case took the X4 for the whole of a warm session. What stays, and why:
+
+- **The phone's own throttling** for the SoC, the GPU and DDR: the kernel's thermal zones (the X4 at 90 C, the GPU at
+  95 C, DDR at 90 C, the cores pausing at 108-110 C), LMh in hardware, the PMIC's BCL, KGSL's `thermal_pwrlevel`. They
+  act on every Linux thread, xnuhost's included, and need nothing of ours: the SoC rule only tells iOS.
+- **iOS's own reaction** to the level it is told (its thermal state, as One UI's SSRM reacts on the phone): the levels
+  and thresholds below are unchanged.
+- **This step**, where nothing else acts in a session (SSRM is gone with system_server; the charger only limits its
+  current): the case at 50 C is past what a hand should hold for long [inference], and a cell at 50 C is where charging
+  stops [inference]. Step 2, not 3: the E cores alone put eight vCPUs on two cores, the crowding behind the hang of
+  2026-11-13 (below).
+
+`br_cpu_thermal_mask` (`cpu/topology.c`) works from the topology, not from these numbers, and still knows steps 1 and
+3 (`thermalctl` prints steps 0 and 2). xnuhost's `thermal_step` (`main.c`) narrows the vCPU threads' affinity and bumps
+an epoch, and `xh_thread_run` (`task.c`) places each iOS thread again at its next run.
+
+CPU placement otherwise (read for fix-ram-locked, on main `1b5fb9f`; nothing of it caps): xnuhost runs one vCPU per
+host core (`--cpus` defaults to the host's cores, at most 8; on this phone 2 E and 6 P vCPUs), `cpu-pin` (on) pins each
+to its own core and the iOS threads it runs follow it, the virtual cpufreq device only raises a thread's uclamp minimum
+when iOS asks for a clock (it never sets a maximum), and nothing writes a cpufreq, devfreq or GPU node. The GPU had no
+cap of ours either: drm2kgsl's power constraint and its clock hold (`docs/gpu.md` 2.2) only asked KGSL for the top level
+while iOS draws; the 8 MiB GPU pool is the renderer's response buffers, not a limit; KGSL's own thermal limit stays.
+Merged into main after that reading (fix-host-overhead #40, fix-gpu-perf #42; left as they are here, the owner's to
+decide against the rule "all CPU cores, no caps of ours on the GPU"): iOS threads the kernel hints as background or
+utility QoS get `uclamp.max` 512 (`XH_HINT_BG_MAX`, hosted 0075; `docs/booter.md` 2.6a), and background GPU contexts run
+at KGSL's lowest level at a still screen, the render server's at the top only for a frame that would miss its deadline
+(`gpu-level=hold` and `gpu-priority=0` turn those off; `docs/gpu.md` 2.2b). Neither touches UI or realtime threads.
 
 **Fixed 2026-11-13 (hang):** until then the P vCPUs at step 2 ran on cpu5-6 only (`thermal: step 2 (trapping): P vCPUs
 on host CPUs 0x60` on the phone, 2026-11-13 10:4x): `br_cpu_plan_cap` intersected the step's CPUs with the vCPU's own
@@ -106,8 +136,8 @@ the process is written, so a SIGKILL leaves nothing to restore. No cpufreq or de
 `ONEIOS_THERMAL_CAP=0` in xnuhost's environment: the level is still sent to iOS, the step stays 0.
 
 Log lines (xnuhost's log): `thermal: on: 29 zones; case 31.9 C (lrp), SoC 37.4 C (cpu-2-1-1), battery 29.2 C; nominal;
-read every 5000 ms`, then `thermal: heavy (was moderate; by case): ...` at each new level and `thermal: step 1 (heavy): P
-vCPUs on host CPUs 0x7c` at each new step.
+read every 5000 ms`, then `thermal: heavy (was moderate; by case): ...` at each new level and `thermal: step 2 (sleeping): P
+vCPUs on host CPUs 0x63` (and `thermal: step 0 (...): ... (all of their kind)` when it lifts) at each new step: since 2026-11-15 only with the case or the cell at 50 C.
 
 **Where the heat comes from (2026-11-14):** every 30 s (`BR_THERMAL_LOAD_MS`), one line:
 
@@ -145,7 +175,7 @@ reset stops the reports; the reads go on.
 
 `make -C runtime/bridges/thermal test` (Linux; on a Mac in the container: `runtime/host-tests.sh`, part `bridges`): the
 limits parser, each rule and its hysteresis, the steps' CPUs and pins on the S24 Ultra's topology and on a one-kind host, the
-sysfs reader on a fake tree (an off zone, no `lrp`), the worker's two listeners. 64 checks.
+sysfs reader on a fake tree (an off zone, no `lrp`), the worker's two listeners. 88 checks with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for the SoC, its hysteresis, the worker's cap listener at 50 C).
 
 ## On the phone
 

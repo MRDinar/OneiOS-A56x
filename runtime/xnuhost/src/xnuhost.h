@@ -56,11 +56,13 @@ typedef struct {
   unsigned ram_auto_bound;  // XH_RAM_BOUND_*: what decided ram=auto's size
   // The RAM held fixed for the session (ramfix.c; -1 = unset). ram-giveback=1 is 0058's way instead: nothing prefaulted
   // or locked, free pages given back (and ram=auto as before, without the MemAvailable bound).
-  int   ram_giveback;       // ram-giveback=0|1 (1 until the fixed RAM has run on a PC boot and the phone)
+  int   ram_giveback;       // ram-giveback=0|1 (0 since fix-ram-locked, 2026-11-15: the RAM held fixed and locked)
   int   ram_prefault;       // ram-prefault=0|1 (1)
   int   ram_lock;           // ram-lock=0|1 (1): mlock the prefaulted RAM where Linux allows and it fits
-  int64_t ram_session_reserve;   // ram-session-reserve=SIZE (1 GiB): MemAvailable at the start that ram=auto and the lock leave the host
-  int64_t ram_unlock_below;      // ram-unlock-below=SIZE (256 MiB): the valve; 0 = never unlock
+  bool  ram_lock_expected;  // the lock can work here (xh_ram_can_lock: CAP_IPC_LOCK, or no RLIMIT_MEMLOCK) and is asked
+  int64_t ram_session_reserve;   // ram-session-reserve=SIZE (768 MiB with the lock expected, else 1 GiB): MemAvailable at
+                                 // the start that ram=auto and the lock leave the host
+  int64_t ram_unlock_below;      // ram-unlock-below=SIZE (256 MiB): the valve; with the lock at least XH_RAM_UNLOCK_MIN
   // What fits (2026-11-14): ram=auto and the lock take no more than xh_ram_fit of MemAvailable at the start.
   int   ram_fit_on;         // ram-fit=0|1 (1); 0: ram=auto as before 2026-11-14 (share and floor only)
   int64_t ram_gpu_reserve;  // ram-gpu-reserve=SIZE (256 MiB): KGSL's own memory and the GPU's host buffers
@@ -138,8 +140,16 @@ uint64_t xh_parse_size(const char *text, bool *ok);
 // 0 when that leaves the guest less than 1 GiB. Portable (unit-tested).
 #define XH_RAM_AUTO_PERCENT 90
 #define XH_RAM_AUTO_FLOOR   (3ull << 29)    // 1.5 GiB
-#define XH_RAM_SESSION_RESERVE (1ull << 30) // ram-session-reserve: the headroom what fits leaves the host (surfaceflinger, helpers, zram, kernel)
+// ram-session-reserve: the headroom what fits leaves the host (docs/booter.md 2.2, "What fits"). With the RAM locked
+// (the default since fix-ram-locked, 2026-11-15, where the lock can work: CAP_IPC_LOCK or no RLIMIT_MEMLOCK) 768 MiB:
+// the valve's level and 512 MiB for what grows beside the guest (the iOS threads' kernel memory, surfaceflinger and the
+// display helper, the host's working page cache, the way back). Unlocked 1 GiB: the host may swap the guest, and zram's
+// pool and working set for it come on top.
+#define XH_RAM_SESSION_RESERVE        (1ull << 30)
+#define XH_RAM_SESSION_RESERVE_LOCKED (768ull << 20)
 #define XH_RAM_UNLOCK_BELOW    (256ull << 20)   // ram-unlock-below: the lock's valve
+#define XH_RAM_UNLOCK_MIN      (128ull << 20)   // with the lock the valve is never lower (0 included): the way back must fit
+#define XH_RAM_VALVE_MARGIN    (256ull << 20)   // what fits leaves at least the valve's level and this much
 #define XH_RAM_GPU_RESERVE     (256ull << 20)   // ram-gpu-reserve
 #define XH_RAM_PAGETABLE_PERCENT 8              // ram-pagetable-percent: the phone, 2026-11-14: 575 MiB for 7263 MiB held
 #define XH_RAM_MAX (64ull << 30)            // the RAM window and the kernel's own range share 0x20_0000_0000 .. 0x3c_0000_0000
@@ -148,6 +158,9 @@ uint64_t xh_ram_auto(uint64_t total, unsigned percent, uint64_t floor);
 int      xh_meminfo(const char *path, uint64_t *total, uint64_t *available);
 // One line of a /proc/meminfo file ("Key:  N kB"), in bytes: 0, or -1 when the file has no such line.
 int      xh_meminfo_value(const char *path, const char *key, uint64_t *bytes);
+// Several lines of a /proc file in one read: "Key: N kB" (meminfo, status) in bytes, "key N" (vmstat) as the number.
+// out[k] for each of the n keys found (n <= 64; the others are left as they are); returns how many were found.
+unsigned xh_proc_values(const char *path, const char *const *keys, unsigned n, uint64_t *out);
 
 // The phone's USB gadget for the log (usb.c, docs/booter.md 2.9a): sys.usb.state, sys.usb.config, sys.usb.controller
 // and the named file /sys/class/udc/<controller>/state. Read only; portable (the property source is a parameter).
@@ -299,16 +312,18 @@ bool xh_swap_note(uint64_t swapped, uint64_t *next);
 #define XH_RAMFIX_STEP (16ull << 20)        // a prefault step: one mlock call or 4096 page reads
 typedef struct {
   // asked (set before the start)
-  bool lock;                // lock what is prefaulted (mlock), all or nothing
+  bool lock;                // lock what is prefaulted (mlock), step by step; the prefault stops at the first failure
   const char *lock_why;     // why lock is off, for the log ("ram-lock=0", "more than the host has free")
   uint64_t step;            // bytes per step; 0 = XH_RAMFIX_STEP
   uint64_t unlock_below;    // the valve: host MemAvailable under this while locked: munlock once; 0 = never
+  const char *meminfo;      // where the prefault and the valve read MemAvailable; NULL: the prefault does not look
   // done (written by the prefault, read by the log)
-  uint64_t size, prefaulted, locked;     // bytes
-  int lock_error;           // the errno of the mlock that failed (EPERM, ENOMEM, EAGAIN): then nothing is locked
+  uint64_t size, prefaulted, locked;     // bytes; [0, locked) is locked
+  int lock_error;           // the errno of the mlock that failed (EPERM, ENOMEM, EAGAIN); what was locked before stays
   bool locking, done, stop, unlocked;
+  bool short_stop;          // the prefault stopped: host MemAvailable under unlock_below (short_available)
   uint64_t ms;              // the prefault's time
-  uint64_t unlock_available;             // MemAvailable when the valve opened
+  uint64_t unlock_available, short_available;   // MemAvailable when the valve opened / when the prefault stopped short
 } xh_ramfix;
 extern xh_ramfix g_ramfix;
 // What the prefault calls; the tests put failing ones here.
@@ -318,14 +333,27 @@ extern int (*xh_ramfix_munlock)(const void *, size_t);
 void xh_ramfix_prefault(xh_ramfix *r, uint8_t *base, uint64_t size);
 // The valve: true when it opened now (the RAM unlocked).
 bool xh_ramfix_valve(xh_ramfix *r, uint8_t *base, uint64_t available);
-// The prefault on a thread of its own at nice 19 (SCHED_OTHER), then the valve once a second while the RAM is locked.
+// The valve as the main loop runs it (nice 0, once a second): reads MemAvailable from r->meminfo only while the
+// prefault is done and something is locked; true when it opened now (*available: what it read).
+bool xh_ramfix_valve_tick(xh_ramfix *r, uint8_t *base, uint64_t *available);
+// The prefault on a thread of its own at nice 19 (SCHED_OTHER); the thread ends with the prefault.
 int  xh_ramfix_start(xh_ramfix *r, uint8_t *base, uint64_t size, const char *meminfo);
 void xh_ramfix_stop(xh_ramfix *r);
+// Whether a lock of the whole RAM can work here: CAP_IPC_LOCK in CapEff, or RLIMIT_MEMLOCK unlimited. A pointer: the
+// tests put their own answer here.
+extern bool (*xh_ram_can_lock)(void);
 // One line of what decides whether a lock can work here: RLIMIT_MEMLOCK, CAP_IPC_LOCK, the cgroup's memory limits.
 void xh_ramfix_facts(char *out, size_t size);
 typedef struct { uint64_t vm_locked, mlocked, swap_ins, swap_outs, major_faults; } xh_ramfix_counters;
-// VmLck of this process, the host's Mlocked (bytes); the host's pswpin/pswpout and this process's majflt (counts).
+// VmLck of this process (bytes), the host's pswpin/pswpout and this process's majflt (counts): one read each of
+// /proc/self/status, /proc/vmstat and /proc/self/stat. mlocked (the host's Mlocked) is left 0: the caller has it from
+// its own read of /proc/meminfo.
 void xh_ramfix_sample(xh_ramfix_counters *c);
+// The host's pswpin and pswpout (pages since boot), one read of /proc/vmstat: false when it cannot be read.
+bool xh_vmstat_swaps(uint64_t *ins, uint64_t *outs);
+// Where the part of the guest's RAM that the host may have swapped out begins: [0, locked) is resident while this
+// process's VmLck covers it, so a resident count (mincore) need only look at [returned, size).
+uint64_t xh_ramfix_unlocked_from(const xh_ramfix *r, uint64_t vm_locked);
 // KGSL's per-process memory files of `pid` (/sys/class/kgsl/kgsl/proc/PID: "name value, ..." as KGSL prints them),
 // the length written; 0 where there is no KGSL.
 size_t xh_kgsl_memory(int pid, char *out, size_t size);

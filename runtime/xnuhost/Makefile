@@ -131,10 +131,10 @@ $(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src
 $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
-# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket.
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/log.c ../bridges/hw/hw_backend.c $(HDR)
+# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket. (config.c asks ramfix.c whether a lock can work: xh_ram_can_lock)
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/log.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)
@@ -165,11 +165,12 @@ check-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	  timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --ram 256M --set ram-giveback=1 \
 	     --display none --no-input --width 64 --height 64 2>&1 | tee $(A)/check.log; \
 	  grep -q 'TESTKERNEL: all passed' $(A)/check.log && \
-	  echo "check-arm64: ram=auto on a host of 4 GiB, 2.5 GiB available (ram-meminfo): the guest gets what fits, 1024 MiB, held fixed (ram-giveback=0)" && \
+	  echo "check-arm64: ram=auto on a host of 4 GiB, 2.5 GiB available (ram-meminfo): the guest gets what fits, 1024 MiB (1280 where the lock can work: a smaller headroom), held fixed and locked by default (ram-giveback=0; where mlock fails, a clean fallback)" && \
 	  printf 'MemTotal:        4194304 kB\nMemAvailable:    2621440 kB\n' > $(A)/meminfo-3g && rm -f $(A)/testdata/data.img && \
-	  { timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --set ram-meminfo=$(A)/meminfo-3g --set ram-giveback=0 \
+	  { timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --set ram-meminfo=$(A)/meminfo-3g \
 	     --display none --no-input --width 64 --height 64 > $(A)/ramauto.log 2>&1; \
-	    grep -q 'ram=auto: host MemTotal 4096 MiB, MemAvailable 2560 MiB; the guest gets 1024 MiB' $(A)/ramauto.log && grep -q 'memory: the guest.s RAM is held for the session: 1024 MiB, prefaulted' $(A)/ramauto.log && \
+	    grep -Eq 'ram=auto: host MemTotal 4096 MiB, MemAvailable 2560 MiB; the guest gets (1024|1280) MiB' $(A)/ramauto.log && grep -Eq 'memory: the guest.s RAM is held for the session: (1024|1280) MiB, prefaulted' $(A)/ramauto.log && \
+	    grep -Eq 'memory: the guest.s RAM is held: [0-9]+ MiB prefaulted in [0-9]+ ms, (locked \(mlock|not locked \(mlock: .*so not prefaulted)' $(A)/ramauto.log && \
 	    grep -q 'TESTKERNEL: all passed' $(A)/ramauto.log || { grep -E 'memory|FAIL|TESTKERNEL' $(A)/ramauto.log | tail -8; echo "check-arm64: ram=auto failed"; false; }; } && \
 	  echo "check-arm64: a guest that keeps restarting: xnuhost starts again in place 8 times, then exit 3" && \
 	  { XNUHOST_RUNNER="$(ARM64_RUN)" timeout 60 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 1 --ram 256M \

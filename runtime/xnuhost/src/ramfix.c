@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // The guest's RAM, held fixed for the session (docs/booter.md 2.2, "Fixed RAM"; the owner's decision of 2026-11-13: iOS's
-// RAM must not grow and shrink during a session). xnuhost takes the whole memfd once, at the start: a thread of its own
-// at nice 19 prefaults it in steps (mlock, which also locks it, where Linux allows; else a read of each page), and nothing is given
-// back until the process ends (ram_discard is refused; kernel 0067 does not ask). The exit frees all of it at once (the
+// RAM must not grow and shrink during a session; the default since fix-ram-locked, 2026-11-15: iOS's RAM is never swapped).
+// xnuhost takes the whole memfd once, at the start: a thread of its own at nice 19 prefaults it in steps (mlock, which
+// also locks it, where Linux allows; where it does not the prefault stops), and nothing is given back until the process
+// ends (ram_discard is refused; kernel 0067 does not ask). The main loop runs the valve. The exit frees all of it at once (the
 // memfd's last mapping and descriptor go with the session's processes). Portable: the host tests run it on memfds of
 // their own, with a failing mlock put in.
 //
@@ -41,16 +42,18 @@ static uint64_t ms_now(void)
 // iOS has not used yet, so it is the coldest page there is and the first the host swaps out (the PC, 2026-11-14: 841 MiB
 // of a prefaulted, unlocked 4 GiB guest swapped out in 15 min, against 6 MiB faulted in as used); the rest is faulted
 // in as iOS uses it.
+// What was locked before the failure stays locked (fix-ram-locked, 2026-11-15; before, it was unlocked again, "all or
+// nothing"). Unlocking it only made those pages prefaulted-and-unlocked, the very pages the host swaps first; the part
+// that could not be locked is faulted in as used either way. Where the lock fails at the first step (EPERM: no
+// CAP_IPC_LOCK; ENOMEM: an RLIMIT_MEMLOCK under one step, the PC's 8 MiB) nothing was locked and nothing is prefaulted.
+// Where it fails part way because the host is short, the valve (MemAvailable under ram-unlock-below) decides as for a
+// whole lock.
 static bool step(xh_ramfix *r, uint8_t *base, uint64_t at, uint64_t length)
 {
   if (r->locking) {
     if (xh_ramfix_mlock(base + at, (size_t)length) == 0) { __atomic_store_n(&r->locked, at + length, __ATOMIC_RELAXED); return true; }
-    // All or nothing: a RAM locked in part leaves the host short of what it could not lock and swaps the rest anyway.
     r->lock_error = errno ? errno : EINVAL;
     r->locking = false;
-    uint64_t had = __atomic_load_n(&r->locked, __ATOMIC_RELAXED);
-    if (had) (void)xh_ramfix_munlock(base, (size_t)had);
-    __atomic_store_n(&r->locked, 0, __ATOMIC_RELAXED);
     return false;
   }
   long page = sysconf(_SC_PAGESIZE);
@@ -66,6 +69,14 @@ void xh_ramfix_prefault(xh_ramfix *r, uint8_t *base, uint64_t size)
   r->lock_error = 0;
   for (uint64_t at = 0; at < size && !__atomic_load_n(&r->stop, __ATOMIC_RELAXED); at += chunk) {
     uint64_t length = size - at < chunk ? size - at : chunk;
+    // The host's MemAvailable before each step (one read of /proc/meminfo per 16 MiB): what fits was reckoned at the
+    // start, and if the host is short now the prefault stops where it is; the valve then decides about what is locked.
+    uint64_t total = 0, available = 0;
+    if (r->meminfo && r->unlock_below && xh_meminfo(r->meminfo, &total, &available) == 0 && available < r->unlock_below) {
+      r->short_stop = true;
+      r->short_available = available;
+      break;
+    }
     if (!step(r, base, at, length)) break;
     __atomic_store_n(&r->prefaulted, at + length, __ATOMIC_RELAXED);
   }
@@ -82,6 +93,28 @@ bool xh_ramfix_valve(xh_ramfix *r, uint8_t *base, uint64_t available)
   r->unlock_available = available;
   __atomic_store_n(&r->locked, 0, __ATOMIC_RELAXED);
   return true;
+}
+
+// From the main loop (nice 0) rather than the prefault's nice-19 thread: under load (eight busy vCPUs at nice 0) a nice-19
+// thread gets a few percent of a core and could wait seconds to run, which is when the valve is wanted. One read of
+// /proc/meminfo a second while something is locked, nothing otherwise; never during the prefault (it checks itself).
+bool xh_ramfix_valve_tick(xh_ramfix *r, uint8_t *base, uint64_t *available)
+{
+  if (!__atomic_load_n(&r->done, __ATOMIC_ACQUIRE) || r->unlocked || !r->unlock_below || !r->meminfo ||
+      !__atomic_load_n(&r->locked, __ATOMIC_RELAXED))
+    return false;
+  uint64_t total = 0, now = 0;
+  if (xh_meminfo(r->meminfo, &total, &now)) return false;
+  if (available) *available = now;
+  return xh_ramfix_valve(r, base, now);
+}
+
+uint64_t xh_ramfix_unlocked_from(const xh_ramfix *r, uint64_t vm_locked)
+{
+  uint64_t locked = __atomic_load_n(&r->locked, __ATOMIC_RELAXED);
+  // VmLck is the size of this process's locked mappings: when it does not cover what the prefault locked (it should
+  // always), count everything.
+  return locked && !r->unlocked && vm_locked >= locked ? locked : 0;
 }
 
 // ---- what Linux says about locking here (read only), once at the start ----------------------------------------------
@@ -106,6 +139,15 @@ static int cap_ipc_lock(void)
   if (f) fclose(f);
   return have;
 }
+
+// The size ram=auto may take depends on it (config.c: the headroom with the lock is smaller, there is no zram working
+// set for the guest), so it is asked before the size is known: a lock of any size works with either.
+static bool can_lock(void)
+{
+  struct rlimit l = { 0, 0 };
+  return cap_ipc_lock() == 1 || (getrlimit(RLIMIT_MEMLOCK, &l) == 0 && l.rlim_cur == RLIM_INFINITY);
+}
+bool (*xh_ram_can_lock)(void) = can_lock;
 
 void xh_ramfix_facts(char *out, size_t size)
 {
@@ -143,13 +185,21 @@ static uint64_t field_kib(const char *path, const char *key)
   return v;
 }
 
+bool xh_vmstat_swaps(uint64_t *ins, uint64_t *outs)
+{
+  static const char *const keys[2] = { "pswpin", "pswpout" };
+  uint64_t v[2] = { 0, 0 };
+  bool ok = xh_proc_values("/proc/vmstat", keys, 2, v) == 2;
+  *ins = v[0];
+  *outs = v[1];
+  return ok;
+}
+
 void xh_ramfix_sample(xh_ramfix_counters *c)
 {
   memset(c, 0, sizeof *c);
   c->vm_locked = field_kib("/proc/self/status", "VmLck") << 10;
-  c->mlocked = field_kib("/proc/meminfo", "Mlocked") << 10;
-  c->swap_ins = field_kib("/proc/vmstat", "pswpin");
-  c->swap_outs = field_kib("/proc/vmstat", "pswpout");
+  (void)xh_vmstat_swaps(&c->swap_ins, &c->swap_outs);
   // /proc/self/stat: majflt is the 12th field, after "(comm)" which may hold spaces
   char text[1024];
   FILE *f = fopen("/proc/self/stat", "r");
@@ -191,39 +241,36 @@ size_t xh_kgsl_memory(int pid, char *out, size_t size)
 static pthread_t thread;
 static bool thread_on;
 static uint8_t *ram_base;
-static const char *meminfo_path = "/proc/meminfo";
 
 static void say_done(xh_ramfix *r)
 {
-  char why[320];
-  if (r->locked) snprintf(why, sizeof why, "locked (mlock: the host cannot swap it)");
+  char why[400], short_by[160] = "";
+  uint64_t locked = __atomic_load_n(&r->locked, __ATOMIC_RELAXED);
+  if (r->short_stop)
+    snprintf(short_by, sizeof short_by, "; stopped at %llu MiB: host MemAvailable %llu MiB is under ram-unlock-below (%llu MiB)",
+             (unsigned long long)(r->prefaulted >> 20), (unsigned long long)(r->short_available >> 20), (unsigned long long)(r->unlock_below >> 20));
+  if (locked && locked == r->size) snprintf(why, sizeof why, "locked (mlock: the host cannot swap it)");
+  else if (locked && r->lock_error)
+    snprintf(why, sizeof why, "%llu MiB of it locked (mlock: %s past that; what is locked stays locked), not prefaulted further: the rest "
+             "is faulted in as iOS uses it", (unsigned long long)(locked >> 20), strerror(r->lock_error));
+  else if (locked) snprintf(why, sizeof why, "%llu MiB of it locked", (unsigned long long)(locked >> 20));
   else if (!r->lock) snprintf(why, sizeof why, "not locked (%s)", r->lock_why ? r->lock_why : "ram-lock=0");
-  else snprintf(why, sizeof why, "not locked (mlock: %s), so not prefaulted further: the rest is faulted in as iOS uses it (an unlocked, unused page is the first the host swaps)", strerror(r->lock_error));
-  LOGI("memory: the guest's RAM is held: %llu MiB prefaulted in %llu ms, %s%s", (unsigned long long)(r->prefaulted >> 20),
-       (unsigned long long)r->ms, why, r->locked || r->lock ? "" : ", read once a page (ram-lock=0)");
+  else if (r->lock_error)
+    snprintf(why, sizeof why, "not locked (mlock: %s), so not prefaulted: the guest's RAM is faulted in as iOS uses it (an unlocked, "
+             "unused page is the first the host swaps)", strerror(r->lock_error));
+  else snprintf(why, sizeof why, "not locked");
+  LOGI("memory: the guest's RAM is held: %llu MiB prefaulted in %llu ms, %s%s%s", (unsigned long long)(r->prefaulted >> 20),
+       (unsigned long long)r->ms, why, r->lock ? "" : ", read once a page", short_by);
 }
 
 static void *ramfix_main(void *arg)
 {
   xh_ramfix *r = arg;
   // Below every vCPU and task thread (nice 0): a prefault takes no CPU time the guest wants. SCHED_OTHER, never realtime.
+  // The thread ends with the prefault; the valve runs in the main loop (xh_ramfix_valve_tick), not at nice 19.
   (void)setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 19);
   xh_ramfix_prefault(r, ram_base, r->size);
   if (!__atomic_load_n(&r->stop, __ATOMIC_RELAXED)) say_done(r);
-  // Then once a second: the host's MemAvailable against ram-unlock-below while the RAM is locked (the one way out of a
-  // lock that leaves the host too little: the host may swap the guest again, which is today's way; the RAM stays held).
-  while (!__atomic_load_n(&r->stop, __ATOMIC_RELAXED) && r->locked && r->unlock_below) {
-    for (int i = 0; i < 10 && !__atomic_load_n(&r->stop, __ATOMIC_RELAXED); i++) {
-      struct timespec s = { 0, 100 * 1000 * 1000 };
-      nanosleep(&s, NULL);
-    }
-    uint64_t total = 0, available = 0;
-    if (xh_meminfo(meminfo_path, &total, &available)) continue;
-    if (xh_ramfix_valve(r, ram_base, available))
-      LOGE("memory: host MemAvailable %llu MiB is under ram-unlock-below (%llu MiB): the guest's RAM is unlocked for the rest of "
-           "the session; the host may swap it now (it stays held, nothing is given back)", (unsigned long long)(available >> 20),
-           (unsigned long long)(r->unlock_below >> 20));
-  }
   return NULL;
 }
 
@@ -231,7 +278,8 @@ int xh_ramfix_start(xh_ramfix *r, uint8_t *base, uint64_t size, const char *memi
 {
   ram_base = base;
   r->size = size;
-  if (meminfo && *meminfo) meminfo_path = meminfo;
+  if (meminfo && *meminfo) r->meminfo = meminfo;
+  else if (!r->meminfo) r->meminfo = "/proc/meminfo";
   int rc = pthread_create(&thread, NULL, ramfix_main, r);
   if (rc) { LOGE("memory: no thread for the prefault: %s", strerror(rc)); return -1; }
   pthread_setname_np(thread, "xnuhost-ram");

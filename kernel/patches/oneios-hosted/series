@@ -210,7 +210,8 @@
 # line: "oneios-mem: free pages given back to the host: no (the host holds the RAM fixed); ...".
 # In the series since fix-ram-fit (2026-11-14). Without the bit (ram-giveback=1, or an xnuhost before 2026-11-13) the
 # kernel gives back as 0058/0066 did; a kernel without 0067 under ram-giveback=0 gets -EPERM at its first ram_discard
-# and stops giving back for the boot.
+# and stops giving back for the boot. xnuhost's ram-giveback=0 (prefaulted and locked) is the default since
+# fix-ram-locked (2026-11-15); the patch is unchanged.
 0067-ram-fixed.patch
 # fix-brightness-touch (2026-11-14): iOS's display power for the host. backboardd's IOMobileFramebufferRequestPowerChange
 # (IOMobileFramebufferUserClient selector 12, one scalar: the state) is answered as before (unsupported by this family)

@@ -268,6 +268,7 @@ static void ram_fix_start(void)
   g_ramfix.lock = config.ram_lock;
   g_ramfix.lock_why = config.ram_lock ? NULL : "ram-lock=0";
   g_ramfix.unlock_below = (uint64_t)config.ram_unlock_below;
+  g_ramfix.meminfo = config.ram_meminfo;
   // A lock is safe only with room beside it: the RAM must be within what fits (config.c, xh_ram_fit) at the start.
   if (g_ramfix.lock && config.ram_fit_available && g_mem.size > config.ram_fit) {
     // Not prefaulted either: an unlocked page iOS has not used is the first the host swaps (PC boot of 2026-11-14).
@@ -276,9 +277,13 @@ static void ram_fix_start(void)
          (unsigned long long)(config.ram_fit >> 20), facts);
     return;
   }
-  LOGI("memory: the guest's RAM is held for the session: %llu MiB, prefaulted on a thread at nice 19 in %llu MiB steps, %s; free pages are "
+  char valve[160] = "";
+  if (g_ramfix.lock)
+    snprintf(valve, sizeof valve, " (the valve: unlocked once if host MemAvailable falls under %llu MiB, checked once a second)",
+             (unsigned long long)(g_ramfix.unlock_below >> 20));
+  LOGI("memory: the guest's RAM is held for the session: %llu MiB, prefaulted on a thread at nice 19 in %llu MiB steps, %s%s; free pages are "
        "not given back (ram-giveback=0); %s", (unsigned long long)(g_mem.size >> 20), (unsigned long long)(XH_RAMFIX_STEP >> 20),
-       g_ramfix.lock ? "locked as it goes (mlock)" : g_ramfix.lock_why, facts);
+       g_ramfix.lock ? "locked as it goes (mlock)" : g_ramfix.lock_why, valve, facts);
   if (xh_ramfix_start(&g_ramfix, g_mem.host, g_mem.size, config.ram_meminfo)) LOGE("memory: the guest's RAM is not prefaulted");
 }
 
@@ -896,28 +901,43 @@ static void guest_restart(void)
 // Every 5 s: the guest's RAM that the host swapped out (held, st_blocks, less in the host's RAM, mincore), said in plain
 // words once past 64 MiB and again at each further 256 MiB (xh_swap_note): a swapped page stalls whichever vCPU or task
 // touches it next (the phone, 2026-11-14: 2126 MiB swapped out, Settings frozen). Read only.
+// Cheap (fix-ram-locked, 2026-11-15): while the whole RAM is locked nothing of it can be swapped, so nothing is read at all
+// (before, every 5 s: four /proc files, vmstat twice, and a mincore over all of the guest's RAM, 1.7 million pages at
+// 6.6 GiB); with part of it locked the mincore covers only the rest (ram_resident_from).
+static uint64_t ram_resident_from(uint64_t from)
+{
+  uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+  if (from >= g_mem.size) return g_mem.size;
+  return from + xh_ram_resident(g_mem.host + from, g_mem.size - from, page);
+}
+static bool ram_all_locked(void)
+{
+  return !g_ramfix.unlocked && __atomic_load_n(&g_ramfix.locked, __ATOMIC_RELAXED) == g_mem.size && g_mem.size;
+}
 static void swap_watch(void)
 {
   static struct timespec last;
-  static uint64_t next;
-  static xh_ramfix_counters was;
+  static uint64_t next, was_ins, was_outs;
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   if (last.tv_sec && t.tv_sec - last.tv_sec < 5) return;
+  if (ram_all_locked()) { last.tv_sec = 0; last.tv_nsec = 0; return; }   // the next look (after a valve) starts afresh
   // The host's swap traffic over the last interval (/proc/vmstat pswpin, pswpout: pages; zram on the phone, where it is
   // also heat: 2026-11-14, about 9.5 MB/s in and 8 MB/s out while iOS's RAM was swapped).
-  xh_ramfix_counters now;
-  xh_ramfix_sample(&now);
+  uint64_t now_ins = 0, now_outs = 0;
+  (void)xh_vmstat_swaps(&now_ins, &now_outs);
   uint64_t seconds = last.tv_sec ? (uint64_t)(t.tv_sec - last.tv_sec) : 0, ins = 0, outs = 0;
-  if (seconds && now.swap_ins >= was.swap_ins && now.swap_outs >= was.swap_outs) {
-    ins = (now.swap_ins - was.swap_ins) / seconds;
-    outs = (now.swap_outs - was.swap_outs) / seconds;
+  if (seconds && now_ins >= was_ins && now_outs >= was_outs) {
+    ins = (now_ins - was_ins) / seconds;
+    outs = (now_outs - was_outs) / seconds;
   }
-  was = now;
+  was_ins = now_ins;
+  was_outs = now_outs;
   last = t;
   struct stat st;
   if (g_mem.fd < 0 || !g_mem.host || fstat(g_mem.fd, &st)) return;
-  uint64_t held = (uint64_t)st.st_blocks * 512, in_ram = xh_ram_resident(g_mem.host, g_mem.size, (uint64_t)sysconf(_SC_PAGESIZE));
+  uint64_t locked = __atomic_load_n(&g_ramfix.locked, __ATOMIC_RELAXED);
+  uint64_t held = (uint64_t)st.st_blocks * 512, in_ram = ram_resident_from(g_ramfix.unlocked ? 0 : locked);
   uint64_t swapped = held > in_ram ? held - in_ram : 0, total = 0, available = 0;
   if (!xh_swap_note(swapped, &next)) return;
   (void)xh_meminfo(config.ram_meminfo, &total, &available);
@@ -934,10 +954,11 @@ static void ram_choice_log(void)
   // the GPU's allowance and the page tables' share of the guest.
   char fits[300] = "";
   if (config.ram_fit_available)
-    snprintf(fits, sizeof fits, "what fits beside the session's needs: %llu MiB (MemAvailable %llu MiB less %llu MiB headroom, %llu MiB for the GPU "
+    snprintf(fits, sizeof fits, "what fits beside the session's needs: %llu MiB (MemAvailable %llu MiB less %llu MiB headroom%s, %llu MiB for the GPU "
              "and %d%% of the guest for page tables)", (unsigned long long)(config.ram_fit >> 20), (unsigned long long)(config.ram_fit_available >> 20),
-             (unsigned long long)((uint64_t)config.ram_session_reserve >> 20), (unsigned long long)((uint64_t)config.ram_gpu_reserve >> 20),
-             config.ram_pagetable_percent);
+             (unsigned long long)((uint64_t)config.ram_session_reserve >> 20),
+             config.ram_lock_expected ? " with the lock" : config.ram_lock ? " (the lock is not expected to work here)" : "",
+             (unsigned long long)((uint64_t)config.ram_gpu_reserve >> 20), config.ram_pagetable_percent);
   if (!config.ram_auto_total) {
     LOGI("memory: the guest gets %llu MiB (ram=%s)%s%s", (unsigned long long)(config.ram_bytes >> 20), config.ram_given ? "SIZE" : "auto: no MemTotal, 4 GiB",
          *fits ? "; " : "", fits);
@@ -970,10 +991,15 @@ static void host_memory_tick(bool now)
   if (config.host_mem_log <= 0 && !now) return;
   if (!now && last.tv_sec && t.tv_sec - last.tv_sec < config.host_mem_log) return;
   last = t;
-  uint64_t total = 0, available = 0;
+  // One read of /proc/meminfo for every figure here (before, five: MemTotal and MemAvailable, SwapTotal, SwapFree,
+  // PageTables, and Mlocked in the counters).
+  static const char *const keys[6] = { "MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "PageTables", "Mlocked" };
+  uint64_t mi[6] = { 0, 0, 0, 0, 0, 0 };
+  (void)xh_proc_values(config.ram_meminfo, keys, 6, mi);
+  uint64_t total = mi[0], available = mi[1], swap_total = mi[2], swap_free = mi[3], tables = mi[4];
   struct stat st;
   uint64_t held = g_mem.fd >= 0 && fstat(g_mem.fd, &st) == 0 ? (uint64_t)st.st_blocks * 512 : 0;
-  if (xh_meminfo(config.ram_meminfo, &total, &available)) return;
+  if (!total) return;
   // What the guest gave back since the start (ram_discard: its free pages, kernel 0058), and the time it took.
   uint64_t calls = __atomic_load_n(&g_discard.calls, __ATOMIC_RELAXED), bytes = __atomic_load_n(&g_discard.bytes, __ATOMIC_RELAXED);
   uint64_t failed = __atomic_load_n(&g_discard.failed, __ATOMIC_RELAXED), ns = __atomic_load_n(&g_discard.ns, __ATOMIC_RELAXED);
@@ -984,12 +1010,12 @@ static void host_memory_tick(bool now)
   // Where the host's memory is besides (2026-11-13): the guest's RAM that the host swapped out (zram on the phone: every
   // touch of such a page is a fault in a vCPU or a task that decompresses it), the host's swap in use, and its page
   // tables (each iOS task is a Linux process mapping the memfd). st_blocks counts a swapped page as held; mincore
-  // does not count it as in RAM. A second line, so that the one above keeps its form for the log tools.
-  uint64_t in_ram = xh_ram_resident(g_mem.host, g_mem.size, (uint64_t)sysconf(_SC_PAGESIZE));
-  uint64_t swap_total = 0, swap_free = 0, tables = 0;
-  (void)xh_meminfo_value(config.ram_meminfo, "SwapTotal", &swap_total);
-  (void)xh_meminfo_value(config.ram_meminfo, "SwapFree", &swap_free);
-  (void)xh_meminfo_value(config.ram_meminfo, "PageTables", &tables);
+  // does not count it as in RAM. A second line, so that the one above keeps its form for the log tools. The locked part
+  // is resident while VmLck covers it: the mincore looks only at the rest (nothing with the whole RAM locked).
+  xh_ramfix_counters c;
+  xh_ramfix_sample(&c);
+  c.mlocked = mi[5];
+  uint64_t in_ram = g_mem.host ? ram_resident_from(xh_ramfix_unlocked_from(&g_ramfix, c.vm_locked)) : 0;
   LOGI("memory: the guest's RAM: %llu MiB in the host's RAM, %llu MiB swapped out by the host; host swap %llu of %llu MiB used, "
        "page tables %llu MiB", (unsigned long long)(in_ram >> 20), (unsigned long long)((held > in_ram ? held - in_ram : 0) >> 20),
        (unsigned long long)((swap_total > swap_free ? swap_total - swap_free : 0) >> 20), (unsigned long long)(swap_total >> 20),
@@ -998,15 +1024,14 @@ static void host_memory_tick(bool now)
   // swap traffic (all processes) and this process's faults that needed the host's I/O (a swapped-out page read back).
   // With the RAM held and locked, `held` stays at the RAM's size, `swapped out` at 0, and the KGSL figures (the host's
   // own GPU memory for this process, beside the guest's pages the blobs are made of) flat once the UI is up.
-  xh_ramfix_counters c;
-  xh_ramfix_sample(&c);
   char kgsl[400] = "";
   size_t k = xh_kgsl_memory(getpid(), kgsl + 8, sizeof kgsl - 8);
   if (k) memcpy(kgsl, "; KGSL: ", 8);
   const char *state = config.ram_giveback ? "given back as freed (ram-giveback=1)" :
                       !config.ram_prefault ? "held, not prefaulted" :
                       !__atomic_load_n(&g_ramfix.done, __ATOMIC_ACQUIRE) ? "held, prefault running" :
-                      g_ramfix.unlocked ? "held, unlocked by the valve" : g_ramfix.locked ? "held and locked" : "held, not locked";
+                      g_ramfix.unlocked ? "held, unlocked by the valve" : ram_all_locked() ? "held and locked" :
+                      g_ramfix.locked ? "held, locked in part" : "held, not locked";
   LOGI("memory: fixed RAM: %s; prefaulted %llu of %llu MiB, locked %llu MiB (VmLck; host Mlocked %llu MiB); give-back refused %llu calls; "
        "since the last line: host swap-ins +%llu, swap-outs +%llu pages, xnuhost major faults +%llu%s", state,
        (unsigned long long)(__atomic_load_n(&g_ramfix.prefaulted, __ATOMIC_RELAXED) >> 20), (unsigned long long)(g_mem.size >> 20),
@@ -1016,6 +1041,24 @@ static void host_memory_tick(bool now)
        (unsigned long long)(have_was ? c.major_faults - was.major_faults : 0), kgsl);
   was = c;
   have_was = true;
+}
+
+// Once a second while the guest's RAM is locked: the valve (ramfix.c). On the main thread (nice 0, SCHED_OTHER), so busy
+// vCPUs cannot starve it as they could the prefault's nice-19 thread, where it ran before 2026-11-15. One read of
+// /proc/meminfo a second while locked, nothing otherwise. The munlock it may do (once a session) holds this loop for as
+// long as it takes; the fork's kill is the backstop under everything.
+static void ram_valve_tick(void)
+{
+  static struct timespec last;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  if (last.tv_sec && t.tv_sec == last.tv_sec) return;
+  last = t;
+  uint64_t available = 0;
+  if (xh_ramfix_valve_tick(&g_ramfix, g_mem.host, &available))
+    LOGE("memory: host MemAvailable %llu MiB is under ram-unlock-below (%llu MiB): the guest's RAM is unlocked for the rest of "
+         "the session; the host may swap it now (it stays held, nothing is given back)", (unsigned long long)(available >> 20),
+         (unsigned long long)(g_ramfix.unlock_below >> 20));
 }
 
 // Every usb-log seconds (3): the phone's USB gadget, logged at the start and whenever it changed (usb.c). From the
@@ -1141,7 +1184,8 @@ int main(int argc, char **argv)
     }
     xh_perf_tick();                         // "perf:" lines every perf-log seconds
     host_memory_tick(false);                // "memory: host MemAvailable" every host-mem-log seconds
-    swap_watch();                           // "memory: the host swaps iOS's RAM" when it does
+    swap_watch();                           // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
+    ram_valve_tick();                       // the lock's valve, once a second while locked
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
     ready_tick();                           // session/ready for an iOS that only draws black (ready-content-wait)
     // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until

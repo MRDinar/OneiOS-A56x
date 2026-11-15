@@ -87,13 +87,25 @@ void br_thermal_decide(const br_thermal_limits *l, const br_thermal_raw *raw, co
     if (s.soc_level == s.level) s.reason |= BR_THERMAL_BY_SOC;
     if (s.battery_level == s.level) s.reason |= BR_THERMAL_BY_BATTERY;
   }
-  s.cap = br_thermal_cap_for(s.level);
+  s.cap = br_thermal_cap_for(&s);
   *out = s;
 }
 
-unsigned br_thermal_cap_for(unsigned level)
+// One step, at a critical temperature only (fix-ram-locked, 2026-11-15; the owner's rule: all CPU cores, no caps of ours
+// beyond a true over-temperature guard). Until then the steps began at "heavy" (the case at 44 C, the SoC at 95 C, the
+// cell at 45 C): step 1 left out the X4, step 2 kept the slowest P domain and the E cores, step 3 the E cores alone. The
+// heat of the 2026-11-14/15 sessions came mostly from the host swapping iOS's RAM (host sys 200 %, swap-outs 2.4 MB/s at
+// SoC 83.8 C), which the lock removes. What stays:
+// - the phone's own throttling for the SoC (the kernel's trips on the X4 at 90 C, the GPU at 95 C, the cores pausing at
+//   108-110 C, LMh in hardware): the SoC rule informs iOS and takes no step;
+// - iOS's own reaction to the level it is told (its thermal state), as One UI's SSRM reacts on the phone;
+// - this step, where nothing else acts in a session: the case (Samsung's lrp) at 50 C ("sleeping") or the cell at 50 C
+//   ("trapping" of the battery rule), each down to its hysteresis (2 C). Step 2 (the slowest P domain and the E cores,
+//   cpu0-1 and 5-6 on this phone) and not step 3: the E cores alone put eight vCPUs on two cores, the crowding behind the
+//   hang of 2026-11-13 (a preempted vCPU holding a kernel lock holds up the others).
+unsigned br_thermal_cap_for(const br_thermal_state *s)
 {
-  return level >= BR_THERMAL_SLEEPING ? 3 : level >= BR_THERMAL_TRAPPING ? 2 : level >= BR_THERMAL_HEAVY ? 1 : 0;
+  return s->skin_level >= BR_THERMAL_SLEEPING || s->battery_level >= BR_THERMAL_TRAPPING ? BR_THERMAL_CAP_CRITICAL : 0;
 }
 
 const char *br_thermal_level_name(unsigned level)
