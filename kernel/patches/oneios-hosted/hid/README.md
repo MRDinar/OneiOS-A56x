@@ -11,6 +11,7 @@ start is called from `oneios_drivers_start` (`drivers/bridge/OneiOSBridge.c`, a 
    -> NativeHidInput (staged) x 2, under the collection's IOHIDDevice
         "OneiOS touch screen"   Digitizer / Touch Screen, 10 fingers, Built-In, DisplayIntegrated
         "OneiOS buttons"        Consumer Menu (Home), Power, Volume +/-, Telephony Ring Enable, boot keyboard
+        "OneiOS pen"            (oneios-pen=1, xnuhost pen=auto) Digitizer / Stylus from /arm-io/input-1: see "Pen"
    -> Apple's IOHIDInterface -> IOHIDEventDriver (unchanged, in kernel.kc; matched by two personalities
       this archive adds to the catalogue, see "Which event driver") -> backboardd
  OneiOSALSDevice (drivers/brightness)   Sensor / Ambient Light, same parent class, same archive
@@ -137,6 +138,59 @@ argument `hidq_size=BYTES` still wins over the property. Log, once per service: 
 256 KiB for its user clients (QueueSize)`, with `; already open: theirs stays 16 KiB until they open again` if
 backboardd was first. On the phone: the `N dropped` of the state line should stay 0 through a stall.
 
+## Pen (spen, 2026-11-15; off by default)
+
+The S Pen as iOS's pencil digitizer (`docs/hardware.md` 7e has what 24A446 needs and where it was read). Published only
+with the boot argument **`oneios-pen=1`** and when the transport found xnuhost's pen device (`/arm-io/input-1`, xnuhost
+`pen=auto`, which adds `oneios-pen=1` itself; `runtime/xnuhost/src/pen.c`). Otherwise one line says why not:
+`oneios-hid: pen: xnuhost has a pen device; not published (oneios-pen=0)`, or `... oneios-pen=1, but xnuhost gave no pen
+device ...`.
+
+```
+ sec_e-pen (evdev, read only) -> xnuhost pen.c (fixed units) -> virtio-input /arm-io/input-1 "OneiOS pen"
+   -> DroidVMVirtioInput.c KIND_PEN (UniXNU-droidvm, unchanged): flags, x, y, pressure, distance, tilt, altitude, azimuth
+   -> NativeHidInput "OneiOS pen" (staged/hid_pen.rs): report 4, Digitizer / Stylus, Transport SPI
+   -> IOHIDEventDriver (the SPI / Digitizer personality) -> the edge wrapper completes each stylus event -> backboardd
+```
+
+The staged edits (`tools/oneios-tool/crates/oneios-kernel/src/staged/hid_pen.rs`, applied after `staged/hid.rs` by
+`oneios-tool kernel gen hid`; after UniXNU-droidvm's iPadOS 27 pen in `ipados27/scripts/build-droidvm-hid-input.py`):
+
+| Edit | What |
+|---|---|
+| `penDescriptor`, report 4 | Stylus application and logical collections: Tip Switch, Barrel Switch, In Range, Eraser (bits 0..3), X, Y 0..32767, Generic Desktop Z 0..255 (the height), Tip Pressure 0..4095, X and Y Tilt -90..90 (11 bytes with the id) |
+| `penOnly`, `setPenOnly`, `native_hid_pen_allocate` | a third mode of the class: "OneiOS pen", Transport SPI; Built-In, DisplayIntegrated, DigitizerCollectionDispatch, MaxHoverHeight 1, AccurateMaxDigitizerPressureValue 500; never the buttons' or the touch sinks |
+| `penNotify`, `penAction` | the transport's pen sink: each frame as report 4 on the device's work loop; the frame's altitude, azimuth, pressure (4095 as 500, IOFixed) and height (255 as 1) for the wrapper |
+| `orient`, in `mark` | a stylus event (transducer type 0) is not marked as a finger: it gets the polar orientation (orientationType 1 at +0x58 of its 0xa0-byte data, checked first), altitude, azimuth, pressure and Z through `IOHIDEvent::setFixedValue` (slot 26, discriminator 0x6e23) |
+| the wrapper's condition | the edge wrapper also on the pen's event driver (`touchEnabled \|\| touchOnly \|\| penOnly`) |
+
+Apple's IOHIDEventDriver (IOHIDFamily-2238.120.5, the profile's pin) drops X and Y Tilt and knows no azimuth or altitude,
+and scales pressure to 0..1: without the wrapper's completion the touches would be pencil touches with no angles and a
+force near 0.
+
+`OneiOSHidInput.cpp` tells the pen's device by its `MaxHoverHeight`, and once its event driver attaches publishes Built-In,
+DisplayIntegrated, PrimaryUsagePage 0x0d, PrimaryUsage 0x20, MaxHoverHeight and AccurateMaxDigitizerPressureValue on the
+event service and its interface (24A446's backboardd reads `isBuiltIn`, `primaryUsagePage` and `primaryUsage` of the
+service it matched to take it as the pencil digitizer).
+
+Lines, in order (guest lines of xnuhost's log):
+
+```
+droidvm input /arm-io/input-1: OneiOS pen, pen
+oneios-hid: virtio-input: 2 device(s) in the device tree, 2 started
+oneios-hid: pen: HID device started under IOHIDResource
+oneios-hid: pen: event driver IOHIDEventDriver attached (registry id 0x...)
+oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 3
+oneios-hid: pen: 1 user client(s) on the event service: IOHIDEventServiceUserClient (pid N, backboardd)
+oneios-hid: pen: N HID events queued for the service's client(s), 0 dropped
+oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus events given the pencil's angles, pressure and height, 0 of a layout not known); the last: in range, tip down, x 41.6% y 64.1%, pressure 2000/4095, height 0/255, tilt x 40 y -30 degrees
+```
+
+In iOS's log (`oneios-tool ioslog show DATA.img --proc backboardd --grep 'pencil digitizer'`): `*** acquired pencil
+digitizer`.
+
+Tested: the kernel with these edits builds (`HOSTED_OUT=spen`), its `kernel.kc` prelinks (audit 0 failures; `oneios-tool prelink stubs-check`: 666 good, 0 bad); the PC boot: `docs/hardware.md` 7e, "Tested". Not on the phone.
+
 ## Which event driver (lead, 2026-11-11)
 
 The collection would give an `IOHIDInterface` of a Consumer or Digitizer device to the DriverKit event driver
@@ -186,7 +240,7 @@ uses it.
 ## Build, boot arguments, log
 
 Built by `kernel/build-hosted.sh` (needs `external/NativeHidInput` at 24f1f3f or later: `scripts/setup/get-references.sh
-NativeHidInput`, after removing an older checkout). Boot arguments: `oneios-hid=0` starts nothing; `oneios-hid-log=0`
+NativeHidInput`, after removing an older checkout). Boot arguments: `oneios-pen=1` publishes the pen digitizer when xnuhost has a pen device (default 0, see "Pen"); `oneios-hid=0` starts nothing; `oneios-hid-log=0`
 silences the state lines; `oneios-hid-driverkit=1` adds no personalities; `oneios-hid-buttons-builtin=1` (off by default,
 fix-power-key 2026-11-14, not proven) publishes `Built-In` and the Consumer Control pair (0x0C, 1) on the buttons' event
 service and interface, because backboardd lists the buttons as `eventSource: externalKeyboard` (`docs/hardware.md` 5,

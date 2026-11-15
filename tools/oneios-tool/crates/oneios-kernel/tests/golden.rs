@@ -99,6 +99,35 @@ fn the_display_edits_fit_the_pinned_sources() {
 }
 
 #[test]
+fn the_pen_edits_fit_the_pinned_source() {
+    // spen, 2026-11-15: the pen digitizer's edits (staged/hid_pen.rs) apply after the phone's (staged/hid.rs) to the real
+    // NativeHidInput.cpp, where external/ has it; the kernel build applies the same lists and stops on a missing anchor.
+    let source = repo().join("external/NativeHidInput/NativeHidInput.cpp");
+    if !source.exists() {
+        eprintln!("external/NativeHidInput is not here: the pen's edits were not checked");
+        return;
+    }
+    let staged = build_oneios_hid::staged_hid_pen(build_oneios_hid::staged_hid(std::fs::read_to_string(&source).unwrap()).unwrap()).unwrap();
+    // Report 4 in a Digitizer / Stylus application collection; the sink set and cleared only for the pen device.
+    assert!(staged.contains("static const unsigned char penDescriptor[]={\n    0x05,0x0d,0x09,0x20,0xa1,0x01, 0x85,0x04,"));
+    assert_eq!(staged.matches("native_pen_set_sink(").count(), 3);               // the declaration, start, stop
+    assert!(staged.contains("if(penOnly)native_pen_set_sink(&NativeHidInput::penNotify,this);"));
+    // backboardd's pencil digitizer: SPI, Built-In, the hover range and the maximum pressure on the device.
+    assert!(staged.contains("touchOnly||penOnly?\"SPI\":\"Virtual\""));
+    assert!(staged.contains("setProperty(\"MaxHoverHeight\",1ULL,32);setProperty(\"AccurateMaxDigitizerPressureValue\",500ULL,32);"));
+    // The stylus event is completed by the wrapper (setFixedValue, slot 26) and is not marked as a finger.
+    assert!(staged.contains("enum : uint16_t {kDivSetFixed=0x6e23};"));
+    assert!(staged.contains("==kStylus) {orient(child);return false;}"));
+    assert!(staged.contains("(touchEnabled || touchOnly || penOnly)){wrappedDriver=driver;edge::install(driver);}"));
+    // The report: 11 bytes, bit 0 Tip, 1 Barrel, 2 In Range, 3 Eraser from the sink's flags (1 range, 2 tip, 4 barrel, 8 eraser).
+    assert!(staged.contains("unsigned char report[11]={4,bits,"));
+    assert!(staged.contains("((flags&2)?1:0)|((flags&4)?2:0)|((flags&1)?4:0)|((flags&8)?8:0)"));
+    assert!(staged.ends_with("if(device)device->setPenOnly();return device;}\n"));
+    // Applied twice, the anchors are gone: the generator stops.
+    assert!(build_oneios_hid::staged_hid_pen(staged).is_err());
+}
+
+#[test]
 fn the_contact_identifier_is_a_free_one_of_1_to_28_and_the_pointer_gets_29() {
     // hid, 2026-11-12 (a6346c1): backboardd drops a touch whose identifier is 30 or more (MAX_PATH_COUNT)
     let staged = golden("synthetic/hid_transport.out");

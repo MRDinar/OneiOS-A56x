@@ -433,7 +433,9 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   evdev reader would open the PC's own devices). The script gives xnuhost's input device a panel's axes and, once
   the guest's driver runs it, repeats a tap, a swipe up from the bottom edge and the three side keys
   ([booter.md](booter.md) 2.8). The kernel's `oneios-hid:` lines say what attached and what arrived
-  ([the HID archive's README](../kernel/patches/oneios-hosted/hid/README.md)).
+  ([the HID archive's README](../kernel/patches/oneios-hosted/hid/README.md)). The script also has a pen (a hover, two
+  strokes, the side button), left out unless `--set pen=auto` is added: then the guest gets the pen device
+  `/arm-io/input-1` and `oneios-pen=1`, and the `pen:` and `oneios-hid: pen:` lines follow it ([hardware.md](hardware.md) 7e).
 - What user space did, after the run has stopped: the Data volume is in `--data`'s `data.img` and launchd keeps
   its own log on it (every job spawned or refused, every exit with its reason).
   `apfs-fuse -o ro,vol=2 out/run/data/data.img MNT`, then `MNT/root/log/com.apple.xpc.launchd/launchd.log`, and

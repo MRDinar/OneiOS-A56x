@@ -40,7 +40,7 @@
 use crate::class_record::pylist;
 use crate::gen::{self, fail, Compile, Ctx, Stubs};
 use crate::macho_object::{Entry, Object};
-use crate::staged::{hid::HID, hid_transport::HID_TRANSPORT};
+use crate::staged::{hid::HID, hid_pen::{HID_PEN, HID_PEN_ALLOCATE}, hid_transport::HID_TRANSPORT};
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use oneios_common::pyjson::Value;
@@ -53,7 +53,8 @@ const CONSTRUCTOR: &str = "__ZN11IOHIDDeviceC2EPK11OSMetaClass";
 const DESTRUCTOR: &str = "__ZN11IOHIDDeviceD2Ev";
 const META: &str = "__ZN11IOHIDDevice10gMetaClassE";
 const VTABLE: &str = "__ZTV11IOHIDDevice";
-const REQUIRED: [&str; 9] = ["_oneios_hid_input_start", "_droidvm_input_start", "_native_hid_touch_allocate", "_native_hid_input_allocate",
+const REQUIRED: [&str; 10] = ["_oneios_hid_input_start", "_droidvm_input_start", "_native_hid_touch_allocate", "_native_hid_input_allocate",
+                              "_native_hid_pen_allocate",
                              "_oneios_als_device_start", "__GLOBAL__sub_I_NativeHidInput.cpp", "__GLOBAL__sub_I_OneiOSALSDevice.cpp",
                              "_oneios_hid_parent_meta_link", CONSTRUCTOR];
 const NOT_AN_OBJECT: &str = "build-oneios-hid: not an arm64 Mach-O object";
@@ -181,6 +182,13 @@ fn gone(what: &'static str) -> impl Fn(&str) -> String {
 /// a touch report carries its frame's scan time (handleReportWithTime, OneiOSTouchTime.inc).
 pub fn staged_hid(text: String) -> Result<String> {
     gen::replace_once(text, HID, gone("NativeHidInput.cpp"))
+}
+
+/// The pen digitizer (spen, 2026-11-15; staged/hid_pen.rs): a third mode of the class, report 4 (Digitizer / Stylus) from
+/// the transport's pen sink, whose stylus events the dispatch wrapper completes as an Apple Pencil's (polar angles,
+/// pressure, Z). Applied to staged_hid's output.
+pub fn staged_hid_pen(text: String) -> Result<String> {
+    Ok(gen::replace_once(text, HID_PEN, gone("NativeHidInput.cpp (the pen's edits)"))? + HID_PEN_ALLOCATE)
 }
 
 /// DroidVMVirtioInput.c with the phone's side keys (OneiOSSideKeys.inc): xnuhost's one input device carries the
@@ -311,7 +319,7 @@ pub fn main() -> Result<()> {
               discriminators, {} functions of the family placed, 0xd0 bytes", slot_of.len());
 
     let staged = out.join("NativeHidInput.cpp"); // the same file name: the static initializer is named after it
-    gen::write_text(&staged, &staged_hid(hid_text)?)?;
+    gen::write_text(&staged, &staged_hid_pen(staged_hid(hid_text)?)?)?;
     let hid = compile_source("iokit", &staged, out.join("NativeHidInput.o"), &["-DNATIVE_HID_SOURCE_API=1"])?;
     let start = compile_source("iokit", &here.join("OneiOSHidInput.cpp"), out.join("OneiOSHidInput.o"), &[])?;
     let als = compile_source("iokit", &als_source, out.join("OneiOSALSDevice.o"), &[])?;
