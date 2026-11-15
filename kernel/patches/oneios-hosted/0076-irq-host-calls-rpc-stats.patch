@@ -1,0 +1,479 @@
+diff --git a/osfmk/arm/cpu_common.c b/osfmk/arm/cpu_common.c
+index 9b89ec3..ad7f0c6 100644
+--- a/osfmk/arm/cpu_common.c
++++ b/osfmk/arm/cpu_common.c
+@@ -539,6 +539,15 @@ cpu_signal_internal(cpu_data_t *target_proc,
+ 		assert3u(os_atomic_load(&target_proc->cpu_flags, relaxed) & (InitState | StartedState),
+ 		    ==, InitState | StartedState);
+ 
++#if XNU_HOSTED
++		/*
++		 * OneiOS hosted 0076: the IPI by xnuhost's ipi host call, not ArmCpu's store to GICD_ISPENDR (a trapped store, a
++		 * signal on this vCPU's thread). A deferred one too: the board has no deferred IPI (IOCPU sends it at once).
++		 */
++		extern bool hosted_ipi_send(unsigned int phys);
++		if (hosted_ipi_send((unsigned int)target_proc->cpu_phys_id)) {
++		} else
++#endif
+ 		if (defer) {
+ #if defined(HAS_IPI)
+ 			if (gFastIPI) {
+diff --git a/osfmk/arm/thread.h b/osfmk/arm/thread.h
+index ee171b5..1e7c31c 100644
+--- a/osfmk/arm/thread.h
++++ b/osfmk/arm/thread.h
+@@ -149,7 +149,11 @@ struct machine_thread {
+ 	uint64_t                  kredzonestack;
+ #endif
+ 	struct perfcontrol_state  perfctrl_state;
++#if XNU_HOSTED
++	uint64_t                  hosted_rpc_at;              /* OneiOS hosted 0076: counter at the thread's Mach RPC trap, 0 = none */
++#else
+ 	uint64_t                  reserved5;
++#endif
+ 
+ #if SCHED_HYGIENE_DEBUG
+ 	kern_timeout_t            int_timeout;                /* for interrupt disabled timeout mechanism */
+diff --git a/osfmk/arm64/hosted/hostcall.h b/osfmk/arm64/hosted/hostcall.h
+index a52bc2d..c63323a 100644
+--- a/osfmk/arm64/hosted/hostcall.h
++++ b/osfmk/arm64/hosted/hostcall.h
+@@ -120,6 +120,11 @@ struct xh_trap {
+ #define XH_INTID_NONE   1023u
+ #define XH_INTID_VTIMER 27u      // per-CPU virtual timer (PPI), as ArmCpu takes it
+ #define XH_SGI_COUNT    16u
++#define XH_IPI_SPI_FIRST 1008u   // ArmCpu's software IPIs (armcpu-spi-ipi=1): SPI 1008 + core
++#define XH_IPI_SPI_COUNT 8u
++// irq_take (appended to the vector) sets this bit in the INTID it returns when it did not acknowledge it: a device
++// interrupt, which stays pending for the controller driver's own ICC_IAR1_EL1 path.
++#define XH_INTID_UNTAKEN 0x80000000u
+ 
+ // ---- halt reasons -------------------------------------------------------------------------------
+ #define XH_HALT_OFF      0u      // guest shut down: xnuhost exits 0
+@@ -234,6 +239,15 @@ struct xh_vector {
+   // aperture or pc is not kernel text; -ENOTSUP: not a load or store the host emulates (SIMD,
+   // exclusive, atomics): the frame is unchanged. May be called with interrupts masked.
+   int64_t  (*mmio_emulate)(struct xh_cpu *, struct xh_frame *frame, uint64_t phys);
++
++  // Appended (check vector->size; fix-mach-rpc, 2026-11-15). The interrupt path of a kernel whose controller driver
++  // reads ICC_IAR1_EL1 and writes ICC_EOIR1_EL1 (ArmCpu): each is a trapped instruction, a signal round trip on the
++  // vCPU's thread, three per interrupt and a fourth (GICD_ICPENDR) per software-IPI SPI. irq_take is irq_ack for the
++  // interrupts the kernel handles itself: the highest pending INTID of the calling CPU, acknowledged (active) and
++  // returned when it is the timer (XH_INTID_VTIMER), an SGI or a software-IPI SPI (XH_IPI_SPI_FIRST + n);
++  // another (a device's SPI) is returned with XH_INTID_UNTAKEN set and left pending, for the driver; XH_INTID_NONE
++  // when nothing is pending. End a taken one with irq_eoi. Call masked.
++  uint32_t (*irq_take)(struct xh_cpu *);
+ };
+ #define XH_PAC_ALL 0xfu          // APIA, APIB, APDA, APDB
+ 
+diff --git a/osfmk/arm64/hosted/hosted.h b/osfmk/arm64/hosted/hosted.h
+index 3512193..cf3fce7 100644
+--- a/osfmk/arm64/hosted/hosted.h
++++ b/osfmk/arm64/hosted/hosted.h
+@@ -187,6 +187,26 @@ extern void hosted_user_loop(void) __attribute__((noreturn));
+ extern void hosted_thread_twin_destroy(struct thread *thread);
+ extern void hosted_user_interrupt(struct arm_saved_state *state);
+ 
++
++/* 0076 (fix-mach-rpc): interrupts and IPIs by host call (hosted_machine.c), the Mach RPC round trip and the wake by IPI
++ * (hosted_user.c's report). One block per vCPU. */
++#define HOSTED_IRQ_CPUS 16
++struct hosted_irq_counts {
++	uint64_t timer_hc, ipi_hc;              /* interrupts taken by irq_take, by kind */
++	uint64_t hc_calls, hc_ticks;            /* dispatches that the host calls finished, and their time */
++	uint64_t driver_calls, driver_ticks;    /* dispatches that went to ArmCpu's handler (its trapped registers) */
++	uint64_t ipi_sent_hc, ipi_sent_driver;  /* IPIs sent by the ipi host call, by ArmCpu (a trapped GICD store) */
++	uint64_t wake_ipi_n, wake_to_sent, wake_to_taken, wake_to_run, wake_ipi_t, wake_ipi_max;
++	uint64_t wake_other_n, wake_other_t;
++	uint64_t rpc_n, rpc_t, rpc_max, rpc_b[4];
++	uint64_t sys_same_n, sys_same_t;       /* system calls (bsd, mach) back to their own thread, and their kernel time */
++	uint64_t sys_block_n, sys_block_t;     /* those that blocked: another thread (or idle) came next on the vCPU */
++} __attribute__((aligned(128)));
++extern struct hosted_irq_counts hosted_irq_cpu[HOSTED_IRQ_CPUS];
++extern uint64_t hosted_ipi_sent_at[HOSTED_IRQ_CPUS], hosted_irq_taken_at[HOSTED_IRQ_CPUS];
++extern unsigned hosted_fast_irq_state(void);    /* this moment's path: 1 host calls, 0 ArmCpu */
++extern unsigned hosted_fast_irq_mode(void);     /* oneios-fast-irq: 0, 1, 2 (in turn by period) */
++extern void hosted_fast_irq_period(void);       /* mode 2: the next period takes the other path */
+ #endif /* !__ASSEMBLER__ */
+ 
+ #endif /* XNU_HOSTED */
+diff --git a/osfmk/arm64/hosted/hosted_machine.c b/osfmk/arm64/hosted/hosted_machine.c
+index 92ce253..ef5593d 100644
+--- a/osfmk/arm64/hosted/hosted_machine.c
++++ b/osfmk/arm64/hosted/hosted_machine.c
+@@ -885,4 +885,133 @@ hosted_user_pac_off(void)
+ 	}
+ 	return off != 0;
+ }
++
++/* ---- 0076: interrupts and IPIs by host call (fix-mach-rpc, 2026-11-15) --------------------------- */
++/*
++ * ArmCpu, the board's interrupt controller driver, sends an IPI as a store to GICD_ISPENDR and takes each interrupt with
++ * ICC_IAR1_EL1, a store to GICD_ICPENDR (an IPI), ICC_EOIR1_EL1 and ICC_IAR1_EL1 again. Under xnuhost every one of them
++ * is a trapped instruction: a signal on the vCPU's thread, its emulation and the signal return. A Mach RPC between two
++ * processes wakes the server's idle vCPU with an IPI and the client's with another: ten signals a round trip, and three
++ * for every timer interrupt. Here the IPI is the `ipi` host call, and the timer and IPIs are taken with `irq_take` and
++ * `irq_eoi` (function calls); a device's interrupt (irq_take says XH_INTID_UNTAKEN) still goes to ArmCpu's handler,
++ * which takes it as before. Boot argument oneios-fast-irq=0: ArmCpu's way for everything (the old path, to compare).
++ *
++ * The counters (per vCPU, summed by the oneios-perf report in hosted_user.c) and the stamps the report's wake line
++ * reads: when an IPI was last sent to a CPU, and when that CPU last took an interrupt.
++ */
++extern void cpu_signal_handler(void);
++extern void rtclock_intr(unsigned int is_user_context);
++
++struct hosted_irq_counts hosted_irq_cpu[HOSTED_IRQ_CPUS] __attribute__((aligned(128)));
++uint64_t hosted_ipi_sent_at[HOSTED_IRQ_CPUS], hosted_irq_taken_at[HOSTED_IRQ_CPUS];
++
++/*
++ * oneios-fast-irq: 1 (the default) host calls, 0 ArmCpu's way, 2 the two in turn, one oneios-perf period each (an A/B
++ * test in one boot, under the same load: the report says which path each period had). Any mix is safe: ArmCpu takes
++ * SGI 0 as an IPI, and irq_take takes ArmCpu's IPI SPIs. -1 until the first use (the boot argument, the host's vector).
++ */
++static int hosted_fast_irq = -1;
++static volatile uint32_t hosted_fast_irq_turn = 1;     /* mode 2: this period's path */
++
++static bool
++hosted_fast_irq_on(void)
++{
++	if (__improbable(hosted_fast_irq < 0)) {
++		uint32_t wanted = 1;
++		(void)PE_parse_boot_argn("oneios-fast-irq", &wanted, sizeof(wanted));
++		hosted_fast_irq = !HOSTED_HAS(irq_take) ? 0 : wanted > 2 ? 1 : (int)wanted;
++	}
++	return hosted_fast_irq == 2 ? hosted_fast_irq_turn != 0 : hosted_fast_irq != 0;
++}
++
++/* The report, at the end of each period: mode 2 changes path for the next one. */
++void
++hosted_fast_irq_period(void)
++{
++	if (hosted_fast_irq == 2) {
++		hosted_fast_irq_turn ^= 1;
++	}
++}
++
++unsigned
++hosted_fast_irq_mode(void)
++{
++	(void)hosted_fast_irq_on();
++	return (unsigned)hosted_fast_irq;
++}
++
++static inline uint64_t
++hosted_irq_now(void)
++{
++	return mach_absolute_time();          /* the clock of last_made_runnable_time and last_dispatch (the wake line) */
++}
++
++/*
++ * cpu_signal_internal (osfmk/arm/cpu_common.c): send the IPI to the CPU whose physical id (its /cpus reg, xnuhost's
++ * vCPU index) is `phys`. True: sent by host call (SGI 0, which ArmCpu also takes as an IPI). False: the caller sends it
++ * with ArmCpu's PE_cpu_signal. Interrupts are masked there.
++ */
++bool hosted_ipi_send(unsigned int phys);
++bool
++hosted_ipi_send(unsigned int phys)
++{
++	struct hosted_irq_counts *c = &hosted_irq_cpu[(unsigned)cpu_number() & (HOSTED_IRQ_CPUS - 1)];
++	hosted_ipi_sent_at[phys & (HOSTED_IRQ_CPUS - 1)] = hosted_irq_now();
++	if (phys >= 16 || !hosted_fast_irq_on()) {
++		c->ipi_sent_driver++;
++		return false;
++	}
++	c->ipi_sent_hc++;
++	(void)HC(ipi, phys, 0);
++	return true;
++}
++
++/*
++ * sleh_irq (osfmk/arm64/sleh.c) instead of calling the registered handler (ArmCpu::dispatch) directly: the timer and IPIs
++ * by host call, the rest by the driver. Masked, on the interrupt stack.
++ */
++void hosted_irq_dispatch(cpu_data_t *cdp);
++void
++hosted_irq_dispatch(cpu_data_t *cdp)
++{
++	unsigned me = (unsigned)cpu_number() & (HOSTED_IRQ_CPUS - 1);
++	struct hosted_irq_counts *c = &hosted_irq_cpu[me];
++	uint64_t began = hosted_irq_now();
++
++	hosted_irq_taken_at[me] = began;
++	if (hosted_fast_irq_on()) {
++		unsigned taken = 0;
++		for (; taken < 64; taken++) {
++			uint32_t id = (uint32_t)HC(irq_take);
++			if (id == XH_INTID_NONE) {
++				break;
++			}
++			if (id & XH_INTID_UNTAKEN) {
++				goto driver;    /* a device's: ArmCpu takes it (and anything after it) as before */
++			}
++			if (id == XH_INTID_VTIMER) {
++				c->timer_hc++;
++				rtclock_intr(0);
++			} else {
++				c->ipi_hc++;    /* an SGI, or ArmCpu's software-IPI SPI 1008 + n */
++				cpu_signal_handler();
++			}
++			(void)HC(irq_eoi, id);
++		}
++		c->hc_ticks += hosted_irq_now() - began;
++		c->hc_calls++;
++		return;
++	}
++driver:
++	c->driver_calls++;
++	cdp->interrupt_handler(cdp->interrupt_target, cdp->interrupt_refCon, cdp->interrupt_nub, cdp->interrupt_source);
++	c->driver_ticks += hosted_irq_now() - began;
++}
++
++/* For the report: whether the host-call path is on (it is decided at the first interrupt or IPI). */
++unsigned
++hosted_fast_irq_state(void)
++{
++	return hosted_fast_irq_on() ? 1 : 0;
++}
+ #endif /* XNU_HOSTED */
+diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
+index 7312da9..eaae45d 100644
+--- a/osfmk/arm64/hosted/hosted_user.c
++++ b/osfmk/arm64/hosted/hosted_user.c
+@@ -139,6 +139,7 @@ hosted_perf_sum(struct hosted_perf_counts *out)
+ }
+ static struct {
+ 	uint64_t at;
++	thread_t who;                   /* 0076: the thread that trapped */
+ 	uint32_t kind, number;
+ } hosted_perf_open[HOSTED_PERF_CPUS];
+ static uint32_t hosted_perf_every = 30;
+@@ -158,6 +159,7 @@ hosted_perf_trap(uint32_t kind, uint32_t number)
+ 		hosted_perf_open[cpu].at = hosted_perf_now();
+ 		hosted_perf_open[cpu].kind = kind;
+ 		hosted_perf_open[cpu].number = number;
++		hosted_perf_open[cpu].who = current_thread();
+ 	}
+ }
+ 
+@@ -171,6 +173,17 @@ hosted_perf_enter_user(void)
+ 	}
+ 	uint64_t ticks = hosted_perf_now() - hosted_perf_open[cpu].at;
+ 	uint32_t kind = hosted_perf_open[cpu].kind, number = hosted_perf_open[cpu].number;
++	if (kind == HOSTED_PERF_K_BSD || kind == HOSTED_PERF_K_MACH) {
++		/* 0076: a call that came back to its own thread, or one that blocked (another thread, or idle, came next) */
++		struct hosted_irq_counts *ic = &hosted_irq_cpu[cpu & (HOSTED_IRQ_CPUS - 1)];
++		if (hosted_perf_open[cpu].who == current_thread()) {
++			ic->sys_same_n++;
++			ic->sys_same_t += ticks;
++		} else {
++			ic->sys_block_n++;
++			ic->sys_block_t += ticks;
++		}
++	}
+ 	hosted_perf_open[cpu].at = 0;
+ 	os_atomic_inc(&hosted_perf.kind_n[kind], relaxed);
+ 	os_atomic_add(&hosted_perf.kind_t[kind], ticks, relaxed);
+@@ -205,6 +218,73 @@ hosted_perf_syscall(const arm_saved_state64_t *ss)
+ 	}
+ }
+ 
++
++/* ---- 0076: the Mach RPC round trip and the wake by IPI (fix-mach-rpc, 2026-11-15) ---------------- */
++/*
++ * A Mach RPC is a mach_msg trap that sends and then receives (mach_msg2_trap -47 or mach_msg_trap -31/-32 with
++ * MACH_SEND_MSG | MACH_RCV_MSG in x1): a synchronous XPC message, a MIG call. Its round trip is the thread's, from the
++ * trap to its next return to user mode (the reply, an error or a timeout), the server's own work included. Counted per
++ * vCPU at the return; the report gives each period's number, mean, maximum and four bands.
++ */
++static inline void
++hosted_rpc_begin(thread_t thread, const arm_saved_state64_t *ss)
++{
++	int32_t number = (int32_t)ss->x[16];
++	if ((number == -47 || number == -31 || number == -32) && (ss->x[1] & 3) == 3) {
++		thread->machine.hosted_rpc_at = hosted_perf_now();
++	}
++}
++
++static inline void
++hosted_rpc_end(thread_t thread)
++{
++	uint64_t ticks = hosted_perf_now() - thread->machine.hosted_rpc_at;
++	struct hosted_irq_counts *c = &hosted_irq_cpu[(unsigned)cpu_number() & (HOSTED_IRQ_CPUS - 1)];
++	uint64_t ns = 0;
++
++	absolutetime_to_nanoseconds(ticks, &ns);
++	uint64_t us = ns / 1000;
++	thread->machine.hosted_rpc_at = 0;
++	c->rpc_n++;
++	c->rpc_t += ticks;
++	if (ticks > c->rpc_max) {
++		c->rpc_max = ticks;
++	}
++	c->rpc_b[us < 100 ? 0 : us < 1000 ? 1 : us < 10000 ? 2 : 3]++;
++}
++
++/*
++ * thread_invoke (osfmk/kern/sched_prim.c), as a thread starts to run: `latency` is from it being made runnable to now
++ * (processor->last_dispatch). A thread made runnable before an IPI was sent to this CPU that this CPU took before now was
++ * woken by that IPI: its wait is split into made runnable -> IPI sent (the waker's scheduler), -> interrupt taken (the
++ * host: the vCPU's futex wake or signal and its way out of idle), -> running (the kernel's idle exit and switch).
++ */
++void hosted_perf_wake(uint64_t latency, uint64_t at);
++void
++hosted_perf_wake(uint64_t latency, uint64_t at)
++{
++	unsigned me = (unsigned)cpu_number() & (HOSTED_IRQ_CPUS - 1);
++	struct hosted_irq_counts *c = &hosted_irq_cpu[me];
++	uint64_t runnable = at - latency, sent = hosted_ipi_sent_at[me], taken = hosted_irq_taken_at[me];
++
++	if (hosted_perf_every == 0 || latency > at) {
++		return;
++	}
++	if (sent >= runnable && taken >= sent && at >= taken) {
++		c->wake_ipi_n++;
++		c->wake_to_sent += sent - runnable;
++		c->wake_to_taken += taken - sent;
++		c->wake_to_run += at - taken;
++		c->wake_ipi_t += latency;
++		if (latency > c->wake_ipi_max) {
++			c->wake_ipi_max = latency;
++		}
++	} else {
++		c->wake_other_n++;
++		c->wake_other_t += latency;
++	}
++}
++
+ /* ---- the thread's Linux twin ------------------------------------------------------------------ */
+ 
+ /*
+@@ -225,6 +305,7 @@ hosted_twin_drop(thread_t thread)
+ 	thread->machine.hosted_pmap = NULL;
+ 	thread->machine.hosted_pac = 0;
+ 	thread->machine.hosted_refill = 0;
++	thread->machine.hosted_rpc_at = 0;
+ 	if (twin != 0) {
+ 		uint32_t old = hosted_irq_mask();
+ 		(void)HC(thread_destroy, twin - 1);
+@@ -718,6 +799,9 @@ hosted_user_loop(void)
+ 		    (ARM_MACHINE_THREAD_PRESERVE_X18_SAVE | ARM_MACHINE_THREAD_PRESERVE_X18_INITIAL)) != 0;
+ 		hosted_perf_enter_user();               /* 0041 */
+ 		hosted_perf_hint(thread);               /* 0075 */
++		if (__improbable(thread->machine.hosted_rpc_at != 0)) {
++			hosted_rpc_end(thread);         /* 0076: the RPC this thread trapped with returns */
++		}
+ 		int64_t rc = hosted_user_enter(twin, context, thread->machine.cthread_self, keep_x18, &trap);
+ #if PRECISE_USER_KERNEL_TIME
+ 		recount_leave_user();
+@@ -773,6 +857,7 @@ hosted_user_loop(void)
+ 		case XH_TRAP_SYSCALL:
+ 			hosted_user_stats.syscalls++;
+ 			hosted_perf_syscall(&context->ss.ss_64);
++			hosted_rpc_begin(thread, &context->ss.ss_64);   /* 0076 */
+ 			break;
+ 		case XH_TRAP_ILLEGAL:
+ 			hosted_user_stats.illegal++;
+@@ -810,6 +895,61 @@ hosted_perf_us(uint64_t ticks)
+ 	absolutetime_to_nanoseconds(ticks, &ns);
+ 	return ns / 1000;
+ }
++static void
++hosted_irq_report(uint64_t wall_us)
++{
++	static struct hosted_irq_counts last;
++	struct hosted_irq_counts s;
++	uint64_t rpc_max = 0, wake_max = 0;
++
++	bzero(&s, sizeof(s));
++	for (unsigned i = 0; i < HOSTED_IRQ_CPUS; i++) {
++		struct hosted_irq_counts *c = &hosted_irq_cpu[i];
++		s.timer_hc += c->timer_hc; s.ipi_hc += c->ipi_hc; s.hc_calls += c->hc_calls; s.hc_ticks += c->hc_ticks;
++		s.driver_calls += c->driver_calls; s.driver_ticks += c->driver_ticks;
++		s.ipi_sent_hc += c->ipi_sent_hc; s.ipi_sent_driver += c->ipi_sent_driver;
++		s.wake_ipi_n += c->wake_ipi_n; s.wake_to_sent += c->wake_to_sent; s.wake_to_taken += c->wake_to_taken;
++		s.wake_to_run += c->wake_to_run; s.wake_ipi_t += c->wake_ipi_t; s.wake_other_n += c->wake_other_n;
++		s.wake_other_t += c->wake_other_t;
++		s.rpc_n += c->rpc_n; s.rpc_t += c->rpc_t;
++		s.sys_same_n += c->sys_same_n; s.sys_same_t += c->sys_same_t; s.sys_block_n += c->sys_block_n; s.sys_block_t += c->sys_block_t;
++		for (unsigned b = 0; b < 4; b++) {
++			s.rpc_b[b] += c->rpc_b[b];
++		}
++		/* the maxima are the period's: taken and cleared (a racing update may be lost, or land in the next period) */
++		if (c->rpc_max > rpc_max) {
++			rpc_max = c->rpc_max;
++		}
++		if (c->wake_ipi_max > wake_max) {
++			wake_max = c->wake_ipi_max;
++		}
++		c->rpc_max = 0;
++		c->wake_ipi_max = 0;
++	}
++#define S(f) (s.f - last.f)
++	uint64_t rpcs = S(rpc_n), wakes = S(wake_ipi_n), others = S(wake_other_n), hc = S(hc_calls), drv = S(driver_calls);
++	printf("oneios-perf:   rpc: %llu Mach RPCs (mach_msg send + receive), round trip mean %llu us, max %llu us; "
++	    "under 100 us %llu, 100 us-1 ms %llu, 1-10 ms %llu, over 10 ms %llu (%llu.%01llu per s)\n",
++	    rpcs, rpcs ? hosted_perf_us(S(rpc_t)) / rpcs : 0, hosted_perf_us(rpc_max), S(rpc_b[0]), S(rpc_b[1]), S(rpc_b[2]),
++	    S(rpc_b[3]), rpcs * 1000000 / wall_us, rpcs * 10000000 / wall_us % 10);
++	printf("oneios-perf:   wake: %llu threads woken by an IPI: made runnable -> IPI sent %llu us, -> interrupt taken %llu us, "
++	    "-> running %llu us (means), %llu us in all (max %llu us); other dispatches %llu, mean wait %llu us\n",
++	    wakes, wakes ? hosted_perf_us(S(wake_to_sent)) / wakes : 0, wakes ? hosted_perf_us(S(wake_to_taken)) / wakes : 0,
++	    wakes ? hosted_perf_us(S(wake_to_run)) / wakes : 0, wakes ? hosted_perf_us(S(wake_ipi_t)) / wakes : 0,
++	    hosted_perf_us(wake_max), others, others ? hosted_perf_us(S(wake_other_t)) / others : 0);
++	printf("oneios-perf:   0076: interrupts by host call %llu (timer %llu, IPI %llu; %llu.%02llu us a dispatch), by ArmCpu's "
++	    "trapped registers %llu (%llu.%02llu us a dispatch); IPIs sent by host call %llu, by ArmCpu %llu (oneios-fast-irq=%u; this period %s)\n",
++	    S(timer_hc) + S(ipi_hc), S(timer_hc), S(ipi_hc), hc ? hosted_perf_us(S(hc_ticks) * 100 / hc) / 100 : 0,
++	    hc ? hosted_perf_us(S(hc_ticks) * 100 / hc) % 100 : 0, drv, drv ? hosted_perf_us(S(driver_ticks) * 100 / drv) / 100 : 0,
++	    drv ? hosted_perf_us(S(driver_ticks) * 100 / drv) % 100 : 0, S(ipi_sent_hc), S(ipi_sent_driver), hosted_fast_irq_mode(),
++	    hosted_fast_irq_state() ? "host calls" : "ArmCpu's way");
++	uint64_t same = S(sys_same_n), blocked = S(sys_block_n);
++	printf("oneios-perf:   syscalls: %llu back to their own thread, %llu us each (the call's own kernel work); %llu blocked, "
++	    "%llu us each to the vCPU's next user entry or idle (the switch, the next thread's way back)\n",
++	    same, same ? hosted_perf_us(S(sys_same_t)) / same : 0, blocked, blocked ? hosted_perf_us(S(sys_block_t)) / blocked : 0);
++#undef S
++	last = s;
++}
+ 
+ /* The `count` numbers with the most calls in n[0..size), as " NUMBER CALLS xMEAN_US" items. */
+ static void
+@@ -949,6 +1089,8 @@ hosted_perf_report_thread(__unused void *arg, __unused wait_result_t result)
+ 		hosted_perf_top("bsd (number calls x mean)", c.bsd_n, c.bsd_t, c0->bsd_n, c0->bsd_t, HOSTED_PERF_BSD, 12, false);
+ 		hosted_perf_top("mach traps", c.mach_n, c.mach_t, c0->mach_n, c0->mach_t, HOSTED_PERF_MACH, 8, true);
+ 		hosted_perf_kernel_threads(wall_us);    /* 0051 */
++		hosted_irq_report(wall_us);             /* 0076 */
++		hosted_fast_irq_period();               /* 0076, oneios-fast-irq=2: the other path next */
+ 		hosted_perf_last = c;
+ 		user_last = u;
+ 		for (unsigned i = 0; i < 18; i++) {
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index d8d69a3..8f6ab1c 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -3026,6 +3026,10 @@ sleh_irq(arm_saved_state_t *state)
+ 
+ #if USE_APPLEARMSMP
+ 	PE_handle_ext_interrupt();
++#elif XNU_HOSTED
++	/* OneiOS hosted 0076: the timer and IPIs by host call, a device's interrupt by the registered handler (ArmCpu) */
++	extern void hosted_irq_dispatch(cpu_data_t *cdp);
++	hosted_irq_dispatch(cdp);
+ #else
+ 	/* Run the registered interrupt handler. */
+ 	cdp->interrupt_handler(cdp->interrupt_target,
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index b2aae03..bdc60c3 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -3783,6 +3783,13 @@ thread_dispatch(
+ 		assert(self->last_made_runnable_time <= self->last_basepri_change_time);
+ 
+ 		latency = processor->last_dispatch - self->last_made_runnable_time;
++#if XNU_HOSTED
++		{
++			/* OneiOS hosted 0076: the wait of a woken thread, split at the IPI that woke this CPU (oneios-perf wake:) */
++			extern void hosted_perf_wake(uint64_t latency, uint64_t at);
++			hosted_perf_wake(latency, processor->last_dispatch);
++		}
++#endif
+ 		assert(latency >= self->same_pri_latency);
+ 
+ 		urgency = thread_get_urgency(self, &arg1, &arg2);

@@ -267,6 +267,22 @@ static void test_gic(void)
   CHECK(xh_gic_pending(1) && !xh_gic_pending(0) && xh_gic_ack(1) == 1009);
   xh_gic_eoi(1, 1009);
   CHECK(xh_gic_ack(1) == XH_INTID_NONE);
+  // irq_take (fix-mach-rpc): the timer, SGIs and IPI SPIs are taken; a device's SPI is left pending for the driver's IAR
+  CHECK(xh_gic_take(1) == XH_INTID_NONE);
+  xh_mmio_write(0x8000000 + 0x200 + (1009 / 32) * 4, 4, 1u << (1009 % 32));
+  CHECK(xh_gic_take(1) == 1009 && xh_gic_take(1) == XH_INTID_NONE);            // active: not offered again
+  xh_gic_eoi(1, 1009);
+  xh_gic_set_spi(40, true);
+  CHECK(xh_gic_take(1) == (40 | XH_INTID_UNTAKEN) && line[1] && xh_gic_pending(1));
+  CHECK(xh_gic_take(1) == (40 | XH_INTID_UNTAKEN));                             // still there, not active
+  xh_gic_enable(1, 5, true);
+  xh_gic_send_sgi(1, 5);
+  CHECK(xh_gic_take(1) == 5);                                                  // the SGI comes first (lower INTID)
+  xh_gic_eoi(1, 5);
+  CHECK(xh_gic_sysreg(1, &iar, &v) && v == 40);                                // the device's, by the driver's path
+  xh_gic_set_spi(40, false);
+  xh_gic_eoi(1, 40);
+  CHECK(xh_gic_take(1) == XH_INTID_NONE && !line[1]);
   // the timer's line is a level read from the CPU layer
   xh_gic_enable(0, XH_INTID_VTIMER, true);
   xh_cpu_timer_set(&g_vcpu[0], 1);                                             // long past

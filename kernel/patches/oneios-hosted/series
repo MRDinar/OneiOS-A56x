@@ -239,6 +239,16 @@
 # CLPC's hint (hostcall.h perf_hint: the class of the user thread a vCPU runs, for the host's uclamp and the GPU path);
 # hosted_processors_idle_mach for the oneios-cpu window's bound (gpu/cpu_window.h). README.md, "0075".
 0075-host-overhead-per-cpu-stats-perf-hint.patch
+# fix-mach-rpc (2026-11-15): interrupts and IPIs by host call. ArmCpu sent each IPI as a store to GICD_ISPENDR and took
+# each interrupt with ICC_IAR1_EL1, a GICD_ICPENDR store, ICC_EOIR1_EL1 and ICC_IAR1_EL1 again: under xnuhost every one a
+# trapped instruction (a signal round trip on the vCPU's thread), ten per Mach RPC between two processes (two IPIs to idle
+# vCPUs) and three per timer interrupt. Now cpu_signal_internal sends with the `ipi` host call and sleh_irq takes the
+# timer and IPIs with xnuhost's new `irq_take` and `irq_eoi` (a device's interrupt still goes to ArmCpu's handler);
+# oneios-fast-irq=0 is ArmCpu's way, =2 the two in turn by oneios-perf period (an A/B in one boot). oneios-perf gains
+# four lines: `rpc:` (Mach RPCs, mach_msg send + receive: count, round-trip mean and maximum, bands), `wake:` (a thread
+# woken by an IPI: made runnable -> IPI sent -> taken -> running), `0076:` (interrupts and IPIs by path, the mean time of
+# a dispatch) and `syscalls:` (calls back to their own thread against calls that blocked). README.md, "0076".
+0076-irq-host-calls-rpc-stats.patch
 # radio2: no numbered patch for the Wi-Fi: net/ is an archive of this build (kernel/build-hosted.sh,
 # oneios-tool kernel gen net), started by oneios_drivers_start's oneios_net_start (weak in drivers/bridge/OneiOSBridge.c).
 # net/README.md: IO80211Controller/IO80211Interface under the collection's original IOEthernetController and

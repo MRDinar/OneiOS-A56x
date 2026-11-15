@@ -552,7 +552,7 @@ static void bh_put(const char *name, const bhist *h)
   dec(h->n);
   if (!h->n) { put("\n"); return; }
   put(" mean ");
-  dec(h->sum * 1000000000ull / h->n / hz);
+  dec(h->sum / h->n * 1000000000ull / hz + h->sum % h->n * 1000000000ull / h->n / hz);   // no overflow of the sum
   put(" ns, p50 ");
   dec(bh_q(h, 500) * 1000000000ull / hz);
   put(" p90 ");
@@ -782,6 +782,148 @@ static void parallel_bench(struct xh_cpu *cpu, unsigned scale)
   put("PARALLEL done\n");
 }
 
+// ---- the Mach RPC round trip (boot argument testkernel-rpc[=SCALE], testkernel-rpc-mode=N; `make rpc-arm64`) -------
+// fix-mach-rpc, 2026-11-15. The trip of a synchronous Mach message between two iOS processes, with XNU's own IPC code
+// left out: a client thread of task A on vCPU 0 and a server thread of task B on vCPU 1, each a loop of `mrs x0,
+// cntvct; svc`. A's svc is the send-and-wait-for-the-reply: vCPU 0 posts the request and sends vCPU 1 an IPI, then idles
+// (the client blocks in its receive). vCPU 1, idle (the server blocked in its receive), wakes, takes the interrupt and
+// releases B, whose svc is the reply-and-wait-for-the-next: vCPU 1 posts the reply, sends the IPI back and idles; vCPU 0
+// wakes, takes it and releases A. So one round trip is what XNU's is under xnuhost minus its IPC code: two user stays
+// (four hand-offs), two IPIs, two wakes of an idle vCPU, two interrupts taken. The round trip is A's (its stamp at one
+// svc to its stamp at the next). The mode is how the kernel drives the interrupt controller:
+//   0  ArmCpu's way (what the hosted kernel did before 0076): the IPI is a store to GICD_ISPENDR (a trapped MMIO
+//      store: a SIGSEGV on the sender's thread), the interrupt is ICC_IAR1_EL1, a store to GICD_ICPENDR, ICC_EOIR1_EL1
+//      and ICC_IAR1_EL1 again (three trapped system registers and one trapped store: four signals on the receiver's);
+//   1  host calls (0076): ipi; irq_take, irq_eoi, irq_take;
+//   2  one vCPU: vCPU 0 releases B itself, no IPI and no wake (the floor: what a direct hand-off of the CPU would cost).
+// xnuhost's perf report at the stop says the futex sleeps and wakes, the signals (`emulated:` lines) of the mode.
+static volatile struct { uint64_t req, rep, a, b; uint32_t mode, stop; volatile uint8_t *gicd; uint64_t woke_at, sent_at; } rpc;
+static struct xh_user_state rpc_sa, rpc_sb;
+static bhist rpc_wake;
+
+static void rpc_send(struct xh_cpu *cpu, unsigned target)
+{
+  if (rpc.mode == 0) {
+    unsigned id = XH_IPI_SPI_FIRST + target;
+    __asm__ volatile("dsb ishst" ::: "memory");
+    *(volatile uint32_t *)(rpc.gicd + 0x200 + (id / 32) * 4) = 1u << (id % 32);
+  } else H->ipi(cpu, target, 7);
+}
+
+// The interrupt as each mode takes it; returns once nothing is pending.
+static void rpc_irq(struct xh_cpu *cpu)
+{
+  if (rpc.mode == 0) {
+    for (;;) {
+      uint64_t id;
+      __asm__ volatile("mrs %0, S3_0_C12_C12_0" : "=r"(id));                          // ICC_IAR1_EL1
+      if ((id & 0xffffff) >= 1020) break;
+      if (id >= XH_IPI_SPI_FIRST) *(volatile uint32_t *)(rpc.gicd + 0x280 + (id / 32) * 4) = 1u << (id % 32);   // GICD_ICPENDR
+      __asm__ volatile("msr S3_0_C12_C12_1, %0" : : "r"(id) : "memory");               // ICC_EOIR1_EL1
+    }
+    return;
+  }
+  for (;;) {
+    uint32_t id = H->irq_take(cpu);
+    if (id == XH_INTID_NONE) break;
+    if (id & XH_INTID_UNTAKEN) { id = H->irq_ack(cpu); if (id == XH_INTID_NONE) break; }
+    H->irq_eoi(cpu, id);
+  }
+}
+
+static void rpc_server(struct xh_cpu *cpu, uint64_t arg)
+{
+  (void)arg;
+  H->irq_enable(cpu, 7, 1);
+  H->irq_enable(cpu, XH_IPI_SPI_FIRST + cpu->index, 1);
+  uint64_t served = 0;
+  for (;;) {
+    H->cpu_idle(cpu);
+    uint64_t woke = now();
+    if (cpu->irq_pending) rpc_irq(cpu);
+    if (rpc.stop) continue;
+    uint64_t req = __atomic_load_n(&rpc.req, __ATOMIC_ACQUIRE);
+    if (req == served) continue;
+    if (rpc.sent_at && woke >= rpc.sent_at) bh_add(&rpc_wake, woke - rpc.sent_at);
+    served = req;
+    struct xh_trap trap;
+    int64_t rc;
+    while ((rc = H->thread_run(cpu, rpc.b, &rpc_sb, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) rpc_irq(cpu);
+    rpc.sent_at = now();
+    __atomic_store_n(&rpc.rep, served, __ATOMIC_RELEASE);
+    rpc_send(cpu, 0);
+  }
+}
+
+static void rpc_bench(struct xh_cpu *cpu, unsigned scale, unsigned mode)
+{
+  static volatile struct xh_upcalls upcalls;
+  upcalls.irq = irq_upcall;
+  upcalls.cpu_entry = rpc_server;
+  H->set_upcalls(cpu, (const struct xh_upcalls *)&upcalls);
+  cpu->irq_masked = 1;
+  H->timer_set(cpu, UINT64_MAX);
+  if (mode == 1 && H->size < offsetof(struct xh_vector, irq_take) + sizeof(void *)) { put("RPC skipped: no irq_take in this xnuhost\n"); return; }
+  rpc.mode = mode;
+  rpc.gicd = (volatile uint8_t *)(uintptr_t)H->io_map(cpu, 0x08000000, 0x10000);
+  uint64_t ta = 0, tb = 0;
+  if (H->task_create(cpu, &ta) < 0 || H->task_create(cpu, &tb) < 0) { put("RPC skipped: no task layer\n"); return; }
+  uint64_t code_pa = page_alloc();
+  uint32_t *code = (uint32_t *)(uintptr_t)kva(code_pa);
+  code[0] = 0xd53be040;   // mrs x0, cntvct_el0
+  code[1] = 0xd4001001;   // svc #0x80
+  code[2] = 0x17fffffe;   // b 0
+  H->text_fixup(cpu, code, 3 * 4);
+  const uint64_t code_va = 0x100000000ull;
+  H->task_map(cpu, ta, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa);
+  H->task_map(cpu, tb, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa);
+  if (H->thread_create(cpu, ta, (uint64_t *)&rpc.a) || H->thread_create(cpu, tb, (uint64_t *)&rpc.b)) { put("RPC skipped: no thread\n"); return; }
+  zero(&rpc_sa, sizeof rpc_sa); rpc_sa.pc = code_va;
+  zero(&rpc_sb, sizeof rpc_sb); rpc_sb.pc = code_va;
+  H->irq_enable(cpu, 7, 1);
+  H->irq_enable(cpu, XH_IPI_SPI_FIRST + cpu->index, 1);
+  bhist round;
+  bh_init(&round); bh_init(&rpc_wake);
+  round.step *= 64; rpc_wake.step *= 64;       // 4096 steps of 64 ticks: about 11 ms (qemu-user and a loaded host go past 168 us)
+  if (mode != 2) {
+    H->cpu_start(cpu, 1, 0, 0);
+    uint64_t t0 = now();
+    while (now() - t0 < H->info->timebase_hz / 10) __asm__ volatile("yield");      // vCPU 1 up and idle
+  }
+  // (no table of strings: this program has no fixups, a pointer in data holds its link address)
+  put("RPC: mode "); dec(mode); put(", ");
+  put(mode == 0 ? "ArmCpu's way (trapped GIC registers and stores)\n" : mode == 1 ? "host calls (0076)\n" : "one vCPU, no IPI (the floor)\n");
+  uint64_t n = 4000ull * scale, last = 0, bad = 0;
+  struct xh_trap trap;
+  for (uint64_t i = 0; i < n + 1; i++) {
+    int64_t rc;
+    while ((rc = H->thread_run(cpu, rpc.a, &rpc_sa, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) rpc_irq(cpu);
+    if (rc || (trap.kind != XH_TRAP_SYSCALL && trap.kind != XH_TRAP_ILLEGAL)) { bad++; continue; }
+    if (last && rpc_sa.x[0] > last && i > 1) bh_add(&round, rpc_sa.x[0] - last);    // the first trip is not timed
+    last = rpc_sa.x[0];
+    if (i == n) break;
+    if (mode == 2) {
+      while ((rc = H->thread_run(cpu, rpc.b, &rpc_sb, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) rpc_irq(cpu);
+      continue;
+    }
+    uint64_t want = i + 1;
+    rpc.sent_at = now();
+    __atomic_store_n(&rpc.req, want, __ATOMIC_RELEASE);
+    rpc_send(cpu, 1);
+    for (;;) {
+      H->cpu_idle(cpu);
+      uint64_t woke = now();
+      if (cpu->irq_pending) rpc_irq(cpu);
+      if (__atomic_load_n(&rpc.rep, __ATOMIC_ACQUIRE) == want) { if (woke >= rpc.sent_at) bh_add(&rpc_wake, woke - rpc.sent_at); break; }
+    }
+  }
+  rpc.stop = 1;
+  bh_put("rpc round trip, client svc to client resumed", &round);
+  bh_put("  IPI sent -> the idle vCPU out of cpu_idle", &rpc_wake);
+  if (bad) { put("RPC   (failed runs or other traps: "); dec(bad); put(")\n"); }
+  put("RPC done\n");
+}
+
 __attribute__((noreturn)) void kernel_main(const struct boot_args *args, const struct xh_vector *vector, struct xh_cpu *cpu);
 void kernel_main(const struct boot_args *args, const struct xh_vector *vector, struct xh_cpu *cpu)
 {
@@ -803,6 +945,27 @@ void kernel_main(const struct boot_args *args, const struct xh_vector *vector, s
     if (!want[i]) {
       next_page = (args->top_of_kernel_data + 0x3fff) & ~0x3fffull;
       parallel_bench(cpu, c[i] == '=' && c[i + 1] >= '1' && c[i + 1] <= '9' ? (unsigned)(c[i + 1] - '0') : 1);
+      H->halt(cpu, XH_HALT_OFF, 0);
+    }
+  }
+  // boot-args "testkernel-rpc[=SCALE] testkernel-rpc-mode=N": only the Mach RPC round trip (2 or more vCPUs), then off.
+  {
+    int rpc_on = 0;
+    unsigned rpc_scale = 1, rpc_mode = 1;
+    for (const char *c = args->command_line; *c; c++) {
+      static const char want[] = "testkernel-rpc", mode[] = "-mode=";
+      unsigned i = 0;
+      while (want[i] && c[i] == want[i]) i++;
+      if (want[i]) continue;
+      unsigned k = 0;
+      while (mode[k] && c[i + k] == mode[k]) k++;
+      if (!mode[k]) { if (c[i + k] >= '0' && c[i + k] <= '2') rpc_mode = (unsigned)(c[i + k] - '0'); continue; }
+      if (c[i] == '=' && c[i + 1] >= '1' && c[i + 1] <= '9') rpc_scale = (unsigned)(c[i + 1] - '0');
+      if (c[i] == '=' || c[i] == ' ' || c[i] == 0) rpc_on = 1;
+    }
+    if (rpc_on) {
+      next_page = (args->top_of_kernel_data + 0x3fff) & ~0x3fffull;
+      rpc_bench(cpu, rpc_scale, rpc_mode);
       H->halt(cpu, XH_HALT_OFF, 0);
     }
   }
@@ -867,6 +1030,11 @@ void kernel_main(const struct boot_args *args, const struct xh_vector *vector, s
   if (!(timer_fires == 1 && last_intid == XH_INTID_VTIMER && elapsed >= hz / 100)) { put("  fires, intid, elapsed, hz: "); hex(timer_fires); put(" "); hex(last_intid); put(" "); hex(elapsed); put(" "); hex(hz); put("\n"); }
   check(timer_fires == 1 && last_intid == XH_INTID_VTIMER && elapsed >= hz / 100, "the timer fires after its deadline and wakes cpu_idle");
   check(H->irq_ack(cpu) == XH_INTID_NONE && cpu->irq_pending == 0, "the line is low again after end-of-interrupt");
+  H->ipi(cpu, 0, 5);
+  uint32_t taken = H->irq_take(cpu), again = H->irq_take(cpu);
+  H->irq_eoi(cpu, 5);
+  check(taken == 5 && again == XH_INTID_NONE && H->irq_take(cpu) == XH_INTID_NONE && cpu->irq_pending == 0,
+        "irq_take takes an SGI by host call (fix-mach-rpc), the line low again after its end-of-interrupt");
 
   // 4. Interrupts taken while kernel code runs unmasked: five timer ticks during a computation.
   double f0, f1;

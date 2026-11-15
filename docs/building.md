@@ -357,6 +357,13 @@ after):
   of the trap path (boot argument `testkernel-bench`) and prints them with xnuhost's `perf:` report;
   `BENCH_SET="--set cpu-pin=0 --set map-defer=0"` measures other settings, `BENCH_SCALE=2` doubles the loops
   (`docs/booter.md` 2.6a has the numbers). Not part of `make test`.
+- `make -C runtime/xnuhost rpc-arm64` (fix-mach-rpc, 2026-11-15; the same runners) times the round trip of a synchronous
+  Mach message between two tasks as the hosted kernel makes it (two user stays, two IPIs, two wakes of an idle vCPU),
+  once per interrupt path: `RPC_MODES="0 1 2"` = ArmCpu's trapped GIC registers (the kernel before hosted 0076), host
+  calls (0076), one vCPU without an IPI (the floor). Each mode is its own run, with xnuhost's `perf:` lines and
+  `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips
+  (`docs/booter.md` 2.6d has the numbers). On the phone: the same command line, as the parallel test's (2.6c step 2).
+  Not part of `make test`.
 - macOS's `tar` is bsdtar (no `--mtime`): `runtime/package.sh` writes the archive with `pack.py archive` where `tar`
   is not GNU tar. For the same files it is byte-identical to GNU tar 1.35's `--format=ustar` archive (checked).
 - macOS's `wc -l` pads its count: `runtime/package/test.sh` strips it.

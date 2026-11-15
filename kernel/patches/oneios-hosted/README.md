@@ -1151,6 +1151,48 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0076-irq-host-calls-rpc-stats.patch (fix-mach-rpc, 2026-11-15)
+
+The keyboard lagged everywhere (phone session 8644ae9-b: Preferences at 102-104 % while typing in Settings' search, its main
+thread sampled in `_xpc_connection_send_message_with_reply_sync`; `oneios-perf` mach traps 37 us each). A synchronous
+XPC message is one `mach_msg2` trap that sends and receives the reply: the server's thread is woken with `thread_go` on an
+idle processor by an IPI, and the reply wakes the client's vCPU the same way (`docs/booter.md` 2.6d).
+
+- **The IPI is a host call.** `cpu_signal_internal` (`osfmk/arm/cpu_common.c`) calls `hosted_ipi_send(cpu_phys_id)` first:
+  xnuhost's `ipi` host call, SGI 0 (enabled by ArmCpu on every core; ArmCpu takes SGI 0 as an IPI too). Deferred IPIs the
+  same (IOCPU sends those at once anyway). Before, `PE_cpu_signal` -> `ArmCpu::signalCPU` -> `spiIpiSend`: a store to
+  GICD_ISPENDR, a trapped store (SIGSEGV, `xh_mmio_emulate`, the distributor's recompute of every CPU's line).
+- **The timer and IPIs are taken by host call.** `sleh_irq` (`osfmk/arm64/sleh.c`) calls `hosted_irq_dispatch` instead of
+  the registered handler: `irq_take` (xnuhost's new host call; `hostcall.h`, appended to the vector) acknowledges the
+  highest pending interrupt only when it is the timer (INTID 27: `rtclock_intr(0)`, as ArmCpu calls it), an SGI or an IPI
+  SPI (`cpu_signal_handler`, the handler `ml_processor_register` gives ArmCpu), and `irq_eoi` ends it; when it is a
+  device's, it comes back with `XH_INTID_UNTAKEN`, stays pending, and ArmCpu's `dispatch` takes it (and anything after it)
+  with its trapped `ICC_IAR1_EL1`/`ICC_EOIR1_EL1` as before. Before, every interrupt went through ArmCpu: three trapped
+  system registers (IAR, EOIR, IAR again for 1023) and, for an IPI SPI, a trapped GICD_ICPENDR store.
+- `oneios-fast-irq=0` (boot argument): ArmCpu's way for everything, as before; `oneios-fast-irq=2`: the two paths in turn,
+  one `oneios-perf` period each (the `0076:` line says which: an A/B test in one boot, under the same load; any mix is safe,
+  ArmCpu takes SGI 0 as an IPI and `irq_take` takes ArmCpu's IPI SPIs). An xnuhost without `irq_take` (vector
+  size) gets ArmCpu's way too.
+- **The lasting lines** of each `oneios-perf:` period:
+  - `rpc:` Mach RPCs (a `mach_msg2_trap` -47 or `mach_msg_trap` -31/-32 with `MACH_SEND_MSG | MACH_RCV_MSG` in x1): the
+    number, the round trip from the trap to the thread's next return to user mode (the reply, an error, a timeout; the
+    server's own work included) as mean and maximum, and four bands (under 100 us, to 1 ms, to 10 ms, over), per second.
+    A thread's stamp is `machine.hosted_rpc_at` (the `reserved5` word of `struct machine_thread` under `XNU_HOSTED`: the
+    layout Apple's kexts see is unchanged), cleared with the twin.
+  - `wake:` threads dispatched after an IPI to their CPU (`thread_dispatch`'s `latency`, `osfmk/kern/sched_prim.c`): made
+    runnable -> IPI sent (the waker's scheduler) -> the interrupt taken on this CPU (the host: the futex wake or signal of
+    the vCPU's thread, its way out of `cpu_idle`) -> running (the idle exit, the switch); the other dispatches' mean wait.
+  - `0076:` interrupts by host call (timer, IPI) and by ArmCpu's trapped registers, with the mean time of a dispatch on
+    each path (the handler's own work included); IPIs sent each way.
+  - `syscalls:` 0041's bsd and mach calls split into those that came back to their own thread (the call's own kernel
+    work) and those that blocked (to the vCPU's next user entry or idle: the switch and the next thread's way back).
+
+Tested: built with the series (`HOSTED_OUT=rpc`), prelinked (audit and stubs-check below), and booted on the PC: see
+`docs/booter.md` 2.6d for the bench and the boots. Not run on the phone. On the phone: the four lines in a session's
+`xnuhost.log`, `oneios-fast-irq=1` in the `0076:` line, `by ArmCpu's trapped registers` near zero, the `rpc:` mean and
+maximum while typing, and xnuhost's `emulated: insn 0xd538cc..` (ICC_IAR1_EL1) and `0xd518cc..` (ICC_EOIR1_EL1) counts at
+the stop or on SIGQUIT (millions before, devices' only after).
+
 ## 0049-wifi-association-event.patch (radio2, 2026-11-12)
 
 `kev_post_msg` (bsd/kern/kern_event.c) refuses an event that does not fit one mbuf without a cluster (`MLEN`), with
