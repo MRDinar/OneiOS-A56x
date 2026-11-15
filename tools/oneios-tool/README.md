@@ -307,8 +307,27 @@ Tested (Linux x86_64, 2026-11-15): `cargo test -p oneios-ioslog` 11 tests (7 new
 the hand-written log's counts per kind, process, name and text, the lines byte for byte, a log with nothing in it,
 the text form's parsing, the sources and the stage form, the command line), `cargo test -p oneios-tool --test
 ioslog_health` 1 test (the binary: stdout, `--detail`, `-o`, `--top`, `--examples 0`, the form without SOURCE, the
-exit statuses 0, 1 and 2), and the stand-in suites below ("phone", "cycle"). **Not tested: the phone's own store**
-(it is on the Mac). The check to run there, with the owner's numbers from that log:
+exit statuses 0, 1 and 2); `cargo test --release` for the whole workspace: 142 tests pass, 0 fail (these 8 are
+new). The stand-in suites, `tests/phone/modes.sh` (with origin/main at `fb4ec88` merged in):
+`host` and `stand-in` mode each **phone 232** checks (222 before), **app 103**, **cycle 122** (117 before), all
+ok, no stand-in session left. The ten new phone checks: `pull-data --ioslog` on the stand-in's `data.img`, which
+is no APFS store (it ends at `ioslog boots`, the copy stays, no `ioslog-health.txt`); `ioslog health` without
+SOURCE (the stage's own `data.img` is the one read; a stage without a store is refused by name; on a stage whose
+`data.img` is the hand-written log: the head and seven lines, the counts per kind and process, nothing on stderr;
+`--top 1 -o FILE`); beside a stand-in session (it reads, and says on stderr that the store is being written; a pid
+file of a process that is gone is no session). The five new cycle checks: `cycle --only collect` in a folder that
+holds the hand-written log as `ioslog.txt` (the head and seven lines printed; `ioslog-health.txt` with the
+details; `summary.md`'s section with the seven lines and without the details), in a folder with neither a store
+nor a log (one line that says so, status 0), and in the folder of the failed `--pull-data` case, whose `data.img`
+is no APFS store (`collect: ioslog health: ...`, status 1, no report). **The stand-in phone's `data.img` cannot
+be read as a store, so `pull-data --ioslog`'s and `--pull-data`'s health of a real copy are not run by the
+suites**. Run by hand instead (2026-11-15): a stand-in phone (`tests/phone/lib.sh`'s `make_phone`) whose
+`data.img` is a copy of the Data store iOS wrote on the PC, then `oneios-tool phone pull-data OUT --ioslog`:
+status 0, the copy is the store byte for byte (32 GiB, 1.5 GB written), `ioslog boots` and `checks` ran, then
+`--- ioslog health OUT`, the head (`boot FB412AD9..., 97417 entries, ... (192 s)`), the seven lines (crashes 1
+chronod, stuck-idle 26, the rest 0) and `ioslog-health.txt` beside the copy (27 lines).
+**Not tested: the phone's own store** (it is on the Mac). The check to run there, with the owner's numbers from
+that log:
 
 ```sh
 oneios-tool ioslog health out/session-logs/2026-11-15/main-8644ae9-b/data.img --detail -o out/session-logs/2026-11-15/main-8644ae9-b/ioslog-health.txt

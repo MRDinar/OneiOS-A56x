@@ -16,7 +16,8 @@
 # second cycle that stages nothing; a panic, a boot that never gets ready, Ctrl-C in the hold with and without
 # --stay; a failed collect step (summary.md's head names it, status 1); a split run (`--only stage,switch,watch`,
 # then `--only return,collect` with the same name: the summary reads the markers from the saved xnuhost.log and
-# says so); an audit failure and bad stubs stop it before the phone is touched; no switch without the return script,
+# says so); collect's ioslog-health.txt from the folder's ioslog.txt (its lines printed and in summary.md), without a log, and from a
+# data.img that is no store; an audit failure and bad stubs stop it before the phone is touched; no switch without the return script,
 # during an import, or when the preflight refuses; one phone lock. Every case ends the stand-in session it left
 # (end_case), and at the end, a failure or Ctrl-C none is left running (lib.sh's traps).
 # Env: TOOL, KEEP=1 (keep out/rustport-cycle), FAKE_PROC=host|stand-in (as tests/phone/run.sh).

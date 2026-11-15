@@ -10,7 +10,7 @@
 # return (the restore line, no session, a return that hangs); the session's own commands (session-cmds.sh:
 # display-restart with --lib and --dex, touch status and wake, backlight status and set, each refused without a
 # session, and the return after them); the bridges' hardware backends, samsung and treble (hw-backend.sh); pull-data (the copy is the phone's file, sparse;
-# a size that does not match); sparse-write. The session check's command is the phone's, byte for byte, and a pid
+# a size that does not match; --ioslog, and `ioslog health` without SOURCE on a stage, as on the phone itself); sparse-write. The session check's command is the phone's, byte for byte, and a pid
 # that is not an xnuhost's is no session. Every case ends the stand-in session it left (end_case), and at the
 # end, a failure or Ctrl-C none is left running (lib.sh's traps).
 # With the OneOS fork's checkout at hand (lib.sh's fork_dir: the one `oneios-tool app dir` finds from this checkout:
