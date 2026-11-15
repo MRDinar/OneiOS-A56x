@@ -129,8 +129,9 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
    lock stops that. **fix-ram-locked (this PR): the default flips to fixed, locked RAM** (`ram-giveback=0`,
    `ram-prefault=1`, `ram-lock=1`; `ram-giveback=1` flips it back); `ram=auto` takes the most that fits with the lock
    (the headroom 768 MiB where the lock can work, so (8,561 - 768 - 256) / 1.08 -> **6,912 MiB** on this phone, else
-   1 GiB as before); a lock that fails part way keeps what it locked (EPERM or the PC's 8 MiB RLIMIT_MEMLOCK at the first
-   step: nothing prefaulted, a clean line); the valve runs in the main loop at nice 0, is never under 128 MiB with the
+   1 GiB as before); a lock that fails part way keeps what it locked; where the lock cannot be had at all (EPERM, the
+   PC's 8 MiB RLIMIT_MEMLOCK at the first step, or more than fits) the RAM goes 0058's way with an error line (held
+   but unlocked, the PC swapped 910 MiB of 4 GiB in 15 min); the valve runs in the main loop at nice 0, is never under 128 MiB with the
    lock, and what fits leaves it 256 MiB more; the prefault stops if MemAvailable falls under the valve's level; the 5 s
    swap check reads nothing while all is locked and the mincore covers only the unlocked part; the thermal step only at
    a critical temperature (the case or the cell at 50 C), all cores otherwise. The next boot (the owner's `ram=auto

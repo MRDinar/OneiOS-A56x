@@ -61,7 +61,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |
 | `--set ram-giveback=0\|1` | **0** (since fix-ram-locked, 2026-11-15) | 0: the RAM is **held fixed and locked for the session** (section 2.2, "Fixed RAM": prefaulted, `mlock`ed, no free pages given back; the owner's rule: iOS's RAM is never swapped). 1: 0058's way again (faulted in as used, free pages given back, the host may swap it); one setting flips it back |
-| `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes; at the first `mlock` that fails the prefault stops and what is locked stays locked (where it fails at the first step, EPERM or an RLIMIT_MEMLOCK under 16 MiB, nothing is prefaulted); nothing is prefaulted unlocked unless `ram-lock=0`; neither if the RAM is more than fits |
+| `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes; at an `mlock` that fails part way the prefault stops and what is locked stays locked. Where the lock cannot be had at all (the first 16 MiB step fails: EPERM, or an RLIMIT_MEMLOCK under 16 MiB as on the PC; or the RAM is more than fits) the RAM is not held fixed either: 0058's give-back, with an error line (section 2.2, "Fixed RAM"). Nothing is prefaulted unlocked unless `ram-lock=0` |
 | `--set ram-session-reserve=SIZE` | 768M where the lock can work (CAP_IPC_LOCK, or no RLIMIT_MEMLOCK), else 1G | the headroom what fits leaves the host (section 2.2, "What fits"); with the lock never less than `ram-unlock-below` + 256 MiB; the lock is tried only if the RAM is within what fits |
 | `--set ram-unlock-below=SIZE` | 256M | with the RAM locked, the valve: the host's `MemAvailable` under this (read once a second by the main loop, and before each prefault step) unlocks it once for the rest of the session; with the lock at least 128M (0 or less is raised to 128M, with a line) |
 
@@ -290,12 +290,19 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     failure (EPERM: no CAP_IPC_LOCK; ENOMEM: RLIMIT_MEMLOCK or no memory) the errno is logged, **the prefault stops**
     and the rest is faulted in as iOS uses it; the boot goes on. What was locked before the failure stays locked
     (fix-ram-locked, re-checked: until then it was unlocked again, "all or nothing", which only made those pages
-    prefaulted and unlocked, the very pages the host swaps first; the valve covers a partial lock as a whole one). Where
-    the lock fails at the first step (EPERM, or an RLIMIT_MEMLOCK under one 16 MiB step: the PC's 8 MiB) nothing is
-    locked and nothing is prefaulted, the clean fallback: `not locked (mlock: ...), so not prefaulted: the guest's RAM is
-    faulted in as iOS uses it`. Before each step the prefault reads MemAvailable: under `ram-unlock-below` it stops there
-    (`stopped at N MiB: host MemAvailable M MiB is under ram-unlock-below`). The
-    lock is tried only if the RAM is within what fits (above); if it is not, nothing is prefaulted. Why not prefault
+    prefaulted and unlocked, the very pages the host swaps first; the valve covers a partial lock as a whole one). Before
+    each step the prefault reads MemAvailable: under `ram-unlock-below` it stops there (`stopped at N MiB: host
+    MemAvailable M MiB is under ram-unlock-below`).
+  - **The fallback where the lock cannot be had at all (fix-ram-locked, from the PC boots below).** xnuhost locks the
+    first 16 MiB step itself before the kernel starts; if that fails (EPERM: no CAP_IPC_LOCK; ENOMEM: an RLIMIT_MEMLOCK
+    under one step, the PC's 8 MiB), or the RAM is more than fits, the RAM is **not held fixed either**: the kernel is
+    not told `XH_FEATURE_RAM_FIXED`, its free pages are given back (0058's way, as `ram-giveback=1`), and one error line
+    says so: `memory: the guest's RAM cannot be locked here (mlock: Out of memory at the first 16 MiB): it is not held
+    fixed either; ... given back (0058's way, as ram-giveback=1), since a RAM held but not locked is the host's to swap`.
+    Why: held and not locked, every page iOS ever touched stays in the memfd for the host to swap (the PC boot C below:
+    4,053 MiB held at 900 s, 910 MiB of it swapped out; with give-back, boot A of 2026-11-14, 2,667 MiB held and 6 MiB
+    swapped). Until then the RAM stayed fixed and was faulted in as used. `ram-lock=0` with `ram-giveback=0` still holds
+    it fixed and prefaults it unlocked, as asked. Why not prefault
     without the lock (fix-ram-fit, 2026-11-14): a prefaulted page iOS has not used is the coldest page there is and the
     first the host swaps; the PC boot B below swapped 841 MiB of a prefaulted, unlocked 4 GiB guest in 15 minutes, boot A
     (faulted in as used) 6 MiB. Only `ram-lock=0` with `ram-prefault=1` still prefaults unlocked (one read per host page:
@@ -342,9 +349,10 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     new defaults, the lock's 768 MiB headroom where the lock can work and 1 GiB where it cannot, the fit with the
     2026-11-15 numbers (8,561 MiB -> 6,912 MiB locked, 6,656 MiB unlocked), the valve's floor and margin, one setting
     back to 0058's way; `xh_proc_values` on meminfo and vmstat files), and the test kernel under qemu-aarch64 (`make
-    check-arm64`'s second boot runs with the defaults: the refusal, the prefault, the sizing line, and on the PC the
-    clean fallback, `not locked (mlock: Out of memory), so not prefaulted`: RLIMIT_MEMLOCK 8 MiB, no root). **Not
-    run:** the phone (where xnuhost is root: the lock itself).
+    check-arm64`'s second boot runs with the defaults: the sizing line and, on the PC, the fallback line `cannot be
+    locked here (mlock: Out of memory at the first 16 MiB): it is not held fixed either` (RLIMIT_MEMLOCK 8 MiB, no
+    root); a third boot, `ram-giveback=0 ram-lock=0`, the fixed RAM's refusal and its prefault by reads). **Not run:**
+    the phone (where xnuhost is root: the lock itself).
   - **PC boots, before and after** (fix-ram-fit, 2026-11-14; qemu-aarch64, 8 vCPUs, `--ram 4G`, `out/image-pc/24A446`, a
     fresh Data store each, the kernel of main `f7bb1c3` plus 0067 (`kernel.kc` `e128c27b`), boot arguments of
     `docs/building.md` 5, 960 s each through `/tmp/oneios-qemu.lock`, the PC shared with other agents). A is

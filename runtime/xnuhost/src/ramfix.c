@@ -260,7 +260,7 @@ static void say_done(xh_ramfix *r)
              "unused page is the first the host swaps)", strerror(r->lock_error));
   else snprintf(why, sizeof why, "not locked");
   LOGI("memory: the guest's RAM is held: %llu MiB prefaulted in %llu ms, %s%s%s", (unsigned long long)(r->prefaulted >> 20),
-       (unsigned long long)r->ms, why, r->lock ? "" : ", read once a page (ram-lock=0)", short_by);
+       (unsigned long long)r->ms, why, r->lock ? "" : ", read once a page", short_by);
 }
 
 static void *ramfix_main(void *arg)
