@@ -812,6 +812,19 @@ Sharing functionality not available from Sharing`; 63 `AUTO-JOIN: Scan SUCCEEDED
   ages and TIMESTAMPs, so an age filter sees how old they are), its SCAN_DONE 20 ms later (IO80211 marks the async scan
   pending around the ioctl), and no radio scan. The rate line counts them as `reused`. A scan that timed out or failed,
   and power off, end the reuse. The events stay one per request (wifid asked for each): what goes is the radio time.
+  The PC boot with it (`wifi=sim`, kernel.kc d846437d), 5 minutes of rate lines: `events 10x20; scans asked 20 (started
+  5, reused 15, joined 0, refused 0), done 20 (2 networks), timed out 0; records 40; ...; by wifid 20/40` (18 and 19 in
+  two of them): 5 radio scans a minute instead of 20, and every request still ended in wifid (`Async scan requested by
+  "locationd"` 49, `Completed Apple80211ScanAsync` 48 with the 49th running, no `Thread mismatch` or `scan loop
+  unexpected exit`), each reused answer read in full (2 records and the EIO).
+- **Rates, before and after, on the PC** (`wifi=sim`, SCAN_DONE and radio scans per minute): main's driver 19.5 and
+  19.5 (2026-11-14: 33 in 102 s); the first commit (per-reader cursor, power and no-radio fixes) 20 and 20; with the
+  reuse 20 and 5. POWER sets: none in any PC boot (nobody turned Wi-Fi off and on). Not run on the phone.
+- **On the phone, the lines that prove it**: `ONEIOS WIFI: 60 s: ... scans asked N (started S, reused R, ...)` with S
+  about one per 8 s at most while locationd scans, `events 10xN` equal to `scans asked` minus `refused`, power events
+  only with `(changed N)` and `power 1 (as it was: no event)` for a set that changed nothing; in iOS's log
+  (`ioslog --proc wifid --grep 'Async scan requested by'`) who asks, and `--proc locationd --grep 'WifiTimer, set'` its
+  interval. [I] Whether Preferences' load falls with it is for that session's `oneios-cpu:` lines.
 - What a SCAN_DONE does in a client [F, IO80211.framework `_eventRead`]: a client with an asynchronous scan of its own
   pending reads the records (`_getAsyncScanResults`: `SCAN_RESULT` until `EIO`, which is the expected end); any other
   client that monitors the event gets its callback with code 10 and no data. The event goes to every client's event

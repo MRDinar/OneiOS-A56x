@@ -138,3 +138,7 @@ reading thread, reset by each finished scan (one cursor for all readers before);
 of the last good scan gets its records again with no radio scan (locationd asked for two scans every 6 s on the PC);
 and the `60 s:` rate line counts the events and requests. Why, and what the PC showed: `docs/hardware.md` 3, "Settings uses a full core while the password
 sheet is open".
+
+Built (`HOSTED_OUT=fixsw`; prelink audit 0 failures, `stubs-check` 666 good) and booted on the PC with `wifi=sim`: SCAN_DONE
+20 a minute before and after (one per request: locationd's), radio scans 20 a minute before and 5 after. Not run on the
+phone yet.
