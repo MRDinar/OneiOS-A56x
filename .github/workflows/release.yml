@@ -2,7 +2,8 @@
 # submodule app/) built at the same time on two runners, and a release that carries both.
 #
 #   plan ──┬── runtime    (ubuntu-24.04) script checks, host tests, runtime/package.sh, the Apple-file refusal,
-#          │                             elf-check, drm2kgsl, the package's members
+#          │                             elf-check, drm2kgsl, the package's members, bin/oneios-tool for the
+#          │                             phone and oneios-tool-VERSION-android-arm64 beside the package
 #          ├── apk        (ubuntu-24.04) app/ at the head of the fork's branch, JDK 21, tribalfs' packages,
 #          │                             ./gradlew test assembleFullDebug, the APK's assets checked
 #          ├── apk-macos  (macos-15)     ./gradlew test of the same checkout on a Mac (core:root's script tests)
@@ -80,7 +81,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.plan.outputs.version }}
@@ -156,6 +157,10 @@ jobs:
           zstd -dc "$a" | tar -t | tee members.txt | grep -Ev '^(runtime\.json|NOTICE|LICENSE|(bin|lib|scripts)/[^/].*|kernel/xnu\.macho(\.build\.json)?)$' && { echo "::error::the package has members outside the runtime's folders (above)"; exit 1; }
           [ "$(head -n 1 members.txt)" = runtime.json ] || { echo "::error::runtime.json is not the first member"; exit 1; }
           echo "$(wc -l < members.txt) members, runtime.json first"
+      - name: The phone's oneios-tool is the package's bin/oneios-tool, stripped, with its .sha256
+        # runtime/package.sh builds tools/oneios-tool for aarch64-linux-android into bin/oneios-tool and writes the
+        # same bytes beside the package (docs/releases.md, "oneios-tool for the phone"). The OneOS app runs it as root.
+        run: .github/scripts/check-phone-tool.sh "$VERSION"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oneios-runtime
@@ -163,6 +168,7 @@ jobs:
             out/release/*.tar.zst
             out/release/*.sha256
             out/release/*.runtime.json
+            out/release/oneios-tool-*-android-arm64
           if-no-files-found: error
           retention-days: 14
 
@@ -407,6 +413,8 @@ jobs:
           if [ "$HAS_RUNTIME" = true ]; then
             r=oneios-runtime-$VERSION-arm64.tar.zst
             sha256sum -c "$r.sha256"; files+=("$r" "$r.sha256")
+            t=oneios-tool-$VERSION-android-arm64
+            sha256sum -c "$t.sha256"; files+=("$t" "$t.sha256")
           fi
           if [ "$HAS_APK" = true ]; then
             sha256sum -c "$APK.sha256"
@@ -423,6 +431,7 @@ jobs:
             echo
             if [ "$HAS_RUNTIME" = true ]; then
               echo "- **Runtime** \`oneios-runtime-$VERSION-arm64.tar.zst\` (+ \`.sha256\`): the runtime package for the OneOS fork (branch \`oneios\`). OneiOS's own code only: no Apple firmware; the iOS image set is built locally. See [docs/releases.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/releases.md)."
+              echo "- **oneios-tool for the phone** \`oneios-tool-$VERSION-android-arm64\` (+ \`.sha256\`): the package's \`bin/oneios-tool\` by itself (OneiOS's Rust tools for Android arm64, stripped), which the OneOS app runs as root from the staged runtime."
             else
               echo "- **No runtime** in this release (built as \"apk only\"): it is not marked latest, so the app's runtime download keeps the latest release that has one."
             fi

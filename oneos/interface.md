@@ -110,6 +110,8 @@ A tool the package lacks is shown as "Not in this runtime", not as a failure.
 | `session/` | this session: `xnuhost.pid`, `xnuhost.log`, `ready`, `return.request`, `tmp/`, the baseline | switch, xnuhost |
 | `logs/` | earlier sessions' `xnuhost-<epoch>.log` (the last 5; the next switch moves `session/xnuhost.log` there, so the epoch is that switch's time and the file's own time is its session's last line) | switch |
 | `switch.log`, `return.log`, `return.outcome`, `control/display.log`, `control/watchdog_feeder.log`, `control/usb.log` | the fork's own logs: the switch, the return with the watcher and the key readers, how the last return ended, the display helper's output, the watchdog feeder, the session's USB watcher (section 6a) | switch, return |
+| `tool/` | `TMPDIR` of `runtime/bin/oneios-tool serve` (section 9) | root's `tool` |
+| `make/` | Make iOS image's work folder (the tool's `make-image` `work`): the IPSW members, the volumes, the prelink's `work/`; removed by the tool on a cancel or a failure (its README) | oneios-tool |
 
 **What OneiOS's CLI writes there during a session** (`oneios-tool phone display-restart`, from the PC over adb;
 `tools/oneios-tool/README.md`, "The session's own commands"; stand-in tested, not run on the phone): it ends the
@@ -323,3 +325,30 @@ same files, redacted. It reads these lines and nothing else, so change one only 
 
 An exit with code 2 (setup) has no line of its own: the fork shows the last `xnuhost E` line of a log that never
 entered the kernel. A line that said so (`exit 2`) would be better, and the fork would read it as it is.
+
+## 9. oneios-tool in the app (fork branch `app-oneios-tool`, 2026-11-15; not run on the phone yet)
+
+The runtime package carries the Rust tools for the phone as `bin/oneios-tool` (`docs/releases.md`, "oneios-tool for
+the phone": why there and not in the APK). The fork runs it for one flow at a time, as root, with One UI up:
+
+- `oneios_root.sh tool work|read`: refuses without a stage or a staged runtime, when the runtime has no
+  `bin/oneios-tool` ("get a newer runtime"), when that file is not the one whose SHA-256 root recorded in
+  `runtime.sha256` at staging, and (`work` only) during a session. Then it prints `@@OK tool <mode>` and
+  `exec`s `nice -n 10 runtime/bin/oneios-tool serve --stage /data/local/tmp/oneios` with `TMPDIR=<stage>/tool`, on
+  the app's pipe. From there the lines are the tool's protocol (`tools/oneios-tool/README.md`, "serve": protocol 1,
+  one JSON object a line; the fork's `OneiosTool.kt` reads them). The fork reads `hello`'s `proto` and refuses
+  another one.
+- The app writes requests and `{"cmd":"cancel","id":...}`, and ends the flow by closing the pipe; the tool cancels
+  what runs, removes what it wrote, says `bye` and exits. When it has not ended 10 s after the pipe closed, the app
+  runs `oneios_root.sh untool`: every process whose command line holds `<stage>/runtime/bin/oneios-tool serve`, and
+  their children four levels down, get SIGTERM, then SIGKILL after 2 s; then it ends its `su`.
+- What the fork sends (`OneiosToolJob.kt`): `sums` of `runtime/` and `image/` against `runtime.sha256` and
+  `image.sha256` (`strict`), `cpu`, `log-list` and `log` (`file` `xnuhost`), `ioslog-boots` and `ioslog-show`
+  (`source` `<stage>/data/data.img`, `boot` `last`), and for Make iOS image root's `begin image`, then
+  `make-image` with `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`, `ids_list`
+  `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
+  with those four fields of `make-image`'s `ok`. **`make-image` is not in the tool yet**: the fork's request to the
+  Rust side is its step list (`download` of the released `xnu.macho`, `fetch` of the profile's IPSW members from
+  Apple's URL, `im4p`, `apfs-copy`, `tweaks`, `prelink` with the audit and `stubs-check`, the `receive`-style lists),
+  one `space` event before it writes, and those four result fields. Until then the tool answers `refused`
+  `unknown` and the screen says so.

@@ -5,7 +5,10 @@
 #   runtime.json           the manifest: version, git commit, every file with size, SHA-256 and mode
 #   bin/                   xnuhost and its helpers, built for arm64 Android by runtime/build.sh (the booter's);
 #                          without that script: a placeholder xnuhost that prints "not built yet" and exits 2
-#   lib/                   what a helper loads that is not a program: oneios-display.dex (runtime/display, the
+#   bin/oneios-tool        the Rust tools (tools/oneios-tool) for aarch64-linux-android, stripped: the OneOS app runs
+#                          them as root from the staged runtime. Also written beside the package as
+#                          out/release/oneios-tool-VERSION-android-arm64 with its .sha256 (the same bytes)
+#   lib/                 what a helper loads that is not a program: oneios-display.dex (runtime/display, the
 #                          SurfaceControl layer that bin/oneios-display runs with app_process)
 #   scripts/               runtime/scripts/* (session helpers), when there are any
 #   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record
@@ -17,7 +20,9 @@
 # stage (the display helper's library, the dynamic helpers) and the package is refused (exit 3) when one needs a
 # library that is no API 30 stub of the NDK, or has an undefined symbol that none of its NEEDED libraries defines.
 # Build hosts: Linux x86_64 and macOS (runtime/host.mk). Needs Rust (cargo) for oneios-tool, which is built when it
-# is missing or older than its sources (scripts/lib/oneios-tool.sh; ONEIOS_TOOL=PATH names another binary).
+# is missing or older than its sources (scripts/lib/oneios-tool.sh; ONEIOS_TOOL=PATH names another binary), and
+# the Rust target aarch64-linux-android for the phone's bin/oneios-tool (ONEIOS_TOOL_ANDROID=PATH names a binary
+# built elsewhere; CARGO_TARGET_DIR is honoured).
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release), SOURCE_DATE_EPOCH (default: the commit time),
@@ -73,6 +78,38 @@ else
   PLACEHOLDER=1
   "$CC_aarch64_linux_android" -O2 -static -nostdlib -ffreestanding -fno-stack-protector \
     -Wl,-e,_start -Wl,--build-id=none -Wl,-s -o "$STAGE/bin/xnuhost" "$ROOT/runtime/package/placeholder-xnuhost.c"
+fi
+# 1b. oneios-tool for the phone (tools/oneios-tool, Rust, aarch64-linux-android): bin/oneios-tool, which the OneOS
+# app runs as root from the staged runtime (`oneios_root.sh tool`, oneos/interface.md section 9), and the same file
+# beside the package as oneios-tool-VERSION-android-arm64 with its .sha256 (docs/releases.md). Linked by the NDK's
+# clang for API 30 (the level elf-check.sh reads), stripped with the NDK's llvm-strip. ONEIOS_TOOL_ANDROID=PATH
+# takes a binary built elsewhere instead (it is stripped and checked the same way).
+NDK_STRIP=$NDK_BIN/llvm-strip
+if [ -n "${ONEIOS_TOOL_ANDROID:-}" ]; then
+  [ -f "$ONEIOS_TOOL_ANDROID" ] || { echo "package: ONEIOS_TOOL_ANDROID=$ONEIOS_TOOL_ANDROID is not a file" >&2; exit 1; }
+  TOOL_ANDROID=$ONEIOS_TOOL_ANDROID
+else
+  echo "package: oneios-tool for aarch64-linux-android (cargo build --release --target aarch64-linux-android)"
+  CARGO=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
+  [ -x "$CARGO" ] || { echo "package: no cargo for oneios-tool (docs/building.md section 0)" >&2; exit 1; }
+  CC_aarch64_linux_android=$NDK_BIN/aarch64-linux-android30-clang \
+  CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_BIN/aarch64-linux-android30-clang \
+    "$CARGO" build --release --target aarch64-linux-android -p oneios-tool \
+      --manifest-path "$ROOT/tools/oneios-tool/Cargo.toml" ||
+    { echo "package: oneios-tool did not build for aarch64-linux-android (rustup target add aarch64-linux-android?)" >&2; exit 1; }
+  TOOL_ANDROID=${CARGO_TARGET_DIR:-$ROOT/tools/oneios-tool/target}/aarch64-linux-android/release/oneios-tool
+  [ -f "$TOOL_ANDROID" ] || { echo "package: no $TOOL_ANDROID after the build" >&2; exit 1; }
+fi
+"$NDK_STRIP" --strip-all -o "$STAGE/bin/oneios-tool" "$TOOL_ANDROID"
+# A PIE for /system/bin/linker64, without a symbol table (the strip worked). The headers are read once into a
+# variable: `readelf | grep -q` fails under pipefail when grep's early exit gives readelf SIGPIPE.
+TOOL_HEADERS=$("$NDK_BIN/llvm-readelf" -h -l -S "$STAGE/bin/oneios-tool")
+grep -q 'Type: *DYN' <<< "$TOOL_HEADERS" ||
+  { echo "package: bin/oneios-tool is not a position-independent arm64 executable" >&2; exit 1; }
+grep -q '/system/bin/linker64' <<< "$TOOL_HEADERS" ||
+  { echo "package: bin/oneios-tool does not name /system/bin/linker64" >&2; exit 1; }
+if grep -q -E ' \.(symtab|debug_(info|line|abbrev|str|ranges|rnglists|loclists|aranges)) ' <<< "$TOOL_HEADERS"; then
+  echo "package: bin/oneios-tool still has a symbol table or debug sections" >&2; exit 1
 fi
 chmod 0755 "$STAGE"/bin/*
 for binary in "$STAGE"/bin/*; do
@@ -152,6 +189,13 @@ fi
 zstd -q -19 -f -o "$OUT/$NAME.tar.zst" "$WORK/$NAME.tar"
 ( cd "$OUT" && "${SHA256[@]}" "$NAME.tar.zst" > "$NAME.tar.zst.sha256" )
 cp "$STAGE/runtime.json" "$OUT/$NAME.runtime.json"
+# The phone's oneios-tool by itself (the same bytes as the package's bin/oneios-tool), for a developer's adb push
+# and for the release page.
+TOOL_NAME=oneios-tool-$VERSION-android-arm64
+cp "$STAGE/bin/oneios-tool" "$OUT/$TOOL_NAME" && chmod 0755 "$OUT/$TOOL_NAME"
+( cd "$OUT" && "${SHA256[@]}" "$TOOL_NAME" > "$TOOL_NAME.sha256" )
 rm -rf "$WORK"
 echo "package: $OUT/$NAME.tar.zst ($(wc -c < "$OUT/$NAME.tar.zst" | tr -d ' ') bytes)"
 cat "$OUT/$NAME.tar.zst.sha256"
+echo "package: $OUT/$TOOL_NAME ($(wc -c < "$OUT/$TOOL_NAME" | tr -d ' ') bytes)"
+cat "$OUT/$TOOL_NAME.sha256"

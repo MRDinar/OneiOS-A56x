@@ -11,6 +11,8 @@ Up to two assets and their checksums on a GitHub release of `akshaynexus/OneiOS`
 ```
 oneios-runtime-<version>-arm64.tar.zst             the runtime package (this repository's code)
 oneios-runtime-<version>-arm64.tar.zst.sha256      one sha256sum line: "<64 hex>  <file name>"
+oneios-tool-<version>-android-arm64                the package's bin/oneios-tool by itself, with the runtime (from
+oneios-tool-<version>-android-arm64.sha256         the release after v0.1.9; for a developer's adb push)
 OneOS-oneios-<versionName>-debug.apk               the OneOS app: the fork (submodule app/) at the head of its branch
 OneOS-oneios-<versionName>-debug.apk.sha256        one sha256sum line
 ```
@@ -31,6 +33,7 @@ window) around a ustar archive of regular files, `runtime.json` first, no top fo
 | `runtime.json` | manifest, below |
 | `bin/xnuhost`, other `bin/*` | the booter and its helpers, arm64 Android, built by `runtime/build.sh` with NDK 28.2.13676358. Until that script exists: a 968-byte placeholder that prints `xnuhost: not built yet ...` and exits 2 |
 | `bin/gpuctl`, `bin/bridgectl`, `bin/wifictl`, `bin/brightctl`, `bin/batteryctl`, `bin/displayctl`, `bin/camctl` | the phone checks, each a tool of its own that runs as root with One UI up (`docs/gpu.md`, `runtime/bridges/README.md`, `runtime/bridges/brightness/README.md`, `runtime/bridges/battery/README.md`, `runtime/display/README.md`, `runtime/bridges/camera/README.md`). The fork's **Hardware checks** screen runs them from the staged runtime (`oneios_root.sh check <id>`, the fork's `docs/oneios.md`) |
+| `bin/oneios-tool` | the Rust tools (`tools/oneios-tool`) for `aarch64-linux-android`, linked for API 30 by the NDK's clang and stripped (`runtime/package.sh` step 1b, [building.md](building.md) section 4). The OneOS app runs it as root from the staged runtime, one `oneios-tool serve` per flow (`oneios_root.sh tool`, [../oneos/interface.md](../oneos/interface.md) section 9) |
 | `scripts/*` | `runtime/scripts/*`, when there are any |
 | `kernel/xnu.macho`, `kernel/xnu.macho.build.json` | the XNU that `kernel/` builds from Apple's open source, and its build record. Only when a kernel was built |
 | `NOTICE`, `LICENSE` | licences; with a kernel, the APSL notice (`kernel/NOTICE.kernel`) |
@@ -189,8 +192,11 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   `runtime/package/test.sh`; `kernel/tests/host.sh`, which runs `kernel series-check` and `kernel build-record
   --self-test`; every executable `*/tests/host.sh` of another area); the pinned kernel when
   `kernel/release-kernel.txt` names one; `runtime/package.sh <version>` (the Apple-file refusal and the elf-check of
-  the stage); the drm2kgsl check and `runtime/package/elf-check.sh` on the unpacked archive; the members check
-  (above). Artifact `oneios-runtime`: the `.tar.zst`, its `.sha256` and `.runtime.json`.
+  the stage, and `bin/oneios-tool` built for the phone); the drm2kgsl check and `runtime/package/elf-check.sh` on
+  the unpacked archive; the members check (above); `.github/scripts/check-phone-tool.sh <version>` ("oneios-tool for
+  the phone", below). Artifact `oneios-runtime`: the `.tar.zst`, its `.sha256`, `.runtime.json`, and
+  `oneios-tool-<version>-android-arm64` with its `.sha256`. Its limit is 45 min (the tool's Android build comes on
+  top of the host one).
 - **apk**: what the fork's `.github/workflows/oneios-apk.yml` does, from OneiOS. `git submodule update --init
   --remote app` (the head of the branch `.gitmodules` names, `oneios`; the commit recorded in OneiOS is printed beside
   it); the token for tribalfs' packages (below); JDK 21 (Temurin); Gradle (`setup-gradle`, its open-source `basic`
@@ -205,7 +211,8 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   failed tests; the reports are the artifact `oneos-tests-macos`. Not a gate of the release.
 - **release**: needs runtime and apk (each a success, or skipped because the dispatch asked for the other only).
   Checks the commit is on `main` and that the tag, when it exists, is at the built commit (a tag is never moved);
-  downloads the artifacts, checks their `.sha256` (and that the APK is the file the apk job checked), writes the
+  downloads the artifacts, checks their `.sha256` (the runtime's and the phone tool's; and that the APK is the file
+  the apk job checked), writes the
   notes, creates the release (a pre-release when the version has a suffix; `--latest=false` without a runtime), or
   adds this run's notes to an existing one. Assets are added, never replaced: an asset already on the release with
   the same SHA-256 (GitHub's `digest`) is left, one with other bytes stops the job.
@@ -221,6 +228,24 @@ else the owner's login). The fork's runs read them with their `GITHUB_TOKEN` (HT
 2026-11-12). OneiOS's own `GITHUB_TOKEN`: RESULT_TOKEN.
 
 **The 3D GPU in a release.** The runtime job fetches Droid-VM's virglrenderer (`scripts/setup/get-references.sh virglrenderer`) before the host tests and the package, on every build, and refuses a package whose `xnuhost` or `gpuctl` was built without drm2kgsl. Without that checkout both build 2D-only and only say so at run time: runtime 0.1.1 was published that way and its GPU check failed on the phone with "this build has no drm2kgsl". 0.1.3 is the first release with the check (0.1.2's run failed to link: a stale 2D-only `gpu3d.o` from the host tests beside the real drm2kgsl; the fetch now runs before the host tests and `gpu3d.o` rebuilds when the drm2kgsl setting changes). Before 2026-11-15 only the tag's run fetched it; pull requests built 2D-only.
+
+**oneios-tool for the phone (from 2026-11-15, branch `app-oneios-tool`; no tagged release has it yet).**
+`.github/scripts/check-phone-tool.sh VERSION` checks `oneios-tool-VERSION-android-arm64`: its `.sha256` line names it
+and matches; it is byte for byte the package's `bin/oneios-tool`, which `runtime.json` lists with that SHA-256 and mode
+0755; it is an AArch64 PIE for `/system/bin/linker64` with no `.symtab` and no DWARF section (Rust's allocated `.debug_gdb_scripts` stays). **Why in the runtime
+package and not in the APK** (as `lib/arm64-v8a/liboneios-tool.so`):
+- *Root's exec and SELinux:* the fork's root script already runs the staged runtime's `bin/` files as root, and only
+  the one whose SHA-256 it recorded at staging (`check`: the phone checks; `tool`: this one). The same rule covers the
+  tool with no new path. An APK's native folder (`/data/app/~~.../lib/arm64`, `apk_data_file`) is a second place root
+  would exec from, with a label of its own and a path that changes with every install; not proven on the phone.
+- *Updates apart from the app:* the tool's code lives in OneiOS and changes with the runtime and the kernel (its
+  `prelink`, `image` and `ioslog` follow them); in the package it updates with each runtime release, without a new APK,
+  and the version the app talks to is the one beside the xnuhost it serves.
+- *Size:* 13,772,784 bytes stripped (this branch, built on Linux); the package of `0.0.0-ci` with it is 5,306,913 bytes (v0.1.9 without it: 805,244);
+  in the APK every user would carry it, also those who never set up iOS.
+- *What it costs:* no tool before a runtime is staged. The flows need a staged runtime anyway (the Make iOS image step
+  starts with the runtime download), and the runtime's own import keeps root's shell checks, so no step needs the
+  tool before it is there.
 
 ## The kernel in a release
 
