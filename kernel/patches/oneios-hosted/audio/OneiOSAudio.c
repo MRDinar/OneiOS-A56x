@@ -5,7 +5,9 @@
 // UniXNU-droidvm's virtio-snd transport (DroidVMVirtioSnd.c: xnuhost's /arm-io/virtio-snd, runtime/bridges/devices/
 // virtio_snd.c), which publishes the two IOAudio2Devices of DroidVMAudio.cpp, says what attached, and starts a
 // report thread: every 30 s while the counters move, one line of each side's counters (what an underrun, a late
-// engine period or a refused selector looks like from inside the guest). oneios-audio-report=0 leaves it out.
+// engine period or a refused selector looks like from inside the guest), and while the speaker plays one line of its
+// engine's timing (`speaker engine: ...`: how late it took its periods, how far ahead the HAL wrote: iOS's I/O buffer
+// and safety offset as used). oneios-audio-report=0 leaves it out.
 //
 // oneios-audio-selftest=SECONDS (1..10): 3 s after the start, a 1 kHz sine at -30 dBFS (quiet at any media volume)
 // straight into the transport, before iOS's audio server runs: the guest kernel -> virtio-snd -> oneios-audio ->
@@ -31,6 +33,31 @@ extern volatile uint32_t droidvm_audio_stage, droidvm_audio_out_running, droidvm
 extern volatile uint64_t droidvm_audio_periods, droidvm_audio_late, droidvm_audio_played, droidvm_audio_captured;
 extern volatile uint64_t droidvm_audio_last_selector, droidvm_audio_selectors, droidvm_audio_bad_selectors, droidvm_audio_maps;
 extern volatile int droidvm_audio_family_status, droidvm_audio_hog_owner;
+// The speaker engine's timing (DroidVMAudio.cpp as staged, fix-audio-latency).
+extern uint32_t oneios_speaker_ring;
+extern volatile uint64_t oneios_speaker_periods, oneios_speaker_late_sum, oneios_speaker_late_max, oneios_speaker_leads,
+    oneios_speaker_lead_sum, oneios_speaker_lead_min, oneios_speaker_lead_max, oneios_speaker_lead_last, oneios_speaker_tight;
+
+// Since the last report, the speaker's engine: how late it took its periods, and how far ahead of each the HAL had
+// written (its write end: iOS's I/O buffer and the safety offset as used, so the guest's part of the latency from
+// iOS's mix); a lead within a period of the ring's end is "tight" (the ring too small for the I/O buffer iOS took).
+static void oneios_audio_speaker_report(void) {
+    static uint64_t periods, late_sum, leads, lead_sum, tight;
+    const uint64_t p = oneios_speaker_periods - periods, l = oneios_speaker_leads - leads;
+    if (!p) return;
+    const uint64_t late = (oneios_speaker_late_sum - late_sum) / p, lead = l ? (oneios_speaker_lead_sum - lead_sum) / l : 0;
+    if (l)
+        printf("ONEIOS AUDIO: speaker engine: %llu periods, taken late by %llu us on average (max %llu); the HAL wrote %llu..%llu frames "
+               "ahead (%llu on average, %llu ms: iOS's I/O buffer and safety offset), %llu periods tight (ring %u frames)\n",
+               p, late, oneios_speaker_late_max, oneios_speaker_lead_min, oneios_speaker_lead_max, lead, lead / 48,
+               oneios_speaker_tight - tight, oneios_speaker_ring);
+    else
+        printf("ONEIOS AUDIO: speaker engine: %llu periods, taken late by %llu us on average (max %llu); the HAL's write end not ahead "
+               "(last %llu; ring %u frames)\n", p, late, oneios_speaker_late_max, oneios_speaker_lead_last, oneios_speaker_ring);
+    periods = oneios_speaker_periods; late_sum = oneios_speaker_late_sum; leads = oneios_speaker_leads;
+    lead_sum = oneios_speaker_lead_sum; tight = oneios_speaker_tight;
+    oneios_speaker_late_max = 0; oneios_speaker_lead_max = 0; oneios_speaker_lead_min = ~0ULL;
+}
 
 static void oneios_audio_report(void *arg, wait_result_t result) {
     (void)arg; (void)result;
@@ -38,6 +65,7 @@ static void oneios_audio_report(void *arg, wait_result_t result) {
     uint32_t last_clients = 0;
     for (;;) {
         IOSleep(30000);
+        oneios_audio_speaker_report();
         const uint64_t moved = droidvm_audio_periods + droidvm_audio_selectors + droidvm_snd_errors;
         if (moved == last && droidvm_audio_clients == last_clients) continue;
         last = moved;

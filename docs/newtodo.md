@@ -171,7 +171,7 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
   (`ram-giveback=0`), the graceful return (`return-graceful-ms=`), the wide display path (`display-format=rgba16f`),
   the bigger HID queue (`oneios-hid-queue-kib=`), the GPU read wait (`oneios-gpu-read-wait=1`), the stand-in
   actuator (`haptics=sim`), the fork's USB repairs (the file `/data/local/tmp/oneios/usb-repair`), AAudio's low
-  latency (`ONEIOS_AUDIO_PERF=low`).
+  latency (`ONEIOS_AUDIO_PERF=low`; since 2026-11-15 LOW_LATENCY and MMAP exclusive are the default, `ONEIOS_AUDIO_PERF=none` the old path).
 - **On by default and new on `main`, none of it run on the phone yet:** the audio helper's lower latency (#21),
   `pull-data` in chunks with resume and per-chunk sums (#25), the Wi-Fi scan TIMESTAMP and channel list (#22),
   xnuhost's `usb:` lines (#24), the haptics, widget and display counters (#16, #17, #15), sRGB-tagged frames (#15).
@@ -440,6 +440,11 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
    reported latency is unchanged (6480; 5040 predicted, set by boot argument after the phone measures; the kernel build of
    that default was stopped at the hand-off), LOW_LATENCY is opt-in (`ONEIOS_AUDIO_PERF=low`). On the phone: read the lines that section lists (`the server
    pulls N frames every M ms`, `margin`, `latency about N ms`) and time a key click against a recording.
+   **Since 2026-11-15 (fix-audio-latency, the 8644ae9 session's 105-123 ms on the host side):** LOW_LATENCY with MMAP
+   exclusive by default (no callback, no realtime thread), the speaker's ring 1920 frames (iOS's I/O buffer at most
+   720 frames instead of 3072), each speaker period handed on as it starts, the ring's wrap fixed (every device),
+   the output latency iOS is told measured by the helper at each boot, `end-to-end N ms` and `speaker engine:` lines,
+   `bridgectl audio-loop`. On the phone: `docs/hardware.md` section 6, "Latency end to end", "On the phone".
 7. **Bluetooth:** the uart.sk transport (e73c11d) has not been tried in iOS. Waits for the phone. Steps: a session,
    Settings > Bluetooth on, then the expected lines of `docs/hardware.md` 4 ("Expected lines, in order"), from
    `ONEIOS BT: dev: bluetoothd[N] opens /dev/btwake` to `bluetooth: the controller hears devices`; if they stop, the

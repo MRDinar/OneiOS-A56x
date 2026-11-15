@@ -481,6 +481,34 @@ static int image_set_disk(unsigned i, xh_blk *disk)
   return 0;
 }
 
+// The speaker's output latency for the guest (DroidVMAudio.cpp as staged publishes the boot argument
+// oneios-audio-latency=FRAMES as the device's "output latency"): what the helper measures on its stream before the
+// guest boots (br_audio_probe_latency; the guest's speaker hands each period on as it starts, so nothing is added
+// for the guest), unless the boot arguments already say it. ONEIOS_AUDIO_PROBE=0: no probe, the kernel's default.
+static void audio_latency_arg(const br_audio_backend *audio, void *ctx)
+{
+  const char *given = strstr(config.boot_args, "oneios-audio-latency=");
+  if (given) {
+    unsigned frames = (unsigned)strtoul(given + strlen("oneios-audio-latency="), NULL, 10);
+    br_audio_told(audio, ctx, frames);
+    LOGI("audio: output latency %u frames (%u ms): the boot arguments' oneios-audio-latency, not measured", frames, frames / 48);
+    return;
+  }
+  const char *probe = getenv("ONEIOS_AUDIO_PROBE");
+  if (probe && !strcmp(probe, "0")) { LOGI("audio: ONEIOS_AUDIO_PROBE=0: the kernel's default output latency"); return; }
+  int frames = br_audio_probe_latency(audio, ctx, 2000);
+  if (frames <= 0) { LOGI("audio: speaker latency not measured (%s): the kernel's default output latency", strerror(frames ? -frames : EIO)); return; }
+  size_t used = strlen(config.boot_args);
+  if (snprintf(config.boot_args + used, sizeof config.boot_args - used, "%soneios-audio-latency=%d", used ? " " : "", frames) >=
+      (int)(sizeof config.boot_args - used)) {
+    config.boot_args[used] = 0;
+    LOGE("audio: no room in the boot arguments for oneios-audio-latency=%d: the kernel's default output latency", frames);
+    return;
+  }
+  br_audio_told(audio, ctx, (unsigned)frames);
+  LOGI("audio: speaker latency %d frames (%d ms) measured by the helper: oneios-audio-latency=%d", frames, frames / 48, frames);
+}
+
 static int boot(void)
 {
   const char *error = NULL;
@@ -715,7 +743,10 @@ static int boot(void)
     const br_audio_backend *audio = NULL;
     if (*config.runtime && snprintf(helper, sizeof helper, "%s/bin/oneios-audio", config.runtime) < (int)sizeof helper) audio = br_audio_helper(helper, &audio_ctx);
     if (!audio) audio = br_audio_null(&audio_ctx);
-    if (audio && br_virtio_snd_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, audio, audio_ctx)) kinds[ndev++] = XL_DEV_SND;
+    if (audio && br_virtio_snd_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, audio, audio_ctx)) {
+      kinds[ndev++] = XL_DEV_SND;
+      audio_latency_arg(audio, audio_ctx);
+    }
 
     // The camera: a helper process (Android's camera libraries are shared libraries) that opens a camera only
     // when the guest asks. ONEIOS_CAMERA=0 leaves it out; ONEIOS_CAMERA_BACKEND picks its back end (auto).
