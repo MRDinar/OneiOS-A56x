@@ -43,6 +43,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->haptics, "auto");
   strcpy(c->pen, "off");
   strcpy(c->pen_rotate, "auto");
+  strcpy(c->encoder, "off");
   strcpy(c->wifi, "auto");
   br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
@@ -153,6 +154,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
   else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
+  else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->encoder, value); }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
