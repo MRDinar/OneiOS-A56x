@@ -246,7 +246,12 @@ lowest clock taken as 4 times their top-level time, the hold 150 ms), the share 
 These are the model's numbers, not the phone's. `test_xnuhost`: CTX_CREATE's hint bits and SUBMIT_3D's padding reach the
 renderer. `test_drm2kgsl`'s fourth scenario (queue priorities by class: the render server 4 with its constraint flag,
 `xnu:iconservicesagent` 12 with the flag, an app 4 in front and 12 sent to the background) is built here and skipped
-(`/dev/udmabuf` is root:kvm on this PC); the Mac's container runs it. **Not run on the phone.** The phone test is in
+(`/dev/udmabuf` is root:kvm on this PC); the Mac's container runs it. The guest side: `HOSTED_OUT=fixgpu` built
+(`xnu.macho` 55ea1a18..., `_oneios_gpu_hint` and the two weak CLPC functions in it), prelinked (audit 0 failures, 2711
+paired; `stubs-check` 666 good; `kernel.kc` 49f718cb...), and booted on the PC (qemu-aarch64, `--ram 4G`,
+`oneios-gpu-metal=1 oneios-adreno-selftest=1`, `--set gpu-level=deadline --set gpu-priority=1`): the accelerator at stage 5,
+both self-test lines as before, launchd at +282 s, SpringBoard and backboardd at +364 s, 10 minutes with no panic, stopped
+by hand. qemu has no 3D, so no context, hint or level ran there. **Not run on the phone.** The phone test is in
 `docs/newtodo.md` (update of 2026-11-15).
 
 ### 2.3 `drm2kgsl/patches/0004-gpu-address-room-by-process.patch`

@@ -49,7 +49,8 @@ Built and host-tested on the Linux PC, **not run on the phone**. Details: `docs/
 - **Tests:** `make -C runtime/xnuhost test` (the new `test_gpu_policy` 116 checks; `test_xnuhost` with the hint checks;
   `test_drm2kgsl`'s new priority scenario built, skipped here: `/dev/udmabuf` is root:kvm), `drivers/tests/host.sh`
   (`test_bl_request` 2044), `cargo test -p oneios-kernel --test golden` (the staged hint edits), the hosted kernel
-  `HOSTED_OUT=fixgpu` built and prelinked, a PC boot (results in the PR). The Metal plug-in is not changed (the hint is
+  `HOSTED_OUT=fixgpu` built (800 s) and prelinked (audit 0 failures, stubs 666 good, `kernel.kc` 49f718cb), a PC boot
+  to SpringBoard (+364 s) and 10 minutes with no panic (no 3D under qemu: the hint and the level did not run). The Metal plug-in is not changed (the hint is
   the kernel's), so the Mac builds nothing new for this.
 - **The phone test (the Mac).** The runtime and `kernel.kc` of this branch, the image's `xnuhost.conf` as the baseline
   (`gpu-level` and `gpu-priority` at their defaults). In the session: the lock screen still for a minute, unlock, the
