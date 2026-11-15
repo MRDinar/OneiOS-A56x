@@ -110,6 +110,7 @@ ctl_rcvd(kern_ctl_ref ref __unused, u_int32_t unit, void *unitinfo __unused, int
 	if (c.connected && c.unit == unit) {
 		c.full = false;
 		c.kick = true;
+		obt_ios_kick();         /* room again: the pump thread goes on now (it no longer looks every 20 ms) */
 	}
 }
 

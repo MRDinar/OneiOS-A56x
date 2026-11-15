@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-// virtio-input device (VirtIO 1.2, 5.8): one multitouch touchscreen with the phone's side keys.
+// virtio-input device (VirtIO 1.2, 5.8): the multitouch touchscreen with the phone's side keys, or (a second device, pen.c) the pen.
 // virtio-input carries Linux evdev events unchanged, which is what the phone's /dev/input gives
 // (input.c), and what UniXNU-droidvm's DroidVMVirtioInput.c turns into IOHID digitizer reports.
 #include "xnuhost.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,23 +18,27 @@ typedef struct {
   struct { int32_t min, max, fuzz, flat, res; bool present; } abs[ABS_COUNT_];
   input_event backlog[BACKLOG];              // events the guest had no buffer for
   unsigned head, count;
+  char name[32], serial[32];                 // the configuration's ID_NAME and ID_SERIAL
+  uint16_t keys[8];                          // its EV_KEY bits
+  unsigned nkeys;
 } input_state;
 
-static const uint16_t keys[] = { 114 /* KEY_VOLUMEDOWN */, 115 /* KEY_VOLUMEUP */, 116 /* KEY_POWER */, 0x14a /* BTN_TOUCH */ };
+// The touch screen's (the default): the side keys and BTN_TOUCH. The pen's device (pen.c) states its own.
+static const uint16_t touch_keys[] = { 114 /* KEY_VOLUMEDOWN */, 115 /* KEY_VOLUMEUP */, 116 /* KEY_POWER */, 0x14a /* BTN_TOUCH */ };
 
 // The configuration space answer for (select, subsel): its size and bytes.
 static unsigned config_payload(input_state *s, uint8_t out[128])
 {
   memset(out, 0, 128);
   switch (s->select) {
-  case CFG_ID_NAME: memcpy(out, "OneiOS touchscreen", 18); return 18;
-  case CFG_ID_SERIAL: memcpy(out, "xnuhost-0", 9); return 9;
+  case CFG_ID_NAME: memcpy(out, s->name, strlen(s->name)); return (unsigned)strlen(s->name);
+  case CFG_ID_SERIAL: memcpy(out, s->serial, strlen(s->serial)); return (unsigned)strlen(s->serial);
   case CFG_ID_DEVIDS: { uint16_t ids[4] = { 0x06 /* BUS_VIRTUAL */, 0x4f69, 0x0001, 1 }; memcpy(out, ids, 8); return 8; }
   case CFG_PROP_BITS: out[0] = 1 << 1; return 1;                 // INPUT_PROP_DIRECT
   case CFG_EV_BITS:
     if (s->subsel == EV_KEY_) {
       unsigned top = 0;
-      for (unsigned i = 0; i < sizeof keys / sizeof *keys; i++) { out[keys[i] / 8] |= (uint8_t)(1 << (keys[i] % 8)); if (keys[i] / 8u + 1 > top) top = keys[i] / 8u + 1; }
+      for (unsigned i = 0; i < s->nkeys; i++) { out[s->keys[i] / 8] |= (uint8_t)(1 << (s->keys[i] % 8)); if (s->keys[i] / 8u + 1 > top) top = s->keys[i] / 8u + 1; }
       return top;
     }
     if (s->subsel == EV_ABS_) {
@@ -108,7 +113,18 @@ xh_virtio *xh_virtio_input_create(uint64_t base, unsigned spi)
 {
   input_state *s = calloc(1, sizeof *s);
   if (!s) return NULL;
-  return xh_virtio_create(base, spi, &input_ops, s, "virtio-input");
+  xh_virtio *dev = xh_virtio_create(base, spi, &input_ops, s, "virtio-input");
+  if (dev) xh_virtio_input_set_identity(dev, "OneiOS touchscreen", "xnuhost-0", touch_keys, sizeof touch_keys / sizeof *touch_keys);
+  return dev;
+}
+
+void xh_virtio_input_set_identity(xh_virtio *dev, const char *name, const char *serial, const uint16_t *keys, unsigned nkeys)
+{
+  input_state *s = xh_virtio_opaque(dev);
+  snprintf(s->name, sizeof s->name, "%s", name);
+  snprintf(s->serial, sizeof s->serial, "%s", serial);
+  s->nkeys = nkeys < 8 ? nkeys : 8;
+  for (unsigned i = 0; i < s->nkeys; i++) s->keys[i] = keys[i] < 512 ? keys[i] : 0;   // 64 bytes of key bits in the answer
 }
 
 void xh_virtio_input_set_abs(xh_virtio *dev, unsigned axis, int32_t min, int32_t max, int32_t res)

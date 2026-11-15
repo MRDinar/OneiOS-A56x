@@ -53,6 +53,7 @@
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSSymbol.h>
 #include <libkern/libkern.h>
+#include <kern/clock.h>
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
 
@@ -83,8 +84,11 @@ private:
 	uint32_t fRequests;
 	int32_t fCap16;                 /* brightness-nits-cap, 16.16 nits; 0 or less: no cap */
 	bool fHasAls;
+	struct obl_sent fSent;          /* the last level sent to the host (oneios_bl_request.h: only a change goes on) */
+	struct obl_published fPublished;
 	uint32_t nits16For(uint32_t value) const;
 	void publish(uint32_t value, uint32_t nits16);
+	void sendSet(const struct ob_bright_set *set);
 	bool calibration();
 	void logRequest(OSDictionary *d, uint32_t level, uint32_t ms, bool linear);
 	/* Whether the next request is logged: the first 64, then every 64th (a slider drag sends some 550 a second). */
@@ -182,9 +186,36 @@ OneiOSBacklight::nits16For(uint32_t value) const
 	return v < fMinNits16 ? fMinNits16 : (uint32_t)v;
 }
 
+/* Set by iOS's display power request: the host restores or floors the panel itself then, so the next level goes on whatever
+ * it is. */
+static volatile uint32_t obl_sent_stale;
+
+/* A level to the host, only when it is not the one sent last (obl_send_wanted): a drag sends ~550 a second, most of them
+ * repeats, and each restarted the host's fade. One line per 1024 repeats not sent. */
+void
+OneiOSBacklight::sendSet(const struct ob_bright_set *set)
+{
+	uint64_t ns = 0;
+	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+	if (__atomic_exchange_n(&obl_sent_stale, 0u, __ATOMIC_ACQ_REL)) {
+		obl_sent_forget(&fSent);
+	}
+	if (!obl_send_wanted(&fSent, set->level, set->fade_ms, set->flags, ns / 1000000u)) {
+		if (fSent.skipped % 1024 == 0) {
+			IOLog("ONEIOS BACKLIGHT: %llu requests repeated the level last sent (%u of 65535): not sent again, nothing re-published\n",
+			    fSent.skipped, set->level);
+		}
+		return;
+	}
+	(void)oneios_bridge_send(OB_CH_BRIGHTNESS, OB_BRIGHT_SET, set, sizeof(*set));
+}
+
 void
 OneiOSBacklight::publish(uint32_t value, uint32_t nits16)
 {
+	if (!obl_publish_wanted(&fPublished, value, nits16)) {
+		return;                 /* the registry already says it */
+	}
 	OSDictionary *brightness = OSDictionary::withCapacity(3);
 	OSDictionary *parameters = OSDictionary::withCapacity(1);
 	OSNumber *min = OSNumber::withNumber(0ULL, 32), *max = OSNumber::withNumber((uint64_t)OBL_VALUE_MAX, 32);
@@ -385,7 +416,7 @@ OneiOSBacklight::setProperties(OSObject *properties)
 		uint32_t value = v < 0 ? 0 : (uint32_t)v > OBL_VALUE_MAX ? OBL_VALUE_MAX : (uint32_t)v;
 		set.level = value * OBL_FULL / OBL_VALUE_MAX;
 		logRequest(d, set.level, set.fade_ms, false);
-		(void)oneios_bridge_send(OB_CH_BRIGHTNESS, OB_BRIGHT_SET, &set, sizeof(set));
+		sendSet(&set);
 		publish(value, nits16For(value));
 		return kIOReturnSuccess;
 	}
@@ -399,7 +430,7 @@ OneiOSBacklight::setProperties(OSObject *properties)
 			set.level = (uint32_t)fraction * OBL_FULL / OBL_FRACTION_FULL;
 			set.flags = 0;
 			logRequest(d, set.level, set.fade_ms, false);
-			(void)oneios_bridge_send(OB_CH_BRIGHTNESS, OB_BRIGHT_SET, &set, sizeof(set));
+			sendSet(&set);
 			uint32_t value = (uint32_t)(((uint64_t)fraction * OBL_VALUE_MAX + OBL_FRACTION_FULL / 2) / OBL_FRACTION_FULL);
 			publish(value, nits16For(value));
 			return kIOReturnSuccess;
@@ -436,7 +467,7 @@ OneiOSBacklight::setProperties(OSObject *properties)
 		set.level = (uint32_t)lit * OBL_FULL / OBL_FRACTION_FULL;
 		set.flags = OB_BRIGHT_LINEAR;
 		logRequest(d, set.level, set.fade_ms, true);
-		(void)oneios_bridge_send(OB_CH_BRIGHTNESS, OB_BRIGHT_SET, &set, sizeof(set));
+		sendSet(&set);
 		/* IODisplayParameters follow: the slider's value is the square root of the fraction (the host's curve). */
 		uint64_t top = (uint64_t)fNits << 16, square = n16 * OBL_VALUE_MAX * OBL_VALUE_MAX / top, value = 0;
 		while ((value + 1) * (value + 1) <= square) {
@@ -456,7 +487,7 @@ OneiOSBacklight::setProperties(OSObject *properties)
 			set.flags = 0;
 			logRequest(d, set.level, set.fade_ms, false);
 			IOLog("ONEIOS BACKLIGHT: DisplayBrightness %s -> slider %u of 65535\n", raw, (unsigned)fraction);
-			(void)oneios_bridge_send(OB_CH_BRIGHTNESS, OB_BRIGHT_SET, &set, sizeof(set));
+			sendSet(&set);
 			uint32_t value = (uint32_t)(((uint64_t)fraction * OBL_VALUE_MAX + OBL_FRACTION_FULL / 2) / OBL_FRACTION_FULL);
 			publish(value, nits16For(value));
 			return kIOReturnSuccess;
@@ -500,6 +531,7 @@ oneios_display_power_request(uint64_t state, int pid, int result)
 		    power.on ? "on" : "off", name, pid, state, (unsigned)result);
 	}
 	last = power.on;
+	__atomic_store_n(&obl_sent_stale, 1u, __ATOMIC_RELEASE);   /* the host moves the panel itself now: the next level goes on */
 	(void)oneios_bridge_send(OB_CH_BRIGHTNESS, OB_BRIGHT_POWER, &power, sizeof(power));
 }
 

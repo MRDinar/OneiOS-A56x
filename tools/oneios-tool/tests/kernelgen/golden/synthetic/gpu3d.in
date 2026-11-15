@@ -26,4 +26,8 @@ volatile int droidvm_virtgpu_compositor_pid;
 }
 }
 // For the display: the holds taken so far
+// (before anchor 11)
+    CtxCreate create = {{CmdCtxCreate, 0, 0, context, 0, {}}, 0, in.capset_id, {'x', 'n', 'u', ':'}};
+// (before anchor 12)
+    Submit submit = {{CmdSubmit3D, uint32_t(FlagFence) | uint32_t(FlagRingIndex), fence, c->context, uint8_t(in.ring_idx), {}}, in.size, 0};
 // (the end)

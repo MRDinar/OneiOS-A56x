@@ -196,7 +196,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  static struct {
  	uint64_t at;
  	uint32_t kind, number;
-@@ -493,6 +544,73 @@
+@@ -493,6 +544,108 @@
  }
  
  /*
@@ -219,6 +219,41 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 +	}
 +	*count = n;
 +	return idle;
++}
++
++/*
++ * 0075, the hosted CLPC's signal for the GPU path (gpu/OneiOSAdreno.cpp oneios_gpu_hint, fix-gpu-perf, which declares both
++ * weak and falls back without them):
++ *   oneios_clpc_thread_role      the role of the thread's task as a task_role_t (RunningBoard's, through the task policy);
++ *                                a realtime thread of a task with no role of its own is the render server's
++ *                                (TASK_GRAPHICS_SERVER), a darwin-background thread TASK_DARWINBG_APPLICATION
++ *   oneios_clpc_frame_deadline   the deadline of the work interval the thread has adopted (its last notify: the render
++ *                                server's frame), mach absolute time, 0 when it is in none
++ */
++extern uint64_t hosted_work_interval_deadline(thread_t thread);
++int oneios_clpc_thread_role(thread_t thread);
++int
++oneios_clpc_thread_role(thread_t thread)
++{
++	if (thread == THREAD_NULL || get_threadtask(thread) == TASK_NULL) {
++		return -1;
++	}
++	if (proc_get_effective_thread_policy(thread, TASK_POLICY_DARWIN_BG)) {
++		return TASK_DARWINBG_APPLICATION;
++	}
++	int role = proc_get_effective_task_policy(get_threadtask(thread), TASK_POLICY_ROLE);
++	if ((role == TASK_UNSPECIFIED || role == TASK_DEFAULT_APPLICATION) &&
++	    thread_get_perfcontrol_class(thread) == PERFCONTROL_CLASS_REALTIME) {
++		return TASK_GRAPHICS_SERVER;
++	}
++	return role;
++}
++
++uint64_t oneios_clpc_frame_deadline(thread_t thread);
++uint64_t
++oneios_clpc_frame_deadline(thread_t thread)
++{
++	return thread == THREAD_NULL ? 0 : hosted_work_interval_deadline(thread);
 +}
 +
 +/*
@@ -270,7 +305,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
   * arm64_thread_exception_return and return_to_user of locore.s, then the EL0 exception vectors: never
   * returns. Entered on the thread's kernel stack with nothing above it worth keeping.
   */
-@@ -534,8 +652,8 @@
+@@ -534,8 +687,8 @@
  			}
  		}
  
@@ -281,7 +316,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  			(void)ml_set_interrupts_enabled(TRUE);
  			(void)hosted_check_audit(thread->machine.hosted_pmap, "audit");         /* hosted_mapcheck=1 */
  		}
-@@ -564,6 +682,7 @@
+@@ -564,6 +717,7 @@
  		bool keep_x18 = (thread->machine.arm_machine_flags &
  		    (ARM_MACHINE_THREAD_PRESERVE_X18_SAVE | ARM_MACHINE_THREAD_PRESERVE_X18_INITIAL)) != 0;
  		hosted_perf_enter_user();               /* 0041 */
@@ -289,7 +324,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  		int64_t rc = hosted_user_enter(twin, context, thread->machine.cthread_self, keep_x18, &trap);
  #if PRECISE_USER_KERNEL_TIME
  		recount_leave_user();
-@@ -594,8 +713,19 @@
+@@ -594,8 +748,19 @@
  			/* The software TLB: the page tables may allow what the task's host mapping does not have. */
  			(void)ml_set_interrupts_enabled(TRUE);
  			uint64_t fill_began = hosted_perf_now();
@@ -310,7 +345,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  			if (filled) {
  				hosted_user_stats.fills++;
  				continue;
-@@ -738,18 +868,18 @@
+@@ -738,18 +903,18 @@
  static void
  hosted_perf_report_thread(__unused void *arg, __unused wait_result_t result)
  {
@@ -332,7 +367,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  		const struct hosted_perf_counts *c0 = &hosted_perf_last;
  		uint64_t wall_us = hosted_perf_us(wall) ? hosted_perf_us(wall) : 1;
  #define D(f) (u.f - user_last.f)
-@@ -774,6 +904,10 @@
+@@ -774,6 +939,10 @@
  		    "fault-around maps %llu, windows done already %llu\n", pm[8] - pmap_last[8], pm[9] - pmap_last[9],
  		    hosted_perf_us(pm[10] - pmap_last[10]), pm[11] - pmap_last[11], pm[12] - pmap_last[12], pm[13] - pmap_last[13],
  		    pm[14] - pmap_last[14], pm[15] - pmap_last[15], pm[16] - pmap_last[16]);
@@ -343,3 +378,50 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  #undef D
  #undef KN
  #undef KT
+diff --git a/osfmk/kern/work_interval.c b/osfmk/kern/work_interval.c
+--- a/osfmk/kern/work_interval.c
++++ b/osfmk/kern/work_interval.c
+@@ -153,6 +153,10 @@
+ 	uint64_t wi_id;
+ 	struct os_refcnt wi_ref_count;
+ 	uint32_t wi_create_flags;
++#if XNU_HOSTED
++	/* 0075, the hosted CLPC: the deadline of the interval's last notify (mach time), for the GPU path */
++	uint64_t wi_hosted_deadline;
++#endif /* XNU_HOSTED */
+ 
+ 	/* for debugging purposes only, does not hold a ref on port */
+ 	ipc_port_t wi_port;
+@@ -1079,6 +1083,9 @@
+ 
+ 	uint64_t urgency_param1, urgency_param2;
+ 	kwi_args->urgency = (uint16_t)thread_get_urgency(thread, &urgency_param1, &urgency_param2);
++#if XNU_HOSTED
++	os_atomic_store(&work_interval->wi_hosted_deadline, kwi_args->deadline, relaxed);      /* 0075 */
++#endif /* XNU_HOSTED */
+ 
+ 	splx(s);
+ 
+@@ -1088,6 +1095,22 @@
+ 	return KERN_SUCCESS;
+ }
+ 
++#if XNU_HOSTED
++/*
++ * 0075, the hosted CLPC for the GPU path (gpu/OneiOSAdreno.cpp, fix-gpu-perf's oneios_clpc_frame_deadline): the deadline
++ * of the work interval `thread` has adopted, as its last notify gave it (mach absolute time; the render server's frame),
++ * or 0 when it is in none. Read without a lock: called for the current thread, whose work interval does not change under
++ * it.
++ */
++uint64_t hosted_work_interval_deadline(thread_t thread);
++uint64_t
++hosted_work_interval_deadline(thread_t thread)
++{
++	struct work_interval *work_interval = thread->th_work_interval;
++	return work_interval ? os_atomic_load(&work_interval->wi_hosted_deadline, relaxed) : 0;
++}
++#endif /* XNU_HOSTED */
++
+ /* Start at 1, 0 is not a valid work interval ID */
+ static _Atomic uint64_t unique_work_interval_id = 1;
+ 

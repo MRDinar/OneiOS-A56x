@@ -9,8 +9,11 @@
 //                                         the service backboardd takes touches from
 //   NativeHidInput "OneiOS buttons"       Consumer Menu (Home), Power, Volume Increment and Decrement, Telephony
 //                                         Ring Enable, and a boot keyboard
+//   NativeHidInput "OneiOS pen"           (oneios-pen=1 and a pen device from xnuhost only) Digitizer / Stylus, report 4:
+//                                         backboardd's pencil digitizer, the S Pen as an Apple Pencil (staged/hid_pen.rs)
 //   OneiOSALSDevice                       drivers/brightness: Sensor / Ambient Light, under IOResources
-// The first two are fed by the staged DroidVMVirtioInput.c from xnuhost's virtio-input device (/arm-io/input-N).
+// The first three are fed by the staged DroidVMVirtioInput.c from xnuhost's virtio-input devices (/arm-io/input-N: the
+// touch screen and side keys on one, the pen on its own).
 //
 // NativeHidInput and OneiOSALSDevice subclass the original IOHIDDevice of com.apple.iokit.IOHIDFamily
 // (OriginalHidDeviceABI.h). Its functions are reached through the generated stubs (build-oneios-hid.py), its
@@ -20,7 +23,9 @@
 //
 // Boot arguments: oneios-hid-driverkit=1 adds no personalities (oneios_hid_personalities); oneios-hid=0 starts nothing; oneios-hid-log=0 keeps the once-a-second state line quiet
 // (default 1: it is how a boot shows that backboardd opened the digitizer and that events arrive);
-// oneios-hid-queue-kib=N the event queue of the services' user clients (default 0: off, Apple's 16 KiB; 256 to try; setQueueSize)
+// oneios-hid-queue-kib=N the event queue of the services' user clients (default 0: off, Apple's 16 KiB; 256 to try; setQueueSize);
+// oneios-pen=1 publishes the pen digitizer when xnuhost has a pen device (default 0: off until proven on the phone; xnuhost's
+// pen=auto adds oneios-pen=1 when it gives the guest one)
 #include <IOKit/IOCatalogue.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
@@ -48,6 +53,14 @@ extern const uint32_t oneios_hid_parent_size;
 
 IOService *native_hid_input_allocate(void);
 IOService *native_hid_touch_allocate(void);
+IOService *native_hid_pen_allocate(void);
+bool droidvm_pen_present(void);
+// The pen (staged/hid_pen.rs): the transport's pen frames; [0] HID reports sent, [1] stylus events completed as an Apple
+// Pencil's, [2] stylus events of a layout the wrapper does not know; the last report's flags (1 in range, 2 tip, 4 barrel,
+// 8 eraser), x, y (0..32767), pressure (0..4095), distance (0..255), tilt x and y (degrees).
+extern volatile uint64_t droidvm_input_pen_reports;
+extern volatile uint32_t native_pen_hid[3];
+extern volatile int32_t oneios_pen_last[7];
 void droidvm_input_start(void);
 void oneios_als_device_start(void);
 void oneios_hid_input_start(void);
@@ -94,6 +107,9 @@ static uint32_t oneios_hid_log = 1;
 // oneios-hid-buttons-builtin=1 (fix-power-key, 2026-11-14; off by default, not proven): the buttons' event service as an
 // iPhone's built-in buttons (native_hid_live_checkpoint).
 static uint32_t oneios_hid_buttons_builtin = 0;
+// oneios-pen=1 (spen, 2026-11-15; off by default until a phone session shows it): the pen digitizer is published when the
+// transport found xnuhost's pen device.
+static uint32_t oneios_pen = 0;
 
 void
 native_hid_input_observed(unsigned event, int result)
@@ -284,8 +300,10 @@ native_hid_live_checkpoint(IOService *device)
 	if (!state) {
 		return;
 	}
-	const bool touch = device->getProperty("Built-In") != nullptr;
-	const char *what = touch ? "touch screen" : "buttons";
+	// The pen device is Built-In too; only it has a hover range (staged/hid_pen.rs).
+	const bool pen = device->getProperty("MaxHoverHeight") != nullptr;
+	const bool touch = !pen && device->getProperty("Built-In") != nullptr;
+	const char *what = pen ? "pen" : touch ? "touch screen" : "buttons";
 	IORegistryEntry *driver = eventDriver(device, 4);
 	if (driver && driver != state->driver) {
 		state->driver = driver;
@@ -313,13 +331,41 @@ native_hid_live_checkpoint(IOService *device)
 		IOLog("oneios-hid: touch screen: Digitizer/Touch Screen, Built-In, DisplayIntegrated published on the event service; "
 		    "edge wrapper %u\n", native_touch_edge_install[0]);
 	}
+	// The pen (spen, 2026-11-15). 24A446's backboardd (BackBoardHIDTouchEventProcessor, -[BKHIDDirectTouchEventProcessor
+	// matcher:servicesDidMatch:]) takes the service it matched as its "pencil digitizer" when the service isBuiltIn and its
+	// primaryUsagePage / primaryUsage are 0x0d / 0x20 (it logs "*** acquired pencil digitizer"); the hover range and the
+	// maximum pressure it hands UIKit come from the service's MaxHoverHeight and AccurateMaxDigitizerPressureValue
+	// (droidvm's reading of iPadOS 27's backboardd; both strings are in 24A446's). Once, as for the touch screen.
+	if (pen && !state->published) {
+		state->published = true;
+		OSObject *hover = device->getProperty("MaxHoverHeight"), *pressure = device->getProperty("AccurateMaxDigitizerPressureValue");
+		IORegistryEntry *interface = driver->getParentEntry(gIOServicePlane);
+		IORegistryEntry *const services[] = {driver, interface};
+		for (IORegistryEntry *service : services) {
+			if (!service) {
+				continue;
+			}
+			service->setProperty("Built-In", kOSBooleanTrue);
+			service->setProperty("DisplayIntegrated", kOSBooleanTrue);
+			service->setProperty("PrimaryUsagePage", (unsigned long long)0x0d, 32);
+			service->setProperty("PrimaryUsage", (unsigned long long)0x20, 32);
+			if (hover) {
+				service->setProperty("MaxHoverHeight", hover);
+			}
+			if (pressure) {
+				service->setProperty("AccurateMaxDigitizerPressureValue", pressure);
+			}
+		}
+		IOLog("oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue "
+		    "published on the event service; edge wrapper %u\n", native_touch_edge_install[0]);
+	}
 	// The buttons (oneios-hid-buttons-builtin=1; fix-power-key, docs/hardware.md 5). backboardd lists them as
 	// "eventSource: externalKeyboard; primaryUsagePage: 0x1; primaryUsage: 0x6; transport: Virtual" (the PC boot of
 	// 2026-11-14) and logs each volume press with "source:externalKeyboard ... destinations:<none>": the boot keyboard
 	// collection that holds report 2 makes the service a keyboard that is not built in. An iPhone's buttons are a
 	// built-in Consumer Control service. Built-In and the Consumer Control pair on the event service and its interface,
 	// as for the touch screen; the device's usage pair (1, 6), which the personality matches, stays.
-	if (!touch && oneios_hid_buttons_builtin && !state->published) {
+	if (!touch && !pen && oneios_hid_buttons_builtin && !state->published) {
 		state->published = true;
 		driver->setProperty("Built-In", kOSBooleanTrue);
 		driver->setProperty("PrimaryUsagePage", (unsigned long long)0x0c, 32);
@@ -340,7 +386,7 @@ native_hid_live_checkpoint(IOService *device)
 		state->clients = count;
 		IOLog("oneios-hid: %s: %u user client(s) on the event service: %s\n", what, count, count ? clients : "none");
 	}
-	const uint64_t reports = touch ? native_hid_input_events[6] : native_hid_input_events[4];
+	const uint64_t reports = pen ? native_hid_input_events[7] : touch ? native_hid_input_events[6] : native_hid_input_events[4];
 	if (reports != state->reports) {
 		state->reports = reports;
 		unsigned long long queued = 0, dropped = 0;
@@ -351,7 +397,18 @@ native_hid_live_checkpoint(IOService *device)
 			state->queued = queued;
 			IOLog("oneios-hid: %s: %llu HID events queued for the service's client(s), %llu dropped\n", what, queued, dropped);
 		}
-		if (touch) {
+		if (pen) {
+			// What the pen sent last: where (tenths of a percent of the screen, from the left and from the top), how hard,
+			// how far above the panel and how tilted; and how many of its stylus events became an Apple Pencil's.
+			const int32_t flags = oneios_pen_last[0];
+			const int x = (int)(((int64_t)oneios_pen_last[1] * 1000) >> 15), y = (int)(((int64_t)oneios_pen_last[2] * 1000) >> 15);
+			IOLog("oneios-hid: pen: %llu pen frames, %llu HID reports (last result 0x%x), %u sent (%u stylus events given the "
+			    "pencil's angles, pressure and height, %u of a layout not known); the last: %s%s%s%sx %d.%d%% y %d.%d%%, pressure "
+			    "%d/4095, height %d/255, tilt x %d y %d degrees\n", droidvm_input_pen_reports, reports, native_hid_input_results[7],
+			    native_pen_hid[0], native_pen_hid[1], native_pen_hid[2], flags & 1 ? "in range, " : "out of range, ",
+			    flags & 2 ? "tip down, " : "", flags & 4 ? "barrel button, " : "", flags & 8 ? "eraser, " : "", x / 10, x % 10, y / 10,
+			    y % 10, oneios_pen_last[3], oneios_pen_last[4], oneios_pen_last[5], oneios_pen_last[6]);
+		} else if (touch) {
 			// Tenths of a percent of the screen, from the left and from the top.
 			int at[4];
 			for (unsigned i = 0; i < 4; i++) {
@@ -633,6 +690,14 @@ oneios_hid_thread(void *, wait_result_t)
 	IOLog("oneios-hid: virtio-input: %u device(s) in the device tree, %u started\n", droidvm_input_found, droidvm_input_started);
 	const bool buttons = publish(native_hid_input_allocate(), resource, "buttons");
 	const bool touch = publish(native_hid_touch_allocate(), resource, "touch screen");
+	// The pen: its own device, after the touch screen (its event driver takes the same personality: SPI, Digitizer page).
+	if (droidvm_pen_present() && oneios_pen) {
+		publish(native_hid_pen_allocate(), resource, "pen");
+	} else if (droidvm_pen_present()) {
+		IOLog("oneios-hid: pen: xnuhost has a pen device; not published (oneios-pen=0)\n");
+	} else if (oneios_pen) {
+		IOLog("oneios-hid: pen: oneios-pen=1, but xnuhost gave no pen device (pen=off, or no pen found on the host)\n");
+	}
 	resource->release();
 	oneios_als_device_start();
 	oneios_hid_stage = buttons && touch ? 5 : 0x84;
@@ -647,6 +712,7 @@ oneios_hid_input_start(void)
 	PE_parse_boot_argn("oneios-hid-log", &oneios_hid_log, sizeof(oneios_hid_log));
 	PE_parse_boot_argn("oneios-hid-buttons-builtin", &oneios_hid_buttons_builtin, sizeof(oneios_hid_buttons_builtin));
 	PE_parse_boot_argn("oneios-hid-queue-kib", &oneios_hid_queue_kib, sizeof(oneios_hid_queue_kib));
+	PE_parse_boot_argn("oneios-pen", &oneios_pen, sizeof(oneios_pen));
 	if (!enabled || oneios_hid_stage) {
 		return;
 	}

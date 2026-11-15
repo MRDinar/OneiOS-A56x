@@ -221,6 +221,8 @@ void xh_input_source_init(xh_input_source *s, xh_virtio *dev, const char *name, 
 static struct pollfd fds[MAX_DEVICES];
 static xh_input_source sources[MAX_DEVICES];
 static unsigned nfds;
+static xh_pen_source pen_source;        // the pen (pen.c): read on this thread too, its own filter and guest device
+static int pen_index = -1;             // its place in fds, -1 = none
 static pthread_t thread;
 static volatile bool running;
 
@@ -267,17 +269,18 @@ static void *input_main(void *arg)
       unsigned count = (unsigned)(n / (ssize_t)sizeof *ev);
       for (unsigned e = 0; e < count; e++)
         batch[e] = (xh_input_ev){ (int64_t)ev[e].input_event_sec * 1000000000 + (int64_t)ev[e].input_event_usec * 1000, ev[e].type, ev[e].code, ev[e].value };
-      xh_input_feed(&sources[i], batch, count, now_ns, now_counter, g_info.timebase_hz);
+      if ((int)i == pen_index) xh_pen_feed(&pen_source, batch, count, now_ns);
+      else xh_input_feed(&sources[i], batch, count, now_ns, now_counter, g_info.timebase_hz);
     }
   }
   return NULL;
 }
 
-int xh_input_start(xh_virtio *dev, unsigned width, unsigned height)
+int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height)
 {
   (void)width; (void)height;
   bool have_touch = false;
-  for (unsigned i = 0; i < 32 && nfds < MAX_DEVICES; i++) {
+  for (unsigned i = 0; i < 32 && nfds < MAX_DEVICES - 1; i++) {     // one place kept for the pen
     char path[32], name[64] = "";
     snprintf(path, sizeof path, "/dev/input/event%u", i);
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
@@ -329,6 +332,13 @@ int xh_input_start(xh_virtio *dev, unsigned width, unsigned height)
     sources[nfds].read_state = read_state;
     fds[nfds++] = (struct pollfd){ .fd = fd, .events = POLLIN };
   }
+  // The pen (pen.c): found and opened before (main.c, xh_pen_lookup), read here beside the others, its own filter.
+  if (pen && pen->dev && pen->device.fd >= 0 && nfds < MAX_DEVICES) {
+    xh_pen_source_init(&pen_source, pen->dev, &pen->device, pen->rotate, pen->mirror);
+    pen_source.read_state = xh_pen_read_state;
+    pen_index = (int)nfds;
+    fds[nfds++] = (struct pollfd){ .fd = pen->device.fd, .events = POLLIN };
+  }
   if (!nfds) { LOGI("input: no touchscreen or key device under /dev/input"); return 0; }
   running = true;
   return pthread_create(&thread, NULL, input_main, NULL) ? -1 : 0;
@@ -342,6 +352,6 @@ void xh_input_stop(void)
   for (unsigned i = 0; i < nfds; i++) close(fds[i].fd);
 }
 #else
-int xh_input_start(xh_virtio *dev, unsigned width, unsigned height) { (void)dev; (void)width; (void)height; return 0; }
+int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height) { (void)dev; (void)pen; (void)width; (void)height; return 0; }
 void xh_input_stop(void) {}
 #endif

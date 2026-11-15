@@ -14,6 +14,7 @@
 #endif
 #include "gpu3d.h"
 #include "oneios_drm2kgsl.h"
+#include "oneios_gpu_policy.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -40,6 +41,12 @@ static bool no_io_coherence;
 typedef struct { uint32_t vbo, child, op; uint64_t target, length, child_offset; unsigned call; } bound;
 static bound binds[256];
 static unsigned nbinds, bind_calls;
+// Queues made (DRAWCTXT_CREATE's flags; queue i + 1 is id i + 1) and power constraints set (patch 0008).
+static uint32_t queue_flags[64];
+static unsigned nqueues;
+typedef struct { uint32_t context, type, level; } constraint;
+static constraint constraints[64];
+static unsigned nconstraints;
 
 static object *object_find(uint32_t id)
 {
@@ -117,7 +124,24 @@ static int fake_kgsl(unsigned long request, void *arg)
     bind_calls++;
     return 0;
   }
-  case IOCTL_KGSL_SETPROPERTY: return 0;
+  case IOCTL_KGSL_SETPROPERTY: {
+    struct kgsl_device_getproperty *p = arg;
+    if (p->type == KGSL_PROP_PWR_CONSTRAINT && p->sizebytes == sizeof(struct kgsl_device_constraint) && nconstraints < 64) {
+      const struct kgsl_device_constraint *c = p->value;
+      const struct kgsl_device_constraint_pwrlevel *l = c->data;
+      constraints[nconstraints++] = (constraint){ .context = c->context_id, .type = c->type, .level = l ? l->level : ~0u };
+    }
+    return 0;
+  }
+  // Queues (patch 0008): their flags as asked, a priority over 15 refused as KGSL does.
+  case IOCTL_KGSL_DRAWCTXT_CREATE: {
+    struct kgsl_drawctxt_create *d = arg;
+    if (nqueues == 64) { errno = ENOMEM; return -1; }
+    queue_flags[nqueues++] = d->flags;
+    d->drawctxt_id = nqueues;
+    return 0;
+  }
+  case IOCTL_KGSL_DRAWCTXT_DESTROY: return 0;
   default: errno = ENOTTY; return -1;
   }
 }
@@ -187,12 +211,12 @@ static int ccmd(context *c, void *request, uint32_t size)
   return r ? r : c->shmem->seqno != c->seqno ? -EIO : 0;
 }
 
-static bool context_open(context *c, uint32_t id, uint32_t shmem_res)
+static bool context_named(context *c, uint32_t id, uint32_t shmem_res, const char *name)
 {
   uint64_t offset = 0;
   uint32_t info = 0;
   *c = (context){ .id = id };
-  if (gpu->ctx_create(gpu, id, XH_GPU_CAPSET_DRM, "test", 4)) return false;
+  if (gpu->ctx_create(gpu, id, XH_GPU_CAPSET_DRM, name, strlen(name))) return false;
   if (gpu->create_blob(gpu, id, shmem_res, XH_GPU_BLOB_HOST3D, XH_GPU_BLOB_FLAG_MAPPABLE, 0, 16384, NULL, 0) || gpu->map_blob(gpu, shmem_res, &offset, &info)) return false;
   c->shmem = (msm_shmem *)(ram + RAM_BYTES - POOL_BYTES + offset);
   // GET_PARAM(VA_START): this context's slice of the VBO
@@ -203,6 +227,7 @@ static bool context_open(context *c, uint32_t id, uint32_t shmem_res)
   memcpy(&c->slice, (uint8_t *)c->shmem + c->shmem->rsp_mem_offset + 8 + 8, 8);
   return c->slice >= va_start && c->slice < va_start + va_size;
 }
+static bool context_open(context *c, uint32_t id, uint32_t shmem_res) { return context_named(c, id, shmem_res, "test"); }
 
 static int guest_buffer(context *c, uint32_t res, uint32_t blob, uint64_t iova, uint64_t bytes, const xh_gpu_entry *pages, unsigned n)
 {
@@ -343,6 +368,49 @@ static int coherence(void)
   return 0;
 }
 
+// Patch 0008: each queue's KGSL priority is its owner's class (oneios_gpu_policy.h), by name or by the guest's hint; a
+// background context's queues can carry KGSL's lowest level; the level setter drives the render server's deadline queue.
+static uint32_t queue_new(context *c, uint32_t flags)
+{
+  struct { ccmd_req hdr; uint32_t cmd; struct { uint32_t flags, prio, id; } q; } __attribute__((packed, aligned(4))) req =
+    { .hdr.cmd = 2, .cmd = 0xc00c644au, .q = { .flags = flags, .prio = 1 } };      // IOCTL_SIMPLE, DRM_IOCTL_MSM_SUBMITQUEUE_NEW
+  uint32_t want = 8 + sizeof req.q;
+  memcpy((uint8_t *)c->shmem + c->shmem->rsp_mem_offset, &want, 4);
+  if (ccmd(c, &req, sizeof req)) return 0;
+  int32_t ret;
+  uint32_t id;
+  memcpy(&ret, (uint8_t *)c->shmem + c->shmem->rsp_mem_offset + 4, 4);
+  memcpy(&id, (uint8_t *)c->shmem + c->shmem->rsp_mem_offset + 8 + 8, 4);
+  return ret ? 0 : id;
+}
+
+static unsigned priority_of(uint32_t id) { return id && id <= nqueues ? (queue_flags[id - 1] & KGSL_CONTEXT_PRIORITY_MASK) >> KGSL_CONTEXT_PRIORITY_SHIFT : 99; }
+
+static int classes(void)
+{
+  CHECK(renderer());
+  context render, icons, app, other;
+  CHECK(context_named(&render, 1, 1, "xnu:backboardd"));
+  CHECK(context_named(&icons, 2, 2, "xnu:iconservicesagent"));
+  CHECK(context_named(&app, 3, 3, "xnu:MobileSafari"));
+  CHECK(context_named(&other, 4, 4, "xnu:MobileSafari"));
+  // The guest's hint: Safari in front (role 1), the other one sent to the background (role 2).
+  gpu->hint(gpu, 3, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_FOREGROUND, OG_QOS_USER_INTERACTIVE, 0 });
+  gpu->hint(gpu, 4, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_BACKGROUND, OG_QOS_USER_INTERACTIVE, 0 });
+  uint32_t q1 = queue_new(&render, 0x80000000u);          // DRM2KGSL_SUBMITQUEUE_DEADLINE: the compositor's
+  uint32_t q2 = queue_new(&icons, 0), q3 = queue_new(&app, 0), q4 = queue_new(&other, 0);
+  CHECK(q1 && q2 && q3 && q4);
+  CHECK(priority_of(q1) == 4 && (queue_flags[q1 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  CHECK(priority_of(q2) == 12 && (queue_flags[q2 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));      // background: can carry the lowest
+  CHECK(priority_of(q3) == 4 && !(queue_flags[q3 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  CHECK(priority_of(q4) == 12);
+  // No constraint was set by making them, and the level setter alone sets none (the next submission does).
+  drm2kgsl_renderer_set_level(0);
+  CHECK(nconstraints == 0);
+  for (uint32_t i = 1; i <= 4; i++) gpu->ctx_destroy(gpu, i);
+  return 0;
+}
+
 static bool scenario(const char *name, int (*run)(void))
 {
   fflush(stdout);
@@ -360,5 +428,6 @@ int main(void)
   bool ok = scenario("a VBO over the whole address range (the phone, runtime 0.1.3)", whole_range);
   ok = scenario("a VBO that leaves room; buffers past udmabuf's limits", with_room) && ok;
   ok = scenario("each import's IO coherence read back (patch 0007)", coherence) && ok;
+  ok = scenario("queue priorities by the owner's class (patch 0008)", classes) && ok;
   return ok ? 0 : 1;
 }

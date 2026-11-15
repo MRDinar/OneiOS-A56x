@@ -875,8 +875,10 @@ What each does:
     in the main checkout, or `ONEIOS_DSC_INDEX`). It is not line by line: the analysis is of the log so far.
 
 ```sh
-tools/oneios-tool/tests/phone/run.sh          # 200 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
-                                              #   30 of them usb.sh: ONEOS_DIR=a fork checkout with --usb-watch); ALL OK
+tools/oneios-tool/tests/phone/run.sh          # 222 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
+                                              #   30 of them usb.sh: ONEOS_DIR=a fork checkout with --usb-watch;
+                                              #   22 of them hw-backend.sh: the bridges' samsung and treble backends on stand-in
+                                              #   phones, their host-built tools; docs/hardware.md 7e); ALL OK
 tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 95 checks; ALL OK
 tools/oneios-tool/tests/phone/modes.sh        # phone, app and cycle in each /proc mode this host has (below); ALL OK
 FAKE_PROC=stand-in tools/oneios-tool/tests/phone/run.sh   # one suite with the stand-in's own /proc (macOS's way)
@@ -905,8 +907,9 @@ the phone's command byte for byte). The stand-in answers it in one of two modes,
   `FAKE_PROC=stand-in` runs the same path, and `modes.sh` runs the phone, app and cycle suites in both modes.
 - **Several runs at once** (several agents on one box): each `modes.sh` run has its own folder
   (`out/rustport-modes/run.XXXXXX`, or `MODES_RUN=DIR`), gives each suite its own `WORK=` in it, and counts only its
-  own stand-in sessions; the cycle suite runs its stand-in build steps on a tmux server of its own (`TMUX_TMPDIR`
-  beside its work folder, `TMUX` unset) and stops only that server at its end. The cycle's `summary.md` check reads
+  own stand-in sessions; the cycle suite runs its stand-in build steps on a tmux server of its own (`TMUX_TMPDIR` a
+  short `/tmp/oneios-cycle-tmux.XXXXXX`, since a Unix socket path is at most 108 bytes and a deep worktree's work
+  folder is longer; `TMUX` unset) and stops only that server at its end. The cycle's `summary.md` check reads
   the fork checkout's own `versionName`/`versionCode` (it moves with each upstream merge). Checked 2026-11-15: two
   `modes.sh cycle` runs at once, against the fork's `oneios` (0.4.86) and PR #3's merge (0.5.14): both 103 ok in both
   modes, no session left on the box's tmux server.
@@ -1021,8 +1024,9 @@ What all of them keep:
    `/proc/$$/ns/mnt` is not init's, and empty otherwise. A unit test compares the start line with the switch's.
 6. *Ready.* `control/display.log`'s size is noted before the start and only what the log gains is read, twice a
    second; each whole line is printed once (a line still being written waits for the next look). The command ends
-   with status 0 at `oneios-display: first frame posted` (the helper posts the whole frame right after `layer up`,
-   without waiting for a flush from xnuhost), and says whether the session is still open. A helper that ended
+   with status 0 at `oneios-display: first frame posted` (in a session that is ready the helper posts the whole frame right after `layer up`,
+   without waiting for a flush from xnuhost; before `session/ready` it waits for that file, since 2026-11-15:
+   `runtime/display/README.md`), and says whether the session is still open. A helper that ended
    before that (two looks in a row: its pid is no helper any more) is status 1 with its last lines, which is how
    the fault of 2026-11-14 would have read (`cannot locate symbol ...`). After `--timeout` seconds without the
    line it is status 1 with the log's last lines; the helper is left running (it waits 60 s for xnuhost's socket).
@@ -1663,6 +1667,7 @@ writes for the same build.
 | The staged copies of other projects' sources and of Apple's `IOBlockStorageDevice.cpp` (10) | SHA-256, size and name, `golden/staged.sha256` | `compare-golden.sh WORK` |
 | What the nine generators print | `golden/stdout.txt`, the tree's and the checkout's paths taken out | `compare-golden.sh WORK` |
 | Each edit list applied to a made-up source by the script's own staging function (8 lists; the Contact Identifier change of 2026-11-12 is in `hid_transport`) | `golden/synthetic/NAME.in` and `NAME.out` | `cargo test` |
+| The pen's edit list (`staged/hid_pen.rs`, spen 2026-11-15; no Python original), applied after `hid`'s to the pinned `external/NativeHidInput/NativeHidInput.cpp` | its anchors and results, in the test | `cargo test` (`the_pen_edits_fit_the_pinned_source`; skipped without `external/`) |
 | `drivers/build.py`'s command for a made-up record, C and C++ | `golden/synthetic/command.*.json` | `cargo test` |
 | `build-record.py`'s record of a made-up build (run from a made-up checkout; without the machine's part and the checkouts' commits) | `golden/synthetic/build-record.json`, `.series.txt` | `cargo test` |
 

@@ -228,9 +228,12 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
   `XH_HINT_BACKGROUND`, the floor in bits 0-10), written by hosted 0075 before each user stay from XNU's own class
   (`thread_get_perfcontrol_class`, darwin background). Host code on a vCPU thread reads it as
   `xh_cpu_self()->cpu.perf_hint`: at a virtio-gpu submit (an MMIO write from the vCPU, or a host call) it is the
-  submitting thread's (the render server's realtime thread is `XH_HINT_REALTIME`). No work-interval deadline is published
-  yet. drm2kgsl's vCPU uclamp now goes to xnuhost (`drm2kgsl/patches/0008`, `drm2kgsl_vcpu_uclamp`), the only drm2kgsl
-  change of this branch.
+  submitting thread's (the render server's realtime thread is `XH_HINT_REALTIME`). Hosted 0075 also defines (strong) the
+  two functions #42's `oneios_gpu_hint` declares weak: `oneios_clpc_thread_role(thread)` (the task's effective
+  `TASK_POLICY_ROLE`; `TASK_DARWINBG_APPLICATION` for a darwin-background thread; `TASK_GRAPHICS_SERVER` for a realtime
+  thread of a task with no role of its own) and `oneios_clpc_frame_deadline(thread)` (the deadline of its work interval's
+  last notify, recorded in `kern_work_interval_notify`; 0 outside one). drm2kgsl's vCPU uclamp now goes to xnuhost
+  (`drm2kgsl/patches/0008`, `drm2kgsl_vcpu_uclamp`), the only drm2kgsl change of this branch.
 - 2026-11-15, fix-host-overhead -> fix-ram-locked: no change to the thermal steps or `br_cpu_plan_cap`/`br_cpu_pin_mask`;
   `br_cpu_plan_make` now describes each vCPU by the core cpu-pin gives it (tables, capacity, `host_cpu`), affinities as
   before.
@@ -2078,3 +2081,14 @@ persistent: a reboot costs a manual re-root.
   - Swap on iOS serves only the freezer (`VM_PAGER_FREEZER_WITH_SWAP`, mode 32 on the PC): the hosted README's 0057.
   - Kernel tree `HOSTED_OUT=fpr`; collections `out/kernel/fpr-24A446` (the measured runs) and `fpr2-24A446` (the final
     patch, the stress check); scratch runs in `out/run-fpr/` (logs only, data stores deleted).
+
+- 2026-11-15, fix-gpu-perf -> fix-host-overhead (the CPU side), lead: **the GPU path reads your thread-group role and
+  work-interval deadline through two weak functions; define them strongly in your hosted CLPC and nothing else changes.**
+  In `kernel/patches/oneios-hosted/gpu/OneiOSAdreno.cpp`: `extern "C" int oneios_clpc_thread_role(thread_t)` (the thread
+  group's role of the submitting thread as a `task_role_t` 0-9, or -1 when not known) and `extern "C" uint64_t
+  oneios_clpc_frame_deadline(thread_t)` (the deadline, mach absolute time, of the work interval the thread is in, or 0).
+  Their weak defaults say "not known"; then the GPU path takes the task's own `TASK_POLICY_ROLE`, DarwinBG and the
+  thread's QoS, and the frame cadence on the host. They are called on the Metal client's own thread at its context's
+  creation and at each fenced submission (`oneios_gpu_hint`), so they must not block or take a lock a submitting thread
+  may hold. If your names differ, the adapter is those two functions. The host side and its rules: `docs/gpu.md` 2.2b.
+  I did not touch `runtime/bridges/cpu`, the vCPU topology, uclamp or cpusets.

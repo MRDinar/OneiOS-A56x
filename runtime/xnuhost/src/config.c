@@ -26,6 +26,7 @@ void xh_config_defaults(xh_config *c)
   c->ram_session_reserve = c->ram_unlock_below = c->ram_gpu_reserve = -1;
   c->ram_fit_on = c->ram_pagetable_percent = -1;
   c->return_graceful_ms = -1;
+  c->ready_content_wait = -1;
   strcpy(c->display, "shm");
   strcpy(c->gpu, "auto");
   c->input = true;
@@ -37,9 +38,13 @@ void xh_config_defaults(xh_config *c)
   c->scale_fixup = -1;
   c->setway_skip = -1;
   c->perf_log = c->spin_host = c->spin_task = c->map_defer = c->cpu_pin = -1;
+  c->gpu_priority = -1;
   strcpy(c->bluetooth, "auto");
   strcpy(c->haptics, "auto");
+  strcpy(c->pen, "off");
+  strcpy(c->pen_rotate, "auto");
   strcpy(c->wifi, "auto");
+  br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
 
 uint64_t xh_parse_size(const char *text, bool *ok)
@@ -99,6 +104,11 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     if (ok) c->display_format = !strcmp(value, "bgrx") ? XH_PIXELS_BGRX8 : XH_PIXELS_RGBA16F;
   }
   else if (!strcmp(key, "gpu")) { ok = !strcmp(value, "auto") || !strcmp(value, "3d") || !strcmp(value, "2d"); if (ok) return copy(c->gpu, sizeof c->gpu, value); }
+  else if (!strcmp(key, "gpu-level")) {
+    ok = !strcmp(value, "deadline") || !strcmp(value, "hold") || !strcmp(value, "governor");
+    if (ok) return copy(c->gpu_level, sizeof c->gpu_level, value);
+  }
+  else if (!strcmp(key, "gpu-priority")) { ok = number(value, 0, 1, &c->gpu_priority); }
   else if (!strcmp(key, "cpus")) { c->ncpu = (unsigned)atoi(value); ok = c->ncpu >= 1 && c->ncpu <= XH_MAX_CPUS; }
   else if (!strcmp(key, "ram")) {
     c->ram_bytes = strcmp(value, "auto") ? xh_parse_size(value, &ok) : 0;
@@ -119,6 +129,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "ram-pagetable-percent")) { ok = number(value, 0, 50, &c->ram_pagetable_percent); }
   else if (!strcmp(key, "ram-unlock-below")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_unlock_below = (int64_t)v; }
   else if (!strcmp(key, "return-graceful-ms")) { ok = number(value, 0, 120000, &c->return_graceful_ms); }
+  else if (!strcmp(key, "ready-content-wait")) { ok = number(value, 0, 480, &c->ready_content_wait); }
   else if (!strcmp(key, "width")) c->width = (unsigned)atoi(value);
   else if (!strcmp(key, "height")) c->height = (unsigned)atoi(value);
   else if (!strcmp(key, "hz")) { c->hz = (unsigned)atoi(value); ok = c->hz == 0 || (c->hz >= 24 && c->hz <= 240); }
@@ -138,6 +149,9 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
   else if (!strcmp(key, "touch-sleep")) return flag(value, &c->touch_sleep);
+  else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
+  else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
+  else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
@@ -150,6 +164,12 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
   else if (!strcmp(key, "cpu-pin")) { if (!strcmp(value, "2")) c->cpu_pin = 2; else { bool on; if (flag(value, &on)) return -1; c->cpu_pin = on; } }
   else if (!strcmp(key, "map-defer")) { bool on; if (flag(value, &on)) return -1; c->map_defer = on; }
+  else if (!strncmp(key, "hw-backend", 10)) {
+    // hw-backend, hw-backend-<bridge>, hw-backend-fallback (bridges/hw_backend.h)
+    int taken = br_hw_setting(&c->hw, key, value);
+    if (taken > 0) return -1;
+    ok = taken == 0;
+  }
   else if (!strcmp(key, "log-level")) c->log_level = atoi(value);
   else if (!strcmp(key, "disk") || !strcmp(key, "disk-rw") || !strcmp(key, "data-store")) {
     // disk=FILE (read-only), disk-rw=FILE[,SEED], data-store=FILE[,SEED]
@@ -197,6 +217,7 @@ static void usage(void)
         "               [--session-abi 1] [--mode takeover|bench] [--cpus N] [--ram SIZE|auto]\n"
         "               [--boot-args TEXT] [--display shm|drm|none] [--gpu auto|3d|2d] [--width W --height H]\n"
         "               [--hz N] [--scale 2|3] [--display-format bgrx|rgba16f]\n"
+        "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
         "               [--no-input] [--input-script FILE] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
@@ -267,9 +288,12 @@ int xh_config_finish(xh_config *c)
   if (c->setway_skip < 0) c->setway_skip = from_image.setway_skip < 0 ? 1 : from_image.setway_skip;
   if (c->perf_log < 0) c->perf_log = from_image.perf_log;
   if (c->spin_host < 0) c->spin_host = from_image.spin_host;
+  if (!*c->gpu_level) strcpy(c->gpu_level, *from_image.gpu_level ? from_image.gpu_level : "deadline");
+  if (c->gpu_priority < 0) c->gpu_priority = from_image.gpu_priority < 0 ? 1 : from_image.gpu_priority;
   if (c->spin_task < 0) c->spin_task = from_image.spin_task;
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;
+  br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;
@@ -330,6 +354,8 @@ int xh_config_finish(xh_config *c)
   // or tested end to end, so it is off until the Mac/phone proves it. return-graceful-ms=N (or the image's
   // xnuhost.conf) turns it on. The host state machine itself is tested (docs/booter.md "The return").
   if (c->return_graceful_ms < 0) c->return_graceful_ms = from_image.return_graceful_ms < 0 ? 0 : from_image.return_graceful_ms;
+  // session/ready at the first lit frame of the guest's own, or this many seconds after its first (black) one (ready.c).
+  if (c->ready_content_wait < 0) c->ready_content_wait = from_image.ready_content_wait < 0 ? XH_READY_CONTENT_WAIT : from_image.ready_content_wait;
   if (!*c->ram_meminfo) strcpy(c->ram_meminfo, *from_image.ram_meminfo ? from_image.ram_meminfo : "/proc/meminfo");
   // The RAM held fixed for the session (ramfix.c) with ram-giveback=0; the default is still 0058's way (ram-giveback=1):
   // the fixed RAM has run in the host tests and the test kernel only, not in a PC boot of iOS or on the phone.
@@ -511,6 +537,27 @@ bool xh_boot_args_hides_vmm_from(const char *args, const char *name)
     }
   }
   return false;
+}
+
+// bluetoothd's own reading of its boot argument (24A446 /usr/sbin/bluetoothd at 0x100309098): every space-separated
+// word that contains "bt-transport-override" sets the transport to strtol of what follows its '=', when under 13; the
+// last such word wins.
+int xh_boot_args_bt_transport(const char *args)
+{
+  static const char key[] = "bt-transport-override";
+  int found = -1;
+  for (const char *p = args; *p;) {
+    size_t len = strcspn(p, " ");
+    bool k = false;
+    for (size_t i = 0; !k && i + sizeof key - 1 <= len; i++) k = !strncmp(p + i, key, sizeof key - 1);
+    const char *eq = memchr(p, '=', len);
+    if (k && eq) {
+      long v = strtol(eq + 1, NULL, 10);
+      if (v >= 0 && v < 13) found = (int)v;
+    }
+    p += len + (p[len] == ' ');
+  }
+  return found;
 }
 
 // The display's switches the guest needs, unless the command line has them: its UI scale, the panel's rate, and

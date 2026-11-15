@@ -32,14 +32,19 @@ void *xh_ram(uint64_t pa, uint64_t len) { return pa >= GUEST_PA && pa - GUEST_PA
 static uint32_t stop_reason = 99;
 void xh_stop(uint32_t reason, uint32_t code, const char *why) { (void)code; (void)why; stop_reason = reason; }
 bool xh_stopping(void) { return stop_reason != 99; }
-static int ready_count;
-void xh_guest_ready(void) { ready_count++; }
+// main.c's ready rule as the device sees it: ready_count counts the frames of the guest's own it was given, last_lit
+// the last one's xh_pixels_lit, frame_answer what main.c answers (true: ready, the device stops asking), and
+// frame_before_flush whether the last frame came to the rule before the display (and the helper) were told of it.
+static int ready_count, flushes, flushes_at_frame = -1;
+static bool last_lit, frame_answer = true;
+void xh_guest_ready(void) { }
+bool xh_guest_frame(bool lit) { ready_count++; last_lit = lit; flushes_at_frame = flushes; return frame_answer; }
 struct xh_info g_info;                       // main.c's: the device asks it where the boot framebuffer is
 const struct xh_vector *xh_vector(void) { return NULL; }
 static xh_display fake_display;
 static unsigned flush_rect[4];
 xh_display *xh_display_get(void) { return fake_display.pixels ? &fake_display : NULL; }
-void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; }
+void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; flushes++; }
 unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t text_hi, int ram_fd, int trap_fd);
 
 // ---- instructions -------------------------------------------------------------------------------
@@ -71,6 +76,97 @@ static void test_insn(void)
 static uint64_t reg_store[4], last_write_size;
 static uint64_t fake_read(void *o, uint64_t off, unsigned size) { (void)o; (void)size; return reg_store[off / 8 & 3] >> (off % 8 * 8); }
 static void fake_write(void *o, uint64_t off, unsigned size, uint64_t v) { (void)o; last_write_size = size; reg_store[off / 8 & 3] = v; }
+
+// Whether a frame shows anything (pixels.h xh_pixels_lit, the ready rule's test): an all-black 1440x3120 frame (the
+// X byte set or not), the boot console's kind of frame (a few rows of text), a few lit pixels on the sampled grid, a
+// lit 16x16 block anywhere, a lit pixel off the grid (not seen: the check is sparse), the level at the threshold, and
+// the same in half floats.
+static void test_pixels_lit(void)
+{
+  const uint32_t w = 1440, h = 3120;
+  size_t stride = (size_t)w * 4;
+  uint8_t *f = calloc(h, stride);
+  CHECK(f && !xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));                // black
+  for (size_t i = 3; i < (size_t)h * stride; i += 4) f[i] = 0xff;
+  CHECK(!xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));                      // black, X 0xff: not alpha, not content
+  CHECK(!xh_pixels_lit(f, stride, w, h, 99) && !xh_pixels_lit(NULL, stride, w, h, XH_PIXELS_BGRX8));
+  // A console's picture: grey text in the top rows of a black frame (glyphs 8 px wide, 16 rows each).
+  for (uint32_t y = 0; y < 48; y++)
+    for (uint32_t x = 0; x < 640; x++) if ((x / 2 + y) % 3 == 0) memset(f + y * stride + x * 4, 0xaa, 3);
+  CHECK(xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  memset(f, 0, (size_t)h * stride);
+  f[(8 * stride) + 8 * 4 + 2] = 0x80;                                           // one red pixel on the grid
+  CHECK(xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  memset(f, 0, (size_t)h * stride);
+  f[(9 * stride) + 9 * 4 + 1] = 0xff;                                           // one pixel off the grid: missed
+  CHECK(!xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  memset(f, 0, (size_t)h * stride);
+  f[(3000 * stride) + 1432 * 4] = XH_LIT_LEVEL;                                 // at the level: still black
+  CHECK(!xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  f[(3000 * stride) + 1432 * 4] = XH_LIT_LEVEL + 1;                             // above it: lit
+  CHECK(xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8));
+  // A lit 16x16 block (a logo is far larger) is seen wherever it lies.
+  bool all = true;
+  for (uint32_t by = 0; by + 16 <= h && all; by += 37)
+    for (uint32_t bx = 0; bx + 16 <= w && all; bx += 29) {
+      memset(f, 0, (size_t)h * stride);
+      for (uint32_t y = by; y < by + 16; y++) memset(f + y * stride + bx * 4, 0xc0, 16 * 4);
+      all = xh_pixels_lit(f, stride, w, h, XH_PIXELS_BGRX8);
+    }
+  CHECK(all);
+  free(f);
+  // Half floats: black (and negative values, which clamp to black), then one lit pixel on the grid.
+  size_t hstride = (size_t)w * 8;
+  uint16_t *hf = calloc(h, hstride);
+  CHECK(hf && !xh_pixels_lit((uint8_t *)hf, hstride, w, h, XH_PIXELS_RGBA16F));
+  for (size_t i = 0; i < (size_t)w * h; i++) { hf[i * 4] = 0xbc00; hf[i * 4 + 3] = 0x3c00; }          // R -1, alpha 1
+  CHECK(!xh_pixels_lit((uint8_t *)hf, hstride, w, h, XH_PIXELS_RGBA16F));
+  hf[(24 * w + 40) * 4 + 2] = xh_half_from_float(0.5f);                         // B 0.5 at (40,24)
+  CHECK(xh_pixels_lit((uint8_t *)hf, hstride, w, h, XH_PIXELS_RGBA16F));
+  free(hf);
+}
+
+// The ready rule (ready.c): ready at the first lit frame of the guest's own; black frames wait up to the wait, which
+// the frames and the tick both end; 0 is the rule before 2026-11-15 (the first frame); the host call; once only.
+static void test_ready_rule(void)
+{
+  xh_ready_state st;
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_tick(&st, 120, 1000000) == XH_READY_NOT);                   // no frame yet: never by the clock
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT && st.first_ms == 133000 && st.frames == 1);
+  CHECK(xh_ready_on_frame(&st, false, 120, 140000) == XH_READY_NOT);
+  CHECK(xh_ready_on_tick(&st, 120, 252999) == XH_READY_NOT);
+  CHECK(xh_ready_on_frame(&st, true, 120, 150000) == XH_READY_CONTENT && st.ready && st.frames == 3);
+  CHECK(xh_ready_on_frame(&st, true, 120, 151000) == XH_READY_ALREADY && xh_ready_on_tick(&st, 120, 999999) == XH_READY_ALREADY);
+  CHECK(xh_ready_on_call(&st) == XH_READY_ALREADY);
+  // The first frame lit: ready at once.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, true, 120, 5000) == XH_READY_CONTENT && st.frames == 1);
+  // All black: the tick ends the wait at 120 s after the first frame, or a black frame that late does.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT);
+  CHECK(xh_ready_on_tick(&st, 120, 253000) == XH_READY_BLACK_TIMEOUT && st.ready);
+  CHECK(xh_ready_on_tick(&st, 120, 253100) == XH_READY_ALREADY);
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT);
+  CHECK(xh_ready_on_frame(&st, false, 120, 253000) == XH_READY_BLACK_TIMEOUT);
+  // A clock behind the first frame (not expected) does not end it.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 120, 133000) == XH_READY_NOT && xh_ready_on_tick(&st, 120, 1000) == XH_READY_NOT);
+  // ready-content-wait=0: the first frame of its own, black or not (the rule before 2026-11-15).
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_frame(&st, false, 0, 133000) == XH_READY_ANY_FRAME && st.ready);
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_tick(&st, 0, 133000) == XH_READY_NOT);
+  // The kernel's ready call, before any frame.
+  xh_ready_init(&st);
+  CHECK(xh_ready_on_call(&st) == XH_READY_CALL && xh_ready_on_frame(&st, true, 120, 1) == XH_READY_ALREADY);
+  // The key: unset until finished (then XH_READY_CONTENT_WAIT, checked with the RAM's defaults), 0 to 480 s.
+  xh_config c;
+  xh_config_defaults(&c);
+  CHECK(c.ready_content_wait == -1 && xh_config_set(&c, "ready-content-wait", "0") == 0 && c.ready_content_wait == 0 &&
+        xh_config_set(&c, "ready-content-wait", "480") == 0 && xh_config_set(&c, "ready-content-wait", "481") != 0);
+}
 
 // The return's graceful-shutdown state machine (return.c): graceful done, timeout, panic during the wait, a second
 // request, and the immediate kill when the window is 0 or iOS is not yet up.
@@ -359,7 +455,7 @@ static void test_virtio_blk(const char *dir)
 
 static void test_virtio_gpu(void)
 {
-  fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .pixels = calloc(4, 32) };
+  fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = calloc(4, 32) };
   driver d = { .dev = xh_virtio_gpu_create(0, 42, 8, 4) };
   CHECK(d.dev && R(&d, 8) == 16 && R(&d, 0x108) == 1 && driver_init(&d, 0, 2, GUEST_PA + 0x10000));
   uint32_t *cmd = xh_ram(GUEST_PA + 0x30000, 4096), *resp = xh_ram(GUEST_PA + 0x31000, 4096);
@@ -420,34 +516,58 @@ static void test_virtio_gpu(void)
     cmd[0] = 0x102; cmd[6] = 5;
     CHECK(SEND(8, 24) == 24 && resp[0] == 0x1100);
     free(fake_display.pixels);
-    fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .pixels = eight };
+    fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .format = XH_PIXELS_BGRX8, .bpp = 4, .pixels = eight };
     memset(cmd, 0, 4096);
   }
   {
     // The boot framebuffer scanned out by the guest's display driver (the console) is shown but is not the guest's
-    // first frame; the first surface of its own is.
+    // first frame, even lit; the surfaces of its own go to the ready rule, with whether the display's frame is lit,
+    // before the frame is flushed to the helper, until the rule answers ready (2026-11-15: backboardd's first frames
+    // are black).
     xh_virtio *boot_dev = xh_virtio_gpu_create(0x1000, 43, 8, 4);
     driver b = { .dev = boot_dev };
     uint64_t video = g_info.video[0];
     int before = ready_count;
+    frame_answer = false;
     CHECK(boot_dev && driver_init(&b, 0, 2, GUEST_PA + 0x50000));
 #define SENDB(words) driver_send(&b, 0, (const uint64_t[][3]){ { GUEST_PA + 0x30000, (words) * 4, 0 }, { GUEST_PA + 0x31000, 24, 1 } }, 2, true)
     for (uint32_t id = 1; id <= 2; id++) {
       uint64_t backing = GUEST_PA + 0x40000 + (id - 1) * 0x1000;
       if (id == 1) g_info.video[0] = backing;                                  // resource 1 is the boot framebuffer
+      memset(xh_ram(backing, 8 * 4 * 4), id == 1 ? 0xff : 0, 8 * 4 * 4);       // the console white, the guest's surface black
       memset(cmd, 0, 4096);
       cmd[0] = 0x101; cmd[6] = id; cmd[7] = 2; cmd[8] = 8; cmd[9] = 4;         // RESOURCE_CREATE_2D, B8G8R8X8
       CHECK(SENDB(10) == 24 && resp[0] == 0x1100);
       cmd[0] = 0x106; cmd[6] = id; cmd[7] = 1; cmd[8] = (uint32_t)backing; cmd[9] = (uint32_t)(backing >> 32); cmd[10] = 8 * 4 * 4; cmd[11] = 0;
       CHECK(SENDB(12) == 24 && resp[0] == 0x1100);
       memset(cmd, 0, 4096);
+      cmd[0] = 0x105; cmd[8] = 8; cmd[9] = 4; cmd[12] = id;                    // TRANSFER_TO_HOST_2D, all of it
+      CHECK(SENDB(14) == 24 && resp[0] == 0x1100);
+      memset(cmd, 0, 4096);
       cmd[0] = 0x103; cmd[8] = 8; cmd[9] = 4; cmd[10] = 0; cmd[11] = id;       // SET_SCANOUT
       CHECK(SENDB(12) == 24 && resp[0] == 0x1100);
       cmd[0] = 0x104; cmd[10] = id; cmd[11] = 0;                               // RESOURCE_FLUSH
       flush_rect[2] = 0;
-      CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && flush_rect[2] == 8);
+      int flushed = flushes;
+      CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && flush_rect[2] == 8 && flushes == flushed + 1);
       CHECK(ready_count == before + (id == 2));
+      if (id == 1) CHECK(fake_display.pixels[0] == 0xff);                      // the console is shown, lit
+      if (id == 2) CHECK(!last_lit && flushes_at_frame == flushed);            // black, and asked before the flush
     }
+    // The rule said "not yet": the next black frame is asked again; then a lit pixel (at the 8x4 frame's one
+    // sample, its middle) is a frame with content; once the rule says ready, no more questions.
+    cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 0; cmd[8] = 8; cmd[9] = 4; cmd[10] = 2; cmd[11] = 0;
+    CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && ready_count == before + 2 && !last_lit);
+    uint8_t *surface = xh_ram(GUEST_PA + 0x41000, 8 * 4 * 4);
+    surface[(2 * 8 + 4) * 4 + 1] = 0x80;                                       // pixel (4,2): green 0x80
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x105; cmd[8] = 8; cmd[9] = 4; cmd[12] = 2;
+    CHECK(SENDB(14) == 24 && resp[0] == 0x1100);
+    frame_answer = true;
+    memset(cmd, 0, 4096);
+    cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 2;
+    CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && ready_count == before + 3 && last_lit);
+    CHECK(SENDB(12) == 24 && resp[0] == 0x1100 && ready_count == before + 3);
 #undef SENDB
     g_info.video[0] = video;
     memset(cmd, 0, 4096);
@@ -475,6 +595,7 @@ static struct {
   uint8_t last[256]; size_t last_size;               // the last SUBMIT_3D's bytes
   xh_gpu_entry entries[4]; unsigned nentries; uint64_t blob_id, blob_size; uint32_t blob_mem, blob_flags, blob_ctx;
   uint32_t host_blob[4]; unsigned nhost;             // HOST3D blobs: pool slot i
+  unsigned hints; uint32_t hint_ctx; uint8_t hint[3]; // the guest's hints (gpu3d.h hint): how many, the last one
 } fake;
 static unsigned fake_capset_count(xh_gpu3d *b) { (void)b; return 1; }
 static bool fake_capset_info(xh_gpu3d *b, unsigned i, uint32_t *id, uint32_t *version, uint32_t *size) { (void)b; if (i) return false; *id = 6; *version = 0; *size = 64; return true; }
@@ -493,6 +614,7 @@ static int fake_ctx_create(xh_gpu3d *b, uint32_t ctx, uint32_t capset, const cha
   for (unsigned i = 0; i < 8; i++) if (!fake.live[i]) { fake.live[i] = ctx; fake.contexts++; return 0; }
   return -ENOMEM;
 }
+static void fake_hint(xh_gpu3d *b, uint32_t ctx, const uint8_t h[3]) { (void)b; fake.hints++; fake.hint_ctx = ctx; memcpy(fake.hint, h, 3); }
 static void fake_ctx_destroy(xh_gpu3d *b, uint32_t ctx) { (void)b; for (unsigned i = 0; i < 8; i++) if (fake.live[i] == ctx) { fake.live[i] = 0; fake.contexts--; } }
 static int fake_submit(xh_gpu3d *b, uint32_t ctx, const void *commands, size_t size)
 {
@@ -565,7 +687,7 @@ static void test_virtio_gpu3d(void)
 {
   static xh_gpu3d b = { .capset_count = fake_capset_count, .capset_info = fake_capset_info, .capset = fake_capset, .ctx_create = fake_ctx_create,
                         .ctx_destroy = fake_ctx_destroy, .submit = fake_submit, .submit_fence = fake_submit_fence, .create_blob = fake_create_blob,
-                        .map_blob = fake_map_blob, .attach = fake_attach, .unref = fake_unref };
+                        .map_blob = fake_map_blob, .attach = fake_attach, .unref = fake_unref, .hint = fake_hint };
   fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .pixels = calloc(4, 32) };
   ready_count = 0;
   driver d = { .dev = xh_virtio_gpu_create_3d(0, 43, 8, 4, &b) };
@@ -589,8 +711,10 @@ static void test_virtio_gpu3d(void)
   cmd[6] = 2;
   CHECK(G(8, 24 + 64) == 1 && resp[0] == 0x1205);                                                         // no such capset
   // contexts
-  CLEAR(); cmd[0] = 0x200; cmd[4] = 5; cmd[6] = 4; cmd[7] = 6; memcpy(&cmd[8], "test", 4);
+  // context_init: the capset, and the creating task's hint in bits 8-23 (OneiOSAdreno.cpp oneios_gpu_hint)
+  CLEAR(); cmd[0] = 0x200; cmd[4] = 5; cmd[6] = 4; cmd[7] = 6 | 0x81u << 8 | 6u << 16; memcpy(&cmd[8], "test", 4);
   CHECK(G(24, 24) == 1 && resp[0] == 0x1100 && fake.contexts == 1 && fake.live[0] == 5);
+  CHECK(fake.hints == 1 && fake.hint_ctx == 5 && fake.hint[0] == 0x81 && fake.hint[1] == 6 && fake.hint[2] == 0);
   CHECK(G(24, 24) == 1 && resp[0] == 0x1204 && fake.contexts == 1);                                       // the id is taken
   cmd[4] = 0;
   CHECK(G(24, 24) == 1 && resp[0] == 0x1204);
@@ -639,8 +763,11 @@ static void test_virtio_gpu3d(void)
   cmd[6] = 55;
   CHECK(G(8, 24) == 1 && resp[0] == 0x1203);
   // SUBMIT_3D: the stream reaches the renderer whole, also when it is a part of its own in the chain
-  CLEAR(); cmd[0] = 0x207; cmd[4] = 5; cmd[6] = 12; cmd[8] = 0x11111111; cmd[9] = 0x22222222; cmd[10] = 0x33333333;
+  // and the header's three padding bytes (the submitting task's hint: role, QoS, deadline) reach it first
+  CLEAR(); cmd[0] = 0x207; cmd[4] = 5; cmd[5] = 0x8a | 5u << 8 | 33u << 16; cmd[5] <<= 8; cmd[6] = 12; cmd[8] = 0x11111111; cmd[9] = 0x22222222; cmd[10] = 0x33333333;
+  unsigned hints = fake.hints;
   CHECK(G(11, 24) == 1 && resp[0] == 0x1100 && resp[1] == 0 && fake.submits == 1 && fake.last_size == 12 && !memcmp(fake.last, &cmd[8], 12));
+  CHECK(fake.hints == hints + 1 && fake.hint_ctx == 5 && fake.hint[0] == 0x8a && fake.hint[1] == 5 && fake.hint[2] == 33);
   for (unsigned i = 0; i < 50; i++) extra[i] = i * 0x01010101u;
   cmd[6] = 200;
   CHECK(GX(8, 200, 24) == 1 && resp[0] == 0x1100 && fake.submits == 2 && fake.last_size == 200 && !memcmp(fake.last, extra, 200));
@@ -1110,6 +1237,200 @@ static void test_input_filter(void)
   xh_input_power_key = NULL;
 }
 
+// The pen (pen.c): which devices are taken, the evdev state as the guest's sample, the frames the guest's device gets.
+static test_ev pen_got[64];
+static unsigned pen_n;
+static void pen_capture(void *context, uint16_t type, uint16_t code, int32_t value)
+{
+  (void)context;
+  if (pen_n < 64) pen_got[pen_n++] = (test_ev){ type, code, value };
+}
+static int pen_find(uint16_t type, uint16_t code, int32_t *value)
+{
+  for (unsigned i = 0; i < pen_n; i++)
+    if (pen_got[i].type == type && pen_got[i].code == code) { if (value) *value = pen_got[i].value; return (int)i; }
+  return -1;
+}
+static xh_pen_state pen_fake_state;
+static int pen_fake_read(xh_pen_source *s, xh_pen_state *state) { (void)s; *state = pen_fake_state; return 0; }
+
+static void test_pen(void)
+{
+  // The lookup's test: a pen's bits; never a device with a side key or multitouch positions.
+  uint8_t keys[96] = { 0 }, abs[8] = { 0 };
+#define SETBIT(a, n) ((a)[(n) / 8] |= (uint8_t)(1 << ((n) % 8)))
+  const char *why = NULL;
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && why && strstr(why, "BTN_TOOL_PEN"));
+  SETBIT(keys, 0x140); SETBIT(abs, 0); SETBIT(abs, 1);
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "ABS_PRESSURE"));
+  SETBIT(abs, 0x18);
+  int plain = xh_pen_rank("digitizer", keys, sizeof keys, abs, sizeof abs, &why);
+  CHECK(plain == 1 && why == NULL);
+  SETBIT(abs, 0x1a); SETBIT(keys, 0x14b);
+  int full = xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why);
+  CHECK(full > plain && full == 1 + 2 + 4);                                     // tilt, the side button, a pen's name
+  uint8_t mt[8];
+  memcpy(mt, abs, sizeof mt);
+  SETBIT(mt, 0x35);
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, mt, sizeof mt, &why) == 0 && strstr(why, "multitouch"));
+  SETBIT(keys, 116);                                                            // KEY_POWER: never the pen's device
+  CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "side keys"));
+#undef SETBIT
+  CHECK(xh_pen_lookup == xh_pen_lookup_evdev);                                  // the default lookup, replaceable
+
+  // The sample: a digitizer of 0..16000 x 0..34000, pressure 0..8191, height 0..255, tilt +-63 without a resolution.
+  xh_pen_device d = { .fd = -1, .stylus = true };
+  d.axis[XH_PEN_X] = (xh_pen_axis){ 0, 16000, 0, true };
+  d.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 34000, 0, true };
+  d.axis[XH_PEN_PRESSURE] = (xh_pen_axis){ 0, 8191, 0, true };
+  d.axis[XH_PEN_DISTANCE] = (xh_pen_axis){ 0, 255, 0, true };
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  d.axis[XH_PEN_TILT_Y] = (xh_pen_axis){ -63, 63, 0, true };
+  xh_pen_state st = { .tool = true };
+  st.value[XH_PEN_X] = 8000; st.value[XH_PEN_Y] = 34000; st.value[XH_PEN_DISTANCE] = 0; st.value[XH_PEN_PRESSURE] = 500;
+  st.value[XH_PEN_TILT_X] = 30; st.value[XH_PEN_TILT_Y] = -20;
+  xh_pen_sample s;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  // Hovering: in range, no pressure (the device's 500 is not a contact), a height of 1 at least (UIKit's hover needs Z > 0).
+  CHECK(s.in_range && !s.touch && !s.eraser && s.pressure == 0 && s.distance == 1 && s.x == 16383 && s.y == 32767 && s.tilt_x == 30 && s.tilt_y == -20);
+  st.touch = true; st.value[XH_PEN_PRESSURE] = 8191;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.touch && s.pressure == 4095 && s.distance == 0);
+  st.value[XH_PEN_PRESSURE] = 4096;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.pressure == 2047);                                                    // scaled to 0..4095
+  st.stylus = true;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.barrel);
+  // Turned a quarter clockwise: the digitizer's top left is the panel's top right; the tilt turns with it. Mirrored: back.
+  st.value[XH_PEN_X] = 0; st.value[XH_PEN_Y] = 0;
+  xh_pen_sample_of(&d, 90, false, &st, &s);
+  CHECK(s.x == 32767 && s.y == 0 && s.tilt_x == 20 && s.tilt_y == 30);
+  xh_pen_sample_of(&d, 90, true, &st, &s);
+  CHECK(s.x == 0 && s.y == 0 && s.tilt_x == -20 && s.tilt_y == 30);
+  xh_pen_sample_of(&d, 180, false, &st, &s);
+  CHECK(s.x == 32767 && s.y == 32767 && s.tilt_x == -30 && s.tilt_y == 20);
+  xh_pen_sample_of(&d, 270, false, &st, &s);
+  CHECK(s.x == 0 && s.y == 32767 && s.tilt_x == -20 && s.tilt_y == -30);
+  // Tilt by resolution (units per radian: 57 is about a degree a unit), and a wide range without one (its end is 90).
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -5000, 5000, 57, true };
+  st.value[XH_PEN_TILT_X] = 57;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.tilt_x == 57);
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -9000, 9000, 0, true };
+  st.value[XH_PEN_TILT_X] = 4500;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.tilt_x == 45);
+  st.value[XH_PEN_TILT_X] = -9000;
+  xh_pen_sample_of(&d, 0, false, &st, &s);
+  CHECK(s.tilt_x == -89);                                                        // kept short of flat
+  d.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  // The eraser end; a tip that touches without BTN_TOOL_PEN is in range; out of range is all zero.
+  xh_pen_state rubber = { .rubber = true };
+  xh_pen_sample_of(&d, 0, false, &rubber, &s);
+  CHECK(s.in_range && s.eraser);
+  xh_pen_state tip = { .touch = true };
+  xh_pen_sample_of(&d, 0, false, &tip, &s);
+  CHECK(s.in_range && s.touch);
+  xh_pen_state gone = { 0 };
+  gone.value[XH_PEN_X] = 500;
+  xh_pen_sample_of(&d, 0, false, &gone, &s);
+  CHECK(!s.in_range && !s.touch && s.x == 0 && s.pressure == 0 && s.distance == 0);
+  // A device with no height axis hovers half way up.
+  xh_pen_device flat = d;
+  flat.axis[XH_PEN_DISTANCE].present = false;
+  xh_pen_state hover = { .tool = true };
+  xh_pen_sample_of(&flat, 0, false, &hover, &s);
+  CHECK(s.distance == 127);
+
+  // The filter: frames to the guest's device, only what changed, nothing for a frame like the last.
+  xh_pen_source src;
+  xh_pen_source_init(&src, NULL, &d, 0, false);
+  src.emit = pen_capture;
+  src.read_state = pen_fake_read;
+  const int64_t t = 5000000000;
+  const xh_input_ev in[] = { { t, 1, 0x140, 1 }, { t, 3, 0, 8000 }, { t, 3, 1, 17000 }, { t, 3, 0x19, 128 }, { t, 0, 0, 0 } };
+  pen_n = 0;
+  xh_pen_feed(&src, in, 5, t);
+  int32_t v = 0;
+  int tool = pen_find(1, 0x140, &v);
+  CHECK(tool >= 0 && v == 1 && pen_find(3, 0, &v) >= 0 && v == 16383 && pen_find(3, 1, &v) >= 0 && v == 16383 && pen_find(3, 0x19, &v) >= 0 && v == 128);
+  CHECK(pen_n > 0 && pen_got[pen_n - 1].type == 0 && pen_find(3, 0, NULL) < tool);   // positions before the keys, then SYN_REPORT
+  pen_n = 0;
+  const xh_input_ev same[] = { { t + 1, 3, 0, 8000 }, { t + 1, 0, 0, 0 } };
+  xh_pen_feed(&src, same, 2, t + 1);
+  CHECK(pen_n == 0 && src.stats.unchanged == 1);                                 // a pen held still in the air: nothing new
+  pen_n = 0;
+  const xh_input_ev down[] = { { t + 2, 3, 0x18, 4096 }, { t + 2, 1, 0x14a, 1 }, { t + 2, 0, 0, 0 } };
+  xh_pen_feed(&src, down, 3, t + 2);
+  CHECK(pen_find(3, 0x18, &v) >= 0 && v == 2047 && pen_find(3, 0x19, &v) >= 0 && v == 0 && pen_find(1, 0x14a, &v) >= 0 && v == 1 && pen_find(1, 0x140, NULL) < 0 && pen_n == 4);
+  pen_n = 0;
+  const xh_input_ev button[] = { { t + 3, 1, 0x14b, 1 }, { t + 3, 0, 0, 0 } };
+  xh_pen_feed(&src, button, 2, t + 3);
+  CHECK(pen_n == 2 && pen_find(1, 0x14b, &v) >= 0 && v == 1 && src.stats.presses == 1 && src.stats.strokes == 1);
+  // SYN_DROPPED: the rest of the frame is dropped, the state read again (out of range now): tip up and the pen gone.
+  pen_n = 0;
+  memset(&pen_fake_state, 0, sizeof pen_fake_state);
+  const xh_input_ev drop[] = { { t + 4, 0, 3, 0 }, { t + 4, 3, 0, 1 }, { t + 4, 0, 0, 0 } };
+  xh_pen_feed(&src, drop, 3, t + 4);
+  CHECK(src.drops == 1 && pen_find(1, 0x14a, &v) >= 0 && v == 0 && pen_find(1, 0x140, &v) >= 0 && v == 0 && pen_find(1, 0x14b, &v) >= 0 && v == 0 &&
+        pen_find(3, 0x18, &v) >= 0 && v == 0 && pen_find(3, 0, NULL) < 0 && src.stats.frames == 0);   // the in-range summary was logged and reset
+  pen_n = 0;
+  xh_pen_feed(&src, same, 2, t + 5);                                             // out of range, still: nothing
+  CHECK(pen_n == 0);
+
+  // The guest's pen device: its name, keys and fixed ranges in its configuration.
+  driver g = { .dev = xh_virtio_input_create(0, 46) };
+  CHECK(g.dev != NULL);
+  xh_pen_guest_device(g.dev);
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 1);
+  CHECK(xh_virtio_mmio_read(g.dev, 0x102, 1) == 10 && xh_virtio_mmio_read(g.dev, 0x108 + 7, 1) == 'p');      // "OneiOS pen"
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 0x11);
+  xh_virtio_mmio_write(g.dev, 0x101, 1, 1);                                     // EV_KEY: BTN_TOOL_PEN 0x140, BTN_STYLUS 0x14b
+  CHECK((xh_virtio_mmio_read(g.dev, 0x108 + 40, 1) & 3) == 3 && (xh_virtio_mmio_read(g.dev, 0x108 + 41, 1) & 0x0c) == 0x0c &&
+        (xh_virtio_mmio_read(g.dev, 0x108 + 14, 1) & 0x1c) == 0);              // no side keys
+  xh_virtio_mmio_write(g.dev, 0x101, 1, 3);                                     // EV_ABS: X, Y, pressure, distance, tilt
+  CHECK((xh_virtio_mmio_read(g.dev, 0x108, 1) & 3) == 3 && (xh_virtio_mmio_read(g.dev, 0x108 + 3, 1) & 0x0f) == 0x0f);
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 0x12);
+  xh_virtio_mmio_write(g.dev, 0x101, 1, 0x1a);
+  CHECK((int32_t)xh_virtio_mmio_read(g.dev, 0x108, 4) == -90 && xh_virtio_mmio_read(g.dev, 0x108 + 4, 4) == 90);
+  xh_virtio_mmio_write(g.dev, 0x100, 1, 0x10);                                  // INPUT_PROP_DIRECT, as the guest's transport needs
+  CHECK(xh_virtio_mmio_read(g.dev, 0x108, 1) == 2);
+  // The touch screen's device keeps its own name and keys.
+  driver touch = { .dev = xh_virtio_input_create(0, 47) };
+  xh_virtio_mmio_write(touch.dev, 0x100, 1, 1);
+  CHECK(xh_virtio_mmio_read(touch.dev, 0x102, 1) == 18);
+
+  // pen-rotate=auto: a landscape digitizer under a portrait panel is turned a quarter; a portrait one is not.
+  const char *how = NULL;
+  CHECK(xh_pen_rotation("auto", &d, 1440, 3120, &how) == 0 && how);
+  xh_pen_device wide = d;
+  wide.axis[XH_PEN_X] = (xh_pen_axis){ 0, 34000, 0, true };
+  wide.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 16000, 0, true };
+  CHECK(xh_pen_rotation("auto", &wide, 1440, 3120, &how) == 90 && xh_pen_rotation("270", &wide, 1440, 3120, &how) == 270);
+
+  // The script's pen lines: their steps are the pen's; a stroke is down, moves and up.
+  xh_input_step *steps = NULL;
+  unsigned n = 0, bad = 0;
+  CHECK(!xh_input_script_parse("pen-abs 0 0 16000\npen-hover 100 200 50 40\npen-stroke 0 0 160 0 32 100 900 10 -5\npen-button 1\npen-out\n", &steps, &n, &bad));
+  unsigned pens = 0, touches = 0, ups = 0;
+  for (unsigned i = 0; i < n; i++) {
+    pens += steps[i].pen;
+    if (steps[i].kind == XH_STEP_EVENT && steps[i].code == 0x14a) { if (steps[i].value) touches++; else ups++; }
+  }
+  CHECK(steps[0].kind == XH_STEP_ABS && steps[0].pen && steps[0].max == 16000 && pens == n - 3 && touches == 1 && ups == 2);   // 3 waits; pen-out lifts too
+  free(steps);
+  CHECK(xh_input_script_parse("pen-stroke 1 2 3\n", &steps, &n, &bad) == -1 && bad == 1);
+  CHECK(xh_input_script_parse("pen-button 2\n", &steps, &n, &bad) == -1);
+  // The demo script (the PC boot's) parses and has its pen (run from runtime/xnuhost, as make test does).
+  bool has_pen = false;
+  FILE *demo = fopen("tools/input-demo.script", "r");
+  if (demo) {
+    fclose(demo);
+    CHECK(xh_input_script_load("tools/input-demo.script", &has_pen) == 0 && has_pen);
+  }
+}
+
 // The scripted event source (input_script.c): the file's lines as steps.
 static void test_input_script(void)
 {
@@ -1375,7 +1696,7 @@ static void test_config(const char *dir)
   // The default (ram-giveback=1, 0058's way: nothing prefaulted or locked) with what fits (2026-11-14): MemAvailable 7 GiB here.
   CHECK(xh_config_args(&c, 5, ram1) == 0 && xh_config_finish(&c) == 0 && c.ram_bytes == 5376 * M && c.ram_auto_total == phone &&
         c.ram_auto_available == 7ull * G && c.ram_percent == 90 && c.ram_host_floor == (int64_t)XH_RAM_AUTO_FLOOR && c.host_mem_log == 30 &&
-        c.usb_log == 3 &&
+        c.usb_log == 3 && c.ready_content_wait == XH_READY_CONTENT_WAIT &&
         c.ram_auto_bound == XH_RAM_BOUND_AVAILABLE && c.ram_fit_on == 1 && c.ram_fit / M == 5451 && c.ram_fit_available == 7 * G && c.ram_giveback == 1 && c.ram_prefault == 0 && c.ram_lock == 0 &&
         c.ram_session_reserve == (int64_t)XH_RAM_SESSION_RESERVE && c.ram_unlock_below == (int64_t)XH_RAM_UNLOCK_BELOW && c.ram_gpu_reserve == (int64_t)XH_RAM_GPU_RESERVE && c.ram_pagetable_percent == 8);
   // The RAM held fixed (ram-giveback=0): the same size; prefaulted and locked.
@@ -1455,6 +1776,16 @@ static void test_config(const char *dir)
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=audiomxd,com.apple.WebKit.GPU bluetoothd=1", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=bluetoothd2 xowner-hide-vmm=bluetoothd", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("", "bluetoothd"));
+  // bt-transport-override read as bluetoothd reads it: any word that contains the name, the value after its '=',
+  // under 13, the last word wins
+  CHECK(xh_boot_args_bt_transport("-v bt-transport-override=10 wdt=-1") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=10 bt-transport-override=1") == 1);
+  CHECK(xh_boot_args_bt_transport("xbt-transport-override=10") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=13") == -1);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=10 bt-transport-override=99") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override") == -1);
+  CHECK(xh_boot_args_bt_transport("-v wdt=-1 transport=10") == -1);
+  CHECK(xh_boot_args_bt_transport("") == -1);
   char *argv4b[] = { "xnuhost", "--image", image, "--mode", "bench", "--set", "bluetooth=sim" };   // the PC's stand-in
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 7, argv4b) == 0 && xh_config_finish(&c) == 0 && c.bridges == 0 && !strcmp(c.bluetooth, "sim"));
@@ -1463,6 +1794,32 @@ static void test_config(const char *dir)
   CHECK(!strcmp(c.haptics, "auto"));
   CHECK(xh_config_args(&c, 7, argv4c) == 0 && xh_config_finish(&c) == 0 && c.bridges == 0 && !strcmp(c.haptics, "sim"));
   CHECK(xh_config_set(&c, "haptics", "off") == 0 && !strcmp(c.haptics, "off") && xh_config_set(&c, "haptics", "evdev") != 0);
+  // hw-backend (bridges/hw_backend.h): samsung by default for every bridge; xnuhost.conf, --set and --hw-backend*;
+  // the command line wins per setting over the image set's file; a bad value or an unknown bridge refused.
+  xh_config_defaults(&c);
+  for (unsigned i = 0; i < BR_HW_NBRIDGE; i++) CHECK(br_hw_choose(&c.hw, i, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
+  CHECK(!br_hw_fallback_allowed(&c.hw));
+  f = fopen(path, "w");
+  fputs("boot-args=-v debug=0x8\nhw-backend=treble\nhw-backend-keys=samsung\nhw-backend-fallback=1\n", f);
+  fclose(f);
+  char *hw1[] = { "xnuhost", "--image", image, "--hw-backend-battery", "samsung", "--set", "hw-backend-fallback=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, hw1) == 0 && xh_config_finish(&c) == 0);
+  CHECK(br_hw_choose(&c.hw, BR_HW_BACKLIGHT, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE && br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
+  CHECK(br_hw_choose(&c.hw, BR_HW_BATTERY, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && !br_hw_fallback_allowed(&c.hw));
+  char *hw2[] = { "xnuhost", "--image", image, "--hw-backend", "samsung" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hw2) == 0 && xh_config_finish(&c) == 0 && br_hw_choose(&c.hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
+  CHECK(br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && br_hw_fallback_allowed(&c.hw));
+  char *hw3[] = { "xnuhost", "--image", image, "--hw-backend", "pixel" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hw3) == -1);
+  char *hw4[] = { "xnuhost", "--image", image, "--set", "hw-backend-toaster=treble" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, hw4) == -1);
+  f = fopen(path, "w");
+  fputs("# settings of this image\nboot-args=-v debug=0x8\n", f);
+  fclose(f);
   char *argv5[] = { "xnuhost", "--image", image, "--set", "wifi=off" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, argv5) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.wifi, "off"));
@@ -2041,6 +2398,8 @@ int main(void)
   xh_virtio_translate = xh_ram;
   test_insn();
   test_return();
+  test_pixels_lit();
+  test_ready_rule();
   test_mmio();
   test_gic();
   test_sysreg();
@@ -2049,6 +2408,7 @@ int main(void)
   test_virtio_gpu3d();
   test_virtio_input();
   test_input_filter();
+  test_pen();
   test_input_script();
   test_filter();
   test_fault_access();

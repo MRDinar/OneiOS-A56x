@@ -1133,6 +1133,12 @@ From the phone session of main 3233fed (30 s): `1021984 user stays; 684514 sysca
   same word is the role of the submitting thread for host code on the vCPU (the GPU path, fix-gpu-perf). `perf hints N`
   counts the changes.
 - **`hosted_processors_idle_mach`** for the oneios-cpu window (above).
+- **The GPU path's CLPC signal** (fix-gpu-perf #42 declares both weak in `gpu/OneiOSAdreno.cpp`, this defines them):
+  `oneios_clpc_thread_role(thread)`, the task's effective role (`TASK_POLICY_ROLE`, RunningBoard's), darwin background
+  as `TASK_DARWINBG_APPLICATION`, a realtime thread of a task without a role as `TASK_GRAPHICS_SERVER`; and
+  `oneios_clpc_frame_deadline(thread)`, the deadline of the thread's work interval as its last notify gave it
+  (`kern_work_interval_notify` stores it in the interval, `wi_hosted_deadline`; 0 outside one). Compiled with the tree
+  and built into the kernel; on the PC (no 3D) nothing calls them.
 
 The report's new line: `oneios-perf:   0075: fills switched out N (not in the fill time); kernel entries made again
 unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch64; before/after in `docs/booter.md`

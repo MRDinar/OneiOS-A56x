@@ -17,8 +17,8 @@ ARM64_RUN := $(if $(ARM64_NATIVE),,$(QEMU))
 WARN := -Wall -Wextra -Werror
 INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../../drivers/bridge -I../../drivers/camera
 CFLAGS ?= -O2 -g
-SRC := main return log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display input input_script cpu hostcalls task
-PORTABLE := return log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script virtio_gpu gpu3d cpu task
+SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display input input_script pen cpu hostcalls task
+PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d cpu task
 LOADER_SRC := $(wildcard ../loader/src/*.c)
 HDR := $(wildcard include/xnuhost/*.h src/*.h stub/*.h ../loader/include/xnuloader/*.h)
 A := build/android
@@ -128,17 +128,21 @@ $(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src
 	$(ANDROID_CC) -static -o $@ $^ -lm
 
 # ---- host unit tests ----
-$(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) $(HDR)
+$(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket.
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/log.c $(HDR)
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/log.c ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/log.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/log.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_imageset.c src/imageset.c ../loader/src/adt.c ../loader/src/boot.c -lpthread -o $@
+# The GPU's per-process policy (drm2kgsl/oneios_gpu_policy.h): classes, priorities, the deadline level. No KGSL, no udmabuf.
+$(H)/test_gpu_policy: tests/test_gpu_policy.c drm2kgsl/oneios_gpu_policy.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Idrm2kgsl -fsanitize=address,undefined tests/test_gpu_policy.c -o $@
 
 # ---- the test kernel: our own freestanding AArch64 program wrapped as a Mach-O (no Apple files) ----
 KERNEL_FLAGS := --target=aarch64-unknown-none-elf -O2 -ffreestanding -fno-builtin -fno-stack-protector -fpie -fvisibility=hidden \
@@ -192,12 +196,13 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
+test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_display_mode
 	$(if $(TEST_DRM2KGSL),ASAN_OPTIONS=detect_leaks=0 $(TEST_DRM2KGSL))
 	$(if $(TEST_GPU_LEAKS),ASAN_OPTIONS=detect_leaks=1 $(TEST_GPU_LEAKS))
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_imageset
+	$(H)/test_gpu_policy
 
 clean:
 	rm -rf build

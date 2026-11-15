@@ -213,6 +213,16 @@ SInt8 8, SInt16 16, SInt32 32, SInt64 64, **Float32 31, Float64 63**). So `Brigh
 2026-11-13, 550 a second in a Control Center drag) is a Float32 truncated to 0: no form of it reaches the kernel.
 No iOS-side code is needed: see the next section.
 
+## Only a change goes to the host (fix-gpu-perf, 2026-11-15)
+
+A drag sends some 550 requests a second, most of them the level of the one before. `OneiOSBacklight::sendSet` sends a
+level only when its level, fade or flags differ from the last one sent, or a second has passed (`obl_send_wanted` in
+`oneios_bl_request.h`; iOS's framebuffer power request makes the next one go whatever it is, since the host moves the
+panel itself then); `publish` sets `IODisplayParameters` and `brightness-nits` only when they change
+(`obl_publish_wanted`). Before, each repeat was a bridge message that restarted the host's fade and nine registry
+objects made and freed. Every 1024 repeats: `ONEIOS BACKLIGHT: N requests repeated the level last sent (L of 65535):
+not sent again, nothing re-published`. Host test: `test_bl_request` (2044 checks). Not run on the phone.
+
 ## The slider, the cap and nits 0 (fix-brightness-touch, 2026-11-14)
 
 The phone, 2026-11-13 (main 9f6dc38): at +4805 CoreBrightness sent, in one millisecond, `{brightness-nits-cap}`,

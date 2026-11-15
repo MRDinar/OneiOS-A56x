@@ -40,9 +40,28 @@ back stay exactly OneOS-shaped.
 | Display | `runtime/display/` | `oneios-display`: on One UI's side, an `app_process` helper that puts xnuhost's frames (`session/display.sock`) on a full-screen surfaceflinger layer at the panel's mode, the buffers tagged with the frame's dataspace (8-bit sRGB by default; half floats, linear extended sRGB, with xnuhost's `display-format=rgba16f`). | [runtime/display/README.md](../runtime/display/README.md) |
 | Touch and buttons | `runtime/xnuhost/src/input.c`, `kernel/patches/oneios-hosted/hid/` | The touchscreen and the three side keys, read from evdev without a grab, through xnuhost's virtio-input device to two HID devices in the kernel (UniXNU's NativeHidInput under the collection's `IOHIDDevice`): a Digitizer / Touch Screen service and the buttons, which Apple's HID stack and backboardd take as an iPhone's. | [hardware.md](hardware.md) 7b, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) |
 | Touch and buttons | `runtime/xnuhost/src/input.c`, `kernel/patches/oneios-hosted/hid/` | The touchscreen and the three side keys, read from evdev without a grab, through xnuhost's virtio-input device to two HID devices in the kernel (UniXNU's NativeHidInput under the collection's `IOHIDDevice`): a Digitizer / Touch Screen service and the buttons, which Apple's HID stack hands to backboardd as an iPhone's. | [hardware.md](hardware.md) 7b, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) |
+| Pen (S Pen as an Apple Pencil; off by default) | `runtime/xnuhost/src/pen.c`, `kernel/patches/oneios-hosted/hid/` (`staged/hid_pen.rs` of `oneios-tool kernel gen hid`) | With `pen=auto`: the phone's pen digitizer (`sec_e-pen`), found by its bits through one replaceable lookup (`xh_pen_lookup`), read from evdev without a grab, as a second virtio-input device (`/arm-io/input-1`, fixed ranges) to a third NativeHidInput device, Digitizer / Stylus, which backboardd takes as its pencil digitizer and UIKit types as `UITouchTypePencil`; guest boot argument `oneios-pen=1` (xnuhost adds it). | [hardware.md](hardware.md) 7f, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) "Pen" |
 | Hardware bridges | `runtime/bridges/`, `drivers/` | Host halves (in xnuhost or small helpers) and iOS-side drivers for: CPU topology and clocks, network (`en0` over a tap with its own routing), Bluetooth (the HIDL HAL over hwbinder), haptics (the CS40L26 force-feedback device), audio (AAudio), brightness (backlight sysfs) and the light sensor, the battery (`power_supply` sysfs), camera (the camera provider HAL in a session, the NDK on One UI; in iOS, `AppleH9CamIn` and the capture plug-in `H9ISP.mediacapture` that CMCapture loads for it). | [hardware.md](hardware.md) |
 | Runtime package | `runtime/package.sh`, `.github/workflows/` | `oneios-runtime-<ver>-arm64.tar.zst` with `runtime.json`: xnuhost, the helpers and the phone check tools. Published on GitHub releases. No kernel, nothing of Apple's. | [releases.md](releases.md) |
 | OneOS fork | `akshaynexus/OneOS`, branch `oneios` | The "iOS 27 (OneiOS)" card (S24 Ultra only): downloads the runtime, imports and verifies the image set, Hardware checks, and the session scripts: arm the way back, stop zygote, start xnuhost and the display helper, return in place or by reboot. | [oneos/interface.md](../oneos/interface.md), the fork's `docs/oneios.md` |
+
+## The backend layer: samsung and treble
+
+Each hardware bridge has two forms of its Linux or Android side, chosen at start by the setting `hw-backend`
+(`samsung`, the default, or `treble`) and, per bridge, `hw-backend-<bridge>` (`docs/booter.md` 1):
+
+- **samsung**: today's paths on the Galaxy S24 Ultra (Samsung's nodes and device names), unchanged;
+- **treble**: the vendor-neutral interfaces of any Treble/GSI phone: the stable AIDL HALs through servicemanager
+  (health, thermal, vibrator; the client is the Wi-Fi bridge's binder code, no Android library), evdev found by its
+  capabilities, the standard sysfs classes by named paths.
+
+The choice lives in one place, `runtime/bridges/include/bridges/hw_backend.h` (`hw/hw_backend.c`, pure, and
+`hw/hw_log.c`), which xnuhost's `config.c` fills and `main.c` hands to the bridges (`br_hw_configure`) before any
+opens. Each bridge asks it once at open (`br_hw_select`: one log line with the backend and why) and builds its
+samsung or treble source behind the same API, so the bridge device, the drivers and iOS do not know which one runs.
+A treble interface that is missing is one line (`br_hw_missing`); the bridge then stays off, or with
+`hw-backend-fallback=1` uses its samsung form. Touch and the side keys have one lookup for both (evdev by
+capabilities, never grabbed). The audit table of every path, and each bridge's status: [hardware.md](hardware.md) 7e.
 
 ## A session, step by step
 
@@ -55,7 +74,7 @@ back stay exactly OneOS-shaped.
    session turns them on with `usb-repair` in the stage).
 4. **Start xnuhost** in a mount namespace with the stage over `/data`, in its own cgroup, then `oneios-display`.
 5. **Boot:** xnuhost loads `kernel.kc`; XNU mounts the OS volume (verified by xnuhost), on first start formats the
-   Data volume and unpacks the seed, mounts the cryptexes, starts launchd; backboardd draws on the guest's framebuffer, and at its first frame (not the boot console's)
+   Data volume and unpacks the seed, mounts the cryptexes, starts launchd; backboardd draws on the guest's framebuffer, and at its first frame that is not all black (not the boot console's; since 2026-11-15, `docs/booter.md` 2.8)
    xnuhost writes `session/ready`.
 6. **Return:** Volume Up + Volume Down for 3 s, a return request from inside iOS, xnuhost exiting, or no `ready` in
    time. The return ends xnuhost (SIGTERM, then SIGKILL), restores One UI's backlight, restarts the composer and

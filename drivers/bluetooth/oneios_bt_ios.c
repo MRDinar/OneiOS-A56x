@@ -53,7 +53,15 @@ static struct {
 	uint32_t said_tx, said_rx;              /* commands and events logged for this client (the first OBT_SAY_PACKETS) */
 	uint8_t address[6];
 	int pump_event;
+	volatile bool pump_kicked;              /* set before each wakeup of the pump thread: none is lost */
 } t;
+
+static void
+pump_wake(void)
+{
+	t.pump_kicked = true;
+	thread_wakeup((event_t)&t.pump_event);
+}
 
 bool
 obt_ios_ready(void)
@@ -110,12 +118,12 @@ deliver(const uint8_t *p, uint32_t n)
 	lck_mtx_unlock(&ios_lock);
 	if (owner == 1) {
 		obt_ctl_wakeup();
-		thread_wakeup((event_t)&t.pump_event);
+		pump_wake();
 	} else if (owner == 2) {
 		obt_dev_wakeup();
 	} else if (owner == 3) {
 		obt_sk_wakeup();
-		thread_wakeup((event_t)&t.pump_event);
+		pump_wake();
 	}
 }
 
@@ -165,17 +173,32 @@ from_host(void *context __unused, uint16_t type, const uint8_t *payload, uint32_
 	deliver(t.rx, length + 1u);
 }
 
-/* The control client's data is enqueued by one thread only (ctl_enqueuedata order; ctl_rcvd asks for more). */
+/* The control client's data is enqueued by one thread only (ctl_enqueuedata order; ctl_rcvd asks for more).
+ * The thread sleeps until it is kicked (a packet for the client, bluetoothd's bytes in the Skywalk FIFO, room again in
+ * the control's socket). Only while bytes wait for the client does it also look every PUMP_GUARD_MS. Until
+ * 2026-11-15 it woke every 20 ms from the root mount to the shutdown, with no client and nothing queued: 50 wakeups a
+ * second of a vCPU for the whole session, and 24A446's bluetoothd never connects in a virtual machine
+ * (docs/hardware.md 4, "The virtual transport is bluetoothd's own"). */
 static void
 pump_thread(void *arg __unused, wait_result_t w __unused)
 {
 	for (;;) {
-		uint64_t deadline;
-
+		t.pump_kicked = false;
 		obt_ctl_pump();
 		obt_sk_pump();
-		clock_interval_to_deadline(PUMP_GUARD_MS, NSEC_PER_MSEC, &deadline);
-		assert_wait_deadline((event_t)&t.pump_event, THREAD_UNINT, deadline);
+		if (t.qn) {
+			uint64_t deadline;
+
+			clock_interval_to_deadline(PUMP_GUARD_MS, NSEC_PER_MSEC, &deadline);
+			assert_wait_deadline((event_t)&t.pump_event, THREAD_UNINT, deadline);
+		} else {
+			assert_wait((event_t)&t.pump_event, THREAD_UNINT);
+		}
+		if (t.pump_kicked) {
+			/* kicked while it pumped: the wakeup came before the wait, so look again now */
+			clear_wait(current_thread(), THREAD_AWAKENED);
+			continue;
+		}
 		(void)thread_block(THREAD_CONTINUE_NULL);
 	}
 }
@@ -292,7 +315,7 @@ obt_ios_release(uint32_t owner)
 void
 obt_ios_kick(void)
 {
-	thread_wakeup((event_t)&t.pump_event);
+	pump_wake();
 }
 
 void
