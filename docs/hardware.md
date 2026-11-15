@@ -22,7 +22,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
-| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run (section 5) |
+| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
@@ -781,6 +781,11 @@ may scan all of them. [I] Right; it was limited to 3 while wifid had no channel 
 
 ### Settings uses a full core while the password sheet is open (fix-settings-wifi-cpu, 2026-11-15)
 
+**Superseded (fix-hapticd, 2026-11-15):** the 8644ae9 sessions had #37's scan reuse and Preferences stayed at
+102-110 %, in every text field, not only this sheet: the load is each key's Core Haptics call waiting for a server that
+gave up at its start (section 5, "Core Haptics' server gave up"; hosted 0078). The scan findings below stand as Wi-Fi
+fixes.
+
 **The phone** (main 3233fed, 2026-11-15): `oneios-cpu: 10 s: Preferences[181] 106-111%` for minutes (kernel share 20-25 %),
 backboardd 30-50 %, kbd 18 %, typing lags; touch is not it (`706 HID events queued ... 0 dropped`, 0.4-0.7 ms).
 Preferences' top messages in iOS's log: 724 pairs of `ProcessSignpostStart/End [com.apple.UIKit:TableView]`, 493
@@ -1480,6 +1485,53 @@ press produces [I, from backboardd's and SpringBoard's strings, not traced]: Spr
 turn the display off (backlight to 0 and the framebuffer's power state off; on the next press, on); the display and
 backlight drivers see that as a brightness of 0 and then a brightness above 0, or a framebuffer power-state change
 (`kernel/patches/oneios-hosted/display/README.md`, the power word).
+
+### Core Haptics' server gave up at its start: no preset for "oneios,xnuhost" (fix-hapticd, 2026-11-15)
+
+**The fault (phone, main 8644ae9, 2026-11-15):** typing lags in every text field (the Wi-Fi password sheet, Settings'
+search) with Preferences at 102-110 % of a CPU, and no haptic is ever felt (keyboard, system, buttons). iOS's log:
+Preferences 180 and SpringBoard 42 times `[com.apple.corehaptics:hcln] AVHapticClient.mm:1138 operator(): Initial XPC
+call to server timed out. Invalidating connection to prevent hang` with `Default XPC timeout` and `-[AVHapticClient
+setupConnectionWithOptions:error:]: [xpc] Got error during transaction: ... Code=4099`, in bursts while typing, each
+with a new connection to `com.apple.audio.hapticd`; with keyboard haptics off still SpringBoard 114 and Preferences 18
+(8644ae9-b); HangTracer: Preferences 38 hangs (251 s, the longest 61 s), SpringBoard 25 (71 s).
+
+**The cause [F, iOS's log of a PC boot with `haptics=sim`, 2026-11-14, `oneios-tool ioslog show ... --proc
+audiomxd`]:** the Mach service `com.apple.audio.hapticd` is audiomxd's haptic server (Core Haptics' server). At its
+start it loads its synth preset from `/Library/Audio/Tunings/<hardware model>/Haptics/hapticengineconfig.plist`, and
+the guest's hardware model is the device tree's first `compatible`, `oneios,xnuhost` (xnuhost's loader, with no
+identity tree: the same name as in `Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general`):
+```
+audiomxd  HapticServerManager.mm:41  === Initializing Haptic 2.0 Engine ===
+audiomxd  AVHapticServer.mm:2014  -[AVHapticServer loadSynthPreset]: ERROR: Unable to load the configuration plist: ...
+          NSFilePath=/Library/Audio/Tunings/oneios,xnuhost/Haptics/hapticengineconfig.plist ... No such file or directory
+audiomxd  AVHapticServer.mm:2036  -[AVHapticServer incrementInit:]: ERROR: failed to load haptic preset
+audiomxd  AVHapticServer.mm:1848  -[AVHapticServer init]: ERROR: Failed to set up SSS client -- server bailing out
+audiomxd  HapticServerManager.mm:43  ERROR: Haptic Engine & Server Failure
+```
+launchd still holds the service's port (`com.apple.audiomxd.plist`'s MachServices), so a client's first call waits
+for a reply that never comes, its default XPC timeout, on the calling thread: for the keyboard that is the app's main
+thread at each key (the lag and the CPU), whatever the haptics setting (the keyboard and SpringBoard make their haptic
+clients either way). Nothing reached the Actuator device: every `ONEIOS HAPTIC: counters:` line had `0 StartIO`. The
+OS volume has the iPhone's own folder: `/Library/Audio/Tunings/V54/Haptics` (the preset and the tap, keyboard and
+wheel waveforms; the preset names them by absolute `/Library/Audio/Tunings/V54/Haptics/...` paths), and nothing else
+under V54. Not the cause: the Actuator IOAudio2Device (audiomxd opened it, mapped its memory and built
+`VirtualAudioDevice_Actuator` and its port before the server's start: `Created and published port: [ ... type: pact;
+uid: Actuator ...]`), the `AppleSPUHapticsAudioDriver` stand-in (`oneios-button-haptics=1`; backboardd's ButtonHaptics,
+another path: `ButtonHaptics ready in 0.73 s`), the haptics bridge (it never got a request), and HAL's `HALS_UCPlugIn
+... construction failed, probably because this isn't a server plug-in` (three of the OS's HAL bundles that are not
+server plug-ins; the PC's boot has them too).
+
+**The fix (hosted 0078, `kernel/patches/oneios-hosted/README.md` "0078"):** before launchd the kernel makes the Data
+folder `/private/var/oneios/addons/AudioTunings` with one link, `oneios,xnuhost -> V54`, and shows it read-only over
+`/Library/Audio/Tunings` (0031's union mount): `/Library/Audio/Tunings/oneios,xnuhost/Haptics/...` is then the
+iPhone's own sealed folder. Nothing of Apple's is copied; an existing Data store gets it at its next boot.
+`oneios-audio-tunings=0` turns it off (the A/B switch). Why not the board name in `compatible` instead: `V54AP` first
+would make `hw.model` the iPhone's and every per-board table (CoreMotion, MediaExperience, the speaker's VAD tunings)
+and possibly an original platform kext would follow it (`kernel/profiles/iphone18-2-ios27.md`); the link changes only
+the haptics folder.
+
+PC_RESULTS_HERE
 
 ### The bridge (`runtime/bridges/haptics/haptic.c`)
 

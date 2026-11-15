@@ -1107,6 +1107,8 @@ the time they idled: hosted 0075's `hosted_processors_idle_mach`), and each proc
 besides the old nominal divisor: recount adds a thread's time to its task only when the thread changes state, so time
 from earlier windows lands whole in the window where a long-running thread finally switched, and "all" was the sum of
 those deltas with no bound. A process's lump can still land in one window, but never past what the CPUs did in it.
+Since 2026-11-15 (fix-hapticd) the report thread also runs when no Metal accelerator is published (a host with no 3D:
+the PC under qemu-aarch64), so a PC boot has `oneios-cpu:` lines too; its GPU lines stay quiet there (nothing submits).
 
 ## 0075-host-overhead-per-cpu-stats-perf-hint.patch (fix-host-overhead, 2026-11-15)
 
@@ -1210,3 +1212,30 @@ kernel's recorded compile command with `-fsyntax-only`; built on the Linux PC (2
 7632e390). Not booted; the
 PC cannot press a phone's power key into a lit display. Whether backboardd calls it at the lock in this guest is [U] until a phone boot's
 log shows the line.
+
+## 0078-audio-tunings-haptics.patch (fix-hapticd, 2026-11-15)
+
+Core Haptics' server for the guest. audiomxd publishes `com.apple.audio.hapticd` (Core Haptics' server: every UI and
+keyboard haptic, the Actuator device's only client) and, at its start, loads its synth preset from
+`/Library/Audio/Tunings/<hardware model>/Haptics/hapticengineconfig.plist`. The guest's hardware model is the tree's
+first `compatible`, `oneios,xnuhost` (`runtime/loader/src/machine.c`, no identity tree), so the file was not found and
+the server gave up (iOS's log of the PC boot of 2026-11-14 with `haptics=sim`, `--proc audiomxd`):
+`-[AVHapticServer loadSynthPreset]: ERROR: Unable to load the configuration plist ... NSFilePath=/Library/Audio/Tunings/oneios,xnuhost/Haptics/hapticengineconfig.plist ... No such file or directory`,
+`-[AVHapticServer init]: ERROR: Failed to set up SSS client -- server bailing out`, `HapticServerManager.mm:43 ...
+ERROR: Haptic Engine & Server Failure`. launchd still holds the service's port, so each client's first call waits for
+a reply that never comes (`AVHapticClient.mm:1138 ... Initial XPC call to server timed out. Invalidating connection
+to prevent hang`, with haptics on or off: the phone's sessions of 2026-11-15, Preferences 180 and SpringBoard 42 while
+typing; Settings at 102-110 % of a CPU), and nothing ever played on the Actuator device (`0 StartIO` in every
+`ONEIOS HAPTIC: counters:` line). The OS volume has the iPhone's own folder, `/Library/Audio/Tunings/V54` (only its
+`Haptics`: the preset, whose waveforms it names by their absolute `/Library/Audio/Tunings/V54/Haptics/...` paths).
+
+In `bsd/kern/kern_exec.c`, after 0070's step in `native_gpu_addon_prepare` (before launchd): the Data folder
+`/private/var/oneios/addons/AudioTunings` (and its parents) is made when missing, gets one link `oneios,xnuhost ->
+V54` when it has no entry of that name, and is shown read-only over `/Library/Audio/Tunings` with 0031's union
+(`native_gpu_addon_mount`, bindfs, `MNT_RDONLY | MNT_UNION`; scratch 0xa00, as 0056's mount). The sealed folders stay
+visible below, and the link resolves to the sealed V54 folder: nothing of Apple's is copied or changed, and an
+existing Data store gets it at its next boot. `oneios-audio-tunings=0`: nothing made or mounted (the A/B switch);
+`oneios-audio-tunings=NAME`: the link points at `NAME`. One line:
+`oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost -> V54 (link
+made 0), stage 5, status 0 (stage 5 status 0: ...)`; stage 1 status N: the folder could not be looked up, stage 2: the
+mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found.

@@ -239,6 +239,13 @@
 # CLPC's hint (hostcall.h perf_hint: the class of the user thread a vCPU runs, for the host's uclamp and the GPU path);
 # hosted_processors_idle_mach for the oneios-cpu window's bound (gpu/cpu_window.h). README.md, "0075".
 0075-host-overhead-per-cpu-stats-perf-hint.patch
+# fix-hapticd (2026-11-15): Core Haptics' server (audiomxd's com.apple.audio.hapticd) loads its preset from
+# /Library/Audio/Tunings/<hardware model>/Haptics/hapticengineconfig.plist; the guest's model is "oneios,xnuhost", so it
+# found none and gave up ("Haptic Engine & Server Failure"), every client's first call then timed out (Settings at
+# 106-110 % while typing) and no haptic was ever played. Before launchd, /private/var/oneios/addons/AudioTunings gets a
+# link oneios,xnuhost -> V54 (the iPhone's own sealed folder) and is shown over /Library/Audio/Tunings read-only (0031's
+# union mount). oneios-audio-tunings=0: not done; =NAME: another folder. README.md, "0078". Numbered 0078 (0076 is held).
+0078-audio-tunings-haptics.patch
 # radio2: no numbered patch for the Wi-Fi: net/ is an archive of this build (kernel/build-hosted.sh,
 # oneios-tool kernel gen net), started by oneios_drivers_start's oneios_net_start (weak in drivers/bridge/OneiOSBridge.c).
 # net/README.md: IO80211Controller/IO80211Interface under the collection's original IOEthernetController and

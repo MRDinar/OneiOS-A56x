@@ -436,6 +436,12 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   ([the HID archive's README](../kernel/patches/oneios-hosted/hid/README.md)). The script also has a pen (a hover, two
   strokes, the side button), left out unless `--set pen=auto` is added: then the guest gets the pen device
   `/arm-io/input-1` and `oneios-pen=1`, and the `pen:` and `oneios-hid: pen:` lines follow it ([hardware.md](hardware.md) 7f).
+- Typing on the PC: `--input-script runtime/xnuhost/tools/keyboard-typing.script` waits 7 minutes for SpringBoard,
+  then unlocks, opens Spotlight's search field (a swipe down on the Home Screen raises the keyboard) and taps 40 keys
+  0.5 s apart, every 80 s or so. With `--set haptics=sim` each key is a Core Haptics transient: count
+  `Initial XPC call to server timed out` in iOS's log, the `haptics: effect N played` lines and Preferences', Spotlight's
+  or SpringBoard's `oneios-cpu:` ([hardware.md](hardware.md) 5, "Core Haptics' server gave up"). Since 2026-11-15 a PC
+  boot has `oneios-cpu:` lines (the GPU report thread runs without a Metal accelerator too).
 - What user space did, after the run has stopped: the Data volume is in `--data`'s `data.img` and launchd keeps
   its own log on it (every job spawned or refused, every exit with its reason).
   `apfs-fuse -o ro,vol=2 out/run/data/data.img MNT`, then `MNT/root/log/com.apple.xpc.launchd/launchd.log`, and
