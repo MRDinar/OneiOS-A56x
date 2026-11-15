@@ -148,7 +148,8 @@ static void test_thermal(void)
     stop_fake(pid);
     pid = -1;
     lines[0] = 0;
-    usleep(300000);
+    for (int i = 0; i < 60 && !logged("getTemperatures failed"); i++) usleep(50000);   // the next reading, within 3 s
+    usleep(100000);
     br_thermal_get(t, &s);
     CHECK(logged("thermal: the thermal HAL's getTemperatures failed") && s.raw.skin == BR_THERMAL_UNKNOWN);
     br_thermal_close(t);
@@ -166,6 +167,65 @@ static void test_thermal(void)
   stop_fake(pid);
 }
 
+static char *vib_log(void)
+{
+  static char text[2048];
+  char path[300];
+  snprintf(path, sizeof path, "%s/vibrator.log", values);
+  FILE *f = fopen(path, "r");
+  size_t n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+  if (f) fclose(f);
+  text[n] = 0;
+  unlink(path);
+  return text;
+}
+
+static void test_haptics(void)
+{
+  put("vibrator", "4\n");                                          // CAP_AMPLITUDE_CONTROL
+  pid_t pid = start_fake();
+  lines[0] = 0;
+  br_haptic *h = br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL);
+  CHECK(h != NULL && logged("hw: haptics: backend treble (the caller's choice)") && logged("haptics: on: the vibrator HAL android.hardware.vibrator.IVibrator/default (version 2, capabilities 0x4: amplitude control"));
+  if (h) {
+    br_haptic_vib(h, 30, 1000, 0);                                  // full intensity: amplitude 1
+    br_haptic_flush(h);
+    CHECK(!strcmp(vib_log(), "on 30\namplitude 1.00\n"));
+    br_haptic_vib(h, 80, 500, 0);                                   // half intensity: level 147 of 255
+    br_haptic_flush(h);
+    char *log = vib_log();
+    CHECK(strstr(log, "on 80\namplitude 0.58\n") && strstr(log, "refused") == NULL);
+    br_haptic_stop(h);
+    br_haptic_flush(h);
+    CHECK(!strcmp(vib_log(), "off\n"));
+    br_haptic_stats st;
+    br_haptic_stats_get(h, &st);
+    CHECK(st.played == 2 && st.stopped >= 1 && st.failed == 0);
+    br_haptic_close(h);                                             // the close stops the motor
+    CHECK(!strcmp(vib_log(), "off\n"));
+  }
+  // No amplitude control: on() only.
+  put("vibrator", "0\n");
+  h = br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL);
+  CHECK(h != NULL && logged("no amplitude control"));
+  if (h) { br_haptic_vib(h, 20, 300, 0); br_haptic_flush(h); CHECK(!strcmp(vib_log(), "on 20\n")); br_haptic_close(h); vib_log(); }
+  // Not registered: the missing line, off; with the fallback the evdev search (nothing under /nonexistent here).
+  char path[300];
+  snprintf(path, sizeof path, "%s/vibrator", values);
+  unlink(path);
+  lines[0] = 0;
+  CHECK(br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL) == NULL && logged("hw: haptics: treble: missing: android.hardware.vibrator.IVibrator/default (no service: ") && logged("the bridge stays off"));
+  CHECK(!logged("no force-feedback device"));
+  br_hw_settings hw;
+  br_hw_settings_init(&hw);
+  CHECK(br_hw_setting(&hw, "hw-backend-fallback", "1") == 0);
+  br_hw_configure(&hw);
+  lines[0] = 0;
+  CHECK(br_haptic_open_as("/nonexistent", BR_HW_TREBLE, NULL) == NULL && logged("falling back to samsung") && logged("haptics: off: no force-feedback device with FF_PERIODIC + FF_SINE under /nonexistent"));
+  br_hw_configure(NULL);
+  stop_fake(pid);
+}
+
 int main(void)
 {
   setvbuf(stdout, NULL, _IOLBF, 0);
@@ -176,6 +236,7 @@ int main(void)
   if (!mkdtemp(values)) return 1;
   test_battery();
   test_thermal();
+  test_haptics();
   char command[300];
   snprintf(command, sizeof command, "rm -rf %s", values);
   CHECK(system(command) == 0);

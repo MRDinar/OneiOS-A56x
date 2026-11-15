@@ -39,6 +39,10 @@ $(A)/oneios-audio: audio/aaudio_helper.c audio/audio_proto.h
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) -Iaudio audio/aaudio_helper.c -laaudio -o $@
 $(A)/bridgectl: tools/bridgectl.c $(CORE:%=$(A)/%.o)
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) -static tools/bridgectl.c $(CORE:%=$(A)/%.o) -lm -o $@
+# bridgectl on the build host, for the stand-in phone (tools/oneios-tool/tests/phone/hw-backend.sh: haptic).
+$(H)/bridgectl: tools/bridgectl.c $(CORE:%=%.c) $(HDR)
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tools/bridgectl.c $(CORE:%=%.c) -lpthread -lm -o $@
 # wifictl: the Wi-Fi bridge without xnuhost (status and scan read only; join takes wlan0 as a session does).
 $(A)/wifictl: tools/wifictl.c $(CORE:%=$(A)/%.o) devices/virtio_net.c
 	$(ANDROID_CC) -std=gnu11 $(CFLAGS) $(WARN) $(INC) -static tools/wifictl.c $(CORE:%=$(A)/%.o) -lm -o $@
@@ -75,7 +79,7 @@ $(H)/test_audio_helper: tests/test_audio_helper.c audio/aaudio_helper.c audio/au
 
 # The treble backend's HAL bridges (battery, thermal, haptics) against fake HALs (tests/fake_hal.c) on the same binderfs;
 # fake-hal alone serves the stand-in phone (tools/oneios-tool/tests/phone/hw-backend.sh).
-HAL_TEST := tests/test_hal_binder.c tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c hw/hw_backend.c hw/hw_log.c cpu/topology.c battery/battery.c thermal/thermal.c
+HAL_TEST := tests/test_hal_binder.c tests/fake_hal.c hal/hal.c wifi/aidl_parcel.c wifi/aidl_binder.c hw/hw_backend.c hw/hw_log.c cpu/topology.c battery/battery.c thermal/thermal.c haptics/haptic.c
 $(H)/test_hal_binder: $(HAL_TEST) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DFAKE_HAL_LIB -fsanitize=address,undefined $(HAL_TEST) -lpthread -o $@

@@ -1307,6 +1307,9 @@ backlight drivers see that as a brightness of 0 and then a brightness above 0, o
 
 ### The bridge (`runtime/bridges/haptics/haptic.c`)
 
+- Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the
+  vibrator HAL `android.hardware.vibrator.IVibrator/default` (`on(ms)`, then `setAmplitude(level / 255)` when its
+  capabilities have amplitude control, `off()`; `br_haptic_open_as`).
 - Finds the device by its EV_FF bits (`sec_vibrator_inputff` first), sets `FF_GAIN` 10000 once.
 - One effect, updated for every request: `FF_PERIODIC` / `FF_SINE`, period = 1000 / frequency clamped to 4..10 ms
   (6 ms when iOS names none), magnitude = 40 + 215 x intensity / 1000 (an LRA does not move below a floor), length
@@ -2196,7 +2199,7 @@ who or what it waits for).
 | Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | **done** (test_thermal, test_hal_binder, hw-backend.sh) |
 | Thermal load line | `bridges/thermal/thermal.c` (`br_host_load_read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
 | Thermal policy, CPU step | `thermal.c` (`br_thermal_decide`), `xnuhost/src/main.c` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
-| Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | next (this PR, step 5) |
+| Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | **done** (test_hal_binder, hw-backend.sh) |
 | Touch screen | `xnuhost/src/input.c` | `/dev/input/event0..31`: multitouch X/Y with `INPUT_PROP_DIRECT`, the first one | the same | eventN by ioctl capabilities | same (spen owns the lookup function) |
 | Side keys | `xnuhost/src/input.c` | `/dev/input/event0..31` with `KEY_POWER`, `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN`, read only, never grabbed | the same | eventN by ioctl capabilities | same |
 | Power key -> touch IC | `xnuhost/src/main.c`, `br_bright_key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | **done** (br_bright_key wakes nothing in treble) |
@@ -2254,6 +2257,18 @@ temperature), the stand-in phone (4 checks: `thermalctl` on the S24's zones and 
 phone's CPU/SOC/skin). On the phone: `hw: thermal: backend samsung (the default)` then the same `thermal: on: N zones;
 case ... (lrp)` line; a treble boot by `thermal: on: the thermal HAL android.hardware.thermal.IThermal/default
 (version N), K temperatures; case ... (SKIN)`.
+
+**Vibrator** (`runtime/bridges/haptics/haptic.c`). Treble: the vibrator HAL,
+`android.hardware.vibrator.IVibrator/default`, behind the same worker, mapping and counters: an effect is `on(length)`
+(no callback) then, when `getCapabilities()` has `CAP_AMPLITUDE_CONTROL`, `setAmplitude(level / 255 x gain)` (AOSP's
+vibrator service orders them so); a stop and the close are `off()` (the close always sends one: the motor is stopped
+whatever the worker believed). The period has no place in `on()`: the HAL plays at its own resonance. Not registered:
+one missing line and no actuator for iOS, or the evdev search with `hw-backend-fallback=1`. Tested: `test_hal_binder.c`
+(on and amplitude for two intensities, a stop, the close, no amplitude control, not registered, the fallback), the
+stand-in phone (3 checks: `bridgectl haptic 40` with the fake HAL's call log). The samsung tests (`test_bridges.c`)
+unchanged. On the phone: `hw: haptics: backend samsung (the default)` then the same `haptics: on: /dev/input/eventN
+...` line; a treble boot by `haptics: on: the vibrator HAL android.hardware.vibrator.IVibrator/default (version N,
+capabilities 0x...)` and `haptics: effect N played on the vibrator HAL`.
 
 ## 8. Sources
 
