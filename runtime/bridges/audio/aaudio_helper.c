@@ -62,7 +62,7 @@
 // or SCHED_RR is set back to SCHED_OTHER (logged).
 // End to end (the `end-to-end` of the speaker's report): iOS's sample time to the speaker. The guest's engine
 // hands each period on at a fixed time of its clock (DroidVMAudio.cpp as staged: the speaker's period as it
-// starts), on the same counter as the host's CLOCK_MONOTONIC_RAW; the earliest arrival of a stream fixes that
+// starts), on the same counter as the host's CLOCK_MONOTONIC_RAW; the earliest arrival of the last 1-2 s fixes that
 // schedule, each period's lateness is its arrival against it, and the host's part is what the ring and AAudio
 // hold ahead of it when it arrives (AAudioStream_getTimestamp: written but not yet presented).
 // The probe (audio_proto.h AU_PROBE, xnuhost before the boot): the speaker stream opened in silence, its latency
@@ -139,9 +139,12 @@ struct out_stats {
 };
 static struct out_stats ostat;
 
-// The guest's schedule (guarded by ring_lock): the frames since its START and the earliest arrival less their
-// time (CLOCK_MONOTONIC_RAW, s; -1: none yet).
-static struct { uint64_t frames; double anchor; } guest_clock = { 0, -1 };
+// The guest's schedule (guarded by ring_lock): the frames since its START, and the earliest arrival less their time
+// (CLOCK_MONOTONIC_RAW, s) over the last one to two seconds: this second's (`now_min`, from `since`) and the last's
+// (`last_min`; a large value: none). A rolling minimum, not the stream's: a guest that paused or lost a period
+// (its frames then lag its clock for good) would otherwise look late for the rest of the stream.
+static struct { uint64_t frames; double now_min, last_min, since; } guest_clock = { 0, 1e30, 1e30, -1 };
+static void guest_clock_reset(void) { guest_clock.frames = 0; guest_clock.now_min = guest_clock.last_min = 1e30; guest_clock.since = -1; }
 // The latest guest period (its lateness, s) and the periods since the target last moved or held (ring_lock).
 static double window_late_max;
 static unsigned window_periods;
@@ -432,16 +435,21 @@ static void out_report(const char *when)
 }
 
 // One guest period has come in (ring_lock held): its lateness against the guest's schedule (the earliest arrival
-// of the stream less its sample time) plus what the ring and AAudio hold ahead of it (`ahead`, frames; -1: no
-// timestamp yet) is its end to end, from iOS's sample time to the speaker.
+// of the last one to two seconds less its sample time) plus what the ring and AAudio hold ahead of it (`ahead`,
+// frames; -1: no timestamp yet) is its end to end, from iOS's sample time to the speaker.
 static void guest_period(unsigned frames, int ahead)
 {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC_RAW, &t);
   double now = (double)t.tv_sec + t.tv_nsec / 1e9, at = (double)guest_clock.frames / RATE;
-  if (guest_clock.anchor < 0 || now - at < guest_clock.anchor) guest_clock.anchor = now - at;
+  const double offset = now - at;
+  if (guest_clock.since < 0 || now - guest_clock.since >= 1.0) {
+    guest_clock.last_min = guest_clock.since < 0 || now - guest_clock.since >= 2.0 ? 1e30 : guest_clock.now_min;
+    guest_clock.now_min = offset;
+    guest_clock.since = now;
+  } else if (offset < guest_clock.now_min) guest_clock.now_min = offset;
   guest_clock.frames += frames;
-  double late = now - at - guest_clock.anchor;
+  double late = offset - (guest_clock.now_min < guest_clock.last_min ? guest_clock.now_min : guest_clock.last_min);
   if (late > window_late_max) window_late_max = late;      // what the target may come down to (the writer)
   window_periods++;
   if (ahead < 0) return;
@@ -782,7 +790,7 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
     guest_on = true;
     generation++;
     memset(&ostat, 0, sizeof ostat);
-    guest_clock.frames = 0; guest_clock.anchor = -1;
+    guest_clock_reset();
     pthread_mutex_unlock(&ring_lock);
     clock_gettime(CLOCK_MONOTONIC, &d->started);
     return 0;
@@ -797,7 +805,7 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
     guest_on = true;
     generation++;
     memset(&ostat, 0, sizeof ostat);
-    guest_clock.frames = 0; guest_clock.anchor = -1;
+    guest_clock_reset();
     pthread_mutex_unlock(&ring_lock);
   } else in_sent = in_lost = in_short = 0;
   d->stream = open_stream(output, rate, channels);

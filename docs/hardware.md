@@ -1878,7 +1878,7 @@ expected; the helper's `speaker open` line says it (`sharing exclusive, mmap 1, 
 **End to end, measured (lasting lines).**
 - Host (`oneios-audio: speaker running|stopped ...; end-to-end N ms (max N; the guest's period late by N ms + the
   host N ms; iOS is told N ms)`): per guest period, its lateness against the guest's schedule (the earliest arrival
-  of the stream less its sample time: the guest's engine hands period n on at its start, on the same counter as the
+  of the last one to two seconds less its sample time, so that a guest that paused or lost a period is not late for good: the guest's engine hands period n on at its start, on the same counter as the
   host's `CLOCK_MONOTONIC_RAW`) plus what the ring and AAudio hold ahead of it when it comes in (frames written but
   not yet presented, from `AAudioStream_getTimestamp`). That is iOS's sample time to the speaker. A kernel from
   before this change hands a period on 5 ms later than the model says: its figure is 5 ms short.
