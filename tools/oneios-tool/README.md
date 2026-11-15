@@ -160,6 +160,9 @@ mount the Data volume, copy `db/diagnostics/{Persist,Special,Signpost,HighVolume
 oneios-tool ioslog show SOURCE [-f text|csv|jsonl] [-o OUT] [filters] [--sort]
 oneios-tool ioslog boots SOURCE                       # the boots: UUID, start, first and last entry, entries
 oneios-tool ioslog checks SOURCE [--boot last|all|UUID] [--examples N]
+oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [--examples N] [-o FILE] [--stage DIR]
+                                                      # hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck
+                                                      # idle demotions, encode failures: one line per kind ("health" below)
 oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual steps made, for other tools
 # every subcommand: [--volume N|NAME] [--block0 | --checkpoint XID] [--apfs own|fuse|auto] [-v]
 ```
@@ -198,6 +201,144 @@ oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual step
 - The guest's clock was about a day behind the host's in the 2026-11-12 sessions, so the log's dates are too.
 - Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
   `Info.plist` in the saved archive (Apple's `log show --archive` wants one; Mandiant's tool does not).
+
+### health: the counts that tell lag and heat apart
+
+`ioslog health` (2026-11-15, the owner's request: every session shows the same lasting numbers) counts, for one
+boot, the lines of iOS's own log that say that a main thread hung, a process was killed or a call timed out. One
+line per kind: its count; for hangs the total seconds, the longest and how many were over 1 s; the top processes;
+and, where the lines name something, those names.
+
+```sh
+oneios-tool ioslog health data.img                         # the last boot of a copy of the Data store
+oneios-tool ioslog health data.img --detail                # under each kind: its texts, every process, examples
+oneios-tool ioslog health data.img -o ioslog-health.txt    # the lines on stdout, the report with details in the file
+oneios-tool ioslog health ioslog.txt                       # a text file that `ioslog show ... -o` wrote: every entry of it
+oneios-tool ioslog health                                  # on the phone itself, as root: the staged data/data.img
+```
+
+Its output for the tests' log (`tests/ioslog/health.txt`, **written by hand, not a session**):
+
+```
+tests/ioslog/health.txt: the entries of a text file (ioslog show's), 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)
+hangs              8  109.7 s in all, longest 61.27 s (Preferences), 5 over 1 s; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), SpringBoard 2 (40.1 s, longest 39.34 s, 1 over 1 s), MobileSafari 2 (4.8 s, longest 3.50 s, 2 over 1 s)
+watchdog           5  chronod 3, SpringBoard 1, backboardd 1; named: com.example.clock.widget 2, com.example.weather.widget 2
+xpc-timeouts       4  SpringBoard 3, Preferences 1; services: com.example.photos.service 2, com.example.settings.service 1
+jetsam             4  MobileSafari 2, Preferences 1, nfcd 1
+crashes            3  chronod 2, Preferences 1
+stuck-idle         3  profiled 2, coreauthd 1
+encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation [-12782] 2, -16993 1
+```
+
+- **The head:** the source (for an image with its volume, as the other commands name it), the boot (`boot UUID`,
+  `all boots`, or the entries of a text file), the entries read, the first and the last entry's time and the seconds
+  between them.
+- **A kind's line:** `NAME COUNT`, then, separated by `; `: for a kind whose lines carry seconds `T s in all, longest
+  L s (PROCESS), N over 1 s`; the processes, the largest count first (`NAME COUNT`; for hangs `NAME COUNT (T s,
+  longest L s, N over 1 s)`; beyond `--top N`, default 5: `and N more with COUNT`); and for a kind filed by the
+  process that logged the line, when its lines name something: `named:`, `services:` or `errors:` and those names.
+  A kind with no line is `NAME 0`. The lines are not indented; everything else below the head is.
+- **`--detail`** adds, indented under each kind: `counts:` what the kind means; `first T, last T`; `texts:` each
+  text's count (for a kind of several texts filed by the logger also who logged it: `extension 3 (chronod 3)`);
+  `by process:` every process; the names; `logged by:` for the kernel's kinds; and `e.g.` example lines
+  (`--examples N`, default 3). **`-o FILE`** writes the report with the details to FILE, whatever stdout shows.
+- **A count is a number of log lines, not of events.** One event may be logged more than once: RunningBoard's exit
+  status of one process is logged by every process that watches it (in the PC boot's log SpringBoard has one exit
+  twice, as `Firing exit handlers for PID` and as `[osservice<NAME>:PID] Process exited`). So compare a count with
+  the same count of another session, and read `texts:` for each text apart. A count is what `ioslog show SOURCE
+  --boot last --proc NAME --grep TEXT | grep -c TEXT` gives for that process and text.
+- **`--boot`**: `last` (default), `all`, or the start of a UUID, as `checks`. A text file names no boots: all of
+  its entries are counted (`--boot UUID` is refused: choose the boot with `ioslog show --boot` when writing it).
+- **SOURCE** is what every `ioslog` command takes, or a text file of `ioslog show` (`-f text`; a file whose first
+  line is an entry). In the text form `[SUBSYSTEM:CATEGORY]` is taken off before the message is matched (a message
+  that itself starts with `[word:word] `, in an entry without a subsystem, loses that start: the text cannot tell
+  the two apart), and the times are the text's, cut to the microsecond. On the PC boot's Data store the report from
+  the image and the one from `ioslog show`'s text of it are the same below the head (97,417 entries each).
+- **Without SOURCE** (the form for the phone itself; the tool builds for Android arm64, "For the phone itself"
+  above): `STAGE/data/data.img`, with `--stage DIR` (default `/data/local/tmp/oneios`). It only reads. Beside an
+  open session (`STAGE/session/xnuhost.pid` names a running xnuhost) it says on stderr that the store is being
+  written: what is counted is the newest checkpoint that passes the reader's checks, and what iOS logged last may
+  not be in it yet. **Not run on the phone yet** (`ioslog boots` and `show` were, 3.1 s and 4.0 s; `health` is
+  one more pass of the same decoder). With `health` in it the tool builds for `aarch64-linux-android` on Linux
+  x86_64 (2026-11-15: NDK 28.2, API 30, the command above with `linux-x86_64`; a PIE for `/system/bin/linker64`,
+  13.9 MB stripped); this box has no Android to run it on.
+
+The kinds are one table, `KINDS` in `crates/oneios-ioslog/src/health.rs`:
+
+| Kind | Texts (regular expressions on the message; a line counts once per kind, under the first that matches) | Filed by | Also |
+|---|---|---|---|
+| `hangs` | `Hang detected: N s` (HangTracer, `[com.apple.hangtracer:]`; `0.52s` and `0.52 s`) | the process that logged the line: the one that hung | total seconds, the longest and who, how many over 1 s (1.00 s is not over) |
+| `watchdog` | `RBSProcessExitStatus\| domain:watchdog` (`exit status`), `Extension process termination watchdogged` (`extension`), `watchdog fired` in any case (`fired`) | the process that logged the line | `named:` RunningBoard's name of the process at the line's start (`[xpcservice<NAME(...)>:PID]`), else the first reverse-DNS name in the line |
+| `xpc-timeouts` | `Initial XPC call to server timed out` (`initial call`), `Default XPC timeout` (`default`), `XPC timeout` (`timeout`) | the process that logged the line: the client | `services:` the first reverse-DNS name in the line |
+| `jetsam` | `memorystatus: killing_idle_process` (`idle exit`: a clean daemon ended while idle), `memorystatus: killing` (`kill`: every other reason) | the process the line names (`pid N [NAME]`, `process N [NAME]`) | |
+| `crashes` | the kernel's `NAME[PID] Corpse allowed N of 5` (`corpse`), `NAME[PID] Corpse failure, too many` (`too many corpses`) | the process the line names | |
+| `stuck-idle` | `timed out stuck process` (`memorystatus_perform_idle_demotion() timed out stuck process PID [NAME], moving to idle band`) | the process the line names | |
+| `encode-fail` | `CMPhotoCompressionSessionAddImage ... err =` | the process that logged the line | `errors:` what follows `err =` |
+
+**To add a kind, add a row** (name, what it means, the texts, `By::Logger` or `By::Named`, what the names are, the
+expressions that find a name, the "over" limit) and its lines to `tests/ioslog/health.txt` with their numbers in
+`health_tests.rs`: the counter, the report, `cycle` and `summary.md` take the table as it is. A text may hold the
+named groups `s` (a number of seconds: the kind then gets a total, a longest and an "over" count) and `who` (the
+process, extension or service the line names).
+
+Where the texts are from, and what is a guess:
+- **Seen in a real log** (the Data store that iOS wrote on the PC, read on this Linux box): the `stuck-idle` line,
+  the kernel's `Corpse allowed` line, RunningBoard's `[osservice<com.apple.chronod>:87] Process exited:
+  <RBSProcessExitContext| specific, status:<RBSProcessExitStatus| domain:signal(2) code:SIGABRT(6)>>`. That log (one
+  boot, 192 s, 97,417 entries): hangs 0, watchdog 0, xpc-timeouts 0, jetsam 0, crashes 1 (chronod), stuck-idle 26
+  (24 processes), encode-fail 0; `grep -c` on `ioslog show`'s text gives the same 26 and 1.
+- **The owner's quotes from the phone's log** (2026-11-15; the log is on the Mac): the hang text, the three
+  watchdog texts, the three XPC texts, the CMPhoto text. `docs/hardware.md` 7g quotes the CMPhoto line whole
+  (session 8644ae9, chronod, 58 times): `writeImageAtIndex: *** CMPhotoCompressionSessionAddImage: err =
+  kCMBaseObjectError_UnsupportedOperation [-N] (codec: 'hvc1')`.
+- **Guesses**, written without those lines at hand: where a watchdog or an XPC timeout line names its extension or
+  service (`named:` and `services:` may be empty, or name something else in the line: the per-process counts do
+  not depend on it); the forms of the jetsam line (XNU's source: `killing_idle_process pid N [NAME]`,
+  `killing_specific_process`, `killing_top_process`, `killing process N [NAME]`; no jetsam kill is in the PC
+  log). Crashes are the kernel's corpse lines only, so that a crash counts once (ReportCrash's and launchd's
+  lines of the same crash are not counted; a crash without a corpse is not counted).
+
+Where it runs by itself: `cycle`'s `collect` step and `phone pull-data --ioslog` write the report with its details
+to **`ioslog-health.txt`** (the session's folder, or beside the copy) and print the head and the kinds' lines;
+`summary.md` has them too ("cycle" and "phone" below). For another caller (the app's `serve`, branch
+`tool-app-progress`): `health` is a plain subcommand, and `oneios_ioslog::health` is public (`read` gives a
+`Report` with each kind's `Count`: the tallies by logger and by name; `write` is what `cycle` calls; `summary_of`
+takes the kinds' lines out of a saved report). It has no progress or `serve` code of its own.
+
+Tested (Linux x86_64, 2026-11-15): `cargo test -p oneios-ioslog` 11 tests (7 new in `health_tests.rs`: the table,
+the hand-written log's counts per kind, process, name and text, the lines byte for byte, a log with nothing in it,
+the text form's parsing, the sources and the stage form, the command line), `cargo test -p oneios-tool --test
+ioslog_health` 1 test (the binary: stdout, `--detail`, `-o`, `--top`, `--examples 0`, the form without SOURCE, the
+exit statuses 0, 1 and 2); `cargo test --release` for the whole workspace: 142 tests pass, 0 fail (these 8 are
+new). The stand-in suites, `tests/phone/modes.sh` (with origin/main at `fb4ec88` merged in):
+`host` and `stand-in` mode each **phone 232** checks (222 before), **app 103**, **cycle 122** (117 before), all
+ok, no stand-in session left. The ten new phone checks: `pull-data --ioslog` on the stand-in's `data.img`, which
+is no APFS store (it ends at `ioslog boots`, the copy stays, no `ioslog-health.txt`); `ioslog health` without
+SOURCE (the stage's own `data.img` is the one read; a stage without a store is refused by name; on a stage whose
+`data.img` is the hand-written log: the head and seven lines, the counts per kind and process, nothing on stderr;
+`--top 1 -o FILE`); beside a stand-in session (it reads, and says on stderr that the store is being written; a pid
+file of a process that is gone is no session). The five new cycle checks: `cycle --only collect` in a folder that
+holds the hand-written log as `ioslog.txt` (the head and seven lines printed; `ioslog-health.txt` with the
+details; `summary.md`'s section with the seven lines and without the details), in a folder with neither a store
+nor a log (one line that says so, status 0), and in the folder of the failed `--pull-data` case, whose `data.img`
+is no APFS store (`collect: ioslog health: ...`, status 1, no report). **The stand-in phone's `data.img` cannot
+be read as a store, so `pull-data --ioslog`'s and `--pull-data`'s health of a real copy are not run by the
+suites**. Run by hand instead (2026-11-15): a stand-in phone (`tests/phone/lib.sh`'s `make_phone`) whose
+`data.img` is a copy of the Data store iOS wrote on the PC, then `oneios-tool phone pull-data OUT --ioslog`:
+status 0, the copy is the store byte for byte (32 GiB, 1.5 GB written), `ioslog boots` and `checks` ran, then
+`--- ioslog health OUT`, the head (`boot FB412AD9..., 97417 entries, ... (192 s)`), the seven lines (crashes 1
+chronod, stuck-idle 26, the rest 0) and `ioslog-health.txt` beside the copy (27 lines).
+**Not tested: the phone's own store** (it is on the Mac). The check to run there, with the owner's numbers from
+that log:
+
+```sh
+oneios-tool ioslog health out/session-logs/2026-11-15/main-8644ae9-b/data.img --detail -o out/session-logs/2026-11-15/main-8644ae9-b/ioslog-health.txt
+# expected: hangs: Preferences 38 (251.1 s, longest 61.27 s, ...), SpringBoard 25 (70.8 s, longest 39.34 s, ...)
+#           watchdog: chronod 84        xpc-timeouts: SpringBoard 114, Preferences 18
+#           (docs/hardware.md 7g has chronod's CMPhoto line 58 times in session 8644ae9: encode-fail, if -b is that boot)
+# a number that differs: `texts:` under the kind has each text's count and who logged it; the same count by hand is
+#   oneios-tool ioslog show .../data.img --boot last --proc chronod --grep 'watchdog' | grep -c watchdog
+```
 
 ### The comparison
 
@@ -849,8 +990,11 @@ What each does:
   A stream that breaks is tried again (`--retries`), and a run that stopped, was killed or gave up goes on at
   the first chunk that is not done when the same command is run again. `OUT.part` becomes `OUT` only when every
   chunk is verified and the store's size and modification time are what they were at the start. `--ioslog` then
-  runs `ioslog boots OUT` and `ioslog checks OUT`. "The copy that goes on" below has the design, the options
-  and the test.
+  runs `ioslog boots OUT`, `ioslog checks OUT` and `ioslog health OUT`: the health report with its details goes
+  to `ioslog-health.txt` in OUT's folder, and its head and one line per kind are printed ("health" above). A step
+  that fails ends the command with status 1 (`ioslog boots ended with status 1`; `ioslog health: REASON`), and the
+  copy stays. `phone log` itself reads the stage's log files only, never the Data store: `pull-data --ioslog` is
+  the `phone` command that reads it. "The copy that goes on" below has the design, the options and the test.
 - `sparse-write OUT` is the copy without the phone, and the first port's `pull-data` by hand (one stream, no
   resume, no sums): `adb exec-out "su -c
   '/data/adb/ksu/bin/busybox gzip -1 -c /data/local/tmp/oneios/data/data.img'" | oneios-tool phone sparse-write
@@ -1363,6 +1507,19 @@ oneios-tool cycle --only return,collect --name NAME
 - The exit status is 0 only when every step that ran ended well and the boot reached its first frame (when
   `watch` ran). A `collect` that failed (a log that could not be copied, `--pull-data`'s copy or its `ioslog`)
   fails the cycle too: status 1, `oneios-tool cycle: collect: ...`.
+- **`ioslog-health.txt`** (2026-11-15): `collect` writes iOS's own counts of the last boot (hangs, watchdog
+  kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions, encode failures: `ioslog health`, "health"
+  above) into the session's folder, prints `--- ioslog health SOURCE`, the report's head and one line per kind,
+  and `summary.md` gets them as its last section (`## iOS's log: hangs, kills and timeouts`); the file also has
+  each kind's texts, every process and example lines. The source is the folder's `data.img`: this run's
+  `--pull-data` copy (after `ioslog boots` and `checks`), or the copy an earlier run of the same `--name` left
+  there; without one, an `ioslog.txt` in the folder (iOS's log as text: `oneios-tool ioslog show SOURCE --boot
+  last -o FOLDER/ioslog.txt`). A folder with neither gets one line that says so, and the step is ok; a `data.img`
+  that cannot be read fails the step (`collect: ioslog health: REASON`). A `summary.md` written again later keeps
+  the section as long as `ioslog-health.txt` is in the folder (the store's copy may be deleted). **So the numbers
+  need the Data store's copy (`--pull-data`) or the log as text**; `collect` does not run the tool on the phone
+  (the Android build is not staged with the runtime yet: on the phone itself the command is `oneios-tool ioslog
+  health`).
 - `summary.md` is written by `collect` also for a cycle that failed: the result, each step's time and result, the
   markers, the panics, the way back. **The result line is made from the same step results as the Steps table**:
   `every step that ran ended well` only when no step of the table failed; otherwise `**stopped**: REASON` (what

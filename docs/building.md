@@ -519,7 +519,8 @@ $T phone backlight status          # the panel's level, max_brightness, and One 
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
 $T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
-$T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots and checks. In chunks
+$T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots, checks and health
+                                   #   (the health report: ioslog-health.txt beside OUT, its lines printed). In chunks
                                    #   (--chunk 256 MiB), each checked against the phone's sha256 and tried again when its
                                    #   stream breaks (--retries 5); after a stop, the same command again goes on (OUT.part,
                                    #   OUT.part.progress; --restart begins again; --verify end: the sums after the last chunk)
@@ -544,7 +545,7 @@ $T cycle --only return,collect --name NAME                 # end a session that 
 | `watch` | Reads `session/xnuhost.log`'s new lines every 2 s, and after a switch only once the file changed at or after the phone's second of the switch (until the switch replaces it, about 40 s in, it is the last session's: its first-frame line made the watch say "ready after 0 s", 2026-11-12) and prints each marker once with its time: xnuhost, kernel, darwin, bsd-root, init, launchd, backboardd, SpringBoard, ready (the first frame), PANIC, end. On a panic, when the session ends by itself, or after `--ready-timeout` (300 s) without the first frame: straight to the return, and the cycle's status is 1 |
 | `hold` | `--hold S` seconds, else until Ctrl-C. Ctrl-C returns, unless `--stay`, which leaves the session open (end it with `phone return` or `cycle --only return,collect`). A panic or the session's own end during the hold returns |
 | `return` | `session/return.request`, then waits (180 s) for `One UI restored` in what `return.log` gained |
-| `collect` | `out/session-logs/DATE/NAME/`: `xnuhost.log`, the last 2000 lines of `switch.log` and `return.log`, `return.outcome`, `sums.txt`, and `summary.md` (versions, hashes, each step's time and result, the markers with their times, the panics, the way back). `--pull-data` adds the Data store's copy and `ioslog`. The summary's result line names every step its Steps table has as failed (`every step that ran ended well` only when none did), and a failed `collect` ends the cycle with status 1. A run that did not watch (`--only return,collect` after `--only stage,switch,watch` with the same `--name`) reads the markers from the saved `xnuhost.log` (this folder's copy, else the phone's `session/xnuhost.log`) and says so |
+| `collect` | `out/session-logs/DATE/NAME/`: `xnuhost.log`, the last 2000 lines of `switch.log` and `return.log`, `return.outcome`, `sums.txt`, and `summary.md` (versions, hashes, each step's time and result, the markers with their times, the panics, the way back). `--pull-data` adds the Data store's copy and `ioslog` (boots, checks, health). **`ioslog-health.txt`** (iOS's own counts of the last boot: hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions, encode failures; `oneios-tool ioslog health`, section 10) is written from the folder's `data.img` (this run's `--pull-data`, or an earlier run's of the same `--name`), else from an `ioslog.txt` in the folder (iOS's log as text, `ioslog show ... -o`); its head and one line per kind are printed and go into `summary.md`; a folder with neither gets a line that says so. The summary's result line names every step its Steps table has as failed (`every step that ran ended well` only when none did), and a failed `collect` ends the cycle with status 1. A run that did not watch (`--only return,collect` after `--only stage,switch,watch` with the same `--name`) reads the markers from the saved `xnuhost.log` (this folder's copy, else the phone's `session/xnuhost.log`) and says so |
 
 A cycle takes one phone lock (`out/phone.lock` of the main checkout, also from a worktree) and refuses when
 another cycle holds it. That lock is this tool's own: **the coordinator's `phone-lock.sh` is still the lock between
@@ -872,9 +873,23 @@ iOS's own log of a session, from a copy of the Data store (replaces the mount-an
 oneios-tool ioslog boots data.img                                   # which boots the log holds
 oneios-tool ioslog show data.img --boot last --proc backboardd      # text; -f csv|jsonl -o FILE for a file
 oneios-tool ioslog checks data.img                                  # counts of the known problems' lines, last boot
+oneios-tool ioslog health data.img [--detail] [-o FILE]             # the last boot's hangs, watchdog kills, XPC timeouts, jetsam
+                                                                    #   kills, crashes, stuck idle demotions, encode failures:
+                                                                    #   one line per kind (count, total, longest, top processes)
+oneios-tool ioslog health                                           # on the phone itself, as root: the staged data/data.img
 oneios-tool ioslog save data.img out/session.logarchive             # the .logarchive the manual steps made
 oneios-tool image apfs-checkpoints data.img                         # the store's checkpoints: which pass the checks, and why the others do not
 ```
+
+`ioslog health` gives the numbers that tell lag and heat apart, the same way for every session (the owner's request,
+2026-11-15): HangTracer's `Hang detected: N s` per process (count, total seconds, the longest, how many over 1 s),
+watchdog kills, XPC timeouts per client and service, the kernel's jetsam kills, crashes (the kernel's corpse lines),
+memorystatus' `timed out stuck process`, and `CMPhotoCompressionSessionAddImage ... err =`. A count is a number of
+log lines. `cycle`'s `collect` and `phone pull-data --ioslog` write the report with its details to
+`ioslog-health.txt` and print its lines (section 6). The kinds are one table in
+`tools/oneios-tool/crates/oneios-ioslog/src/health.rs` (`KINDS`): a new kind is a new row. The command, its output,
+the kinds' texts, what was tested and what was not: [tools/oneios-tool/README.md](../tools/oneios-tool/README.md)
+"health".
 
 Every `ioslog` command says on stderr which checkpoint of the store it read (`... is read at checkpoint xid N ...`)
 and which newer ones it skipped and why: a store copied from the phone ends with a killed kernel, so its block 0
