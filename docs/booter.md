@@ -31,6 +31,7 @@ Command line (the first line is what the OneOS fork runs, `oneos/interface.md` s
 xnuhost --session-abi 1 --mode takeover --runtime DIR --image DIR --data DIR --session DIR
         [--kernel FILE] [--cpus N] [--ram SIZE|auto] [--boot-args TEXT] [--display shm|drm|none]
         [--width W --height H] [--hz N] [--scale 2|3] [--no-input] [--input-script FILE] [--no-tasks]
+        [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]
         [--config FILE] [--set KEY=VALUE] [-v]
 xnuhost --selftest            # on the phone: page size, address bits, PAC keys across fork, memfd, seccomp
 ```
@@ -58,6 +59,9 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set ram-percent=N` | 90 | `ram=auto`'s share of `MemTotal`, 10 to 100 |
 | `--set ram-host-floor=SIZE` | 1.5G | what `ram=auto` always leaves the host |
 | `--set host-mem-log=SECONDS` | 30 | a `memory: host MemAvailable` line every so often; 0 = only at the start and the stop |
+| `--hw-backend samsung\|treble` (`hw-backend=`, also in `xnuhost.conf`) | `samsung` | which form of the phone's hardware every bridge uses: today's Samsung paths, or the vendor-neutral Treble interfaces (AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths). One line per bridge says which and why (`hw: battery: backend treble (hw-backend=treble)`). [hardware.md](hardware.md) 7e has the audit table |
+| `--hw-backend-BRIDGE samsung\|treble` (`hw-backend-backlight=`, `-battery`, `-thermal`, `-haptics`, `-touch`, `-keys`, `-audio`, `-camera`, `-wifi`, `-bluetooth`, `-display`) | unset (`hw-backend`'s) | one bridge's backend, over `hw-backend`; an unknown bridge name is refused |
+| `--hw-backend-fallback 0\|1` (`hw-backend-fallback=`) | 0 | a treble bridge whose interface is missing: 0 the bridge stays off, 1 it uses its samsung form; either way one line says what was missing |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
 | `--set ready-content-wait=SECONDS` | 120 | `session/ready` comes at the guest's first frame of its own that is not all black, or this long after its first frame of its own when all were black; 0 = at its first frame (the rule before 2026-11-15); 0 to 480 (section 2.8, "the ready rule") |
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |

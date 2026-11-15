@@ -37,6 +37,28 @@ are 50-60 C above it. This bridge does, inside xnuhost only.
 
 Read every 5 s from xnuhost's start (about 40 files), whether or not iOS listens.
 
+### The two backends of the sensors (hw-backend-thermal, 2026-11-15)
+
+`hw-backend=samsung|treble` or `hw-backend-thermal=...` (`bridges/hw_backend.h`, `docs/hardware.md` 7e);
+`br_thermal_options.backend` forces one, `br_thermal_backend()` says which runs; `hw: thermal: backend X (why)`.
+Only the sensors differ: the levels, the hysteresis, xnuhost's step and the load line are the same code for both
+(the policy is fix-ram-locked's and not touched here).
+
+- **samsung** (the default): the table above, unchanged.
+- **treble**: the thermal HAL `android.hardware.thermal.IThermal/default` by name from servicemanager (`hal/hal.c`),
+  one `getTemperatures()` (code 3 of the frozen `IThermal.aidl`) per reading. `br_thermal_from_hal`: cpu and gpu the
+  hottest of their `TemperatureType`, soc the hottest of CPU, GPU and SOC (its name in `soc_zone`), battery, and the
+  case = the hottest SKIN (the HAL's own skin sensor, where samsung takes Samsung's `lrp`). ddr, xo, ap and lrp are
+  unknown. Values below -40 C or above 200 C (an off sensor) are skipped.
+- Not registered, or no temperature at the open: `hw: thermal: treble: missing: ...; the bridge stays off`, or the
+  files with `hw-backend-fallback=1`. A HAL that stops answering: one line, the readings unknown until it answers
+  (each reading then counts as a missing file does).
+
+`thermalctl` (no argument) reads `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_THERMAL`, `ONEIOS_HW_FALLBACK` and prints
+`backend: ...` and the reading (treble: through the bridge; `case = N (the HAL's SKIN)`). Tests: `test_thermal.c`
+`test_hal` (the parcel, the mapping, the same level as Samsung's lrp gives), `tests/test_hal_binder.c` (a reading, a
+hotter one, the HAL's death, not registered, no temperature), the stand-in phone (`tests/phone/hw-backend.sh`).
+
 ## Levels
 
 iOS's levels (`kOSThermalPressureLevel*` of the iPhoneOS SDK's `OSThermalNotification.h`): 0 nominal, 10 light,

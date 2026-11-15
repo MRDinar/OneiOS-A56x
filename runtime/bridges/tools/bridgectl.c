@@ -3,6 +3,8 @@
 //   bridgectl cpu [NVCPU]            the host's cores and the vCPU plan made from them
 //   bridgectl haptic [MS [INTENSITY [HZ]]]   one vibration (default 200 ms, 1000, resonance)
 //   bridgectl haptic-pattern         three taps and a ramp: what an iOS pattern feels like
+// The backend: ONEIOS_HW_BACKEND, ONEIOS_HW_BACKEND_<BRIDGE>, ONEIOS_HW_FALLBACK (bridges/hw_backend.h): haptic's is
+// the evdev device (samsung) or the vibrator HAL (treble). Off the phone: ONEIOS_INPUT_DIR, ONEIOS_BINDER.
 //   bridgectl bt                     opens the Bluetooth HAL, sends HCI Reset and Read BD_ADDR, prints the events
 //   bridgectl net                    opens the tap, answers the first DHCP request it sees, counts frames for 10 s
 //   bridgectl audio HELPER [S [record]]  a quiet 440 Hz tone for S s (2) through the helper (path of oneios-audio),
@@ -11,6 +13,7 @@
 // Each prints what it found and ends with "ok" or the reason it failed.
 #define _GNU_SOURCE
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +47,7 @@ static int cpu(int argc, char **argv)
 
 static int haptic(int argc, char **argv, bool pattern)
 {
-  br_haptic *h = br_haptic_open(NULL);
+  br_haptic *h = br_haptic_open_as(getenv("ONEIOS_INPUT_DIR"), BR_HW_UNSET, NULL);   // the backend: hw-backend-haptics
   if (!h) return 1;
   if (pattern) {
     for (unsigned i = 0; i < 3; i++) { br_haptic_vib(h, 15, 1000, 0); usleep(150000); }
@@ -187,6 +190,11 @@ int main(int argc, char **argv)
   int rc = 2;
   setvbuf(stdout, NULL, _IOLBF, 0);
   br_log_sink = say;
+  br_hw_settings hw;
+  const char *bad = NULL;
+  br_hw_settings_init(&hw);
+  if (br_hw_settings_env(&hw, &bad)) { fprintf(stderr, "bridgectl: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  br_hw_configure(&hw);
   if (argc < 2) { fprintf(stderr, "usage: bridgectl cpu|haptic|haptic-pattern|bt|net|audio ... (see tools/bridgectl.c)\n"); return 2; }
   if (!strcmp(argv[1], "cpu")) rc = cpu(argc, argv);
   else if (!strcmp(argv[1], "haptic")) rc = haptic(argc, argv, false);
