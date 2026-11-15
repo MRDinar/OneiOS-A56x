@@ -26,7 +26,9 @@ TOOL=${TOOL:-$ROOT/tools/oneios-tool/target/release/oneios-tool}
 W=${WORK:-$ROOT/out/rustport-cycle}
 # A tmux server of its own (the stand-in build steps run in tmux by name, cycle-kernel ...): two runs at once must
 # not meet on the box's one server ("duplicate session").
-export TMUX_TMPDIR=$W.tmux; mkdir -p "$TMUX_TMPDIR"
+# The socket in a short folder of its own under /tmp: a Unix socket path is at most 108 bytes, and $W in a deep
+# worktree is longer ("File name too long").
+export TMUX_TMPDIR=$(mktemp -d /tmp/oneios-cycle-tmux.XXXXXX)
 unset TMUX   # run from inside tmux (scripts/bg.sh), $TMUX would name the box's server instead
 [ -x "$TOOL" ] || { echo "run.sh: no $TOOL" >&2; exit 2; }
 . "$HERE/../phone/lib.sh"

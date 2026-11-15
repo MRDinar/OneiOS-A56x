@@ -906,8 +906,9 @@ the phone's command byte for byte). The stand-in answers it in one of two modes,
   `FAKE_PROC=stand-in` runs the same path, and `modes.sh` runs the phone, app and cycle suites in both modes.
 - **Several runs at once** (several agents on one box): each `modes.sh` run has its own folder
   (`out/rustport-modes/run.XXXXXX`, or `MODES_RUN=DIR`), gives each suite its own `WORK=` in it, and counts only its
-  own stand-in sessions; the cycle suite runs its stand-in build steps on a tmux server of its own (`TMUX_TMPDIR`
-  beside its work folder, `TMUX` unset) and stops only that server at its end. The cycle's `summary.md` check reads
+  own stand-in sessions; the cycle suite runs its stand-in build steps on a tmux server of its own (`TMUX_TMPDIR` a
+  short `/tmp/oneios-cycle-tmux.XXXXXX`, since a Unix socket path is at most 108 bytes and a deep worktree's work
+  folder is longer; `TMUX` unset) and stops only that server at its end. The cycle's `summary.md` check reads
   the fork checkout's own `versionName`/`versionCode` (it moves with each upstream merge). Checked 2026-11-15: two
   `modes.sh cycle` runs at once, against the fork's `oneios` (0.4.86) and PR #3's merge (0.5.14): both 103 ok in both
   modes, no session left on the box's tmux server.
