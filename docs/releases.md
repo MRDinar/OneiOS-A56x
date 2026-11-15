@@ -63,22 +63,31 @@ checks out the fork's tree `app/`).
 
 **The APK** carries no package set, no system image and no firmware: nothing of Apple's, Samsung's, Google's or
 OPPO's. The build packs the Android package sets only with `-Poneos.packSets=true`, which CI never passes; the app
-downloads them by SHA-256, and the iOS image set is imported by its owner. `.github/scripts/check-apk.sh APK
-app/app-android/packages` (the apk job, before the upload) unpacks every entry of the APK, prints its `assets/`
-with their sizes, and refuses it (exit 3) when an entry:
+downloads them by SHA-256, and the iOS image set is imported by its owner. The APK keeps its files
+content-addressed (`assets/oneos/files/<sha256>`) and names them in its own lists (`assets/oneos/sets/<set>.sha256`,
+and `scripts.sha256` for the session scripts). `.github/scripts/check-apk.sh APK app/app-android/packages` (the apk
+job, before the upload) unpacks every entry of the APK, prints its `assets/` with their sizes and, for a
+content-addressed file, the name its hash has in those lists, and refuses it (exit 3) when an entry:
 
 - has the SHA-256 of a package set's file (the fork's `app-android/packages/<set>.sha256` lists, 373 files on
   2026-11-15; `OneOSGuest.apk`, the fork's own in-guest app, excepted);
-- has a firmware, image or OTA name: Apple's (as above), `.img`, `.simg`, `.erofs`, `.ext4`, `payload.bin`,
-  `.new.dat`, Samsung's `.tar.md5`, `.pit`, `.lz4`, `sboot*.bin`, OPPO's `.ozip`, `.ofp`, `.ops`, an image's
-  `.apex`, `.odex`, `.vdex`, `.oat`, or a `.tar`;
+- has, itself or by its hash in the APK's lists, a firmware, image or OTA name: Apple's (as above), `.img`,
+  `.simg`, `.erofs`, `.ext4`, `payload.bin`, `.new.dat`, Samsung's `.tar.md5`, `.pit`, `.lz4`, `sboot*.bin`, OPPO's
+  `.ozip`, `.ofp`, `.ops`, an image's `.apex`, `.odex`, `.vdex`, `.oat`, or a `.tar`;
 - is a Mach-O, an IMG4 container, an AEA archive, a dyld cache or an Android sparse image, or from 1 MiB an ext4,
-  erofs or APFS volume or a `.dmg`;
-- is over 32 MiB (the largest real asset, `guest_vector.bundle`, is 14.5 MB).
+  erofs or APFS volume or a `.dmg`. A `CAFEBABE` file is a fat Mach-O only when its next word is under 45; a Java
+  class has its version there (kotlinx-coroutines' `DebugProbesKt.bin` at the APK's top, which the first run
+  refused, is one);
+- is over 64 MiB (the largest real entry, the debug `guest_manager.apk`, was 45,548,812 bytes in the first run;
+  the first version of the check had 32 MiB and refused it).
 
-Tested on stand-in APKs (2026-11-15, Linux): one made of the fork's `switcher/assets` and root scripts passes; one
-each with a `system.img`, a sparse image, a Mach-O, an AEA file, an Odin `.tar.md5`, an `.ozip`, an ext4 volume, a
-40 MB file and a file whose hash a set list names is refused; `OneOSGuest.apk`'s hash passes.
+Tested on stand-in APKs (2026-11-15, Linux): one made of the fork's `switcher/assets` and root scripts passes, and
+so do a Java class, a 45 MB file and a file with `OneOSGuest.apk`'s listed hash; one each with a `system.img`, a
+sparse image, a Mach-O, a fat Mach-O, an AEA file, an Odin `.tar.md5`, an `.ozip`, an ext4 volume, a 70 MB file, a
+file whose hash a set list names, and a file that the APK's own list names `vendor_boot.img` is refused. On the
+real APK (fork 0.5.14, versionCode 143, 2026-11-15): the first run (43705081715) refused it for the two
+false refusals above; with the fix, run 43710905603 passes it: 3310 entries, every content-addressed file named
+by the APK's `scripts.sha256` (the largest `guest_manager.apk`, 45,548,812 bytes), no set file among them.
 
 ## What a release must be able to load
 
@@ -207,8 +216,12 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
 - **apk-macos**: the same checkout, token, JDK, SDK and guest app on `macos-15`, then `./gradlew --continue test`
   with Homebrew's folders taken off `PATH`, so that core:root's script tests use the harness's stand-ins over
-  macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). On a failure the job summary lists the
-  failed tests; the reports are the artifact `oneos-tests-macos`. Not a gate of the release.
+  macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). Every test's start and end is in the
+  log (`--init-script .github/scripts/gradle-test-events.gradle`, failures with their whole exception). A watchdog
+  stops Gradle after 30 minutes and first prints the processes and the test JVMs' threads (`jstack`), so a hung
+  test is named and the reports still come out. On a failure the job summary lists the failed tests; the reports
+  and results are the artifact `oneos-tests-macos`. Not a gate of the release. The macOS results are in
+  "macOS: the fork's unit tests" below.
 - **release**: needs runtime and apk (each a success, or skipped because the dispatch asked for the other only).
   Checks the commit is on `main` and that the tag, when it exists, is at the built commit (a tag is never moved);
   downloads the artifacts, checks their `.sha256` (the runtime's and the phone tool's; and that the APK is the file
@@ -225,7 +238,31 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
 `GITHUB_TOKEN` (`permissions: packages: read`) on one pom, prints GitHub's answer when it is a refusal, and then
 tries the optional repository secret `GH_PACKAGES_TOKEN` (a token with `read:packages`; `GH_PACKAGES_USER` with it,
 else the owner's login). The fork's runs read them with their `GITHUB_TOKEN` (HTTP 200, run 43149217074,
-2026-11-12). OneiOS's own `GITHUB_TOKEN`: RESULT_TOKEN.
+2026-11-12). **OneiOS's own `GITHUB_TOKEN` reads them too**: HTTP 200 for the probe pom in the first runs of
+this workflow (2026-11-15, runs 43705081715 and 43705167315, both the ubuntu and the macOS job), and the Gradle
+builds resolved every tribalfs dependency with it. GitHub lets any repository's `GITHUB_TOKEN` read public
+packages; tribalfs' are public. The secret path stays in case GitHub changes that or the packages become private;
+no secret is needed today.
+
+**macOS: the fork's unit tests** (the goal: `./gradlew test` passes on the owner's Mac, so that `oneios-tool cycle
+--force app` runs there without `--no-test`). Every run of 2026-11-15 passed ubuntu's `./gradlew test
+assembleFullDebug` for every fork commit below. On `macos-15` (macOS 15.8.2, Homebrew off `PATH`) every other
+module's tests passed, and `:core:root:testDebugUnitTest` gave:
+
+| Run | Fork commit | `:core:root:testDebugUnitTest` on macOS |
+|---|---|---|
+| 43705081715 (#43) | `820253b`, the head of `oneios` | `theLogVerbsListTheSessionLogsAndReadThemInWholeLines`, `aCheckRunsTheStagedToolAndReportsItsOutputAndExitCode` and `aProcessThatEndsLateAfterSigkillIsWaitedForAtGateA` (`OneiosScriptTest`) failed, then the task hung until the job's 60 minutes |
+| 43705167315 (#44, test only) | `479d474`, `fix-macos-tests-2` (OneOS PR #7) | hung until the job's 60 minutes (no test events in the log yet) |
+| 43710905603 (#43), 43710921989 (#44) | `820253b`; `479d474` | with the test events and the watchdog: PR #7 fixes the first two failures (431 passed); `aProcessThatEndsLate...AtGateA` fails on both; both hang in `aHungToolIsEndedAtTheLimitAndWhatItChangedIsPutBack`. The watchdog's process list and `jstack`: `oneios_root.sh check levels` and its stand-in `brightctl levels` still running after 25 minutes, the test reading their output |
+| 43714546247 (#44) | `8c6fae1`, `fix-macos-tests-3` (OneOS PR #9: #7 and a third round: `now` without `date +%N`, a `cat` stand-in for `/proc/PID/cmdline`) | no hang: the task ran to its end, 270 tests, 4 failed (`aProcessThatEndsLate...AtGateA`, `theReturnsLogSaysWhoReturnedAndHow`, `aChatteringHoldOfTheRockerStillReturns`, `StageScriptTest.removeSystemDeletesOnlyTheSystemSetUpNow`), 2 skipped |
+| 43717760387 (#44) | `406f008`, `fix-macos-tests-3` (a fourth round for those four) | 270 tests, 1 failed: `theReturnsLogSaysWhoReturnedAndHow` (the return log's lines twice); Gate A, the chatter and the `find` test pass |
+| 43720242712 (#44) | `433cb0c`, `fix-macos-tests-3` (the return log) | **passes**: `./gradlew test` BUILD SUCCESSFUL on macOS, core:root's 270 tests with the 2 skipped as before. The same run's ubuntu job failed one test, `aReadyGuestIsLeftRunningPastTheDeadline` (a race of the test at its wakelock line, passed in every run before; fixed in `200263f`) |
+
+The causes and the fixes are in OneOS PR #9 and the fork's `docs/oneios.md` ("The third round", "The fourth
+round"): the tests' stand-ins and timing on a Mac, and one line of `oneios_return.sh` that is read only with a test
+root (`ONEIOS_TEST_OUT_IS_LOG`, set by the test where there is no `/proc`: the return log written once); on the
+phone the script is as before. The head of `oneios` stays red on
+macOS until #9 (or #7 and #9) is merged; the job is no release gate.
 
 **The 3D GPU in a release.** The runtime job fetches Droid-VM's virglrenderer (`scripts/setup/get-references.sh virglrenderer`) before the host tests and the package, on every build, and refuses a package whose `xnuhost` or `gpuctl` was built without drm2kgsl. Without that checkout both build 2D-only and only say so at run time: runtime 0.1.1 was published that way and its GPU check failed on the phone with "this build has no drm2kgsl". 0.1.3 is the first release with the check (0.1.2's run failed to link: a stale 2D-only `gpu3d.o` from the host tests beside the real drm2kgsl; the fetch now runs before the host tests and `gpu3d.o` rebuilds when the drm2kgsl setting changes). Before 2026-11-15 only the tag's run fetched it; pull requests built 2D-only.
 

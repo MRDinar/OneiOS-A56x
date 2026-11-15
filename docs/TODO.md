@@ -43,11 +43,12 @@ stops changing every day.
 - [ ] **`oneios-tool` for Android arm64.** Cross-build it with the NDK (the parts the phone needs: `remotezip`,
   `image`, `prelink`, `package`'s Apple-file check), ship it in the runtime release, and run it as root from the app.
   Check that its speed and memory fit on the phone (the Mac's prelink took 4 s).
-  *State (2026-11-15):* built with the NDK (cd42491); `runtime/package.sh` puts it into the runtime package as
-  `bin/oneios-tool` and beside it with its `.sha256`, in CI and the release (branch `app-oneios-tool`, not merged,
-  no tagged release has it); the fork's app runs it as root (`oneios_root.sh tool`, fork branch `app-oneios-tool`,
-  stand-in tested, not run on the phone). Left: the speed and memory of `prelink`, `remotezip` and `apfs-copy` on the
-  phone ([building.md](building.md) section 7 has the steps for the Mac).
+  *State (2026-11-15):* built with the NDK (cd42491, 14.7 MB stripped); `oneios-tool serve` is the app's way in (#52: one
+  root process per flow, JSON lines, all cores at nice 10-19, the thermal stop); `runtime/package.sh` puts it into the
+  runtime package as `bin/oneios-tool` and beside it with its `.sha256`, in CI and the release (#49; no tagged release
+  has it yet); the fork's app runs it as root (`oneios_root.sh tool`, OneOS #10). Not run on the phone. Left: the
+  speed and memory of `prelink`, `remotezip` and `apfs-copy` on the phone ([building.md](building.md) section 7 has
+  the steps for the Mac).
 - [ ] **Build the kernel on the phone too.** The default is to download our released `xnu.macho` (`kernel/publish.sh`,
   `kernel/release-kernel.txt`; open-source XNU and our patches, no Apple binaries). The phone must also build it
   itself, fast: port the Linux build (`kernel/build-linux.sh`: clang, lld, the XNU build system, MIG) to arm64

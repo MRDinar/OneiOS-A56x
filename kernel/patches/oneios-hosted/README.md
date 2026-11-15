@@ -610,6 +610,14 @@ hosted kernel had no audio device. Log lines, boot arguments and what was measur
 On the phone since `kernel.kc` `66faa3e8` (main 924a0d9, agent prelink's sessions of 2026-11-12): `ONEIOS AUDIO: on`,
 both devices published, audiomxd opens them and plays (`docs/hardware.md` section 6, "In a session").
 
+Since 2026-11-15 (fix-audio-latency) the staged source also gives the speaker a smaller ring (`oneios-audio-ring`,
+default 1920 frames: iOS's I/O buffer is at most 0.375 of it, 720 frames, instead of 3072 of the 8192 ring), hands
+its periods on as they start (output safety offset 240), publishes `oneios-audio-latency` (xnuhost passes the
+helper's measured latency; default 720 frames, was 6480), fixes the ring's wrap for every device (8192 is not a
+whole number of 240-frame periods: a period read, zeroed or written up to 208 frames past the ring's buffer; the
+zero time stamp only every 245760 frames) and reports the speaker engine's timing (`ONEIOS AUDIO: speaker engine:`).
+`drivers/audio/README.md`, `docs/hardware.md` section 6 "Latency end to end".
+
 ### The Actuator device (media, 2026-11-12)
 
 The archive also stages a third IOAudio2Device into `DroidVMAudio.cpp`: UID `Actuator` (VirtualAudio's

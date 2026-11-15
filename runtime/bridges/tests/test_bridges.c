@@ -871,6 +871,9 @@ static void test_snd_device(void)
   void *ctx;
   const br_audio_backend *null = br_audio_null(&ctx);
   CHECK(null->start(ctx, true, 48000, 2) == 0 && null->write(ctx, period, 240) == 240);
+  // The latency probe is the helper's only (xnuhost then leaves the kernel's default); telling the null back end is a no-op.
+  CHECK(br_audio_probe_latency(null, ctx, 10) == -ENOTSUP && br_audio_probe_latency(&fake_sound_backend, &sound, 10) == -ENOTSUP);
+  br_audio_told(null, ctx, 480);
 }
 
 // The stand-in controller (bt/hci_sim.c): what bluetoothd's first commands get back.
