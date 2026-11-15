@@ -22,6 +22,7 @@ Found there and fixed since (all on `main`, built and host-tested, **not run on 
 | #27 | "it runs damn hot" | a `thermal: 30 s:` line (host CPU, swap rates, battery temperature and current, xnuhost's CPU); `oneios-cpu-sys:` kernel time per process |
 | #33 | every WebContent process died in `sys_icache_invalidate` (a cache-maintenance fault taken as a write) | the stub and hosted **0071**: a fault with ISS.CM is a read; `test_jit_icache` |
 | #34 | Wi-Fi never joins: auto-join "disabled by user" (a client's request, likely Control Center's Wi-Fi button) | PHY_MODE and AGE in the scan record; hosted **0070** `oneios-log-persist=` keeps a subsystem's info-level log |
+| #37 (3233fed session) | Preferences at 106-111 % with the Wi-Fi password sheet open; auto-join still off | the driver posts POWER_CHANGED only on a change, refuses a scan with no radio instead of an empty SCAN_DONE, keeps a SCAN_RESULT cursor per reader, answers a scan within 8 s of the last good one from its records (locationd asked for two scans every 6 s on the PC, location off, no fix); a `ONEIOS WIFI: 60 s:` rate line. Auto-join: tap Control Center's Wi-Fi button once (`docs/hardware.md` 3) |
 | #32 | bluetoothd crash-loops with `owner-hide-vmm` (proven: the hide caused it) | the hide dropped; 0062 logs `kern.hv_vmm_present` reads; xnuhost warns if the boot arguments hide the VM from bluetoothd |
 | OneOS #2 | an old session's `display.log` could end the boot screen early | the switch moves the old log aside |
 
