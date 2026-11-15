@@ -56,7 +56,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set ram-fit=0\|1` | 1 | 1: `ram=auto` takes no more than what fits (2026-11-14); 0: as before (share and floor only) |
 | `--set ram-gpu-reserve=SIZE` | 256M | what fits leaves this for KGSL's own memory |
 | `--set gpu-level=deadline\|hold\|governor` (`gpu-level=`) | `deadline` | the GPU's level (`docs/gpu.md` 2.2b): the top only for a frame that would miss its deadline; `hold`: every render-server frame at the top to 150 ms after it (the rule before 2026-11-15); `governor`: KGSL's governor alone. Passed to the renderer as `ONEIOS_GPU_LEVEL` |
-| `--set gpu-priority=0\|1` (`gpu-priority=`) | 1 | 1: each GPU context's KGSL priority from its owner's class (render server and front 4, default 8, background 12), background contexts at KGSL's lowest level at a still screen; 0: the guest's queue priority, as upstream (`ONEIOS_GPU_PRIORITY=off`) |
+| `--set gpu-priority=0\|1` (`gpu-priority=`) | 1 | 1: each GPU context's KGSL priority from its owner's class (render server and front 4, default and background 8), background contexts at KGSL's lowest level at a still screen while no other context has GPU work queued (`docs/gpu.md` 2.2b); 0: the guest's queue priority, as upstream, and no lowest level (`ONEIOS_GPU_PRIORITY=off`) |
 | `--set ram-pagetable-percent=N` | 8 | what fits counts the iOS tasks' page tables as this share of the guest's RAM, 0 to 50 |
 | `--set ram-huge=0\|1` | 1 | 1: 2 MiB host pages for xnuhost's window of the RAM where the host allows them (shmem THP by `MADV_HUGEPAGE`; only with the RAM held fixed); section 2.2, "2 MiB pages" |
 | `--set ram-percent=N` | 90 | `ram=auto`'s share of `MemTotal`, 10 to 100 |
