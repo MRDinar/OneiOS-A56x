@@ -1,9 +1,71 @@
-# Paused work (2026-11-13): what is done, what is next, how to resume
+# Paused work (2026-11-13; stopped again 2026-11-15): what is done, what is next, how to resume
 
 The owner paused the work on 2026-11-13 at about 15:00 IST. This file is the hand-over. Two machines worked on it:
 the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyOS, x86_64, 4 CPUs: the kernel, the
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
+
+## Stopped 2026-11-15 (evening): what is done, what is open, what is next
+
+The owner stopped all work on 2026-11-15. Every agent pushed its branch; finished and CI-green work is merged,
+half-done work stays in **draft PRs, not merged**. Nothing in this section has run on the phone unless it says so.
+The last phone sessions were 8644ae9 and 8644ae9-b (Mac: `out/session-logs/2026-11-15/`; **not on the Linux PC**:
+copy them over before the next round, several open items need iOS's log from them).
+
+### Merged on 2026-11-15 (main)
+
+| PR | What | Proven where |
+|---|---|---|
+| #37 | Wi-Fi scan reuse (8 s), POWER_CHANGED only on a change, per-reader SCAN_RESULT cursor, `ONEIOS WIFI: 60 s:` line | PC (scans 20 -> 5 a minute); phone 8644ae9: scans reused, Preferences' CPU **not** lower (the lag was hapticd, below) |
+| #39 | Fixed, locked RAM by default (`ram-giveback=0 ram-prefault=1 ram-lock=1`), the fit with 768 MiB headroom, the valve on the main loop | PC (no lock there); phone: not yet run with `ram=auto` (8644ae9 ran `ram=10G`, unlocked, and swapped) |
+| #45 | 2 MiB host pages possible (memfd offset 0 on a 2 MiB boundary), `config.ram_lock_fit`, page-table lines. **No RAM gain**: the 575 MiB of page tables are the iOS tasks', not xnuhost's | PC boot to SpringBoard; the phone needs `shmem_enabled=advise` (the fork's switch, not done) |
+| #46 | `oneios-tool app` finds the fork at `app/` first (after `--oneos`, `ONEOS_DIR`); `app dir` | cargo 134, stand-in suites |
+| #47 | GPU: no name list for what the user sees, background at KGSL priority 8, no lowest level while others wait, `gpu: 10 s fences over 100 ms` per process | `test_gpu_policy` model; not on the phone. Drop `gpu-priority=0` from xnuhost.conf with it |
+| #48 | HEVC/HEIC encoder, host side (`runtime/bridges/encoder`, `encoder=auto`, off by default) | host tests; four faults in it are fixed in draft #59 |
+| #52 | `oneios-tool serve` (one root process per flow, JSON lines, cancel, idle exit), `--jobs`/`--nice`, the thermal/battery stop, local `sums`/`log`/`cpu` | cargo 175, suites; Android build 14.6 MB, not run on the phone |
+| #53 | `oneios-tool ioslog health` (hangs, watchdog kills, XPC timeouts, jetsam, crashes, encode failures), written by `cycle --only collect` | cargo 142; not checked against 8644ae9-b (on the Mac) |
+| OneOS #6 | the switch's shell moves to the root cpuset (all 8 cores) | not on the phone |
+| #51 | Audio latency: speaker LOW_LATENCY with MMAP exclusive first (no RT thread of ours), speaker ring 1920 frames (iOS's I/O buffer <= 720), the measured output latency told to iOS, the ring-wrap overrun fixed for every device, `end-to-end N ms` line, `bridgectl audio-loop` | host tests and CI; predicted ~230 -> ~40-45 ms iOS-mix-to-speaker; not on the phone (does its HAL give MMAP exclusive?) |
+| #43 | One workflow (`release.yml`; `ci.yml` folded in): `plan` -> `runtime`, `apk`, `apk-macos` in parallel -> `release` (needs runtime + apk). The fork as submodule `app/` (`branch = oneios`, built at its head with `--remote`); `check-apk.sh` refuses set files, firmware/image names and entries over 64 MiB | CI; **the release job has not run yet** (no tag or dispatch since) |
+| OneOS #8, #9 (#7 in #9) | the fork's CI doc (its own `oneios-apk.yml` stays for pushes to `oneios`); core:root tests pass on macOS (PATH for `direct()`, `LC_ALL=C`, base64/cat stand-ins, a fake clock without `%N`) | macOS runner: 270 core:root tests, 2 skipped (run 43722560928) |
+
+### Open, not merged (draft or failing): where each stands and its next step
+
+| PR | Branch | Done | Next step |
+|---|---|---|---|
+| #51 | `fix-audio-latency` | Audio ~230 ms -> ~40 ms predicted: MMAP exclusive low latency (no RT thread of ours), speaker ring 1920 (iOS I/O <= 720 frames), measured latency told to iOS, ring-wrap overrun fixed; `end-to-end N ms` line; kernel built, audit 0 | CI fails `test_audio_helper.c:738-739` (the target's settle after a late guest) since the start-gap fix 78c186f; fix that, then a phone session |
+| #55 | `fix-mach-rpc` | IPIs and the timer/IPI interrupt by host calls instead of trapped GIC registers (hosted **0076**); bench round trip 485 -> 184 us; `rpc:`/`wake:`/`syscalls:` lines | **renumber the patch** (0076 is also #54's), build the committed patch, a PC boot with `oneios-fast-irq=2` (A/B in one boot), then the phone |
+| #56 | `fix-wifi-late-enable` | Cause from configd/bootp source: only IPConfiguration sets IFF_UP, after every configd plugin loads; the driver now sets IFF_UP 50 ms after en0 attaches (`oneios-wifi-up=0` off); per-disk flush line | a PC boot `wifi=sim`; why configd itself starts at +125 s still needs 8644ae9's log. Its disk line overlaps #57's: keep one |
+| #57 | `fix-widget-kill-loop` | Disk flushes (fdatasync of data.img) moved off the vCPU onto the disk's thread (`VIRTIO_BLK_F_LATE_FLUSH`, `blk-late-flush=0` off); `disk N: 60 s:` and `tasks: pid N took T ms to die` lines; kernel built, audit 0 | a PC boot to the widgets (none has reached them yet), then 8644ae9-b's iOS log for what each killed extension waited on |
+| #58 | `fix-hapticd` | **Cause proven** (iOS's log): hapticd loads `/Library/Audio/Tunings/<model>/Haptics/hapticengineconfig.plist`, the model is `oneios,xnuhost`, no file, the server bails, every client waits for its XPC timeout (the keyboard lag). Hosted **0078** links `oneios,xnuhost -> V54` in a read-only union over `/Library/Audio/Tunings` (`oneios-audio-tunings=0` off); kernel built, audit 0 | the PC boot was killed at 10 s (a panic at the kill, before 0078 runs; not proven unrelated): boot B/A with `keyboard-typing.script`, then the phone (a key tap felt, no `Initial XPC call to server timed out`) |
+| #59 | `hevc-guest` | `kernel gen codec`, the codec archive in `kernel.kc` (audit 0, stubs 666), four host-device faults of #48 fixed, a decodable PC stand-in, `encoder=sim`; PC: `VideoToolbox paravirtualization registered` | a PC boot to the home screen with and without `encoder=auto` (the PC may never reach a widget snapshot), then the phone: `encctl hevc`, a session with `encoder=auto` |
+| #54 | `fix-ios-compressor` | **Read in the code:** iOS's compressor is on, as on an iPhone18,2 (mode 32); the pageout daemon takes file pages first, so no PC boot compressed anything (stock behaviour). Fixed: `target-type` V54 (runningboardd found no jetsam properties), `kern.max_task_pmem` 3376 MB; hosted **0076** lines `oneios-mem: compressor: ... ratio R` and `jetsam: ... kills since boot`; `ram-view=SIZE|auto|off` (off; `auto` 12 GiB via `memSizeActual`, scaled limits, `compressor_pool_multiplier`). `hw.memsize` cannot exceed the RAM (`max_mem = boot_args.memSize`) | the committed 0076 (with `oneios-compress-sweep`) was never built; build it, a PC boot to check no `Can't find jetsamproperties`, a sweep boot for a measured ratio, then the phone with `ram=auto ram-view=auto`. **0076 clashes with #55**: renumber one |
+| #60 | `fix-dyld-objc` | The DYLD shared-region unnest is ours: `vm_map_protect` unnests before checking for a change, and dyld toggles its protected memory ~90 times per process; `pmap_protect` flushed (unmapped) its whole range even when nothing changed. Hosted **0080**: flush only changed entries (`oneios-protect-flush-all=1` old), a no-change protect of the nested region stays nested (`oneios-sr-protect-noop=0` old); `oneios-top=N` per-process lines. The objc, `findImageMappedAt` and image-insert samples are iOS's normal paths (read, not measured) | its first PC boot **halted 1 s in** (after `VM bootstrap`, exit 4): find that first (`out/run-dyo/before/boot.log` in its worktree), then before/after boots with `input-typing.script` |
+| #49 | `app-oneios-tool` | `runtime/package.sh` builds `oneios-tool` for Android arm64 into the package (`bin/oneios-tool`, 14.7 MB) and beside it with its `.sha256`; `check-phone-tool.sh`; the release uploads it. Why the package, not the APK: root runs only the staged runtime's hashed `bin/` files, and the tool updates with the runtime | **conflicts with main** after #43 and #51: merge main, rerun CI (its APK job failed on the old `check-apk.sh` of #43's earlier commit) |
+| OneOS #10 | `app-oneios-tool` | The app's side: `oneios_root.sh tool work\|read` and `untool`; `OneiosToolSession` (one `su` + one `serve` per flow, cancel, close, no process left), `OneiosToolJob`/`Activity` in the foreground service: Make iOS image, Check every file (`sums`), CPU, session logs, iOS's log. Linux CI `./gradlew test assembleFullDebug` passed | half done: Make iOS image only shows the tool's refusals (no `make-image`, `tweaks` not ported); the screens never opened; macOS not proven; nothing on the phone. Needs from the tool: `make-image`, the tweaks in Rust, build.sh's order and the AEA decryption, `receive` from a FIFO |
+
+### Owner decisions waiting
+
+- Port the root tweaks (`userland/roottweak`, Python) to Rust, with a byte-for-byte seed comparison? Without it, plus `scripts/image/build.sh`'s steps and the AEA decryption in the tool, the app's "Make iOS image" cannot run fully on the phone (`serve` answers `tweaks` with `not-ported`).
+- The two caps against "no caps of ours on the GPU / all cores": #40's `uclamp.max` 512 for background-hinted threads (it may also slow chronod's widget extensions, #57), and (fixed in #47) the background GPU class.
+- The fork's switch writing `shmem_enabled=advise` (restored at the return) so that #45's 2 MiB pages take effect.
+- An empty `app/` (submodule not initialised): skipped with a note (#46, as now), or a hard stop?
+- The token: rerunning CI needs Actions: Read and write.
+
+### The next phone session
+
+- `ram=auto` (not `ram=10G`: it swapped up to 17.7 MB/s at SoC 76-86 C); with #54, `ram-view=auto` for the 12 GB view.
+- Remove `gpu-priority=0` (fixed in #47).
+- With #58 in: keyboard haptics on; check `Initial XPC call to server timed out` is gone and a tap is felt.
+- Read `oneios-tool ioslog health` of the session (#53) for hangs, watchdog kills and XPC timeouts before and after.
+
+Closed, CI-test only: #44 (proved fork #9 on macOS), #50 (fork #10's branch; its APK job failed).
+
+**Hosted patch numbers in the open PRs:** #54 and #55 both use **0076**: renumber one before the second merges.
+#58 uses 0078, #60 uses 0080. #56 and #57 both add a per-disk flush log line to xnuhost's disk code: keep one.
+
+**Housekeeping:** the main checkout's `.git/config` got `submodule.app.url` and `submodule.app.active` from
+`git submodule add` (#43): correct now that `app/` is on main. Each agent's worktree is under `.claude/worktrees/`.
 
 ## The next phone session (2026-11-15, main 70af164 and OneOS oneios 820253b): one `xnuhost.conf`
 

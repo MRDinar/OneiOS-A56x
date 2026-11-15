@@ -43,6 +43,9 @@ stops changing every day.
 - [ ] **`oneios-tool` for Android arm64.** Cross-build it with the NDK (the parts the phone needs: `remotezip`,
   `image`, `prelink`, `package`'s Apple-file check), ship it in the runtime release, and run it as root from the app.
   Check that its speed and memory fit on the phone (the Mac's prelink took 4 s).
+  **State 2026-11-15:** it cross-builds (14.7 MB stripped); `oneios-tool serve` is merged (#52: one root process per
+  flow, JSON lines, all cores at nice 10-19, the thermal stop). Shipping it in the runtime package is PR #49 (open,
+  conflicts with main). Not run on the phone yet. `docs/newtodo.md` "Stopped 2026-11-15" has the detail.
 - [ ] **Build the kernel on the phone too.** The default is to download our released `xnu.macho` (`kernel/publish.sh`,
   `kernel/release-kernel.txt`; open-source XNU and our patches, no Apple binaries). The phone must also build it
   itself, fast: port the Linux build (`kernel/build-linux.sh`: clang, lld, the XNU build system, MIG) to arm64
@@ -54,6 +57,9 @@ stops changing every day.
   `.tbd` files, the headers we write or the open-source ones). Apple's SDK is never shipped. Not proven: check
   first that the plug-ins link and load this way on a PC.
 - [ ] **The app's "Make iOS image" step,** in the same flow as the Android systems' screens (fork #5):
+  **State 2026-11-15:** the app side is OneOS #10 (open, half done); the tool does steps 1, 2 and 4 (`download`,
+  `fetch`/`zip-get`, `apfs-copy`, `prelink`) but not the root tweaks (Python, `not-ported`), `build.sh`'s order and
+  checks (`make-image`) or the AEA decryption, so the step only shows those refusals today.
   1. download the runtime and `xnu.macho` from the OneiOS release (SHA-256 checked);
   2. fetch only the needed parts of the iOS 27 IPSW from Apple's server for the user (`remotezip`, no full 10 GB),
      or take an IPSW that the user gives;
