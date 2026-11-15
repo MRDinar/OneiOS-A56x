@@ -80,6 +80,9 @@ typedef struct {
   unsigned display_format;  // display-format=: the frame's pixels, XH_PIXELS_BGRX8 ("bgrx", the default) or XH_PIXELS_RGBA16F
                             // ("rgba16f": half floats, wide colour and EDR kept; the guest is told oneios-display-wide=1)
   char  gpu[8];             // "auto" (3D when the host has KGSL, udmabuf and a dma heap), "3d" (or do not start), "2d"
+  char  gpu_level[12];      // gpu-level=: "deadline" (default: the top level only for frames that would miss), "hold" (every
+                            // render-server frame at the top, as before 2026-11-15), "governor" (never asked); docs/gpu.md 2.2b
+  int   gpu_priority;       // gpu-priority=0: KGSL queue priorities as the guest asks, not by the owner's class (-1 unset: 1)
   unsigned width, height;   // guest framebuffer; 0 = the panel's native (largest) mode, 1440x3120 where it cannot be read
   unsigned hz;              // the guest display's refresh rate; 0 = the panel's highest at that mode, 120 where unknown
   unsigned scale;           // UI scale, pixels per point: 3 (480x1040 points, the default) or 2 (720x1560); 0 = the image set's

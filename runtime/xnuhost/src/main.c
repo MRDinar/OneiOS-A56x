@@ -492,6 +492,9 @@ static int boot(void)
   xh_gpu3d *gpu3d = NULL;
   if (pool_bytes) {
     const char *why = "";
+    // The GPU's level and priorities (gpu3d_kgsl.c, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
+    setenv("ONEIOS_GPU_LEVEL", *config.gpu_level ? config.gpu_level : "deadline", 1);
+    if (!config.gpu_priority) setenv("ONEIOS_GPU_PRIORITY", "off", 1);
     gpu3d = xh_gpu3d_kgsl_open(g_mem.fd, phys, g_mem.size, xh_ram(phys + window, pool_bytes), phys + window, pool_bytes, gpu_log, &why);
     if (!gpu3d && !strcmp(config.gpu, "3d")) { LOGE("gpu: no 3D: %s", why); return -1; }
     if (!gpu3d) LOGI("gpu: 2D only: %s", why);

@@ -214,4 +214,60 @@ obl_nits_level(int32_t nits16, int32_t cap16, uint32_t max_nits)
 	return (int32_t)(n * OBL_FRACTION_FULL / top);
 }
 
+/*
+ * Only a change goes on (2026-11-15). CoreBrightness sends the slider's position some 550 times a second in a drag
+ * (phone, 2026-11-13), most of them the level the request before had; each was a bridge message to the host, whose
+ * fade starts again at every one (a repeated target with a FadePeriod never finished its walk), and a re-publish of
+ * IODisplayParameters and brightness-nits (nine objects made and freed). A request whose level, fade and flags are the
+ * last one sent is not sent again within OBL_RESEND_MS; one after that is (the host may have moved the panel since:
+ * its own restore at a display power change, a level set by hand). obl_sent_forget makes the next one go whatever it is.
+ */
+#define OBL_RESEND_MS 1000u
+
+struct obl_sent {
+	int valid;
+	uint32_t level, fade_ms, flags;
+	uint64_t at_ms;
+	uint64_t skipped;              /* requests not sent: the same as the last */
+};
+
+static inline int
+obl_send_wanted(struct obl_sent *s, uint32_t level, uint32_t fade_ms, uint32_t flags, uint64_t now_ms)
+{
+	if (s->valid && s->level == level && s->fade_ms == fade_ms && s->flags == flags && now_ms - s->at_ms < OBL_RESEND_MS) {
+		s->skipped++;
+		return 0;
+	}
+	s->valid = 1;
+	s->level = level;
+	s->fade_ms = fade_ms;
+	s->flags = flags;
+	s->at_ms = now_ms;
+	return 1;
+}
+
+static inline void
+obl_sent_forget(struct obl_sent *s)
+{
+	s->valid = 0;
+}
+
+/* The same for what the service publishes (IODisplayParameters' value, brightness-nits): only a change is set again. */
+struct obl_published {
+	int valid;
+	uint32_t value, nits16;
+};
+
+static inline int
+obl_publish_wanted(struct obl_published *p, uint32_t value, uint32_t nits16)
+{
+	if (p->valid && p->value == value && p->nits16 == nits16) {
+		return 0;
+	}
+	p->valid = 1;
+	p->value = value;
+	p->nits16 = nits16;
+	return 1;
+}
+
 #endif

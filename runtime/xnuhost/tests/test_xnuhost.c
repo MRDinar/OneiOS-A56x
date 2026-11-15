@@ -593,6 +593,7 @@ static struct {
   uint8_t last[256]; size_t last_size;               // the last SUBMIT_3D's bytes
   xh_gpu_entry entries[4]; unsigned nentries; uint64_t blob_id, blob_size; uint32_t blob_mem, blob_flags, blob_ctx;
   uint32_t host_blob[4]; unsigned nhost;             // HOST3D blobs: pool slot i
+  unsigned hints; uint32_t hint_ctx; uint8_t hint[3]; // the guest's hints (gpu3d.h hint): how many, the last one
 } fake;
 static unsigned fake_capset_count(xh_gpu3d *b) { (void)b; return 1; }
 static bool fake_capset_info(xh_gpu3d *b, unsigned i, uint32_t *id, uint32_t *version, uint32_t *size) { (void)b; if (i) return false; *id = 6; *version = 0; *size = 64; return true; }
@@ -611,6 +612,7 @@ static int fake_ctx_create(xh_gpu3d *b, uint32_t ctx, uint32_t capset, const cha
   for (unsigned i = 0; i < 8; i++) if (!fake.live[i]) { fake.live[i] = ctx; fake.contexts++; return 0; }
   return -ENOMEM;
 }
+static void fake_hint(xh_gpu3d *b, uint32_t ctx, const uint8_t h[3]) { (void)b; fake.hints++; fake.hint_ctx = ctx; memcpy(fake.hint, h, 3); }
 static void fake_ctx_destroy(xh_gpu3d *b, uint32_t ctx) { (void)b; for (unsigned i = 0; i < 8; i++) if (fake.live[i] == ctx) { fake.live[i] = 0; fake.contexts--; } }
 static int fake_submit(xh_gpu3d *b, uint32_t ctx, const void *commands, size_t size)
 {
@@ -683,7 +685,7 @@ static void test_virtio_gpu3d(void)
 {
   static xh_gpu3d b = { .capset_count = fake_capset_count, .capset_info = fake_capset_info, .capset = fake_capset, .ctx_create = fake_ctx_create,
                         .ctx_destroy = fake_ctx_destroy, .submit = fake_submit, .submit_fence = fake_submit_fence, .create_blob = fake_create_blob,
-                        .map_blob = fake_map_blob, .attach = fake_attach, .unref = fake_unref };
+                        .map_blob = fake_map_blob, .attach = fake_attach, .unref = fake_unref, .hint = fake_hint };
   fake_display = (xh_display){ .width = 8, .height = 4, .stride = 32, .pixels = calloc(4, 32) };
   ready_count = 0;
   driver d = { .dev = xh_virtio_gpu_create_3d(0, 43, 8, 4, &b) };
@@ -707,8 +709,10 @@ static void test_virtio_gpu3d(void)
   cmd[6] = 2;
   CHECK(G(8, 24 + 64) == 1 && resp[0] == 0x1205);                                                         // no such capset
   // contexts
-  CLEAR(); cmd[0] = 0x200; cmd[4] = 5; cmd[6] = 4; cmd[7] = 6; memcpy(&cmd[8], "test", 4);
+  // context_init: the capset, and the creating task's hint in bits 8-23 (OneiOSAdreno.cpp oneios_gpu_hint)
+  CLEAR(); cmd[0] = 0x200; cmd[4] = 5; cmd[6] = 4; cmd[7] = 6 | 0x81u << 8 | 6u << 16; memcpy(&cmd[8], "test", 4);
   CHECK(G(24, 24) == 1 && resp[0] == 0x1100 && fake.contexts == 1 && fake.live[0] == 5);
+  CHECK(fake.hints == 1 && fake.hint_ctx == 5 && fake.hint[0] == 0x81 && fake.hint[1] == 6 && fake.hint[2] == 0);
   CHECK(G(24, 24) == 1 && resp[0] == 0x1204 && fake.contexts == 1);                                       // the id is taken
   cmd[4] = 0;
   CHECK(G(24, 24) == 1 && resp[0] == 0x1204);
@@ -757,8 +761,11 @@ static void test_virtio_gpu3d(void)
   cmd[6] = 55;
   CHECK(G(8, 24) == 1 && resp[0] == 0x1203);
   // SUBMIT_3D: the stream reaches the renderer whole, also when it is a part of its own in the chain
-  CLEAR(); cmd[0] = 0x207; cmd[4] = 5; cmd[6] = 12; cmd[8] = 0x11111111; cmd[9] = 0x22222222; cmd[10] = 0x33333333;
+  // and the header's three padding bytes (the submitting task's hint: role, QoS, deadline) reach it first
+  CLEAR(); cmd[0] = 0x207; cmd[4] = 5; cmd[5] = 0x8a | 5u << 8 | 33u << 16; cmd[5] <<= 8; cmd[6] = 12; cmd[8] = 0x11111111; cmd[9] = 0x22222222; cmd[10] = 0x33333333;
+  unsigned hints = fake.hints;
   CHECK(G(11, 24) == 1 && resp[0] == 0x1100 && resp[1] == 0 && fake.submits == 1 && fake.last_size == 12 && !memcmp(fake.last, &cmd[8], 12));
+  CHECK(fake.hints == hints + 1 && fake.hint_ctx == 5 && fake.hint[0] == 0x8a && fake.hint[1] == 5 && fake.hint[2] == 33);
   for (unsigned i = 0; i < 50; i++) extra[i] = i * 0x01010101u;
   cmd[6] = 200;
   CHECK(GX(8, 200, 24) == 1 && resp[0] == 0x1100 && fake.submits == 2 && fake.last_size == 200 && !memcmp(fake.last, extra, 200));

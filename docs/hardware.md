@@ -1903,6 +1903,15 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
   failures, stubs 666 good, kernel.kc 7632e390); the
   boot is not done (not on the PC: no phone panel, touch IC or power key there). Details: `drivers/brightness/README.md` ("The slider, the cap
   and nits 0"), `runtime/bridges/brightness/README.md` ("The touch IC follows the display").
+- **Only a change goes to the host (fix-gpu-perf, 2026-11-15).** A Control Center drag sends about 550
+  `DisplayBrightnessSliderPosition` requests a second, most of them the level the one before had; each was a bridge
+  message (whose fade the host started again) and a re-publish of `IODisplayParameters` and `brightness-nits` (nine
+  objects made and freed). Now a request whose level, fade and flags are the last one sent is not sent again within a
+  second, and the two properties are set only when they change (`oneios_bl_request.h` `obl_send_wanted`,
+  `obl_publish_wanted`; iOS's display power request makes the next level go whatever it is). `setProperty` sends no
+  IOKit notification, so this was CPU and bridge traffic, not a cause of iOS redrawing (`docs/newtodo.md`, update of
+  2026-11-15, "the storms"). Line: `ONEIOS BACKLIGHT: N requests repeated the level last sent (L of 65535): not sent
+  again, nothing re-published` (every 1024). Host test: `test_bl_request` 2044 checks. Not run on the phone.
 - **Why the slider did nothing** (phone, 2026-11-12): vmm-present makes MobileGestalt answer `IsVirtualDevice`, and
   24A446's CoreBrightness then runs `VMBLControl` (log: `Set VM Mode 3 BLControl`), which sends brightness to a
   Virtualization.framework host over remote XPC and never to the service. `drivers/brightness/BacklightMode.inc`,

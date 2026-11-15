@@ -394,6 +394,8 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     if (r) return r == -ENOMEM ? RESP_ERR_OUT_OF_MEMORY : RESP_ERR_UNSPEC;
     *slot = h->ctx;
     g->ctx_fast[slot - g->ctx] = name >= 14 && !memcmp(body + 8, "xnu:backboardd", 14);
+    // context_init's bits 8-23: the creating task's role and its thread's QoS (OneiOSAdreno.cpp oneios_gpu_hint).
+    if (b->hint) b->hint(b, h->ctx, (const uint8_t[3]){ (uint8_t)(a[1] >> 8), (uint8_t)(a[1] >> 16), 0 });
     return RESP_OK_NODATA;
   }
   case CMD_CTX_DESTROY: {
@@ -409,6 +411,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     memcpy(a, body, 4);
     if (!ctx_find(g, h->ctx)) return RESP_ERR_INVALID_CONTEXT_ID;
     if (!a[0] || a[0] > left - 8) return RESP_ERR_INVALID_PARAMETER;
+    if (b->hint) b->hint(b, h->ctx, h->pad);         // the submitting task's role, QoS and frame deadline
     return b->submit(b, h->ctx, body + 8, a[0]) ? RESP_ERR_UNSPEC : RESP_OK_NODATA;
   }
   case CMD_RESOURCE_CREATE_BLOB: {
