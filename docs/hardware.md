@@ -28,6 +28,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
+| Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.c` (evdev, no grab) and `virtio_input.c`; `input_script.c` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
 
 Common pieces:
@@ -2233,7 +2234,8 @@ touch: 1 IC ...` lines as before; a treble boot (`--hw-backend-backlight treble`
 
 **The HAL client** (`runtime/bridges/hal/`): `br_hal_open` opens `/dev/binder` (the Wi-Fi supplicant's client,
 `wifi/aidl_binder.c`), asks servicemanager for the instance by name (`getService`; no wait, no list walked), checks
-the object's descriptor (`_NTF`) and reads its version; then plain calls. A HAL that is not registered is the bridge's
+the object's descriptor (`_NTF`) and reads its version; then plain calls. Each treble bridge has its own connection (one
+binder looper thread each, SCHED_OTHER, idle: no HAL calls back into it); samsung opens none. A HAL that is not registered is the bridge's
 one missing line. The method codes are the order of AOSP's frozen AIDL files (stable AIDL only appends), [I] until a
 phone answers. The tests' fake servicemanager and HALs: `tests/fake_hal.c` (`build/host/fake-hal DIR`, values read
 from files at every call), used by `tests/test_hal_binder.c` and the stand-in phone.
@@ -2269,6 +2271,25 @@ stand-in phone (3 checks: `bridgectl haptic 40` with the fake HAL's call log). T
 unchanged. On the phone: `hw: haptics: backend samsung (the default)` then the same `haptics: on: /dev/input/eventN
 ...` line; a treble boot by `haptics: on: the vibrator HAL android.hardware.vibrator.IVibrator/default (version N,
 capabilities 0x...)` and `haptics: effect N played on the vibrator HAL`.
+
+### Tested (2026-11-15, the hw-backend branch) and what is next
+
+- `runtime/host-tests.sh`: all pass (loader, xnuhost incl. the config checks, display, bridges incl. test-binder,
+  camera, links, package). One run on a box at load 17 failed one timing check of the virtio-gpu lanes
+  (`test_xnuhost.c` 951, a 2 s wait; nothing of this branch), which passed in two runs alone and in `make -C
+  runtime/xnuhost test` (13883 checks, the test kernel booted). The bridges: `hw_backend` 55, brightness 105, battery 83, thermal 81, `hal binder` 37,
+  bridges 295, wifi 162 checks, 0 failures; the samsung checks that were there before are unchanged.
+- The stand-in suites (`tests/phone/modes.sh`, both `/proc` modes): phone 222 (22 of them `hw-backend.sh`), app 65,
+  cycle 103, all ok. The cycle suite needs a short run folder in a worktree with a long path (`MODES_RUN=/tmp/...`):
+  its tmux socket path is longer than a Unix socket allows otherwise (`File name too long`), a fault of the suite
+  (main a591c08), not of this branch.
+- Not run on a phone (no phone on the build box). With nothing set the phone is samsung everywhere; the only new
+  lines are the `hw: <bridge>: backend samsung (the default)` ones.
+- Next: the light sensor's treble form (the sensors HAL: events through an FMQ); Wi-Fi (the interface's name from
+  nl80211), Bluetooth (the AIDL `IBluetoothHci`) and the display (the DRM card found at run time) after
+  fix-settings-wifi-cpu, fix-bt-virtual and fix-boot-black merge; the camera provider's instance from
+  servicemanager's list; `oneios-tool phone backlight` with the treble names; the fork's device profiles
+  (`oneos/interface.md` 6b). The first phone boot with `--hw-backend treble` checks the HALs' codes ([I] above).
 
 ## 8. Sources
 
