@@ -252,7 +252,6 @@ static void gic_line(unsigned cpu, bool line) { xh_cpu_line(cpu, line); }
 // and it fits, on a nice-19 thread while the boot goes on. ram-giveback=1: 0058's way, nothing of this.
 static xh_ramfix_counters was;         // the `memory: fixed RAM` line's counters at its last line (first: the start)
 static bool have_was;
-static const char *giveback_why = "ram-giveback=1";   // why free pages are given back: the setting, or the lock's fallback
 
 static void ram_fix_start(void)
 {
@@ -263,40 +262,21 @@ static void ram_fix_start(void)
     LOGI("memory: ram-giveback=1: the guest's RAM is faulted in as it is used and its free pages are given back (0058); not prefaulted, not locked");
     return;
   }
-  xh_ramfix_facts(facts, sizeof facts);
-  // The lock's fallback (fix-ram-locked, 2026-11-15). Where the lock is asked for and cannot be had (the RAM is more than
-  // fits, or the first 16 MiB step of mlock fails: EPERM without CAP_IPC_LOCK, ENOMEM under an RLIMIT_MEMLOCK of less
-  // than a step, as on the PC), the RAM is not held fixed either: 0058's way, its free pages given back. Held and not
-  // locked, every page iOS ever touched stays in the memfd for the host to swap: the PC boot of 2026-11-15 (4 GiB, the
-  // lock failing) held 4054 MiB at 900 s and the host swapped 859 MiB of it, against 2667 MiB held and 6 MiB swapped
-  // with give-back (2026-11-14, boot A of docs/booter.md 2.2). Decided here, before the kernel starts: it is told by
-  // XH_FEATURE_RAM_FIXED. The first step stays locked; the prefault's own first mlock of it changes nothing.
-  if (config.ram_prefault && config.ram_lock) {
-    const char *why = NULL;
-    char text[160];
-    if (config.ram_fit_available && g_mem.size > config.ram_fit) {
-      snprintf(text, sizeof text, "%llu MiB is more than fits beside the session's needs, %llu MiB", (unsigned long long)(g_mem.size >> 20),
-               (unsigned long long)(config.ram_fit >> 20));
-      why = text;
-    } else if (xh_ramfix_mlock(g_mem.host, (size_t)(g_mem.size < XH_RAMFIX_STEP ? g_mem.size : XH_RAMFIX_STEP))) {
-      snprintf(text, sizeof text, "mlock: %s at the first %llu MiB", strerror(errno), (unsigned long long)(XH_RAMFIX_STEP >> 20));
-      why = text;
-    }
-    if (why) {
-      LOGE("memory: the guest's RAM cannot be locked here (%s): it is not held fixed either; it is faulted in as iOS uses it and its "
-           "free pages are given back (0058's way, as ram-giveback=1), since a RAM held but not locked is the host's to swap; %s", why, facts);
-      config.ram_giveback = 1;
-      config.ram_prefault = config.ram_lock = 0;
-      giveback_why = "the lock cannot work here";
-      return;
-    }
-  }
   g_info.features |= XH_FEATURE_RAM_FIXED;
   if (!config.ram_prefault) { LOGI("memory: the guest's RAM is held for the session, not prefaulted (ram-prefault=0); free pages are not given back"); return; }
+  xh_ramfix_facts(facts, sizeof facts);
   g_ramfix.lock = config.ram_lock;
   g_ramfix.lock_why = config.ram_lock ? NULL : "ram-lock=0";
   g_ramfix.unlock_below = (uint64_t)config.ram_unlock_below;
   g_ramfix.meminfo = config.ram_meminfo;
+  // A lock is safe only with room beside it: the RAM must be within what fits (config.c, xh_ram_fit) at the start.
+  if (g_ramfix.lock && config.ram_fit_available && g_mem.size > config.ram_fit) {
+    // Not prefaulted either: an unlocked page iOS has not used is the first the host swaps (PC boot of 2026-11-14).
+    LOGI("memory: the guest's RAM is held for the session: %llu MiB, not locked and not prefaulted (more than fits beside the "
+         "session's needs: %llu MiB); free pages are not given back (ram-giveback=0); %s", (unsigned long long)(g_mem.size >> 20),
+         (unsigned long long)(config.ram_fit >> 20), facts);
+    return;
+  }
   char valve[160] = "";
   if (g_ramfix.lock)
     snprintf(valve, sizeof valve, " (the valve: unlocked once if host MemAvailable falls under %llu MiB, checked once a second)",
@@ -1047,9 +1027,7 @@ static void host_memory_tick(bool now)
   char kgsl[400] = "";
   size_t k = xh_kgsl_memory(getpid(), kgsl + 8, sizeof kgsl - 8);
   if (k) memcpy(kgsl, "; KGSL: ", 8);
-  char given[64];
-  snprintf(given, sizeof given, "given back as freed (%s)", giveback_why);
-  const char *state = config.ram_giveback ? given :
+  const char *state = config.ram_giveback ? "given back as freed (ram-giveback=1)" :
                       !config.ram_prefault ? "held, not prefaulted" :
                       !__atomic_load_n(&g_ramfix.done, __ATOMIC_ACQUIRE) ? "held, prefault running" :
                       g_ramfix.unlocked ? "held, unlocked by the valve" : ram_all_locked() ? "held and locked" :
