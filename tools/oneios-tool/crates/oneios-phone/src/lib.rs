@@ -134,7 +134,7 @@ pub enum Command {
         /// Throw away OUT.part and its progress and begin again
         #[arg(long)]
         restart: bool,
-        /// Then `ioslog boots` and `ioslog checks` on the copy
+        /// Then `ioslog boots`, `ioslog checks` and `ioslog health` on the copy (the health report: ioslog-health.txt beside OUT)
         #[arg(long)]
         ioslog: bool,
     },

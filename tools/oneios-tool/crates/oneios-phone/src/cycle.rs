@@ -63,7 +63,9 @@ pub struct Args {
     /// watch: seconds to wait for the first frame before returning
     #[arg(long, default_value_t = 300)]
     ready_timeout: u64,
-    /// collect: also copy the Data store (phone pull-data) and run ioslog on it
+    /// collect: also copy the Data store (phone pull-data) and run ioslog on it (boots, checks, and health into
+    /// ioslog-health.txt). Without it, collect writes ioslog-health.txt from a data.img or an ioslog.txt that is
+    /// already in the session's folder
     #[arg(long)]
     pull_data: bool,
     /// The phone's adb serial (or ANDROID_SERIAL)
@@ -572,9 +574,34 @@ impl Cycle<'_> {
             }
         }
         if self.a.pull_data {
+            // with ioslog: boots, checks, and health into this folder's ioslog-health.txt
             pull::pull_data(adb, &self.out.join("data.img").display().to_string(), &pull::Options { ioslog: true, ..Default::default() })?;
+        } else {
+            // no copy in this run: the Data store's copy an earlier run of this name left here, else iOS's log as
+            // text (`ioslog show -o`)
+            match ["data.img", "ioslog.txt"].iter().map(|name| self.out.join(name)).find(|path| path.is_file()) {
+                Some(source) => pull::ioslog_health(&source.display().to_string(), &self.out)?,
+                None => println!(
+                    "  {}: not written: this folder has no data.img (--pull-data copies the Data store) and no ioslog.txt (iOS's log as text, `oneios-tool ioslog show SOURCE --boot last -o`)",
+                    pull::HEALTH_FILE
+                ),
+            }
         }
         Ok(())
+    }
+
+    /// summary.md's part with iOS's own counts: the head and the kinds' lines of this folder's ioslog-health.txt
+    /// (the collect step's, of this run or of an earlier one of this name). Empty when the folder has none.
+    fn health(&self) -> String {
+        let Ok(report) = fs::read_to_string(self.out.join(pull::HEALTH_FILE)) else { return String::new() };
+        let mut s = format!("\n## iOS's log: hangs, kills and timeouts (`ioslog health`; `{}` has the details)\n\n```\n", pull::HEALTH_FILE);
+        s += report.lines().next().unwrap_or_default();
+        s.push('\n');
+        for line in oneios_ioslog::health::summary_of(&report) {
+            s += &line;
+            s.push('\n');
+        }
+        s + "```\n"
     }
 
     /// The summary's result: from the same step results as its Steps table (a step that failed is named, with its
@@ -672,6 +699,7 @@ impl Cycle<'_> {
         let panics: Vec<&String> = found.iter().filter(|(m, _)| *m == Mark::Panic).map(|(_, l)| l).collect();
         s += &format!("\n## Panics\n\n{}\n", if panics.is_empty() { "none".to_string() } else { panics.iter().map(|l| format!("- `{l}`")).collect::<Vec<_>>().join("\n") });
         s += &format!("\n## The way back\n\n{}\n", if self.way_back.is_empty() { "no return was made by this cycle" } else { &self.way_back });
+        s += &self.health();
         fs::write(self.out.join("summary.md"), s).context("summary.md")
     }
 
@@ -715,7 +743,7 @@ impl Cycle<'_> {
                 ("watch", "read session/xnuhost.log's new lines every 2 s and print the markers (kernel, launchd, backboardd, SpringBoard, the first frame, a panic); return on a panic or after --ready-timeout without the first frame"),
                 ("hold", "keep the session for --hold seconds, or until Ctrl-C (which returns unless --stay)"),
                 ("return", "write session/return.request and wait for One UI's restore line"),
-                ("collect", "xnuhost.log, switch.log, return.log, return.outcome, sums.txt and summary.md into the session's folder (--pull-data: also the Data store and ioslog); summary.md names every step that failed, and a run that did not watch reads the markers from the saved xnuhost.log"),
+                ("collect", "xnuhost.log, switch.log, return.log, return.outcome, sums.txt and summary.md into the session's folder (--pull-data: also the Data store and ioslog); ioslog-health.txt (iOS's hangs, kills and timeouts) from the folder's data.img or ioslog.txt; summary.md names every step that failed, and a run that did not watch reads the markers from the saved xnuhost.log"),
             ] {
                 if on(step) {
                     println!("== {step}\nwould: {what}");

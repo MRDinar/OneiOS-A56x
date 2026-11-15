@@ -19,6 +19,17 @@ and the third Linux round, the owner's queue of eight items:
 | 7 | `prelink`: the ten remaining steps | **done (fourth Linux round)**: all twelve steps byte for byte Python's on the pc and pc2 kernels (`kernel.kc` `ffbe95f7`, `cdd98e7e`; audit 2,711 paired, 93 on the stub, 0 failures; 666 good stubs); `PRELINK_IMPL=python\|rust` in `kernel/prelink/build.sh`, default `python` (README "prelink") |
 | 8 | Retire the replaced Python and shell code | **in work**: the prelink's steps, the kernel generators (group 1), the tests' helpers, the kernel's and the prelink's small scripts (group 2) and the package check are retired; section 7 has the table and what is left |
 
+Since then (2026-11-15), `ioslog health` (README "health": iOS's hangs, watchdog kills, XPC timeouts, jetsam kills,
+crashes, stuck idle demotions and encode failures of a boot; written to `ioslog-health.txt` by `cycle`'s `collect`
+and by `phone pull-data --ioslog`). Left open there:
+- **the phone's own store**: `health` was tested on a hand-written log and on the Data store iOS wrote on the PC,
+  not on a session's store (they are on the Mac). The command and the owner's numbers to check it against are in
+  the README. The places where a watchdog or XPC timeout line names its extension or service, the jetsam line's
+  forms are guesses until that run (`KINDS` in `crates/oneios-ioslog/src/health.rs`);
+- **`collect` without `--pull-data`**: it needs the store's copy or `ioslog.txt` in the folder. Running the
+  Android build's `oneios-tool ioslog health` on the phone from `collect` (no copy of 32 GiB) waits for that
+  build to be staged with the runtime; `health` without SOURCE is the phone's own form, **not run on the phone**.
+
 **Rule until further notice: Python stays the default and the only path the builds use.** The switches that
 exist (`IMAGETOOL_IMPL` in `scripts/image/build.sh` and `verify.sh`, default `python`; `kernel-inputs.sh` takes
 `oneios-tool image im4p` only when there is no `lzfse` program) change no output. `kernel/prelink/build.sh` has no

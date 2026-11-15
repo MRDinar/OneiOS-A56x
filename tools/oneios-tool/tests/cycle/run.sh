@@ -268,6 +268,29 @@ miss=""; for want in "^- kernel: " "^- launchd: " "^- backboardd: " "^- SpringBo
   && ok "summary.md of a split run: the markers of the saved xnuhost.log, each stage once (as phone log --markers has them)" || bad "summary.md of a split run: the markers" "missing:$miss; $(sed -n '/^## Markers/,/^## Panics/p' "$M" | cut -c1-50 | tr '\n' '|')"
 end_case
 
+# ---- collect writes ioslog-health.txt (iOS's hangs, kills and timeouts) from what the session's folder holds, prints
+# its lines and puts them into summary.md. The log is tests/ioslog/health.txt, written by hand in `ioslog show`'s form.
+mkdir -p "$D/health"; cp "$HERE/../ioslog/health.txt" "$D/health/ioslog.txt"
+out=$(cycle --only collect --name health 2>&1); st=$?
+H=$D/health/ioslog-health.txt; M=$D/health/summary.md
+[ $st = 0 ] && printf '%s\n' "$out" | grep -q "^--- ioslog health $D/health/ioslog.txt$" && printf '%s\n' "$out" | grep -q "^$D/health/ioslog.txt: .*, 36 entries, from .* (600 s)$" \
+  && [ "$(printf '%s\n' "$out" | grep -Ec '^(hangs|watchdog|xpc-timeouts|jetsam|crashes|stuck-idle|encode-fail) +[0-9]+')" = 7 ] \
+  && printf '%s\n' "$out" | grep -q "^hangs  *8  109.7 s in all, longest 61.27 s (Preferences), 5 over 1 s; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), SpringBoard 2 (40.1 s, longest 39.34 s, 1 over 1 s), MobileSafari 2 (4.8 s, longest 3.50 s, 2 over 1 s)$" \
+  && ok "cycle --only collect: ioslog health of the folder's ioslog.txt, its head and one line per kind printed" || bad "cycle --only collect: ioslog health" "status $st: $(printf '%s' "$out" | tail -n 4 | cut -c1-200 | tr '\n' '|')"
+[ "$(grep -Ec '^(hangs|watchdog|xpc-timeouts|jetsam|crashes|stuck-idle|encode-fail) +[0-9]+' "$H")" = 7 ] && grep -q "^watchdog  *5  chronod 3, SpringBoard 1, backboardd 1; named: com.example.clock.widget 2, com.example.weather.widget 2$" "$H" \
+  && grep -q "^    texts: initial call 2 (SpringBoard 2), default 1 (SpringBoard 1), timeout 1 (Preferences 1)$" "$H" && grep -q "^    by process: MobileSafari 2, Preferences 1, nfcd 1$" "$H" && grep -q "^    e.g. 2026-11-15 09:05:00.000000Z kernel\[0\] Default chronod\[87\] Corpse allowed 1 of 5$" "$H" \
+  && ok "ioslog-health.txt in the session's folder: the lines, and under each kind its texts, every process and examples" || bad "ioslog-health.txt" "$(head -n 3 "$H" 2>&1 | cut -c1-200 | tr '\n' '|')"
+[ "$(sed -n '/^## iOS.s log: hangs, kills and timeouts/,$p' "$M" | grep -Ec '^(hangs|watchdog|xpc-timeouts|jetsam|crashes|stuck-idle|encode-fail) +[0-9]+')" = 7 ] && grep -q "^xpc-timeouts  *4  SpringBoard 3, Preferences 1; services: " "$M" \
+  && grep -q "^$D/health/ioslog.txt: .*, 36 entries" "$M" && ! grep -q "^    texts: " "$M" && grep -q "the result: every step that ran ended well$" "$M" \
+  && ok "summary.md: the health report's head and its seven lines (the details stay in ioslog-health.txt)" || bad "summary.md: the health lines" "$(sed -n '/^## iOS/,$p' "$M" | cut -c1-80 | tr '\n' '|')"
+out=$(cycle --only collect --name nohealth 2>&1); st=$?
+[ $st = 0 ] && printf '%s\n' "$out" | grep -q "^  ioslog-health.txt: not written: this folder has no data.img (--pull-data copies the Data store) and no ioslog.txt" && [ ! -e "$D/nohealth/ioslog-health.txt" ] && ! grep -q "ioslog health" "$D/nohealth/summary.md" \
+  && ok "cycle --only collect in a folder without a store's copy or a log: says why there is no ioslog-health.txt, status 0" || bad "cycle --only collect without a log" "status $st: $(printf '%s' "$out" | tail -n 3 | cut -c1-200 | tr '\n' '|')"
+# the folder of the failed --pull-data above holds the stand-in's data.img, which is no APFS store: no report, and the step fails by name
+out=$(cycle --only collect --name failcollect 2>&1); st=$?
+[ $st = 1 ] && printf '%s\n' "$out" | grep -q "oneios-tool cycle: collect: ioslog health: " && [ ! -e "$D/failcollect/ioslog-health.txt" ] && grep -Eq "^\| collect \| [0-9.]+ \| failed: ioslog health: " "$D/failcollect/summary.md" \
+  && ok "cycle --only collect on a data.img that is no APFS store: the collect step fails as ioslog health, no report is written" || bad "cycle --only collect on a bad data.img" "status $st: $(printf '%s' "$out" | tail -n 3 | cut -c1-200 | tr '\n' '|')"
+
 # ---- what stops a cycle before the phone is touched, or before the switch
 before=$(calls); touch "$R/audit-fails"
 check "cycle: an audit failure stops the cycle" 1 "cycle-prelink ended with exit code 1" cycle --kernel-out t --force prelink --name audit
