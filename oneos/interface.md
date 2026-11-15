@@ -249,6 +249,29 @@ session was staged over wireless adb for that reason), with One UI's framework s
 missing USB was not caused by the switch; the cable, the Mac's port, or a gadget state One UI already had are left
 (a guess until the lines asked for in the PR come back).
 
+## 6b. The hardware backend (for the fork's later device profiles)
+
+xnuhost has two forms of the phone's hardware (`docs/hardware.md` 7e, `docs/booter.md` 1): `samsung` (today's
+Galaxy S24 Ultra paths, the default) and `treble` (vendor-neutral: the AIDL HALs through servicemanager, evdev by
+capabilities, standard sysfs classes by named paths). Nothing changes for the fork while it passes nothing: every
+bridge is `samsung`, exactly as before.
+
+A device profile of the fork chooses with settings, in the staged image set's `xnuhost.conf` or on the command line
+it builds (the command line wins per setting):
+
+| Setting | Values | Default |
+|---|---|---|
+| `hw-backend` | `samsung`, `treble` | `samsung` |
+| `hw-backend-<bridge>` | `samsung`, `treble`; bridge: `backlight`, `battery`, `thermal`, `haptics`, `touch`, `keys`, `audio`, `camera`, `wifi`, `bluetooth`, `display` | `hw-backend`'s |
+| `hw-backend-fallback` | `0` (a missing treble interface leaves the bridge off), `1` (it uses its samsung form) | `0` |
+
+On the command line: `--hw-backend treble`, `--hw-backend-battery samsung`, `--hw-backend-fallback 1` (or `--set
+KEY=VALUE`). A bad value or an unknown bridge ends xnuhost at start (exit 2, before the session) with
+`xnuhost: bad value for --hw-backend...` or `xnuhost: <file>:<line>: bad setting hw-backend...`. The log has one line per bridge, `hw: <bridge>: backend <name> (<why>)`, and for a
+treble interface that is missing `hw: <bridge>: treble: missing: <what>; ...`; the fork may show them in the
+session's log view. The fork's own scripts keep their Samsung paths (the backlight glob, `gpu_max_clock`,
+`cpufreq_limit`): the table in `docs/hardware.md` 7e lists their treble forms for the profiles.
+
 ## 7. Overlay mode
 
 Not part of this interface. The fork only does the takeover session.

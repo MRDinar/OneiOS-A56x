@@ -2140,6 +2140,75 @@ it back last (fork 2nd commit; tested against a fake sysfs, not yet on the phone
 - The GPU: drm2kgsl's burst rule (`docs/gpu.md` 2.2) and its constraint are the gpu agent's; at heavy pressure they
   could stop constraining (a note on the board). The KGSL constraint stays under the thermal devfreq limit [inference].
 
+## 7e. Hardware backends: samsung (the default) and treble (hw-backend, 2026-11-15)
+
+The owner's decision of 2026-11-15: the Samsung paths stay the default and keep working exactly as on the S24 Ultra;
+a second, vendor-neutral backend, `treble`, sits beside them so that the image can later run on other Android phones
+(other Samsung phones first). Device profiles (the fork's) come later: `oneos/interface.md`, "The hardware backend".
+
+**The settings** (`runtime/bridges/include/bridges/hw_backend.h`; xnuhost's `config.c`; `docs/booter.md` 1):
+
+| Setting | Values | What |
+|---|---|---|
+| `hw-backend` | `samsung` (default), `treble` | every bridge |
+| `hw-backend-<bridge>` | `samsung`, `treble` | one bridge, over `hw-backend`: `backlight`, `battery`, `thermal`, `haptics`, `touch`, `keys`, `audio`, `camera`, `wifi`, `bluetooth`, `display` (for tests, or a phone whose one part is Samsung's) |
+| `hw-backend-fallback` | `0` (default), `1` | a treble bridge whose interface is missing uses its samsung form (1) or stays off (0) |
+
+In xnuhost.conf (the image set's or the overlay's), with `--set KEY=VALUE`, or as `--hw-backend treble`,
+`--hw-backend-battery treble`; the command line wins per setting. The ctl tools (`brightctl`, `batteryctl`,
+`thermalctl`, `bridgectl`) read `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_<BRIDGE>` and `ONEIOS_HW_FALLBACK`.
+
+**The log** names each bridge's backend and why, one line each: `hw: battery: backend treble (hw-backend=treble)`,
+`hw: thermal: backend samsung (the default)`, `hw: touch: backend samsung (the default); keys: backend samsung (the
+default): the same lookup in both ...`. A treble interface that is missing is one line:
+`hw: battery: treble: missing: android.hardware.health.IHealth/default (no service: ...); the bridge stays off
+(hw-backend-fallback=0)` or `...; falling back to samsung (hw-backend-fallback=1)`.
+
+**The way back applies to both.** No treble path grabs an input device (the side keys are found by their capabilities
+and read only), starts a realtime thread, leaves xnuhost's cgroup, writes under `/sys/power` or restarts anything.
+Treble lookups never walk a directory of sysfs or /proc: a HAL is asked for by name from servicemanager
+(`IServiceManager.getService`, handle 0 of `/dev/binder`), a sysfs class device by a named path, an evdev device as
+`/dev/input/eventN` for N = 0..31 probed by its ioctl capabilities. The binder client is the Wi-Fi supplicant's
+(`wifi/aidl_binder.c`, `aidl_parcel.c`): no Android library.
+
+### The audit table
+
+Every hardware path of xnuhost, the bridges, the phone tools and the fork's session scripts (read only here), its
+Samsung form (today's, the default) and its Treble form. Status: **done** (both backends in code, host-tested and
+tested on the stand-in phone), **same** (one form, already vendor-neutral: both backends use it), **next** (not yet;
+who or what it waits for).
+
+| Path | Where | Samsung form (default) | Treble form | How treble finds it (no walk) | Status |
+|---|---|---|---|---|---|
+| Backend choice | `bridges/hw/`, `xnuhost/src/config.c` | - | - | settings above | **done** (this PR) |
+| Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | next (this PR, step 2) |
+| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | next (this PR, step 2) |
+| Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
+| Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | next (this PR, step 3) |
+| Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | next (this PR, step 4) |
+| Thermal load line | `bridges/thermal/thermal.c` (`br_host_load_read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
+| Thermal policy, CPU step | `thermal.c` (`br_thermal_decide`), `xnuhost/src/main.c` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
+| Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | next (this PR, step 5) |
+| Touch screen | `xnuhost/src/input.c` | `/dev/input/event0..31`: multitouch X/Y with `INPUT_PROP_DIRECT`, the first one | the same | eventN by ioctl capabilities | same (spen owns the lookup function) |
+| Side keys | `xnuhost/src/input.c` | `/dev/input/event0..31` with `KEY_POWER`, `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN`, read only, never grabbed | the same | eventN by ioctl capabilities | same |
+| Power key -> touch IC | `xnuhost/src/main.c`, `br_bright_key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | next (with the backlight) |
+| CPU topology, placement | `bridges/cpu/topology.c` | `/sys/devices/system/cpu/...` (standard) | the same | named files | same (fix-host-overhead's) |
+| Audio | `bridges/audio/aaudio_helper.c` | AAudio (NDK, `libaaudio.so`) | the same | - | same |
+| Camera | `bridges/camera/backend_hal.c`, `backend_ndk.c` | AIDL `android.hardware.camera.provider.ICameraProvider/internal/0`; Camera2 NDK | the same; another vendor may name its provider otherwise [I]: from servicemanager's list (`listServices`) | servicemanager | same; the instance name next |
+| Wi-Fi | `bridges/wifi/` | `wlan0` (AF_PACKET, nl80211), AIDL `android.hardware.wifi.supplicant.ISupplicant/default` | the same interfaces; the interface's name from nl80211 instead of `wlan0` | nl80211 | next (after fix-settings-wifi-cpu merges) |
+| Bluetooth | `bridges/bt/hci_hidl.c` | HIDL `android.hardware.bluetooth@1.1::IBluetoothHci/default` on `/dev/hwbinder` | AIDL `android.hardware.bluetooth.IBluetoothHci/default` (Android 13+), HIDL as before | servicemanager, hwservicemanager | next (after fix-bt-virtual merges) |
+| Display (drm mode) | `xnuhost/src/display.c` | `/dev/dri/card0` | the DRM card found at run time: `/dev/dri/card0..7` by `DRM_IOCTL_VERSION` and a connected connector | eventN-style probe of named nodes | next (after fix-boot-black merges) |
+| Display (shm mode) | `runtime/display` (the helper) | SurfaceControl (Java, app_process) | the same | - | same |
+| GPU 3D | `xnuhost/src/gpu3d_kgsl.c`, drm2kgsl | KGSL (`/dev/kgsl-3d0`), `/dev/dma_heap/system`, `/dev/udmabuf` | KGSL when present (Qualcomm), else 2D | named nodes | next (Qualcomm only today) |
+| RAM fix, KGSL memory | `xnuhost/src/ramfix.c` | `/sys/class/kgsl/kgsl/proc/PID`, the session cgroup | the same on Qualcomm | named files | same (fix-ram-locked's) |
+| Phone tool: backlight, touch | `oneios-tool phone backlight`, `phone touch` | `/sys/class/backlight/panel0-backlight`, `/sys/class/sec/tsp/enabled` | the backlight names above; no touch IC | named paths | next (the tool) |
+| Session scripts (the fork's; read only) | `switcher/assets/oneios_switch.sh`, `oneios_return.sh`, `oneios_root.sh` | `/sys/class/backlight/*/brightness` (glob), `/sys/kernel/gpu/gpu_max_clock` and `/sys/devices/system/cpu/cpufreq_limit/*` (Samsung's), `/sys/class/kgsl/kgsl-3d0/max_gpuclk`, `/sys/class/power_supply/usb/online`, `/sys/class/udc/*/state`, watchdogs, `/sys/class/input/event*/device/enable` | cpufreq `policy*/scaling_max_freq` (standard), the KGSL devfreq, the backlight names above, `/sys/class/udc` | the fork's device profiles | next (the fork) |
+
+### What each treble form does
+
+The sections below say, per bridge, what the treble form reads or calls, how it maps to what the bridge gives iOS, and
+how it was tested. Until a bridge's step is done its row above says next.
+
 ## 8. Sources
 
 | What | Repository and commit |

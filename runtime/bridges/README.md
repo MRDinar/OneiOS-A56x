@@ -13,6 +13,7 @@ tests/host.sh      # both; CI runs it (Linux only: on a Mac, runtime/host-tests.
 |---|---|
 | `include/bridges/bridges.h` | every bridge's C API, with no dependency on xnuhost |
 | `include/bridges/devices.h` | the virtio devices on xnuhost's transport (`runtime/xnuhost/src/xnuhost.h`) |
+| `include/bridges/hw_backend.h`, `hw/` | the backend layer: `hw-backend=samsung\|treble`, `hw-backend-<bridge>`, `hw-backend-fallback` (`hw_backend.c`, pure: the settings, the choice; `hw_log.c`: the `hw: <bridge>: backend ...` and `... treble: missing: ...` lines); `test_hw_backend.c` (in `make test`). `docs/hardware.md` 7e: the audit table |
 | `cpu/` | host topology from sysfs, the vCPU plan (E first, then P), thread placement, the cpufreq register window |
 | `haptics/` | evdev force feedback (`sec_vibrator_inputff`), a worker thread, the iOS-to-effect mapping, the counters (`haptics: effect N played`, `haptics: counters:`) and the stand-in actuator of xnuhost's `haptics=sim` (a boot with no vibrator) |
 | `net/` | the old route, only with xnuhost's `wifi=tap`: tap back end, the built-in DHCP answer, `oneios-net.sh` (routing and NAT, root) |
