@@ -754,6 +754,14 @@ static void parallel_bench(struct xh_cpu *cpu, unsigned scale)
   uint64_t hz = H->info->timebase_hz, one = 0;
   put("PARALLEL: "); dec(ncpu); put(" vCPUs; each thread "); dec(par.rounds); put(" rounds of "); dec(par.spin);
   put(" iterations and a system call\n");
+  // One untimed round on every vCPU first: each thread's first run (its Linux thread placed, its pages mapped; under qemu
+  // the code translated) is not part of anyone's time.
+  par.n = ncpu;
+  par.done = 0;
+  __atomic_add_fetch(&par.go, 1, __ATOMIC_ACQ_REL);
+  for (unsigned i = 1; i < ncpu; i++) H->ipi(cpu, i, 6);
+  par_work(cpu);
+  while (__atomic_load_n(&par.done, __ATOMIC_ACQUIRE) < ncpu - 1) __asm__ volatile("yield");
   for (unsigned n = 1; n <= ncpu; n *= 2) {
     par.n = n;
     par.done = 0;
