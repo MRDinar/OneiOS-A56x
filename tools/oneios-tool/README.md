@@ -274,6 +274,126 @@ already done changes nothing: the request ends with `ok`.
 - The exit status of `serve` on standard input: 0 when it ended in order, 5 when the end cut a request short, 3 for
   a wrong command line of `serve` itself.
 
+### Downloads on a mobile network: pause, resume, retries, parallel ranges
+
+(The owner's request of 2026-11-15, branch `tool-download-resume`.) Every network request of `serve` (`download`,
+`fetch`, `zip-get`, `zip-ls`) goes through one transfer layer (`crates/oneios-image/src/transfer.rs`). What the app
+can rely on:
+
+**Two more requests,** answered at once like `cancel` (they do not wait in the queue; `hello`'s `cmds` lists them, so
+an app can tell a tool that has them; `proto` stays 1: nothing that was there changed its form):
+
+| Request | Answer | Meaning |
+|---|---|---|
+| `{"cmd":"pause","id":"7"}` | `{"ev":"paused","id":"7","step":"download","done":1234567,"total":9876543,"unit":"bytes","text":"paused at 1 MB of 10 MB"}` | the running request 7 (a `download`, `zip-get` or `fetch`) stops its transfer and **keeps what has arrived**: nothing is removed. `done` is the bytes that are in the part file; no byte is counted and no `progress` comes after `paused`. Its connections are closed (one that is inside a read is closed when that read returns, 5 s later at most; what it read is not kept). The request **stays the running one**: the queue waits behind it and the idle time does not run. A `pause` of a request that is paused already gives its `paused` again |
+| `{"cmd":"resume","id":"7"}` | `{"ev":"resumed","id":"7","step":"download","done":1234567,"total":9876543,"unit":"bytes","text":"going on from 1 MB of 10 MB"}` | the paused request 7 goes on from the bytes it has. The count of failed tries and the give-up time start anew |
+
+`pause` and `resume` of an id that cannot take them are answered with an `error` line that has the `id` and a
+`code`: `no-such-request` (neither running nor waiting), `not-running` (it waits in the queue: nothing to pause yet),
+`not-pausable` (the running request is not a `download`, `zip-get` or `fetch`), `not-paused` (a `resume` of a
+request that is not paused). A paused request does not end before it is resumed: a pause that came with the last
+byte holds the request before its next step. `cancel` ends a paused request at once (`cancelled`). To give the
+queue to other requests while a download is paused, cancel it with `"resume":true` and send the same request again
+later: it goes on from the part.
+
+**What is kept, and when a later request goes on from it.** A `download` writes `OUT.part` and, beside it, the state
+file `OUT.part.state` (a member of `zip-get` and `fetch`: `NAME.part` and `NAME.part.state`, or `NAME.deflate.part`
+and `NAME.deflate.part.state` for a deflated member). They are kept when the request ends before the file is whole
+- with `"resume":true`: however it ends (cancelled, failed, the give-up time, heat, the end of the process);
+- without it: only when the request **was paused** and the end of the process stopped it (`cancelled` by `eof` or
+  `sigterm`: the app went away while the user had the download paused). A `cancel` request removes them.
+
+A process that is killed (SIGKILL, the phone restarts) removes nothing. The same request with `"resume":true`, in
+the same process or in a new one, **goes on from what the state file lists**; without `"resume":true` it removes the
+part and starts again. **The app should send `"resume":true` with every download the user may pause or that should
+survive a restart.**
+
+The state file is one JSON object on one line:
+
+```
+{"v":1,"source":"https://host/xnu.macho","what":"file","size":104857600,"etag":"\"6917a5c1-6400000\"","last_modified":"Sat, 14 Nov 2026 21:41:21 GMT","offset":0,"length":104857600,"ranges":true,"done":[[0,58720256],[67108864,71303168]]}
+```
+
+| Key | Meaning |
+|---|---|
+| `v` | 1 |
+| `source` | the URL (or the file's path) |
+| `what` | `file` for a `download`; `member CRC32 NAME` for a member of an archive |
+| `size` | the source's size in bytes (for a member: the archive's) |
+| `etag`, `last_modified` | the server's `ETag` and `Last-Modified` headers as it sent them, `null` for one it did not send (a file's path: no `etag`, its modification time in nanoseconds as `last_modified`) |
+| `offset`, `length` | which bytes of the source the part holds (a `download`: 0 and the size; a member: where its packed bytes begin, and how many they are) |
+| `ranges` | false: the server has no range requests (below) |
+| `done` | the byte ranges that are in the part, each `[first, end)` counted from `offset`, in order and merged |
+
+It is written to `OUT.part.state.tmp`, synced and renamed over the state file, **after** the part's own data was
+synced (`fdatasync`): a state file never lists bytes that a power loss could take from the part. It is written at
+most every 3 seconds while bytes arrive, at a pause, and when the request ends early; a kill loses at most the
+bytes since the last write (they are fetched again). It holds no hashes of the segments: the sync order above
+makes the list true, and the whole file's SHA-256 (or the member's CRC-32) is checked from the disk at the end
+anyway. When the file gets its name the state file is removed.
+
+A later request **goes on only when** the state's `v`, `source`, `what`, `size`, `offset`, `length`, `etag` and
+`last_modified` are what the server says now and the part has `length` bytes. Otherwise it **starts again from the
+first byte** and says why in a `line`, for example `xnu.macho: the server's file changed (ETag "a" then, "b" now):
+starting again from the first byte`. A server that sends neither header is compared by size alone (a `line` says
+so). A range answer whose `ETag` or total size is another than the one the request began with ends the request
+(`failed`, code `changed`): the next request starts again.
+
+**Dropped connections.** A connection that drops or gives no byte for 5 s, a name lookup that fails, a refused or
+timed-out connect, a TLS failure, and the answers 408, 429 and 5xx are **tried again**; any other status (403, 404,
+416) ends the request. A segment goes on **from the byte it reached**, not from its start. Before each new try the
+connection's thread sleeps: 1 s after the first failure, doubling to 60 s, each wait shortened by a random part of
+up to half (try 1: 0.5 to 1 s; from try 7: 30 to 60 s), and a `Retry-After` of the server in seconds is waited when
+it is longer (60 s at most). A try that brings a byte starts the count again. There is no retry without a sleep.
+**Giving up:** when no byte arrived for `give_up_s` seconds (default 1,800) the request ends with `failed`, code
+`network`; with `"resume":true` the part stays for the next request.
+
+While it waits the request says so with a **`net` event:**
+
+```
+{"ev":"net","id":"7","state":"waiting","try":3,"next":3.4,"left":1771,"why":"dropped","error":"Connection reset by peer","text":"waiting for the network (try 3, next in 3 s): Connection reset by peer"}
+{"ev":"net","id":"7","state":"resumed","tries":3,"waited":7.9,"text":"the network is back after 3 tries and 8 s"}
+```
+
+| Field | Meaning |
+|---|---|
+| `state` | `waiting`: a try failed and **no connection of the request receives bytes**; `resumed`: the first byte after a `waiting` |
+| `try` | the count of failed tries in a row, from 1. One `waiting` per count: eight connections that fail together give one event, not eight |
+| `next` | seconds until the next try (one decimal) |
+| `left` | whole seconds until the request gives up |
+| `why` | `dns` (the name lookup), `connect`, `timeout` (no byte for 5 s), `dropped` (the connection ended or broke), `server` (408, 429, 5xx: then also `status`) |
+| `error` | the failure in the library's or the system's words |
+| `tries`, `waited` | of `resumed`: how many tries failed, and for how many seconds no byte came |
+
+One connection of several that drops while the others receive is tried again in the same way without an event (the
+request's `ok` counts every repeated try in `retries`). **A `cancel` or a `pause` during a wait acts at once** (the
+wait is a sleep on a condition, not a read). No `progress` comes while nothing arrives.
+
+**Parallel ranges.** A file is fetched in pieces of 8 MiB by up to `connections` connections at once (HTTP `Range`),
+each piece written in place into the part (`pwrite`) as its bytes arrive, the pieces in rising order. `connections`
+is a key of `download`, `zip-get` and `fetch`: 1 to 8, default 8, and never more than the request's `jobs`. The
+connections are threads of the request (scoped: joined before its last event); a `download` has one more thread for
+the SHA-256.
+
+**A server without range requests** (it answers a `Range` request with 200) is fetched in **one stream**; a
+`line` says so. Such a download can go on only from its first byte: a drop, a pause and a later request all start
+the stream again (`progress` goes back to 0), and the state file says `"ranges":false`. Members of an archive need
+range requests: without them `zip-ls`, `zip-get` and `fetch` fail as before.
+
+**The SHA-256 of a `download`** is still checked before the file gets its name, on the bytes **read back from the
+part file**, not on the bytes as they arrive: a thread hashes the part's unbroken beginning as it grows, while the
+download runs. Pieces arrive out of order and SHA-256 has one order, so the hash follows at most `connections`
+pieces behind; when the last byte is there the `check` step shows what is left to hash (little, when hashing is
+faster than the network). After a resume in a new process the thread reads the bytes that were there already from
+the disk (a hash state is not kept in the state file), again while the rest downloads. A member's CRC-32 is still
+one pass over the finished part (a deflated member is inflated in that pass).
+
+**Request keys** (beside `resume`): `connections` (`download`, `zip-get`, `fetch`), `give_up_s` (the same and
+`zip-ls`: 1 to 86,400). `ok` of a `download` has also `connections`, `ranges` (false: one stream), `retries` (tries
+that failed and were repeated) and `resumed_from` (bytes that were in the part when the request began).
+
+**State (2026-11-15): this section is the protocol; the code and its tests follow on this branch.**
+
 ### Threads, nice, heat
 
 - A request's work runs in `jobs` threads: a rayon pool made for the request (`--jobs`, default the online CPUs, at
