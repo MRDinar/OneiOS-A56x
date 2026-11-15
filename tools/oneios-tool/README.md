@@ -259,7 +259,9 @@ encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_Unsup
   open session (`STAGE/session/xnuhost.pid` names a running xnuhost) it says on stderr that the store is being
   written: what is counted is the newest checkpoint that passes the reader's checks, and what iOS logged last may
   not be in it yet. **Not run on the phone yet** (`ioslog boots` and `show` were, 3.1 s and 4.0 s; `health` is
-  one more pass of the same decoder).
+  one more pass of the same decoder). With `health` in it the tool builds for `aarch64-linux-android` on Linux
+  x86_64 (2026-11-15: NDK 28.2, API 30, the command above with `linux-x86_64`; a PIE for `/system/bin/linker64`,
+  13.9 MB stripped); this box has no Android to run it on.
 
 The kinds are one table, `KINDS` in `crates/oneios-ioslog/src/health.rs`:
 
