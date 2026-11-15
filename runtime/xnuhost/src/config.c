@@ -513,6 +513,27 @@ bool xh_boot_args_hides_vmm_from(const char *args, const char *name)
   return false;
 }
 
+// bluetoothd's own reading of its boot argument (24A446 /usr/sbin/bluetoothd at 0x100309098): every space-separated
+// word that contains "bt-transport-override" sets the transport to strtol of what follows its '=', when under 13; the
+// last such word wins.
+int xh_boot_args_bt_transport(const char *args)
+{
+  static const char key[] = "bt-transport-override";
+  int found = -1;
+  for (const char *p = args; *p;) {
+    size_t len = strcspn(p, " ");
+    bool k = false;
+    for (size_t i = 0; !k && i + sizeof key - 1 <= len; i++) k = !strncmp(p + i, key, sizeof key - 1);
+    const char *eq = memchr(p, '=', len);
+    if (k && eq) {
+      long v = strtol(eq + 1, NULL, 10);
+      if (v >= 0 && v < 13) found = (int)v;
+    }
+    p += len + (p[len] == ' ');
+  }
+  return found;
+}
+
 // The display's switches the guest needs, unless the command line has them: its UI scale, the panel's rate, and
 // with a half-float frame (display-format=rgba16f) oneios-display-wide=1, which tells the guest's display to hand
 // half-float surfaces to the scanout as they are (XH_VIRTIO_GPU_FORMAT_RGBA16F) instead of narrowing them to 8 bits.

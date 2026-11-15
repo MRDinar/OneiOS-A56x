@@ -1373,6 +1373,16 @@ static void test_config(const char *dir)
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=audiomxd,com.apple.WebKit.GPU bluetoothd=1", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=bluetoothd2 xowner-hide-vmm=bluetoothd", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("", "bluetoothd"));
+  // bt-transport-override read as bluetoothd reads it: any word that contains the name, the value after its '=',
+  // under 13, the last word wins
+  CHECK(xh_boot_args_bt_transport("-v bt-transport-override=10 wdt=-1") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=10 bt-transport-override=1") == 1);
+  CHECK(xh_boot_args_bt_transport("xbt-transport-override=10") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=13") == -1);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override=10 bt-transport-override=99") == 10);
+  CHECK(xh_boot_args_bt_transport("bt-transport-override") == -1);
+  CHECK(xh_boot_args_bt_transport("-v wdt=-1 transport=10") == -1);
+  CHECK(xh_boot_args_bt_transport("") == -1);
   char *argv4b[] = { "xnuhost", "--image", image, "--mode", "bench", "--set", "bluetooth=sim" };   // the PC's stand-in
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 7, argv4b) == 0 && xh_config_finish(&c) == 0 && c.bridges == 0 && !strcmp(c.bluetooth, "sim"));

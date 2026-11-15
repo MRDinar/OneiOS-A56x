@@ -30,8 +30,9 @@ Integration of #26-#34 (one tree): kernel `xnu.macho` fe21f390, prelink audit 0 
 122 passed; stand-in phone 200, app 65, cycle 103 in both /proc modes.
 
 **The next phone session** (build from `main`), `xnuhost.conf`:
-- Remove `owner-hide-vmm=bluetoothd,BlueTool`. Add `bt-transport-override=10` (bluetoothd's own switch to Apple's
-  virtual transport).
+- Remove `owner-hide-vmm=bluetoothd,BlueTool`. Do not add `bt-transport-override=10`: tried in the 3233fed session,
+  it is bluetoothd's own simulated controller inside its own process (nothing reaches ours; exit(1) every ~56 s;
+  `docs/hardware.md` 4, "The virtual transport is bluetoothd's own"); xnuhost warns about it since fix-bt-virtual.
 - `ram=auto` (it now fits; or keep `ram=6G`); `ram-giveback` at its default first, then one session with
   `ram-giveback=0` (look for `CAP_IPC_LOCK yes`, `locked (mlock: the host cannot swap it)`, no `the host swaps iOS's
   RAM` line, and `stopping:` right after the return's SIGTERM).

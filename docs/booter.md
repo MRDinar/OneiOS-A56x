@@ -632,7 +632,11 @@ bridge device that serves only it. One log line says which:
 `bluetooth: on: the phone's controller through its HAL 1.1, address ...`, `bluetooth: on: a stand-in controller
 (bluetooth=sim), address ...` or `bluetooth: off (...)` with the reason. Boot arguments whose `owner-hide-vmm=` list
 names bluetoothd get an error line (`boot arguments: owner-hide-vmm names bluetoothd: ...`) and are left as they are:
-24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4).
+24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4). So do boot
+arguments that give bluetoothd `bt-transport-override=10`, read as bluetoothd reads it (`boot arguments:
+bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: ...`; since 2026-11-15):
+that transport is a simulated controller inside bluetoothd, and nothing reaches the phone's
+([hardware.md](hardware.md) 4, "The virtual transport is bluetoothd's own").
 Haptics (`haptics=` in `xnuhost.conf`, `--set haptics=...`; 2026-11-13): `auto`, the default, opens the phone's
 force-feedback device (`haptics: on: /dev/input/eventN ...`) when the bridges are on; `off` gives iOS no actuator
 (`haptics: off (haptics=off)`: no Actuator audio device, no `/product/haptics`); `sim` (a boot with no vibrator,

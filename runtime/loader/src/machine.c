@@ -261,7 +261,8 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   }
   xl_adt_node *defaults = xl_adt_add(root, "defaults");
   xl_adt_set_u32(defaults, "sleep-disabled", 1);
-  // XNU publishes this as kern.hv_vmm_present; bluetoothd then skips chip initialisation.
+  // XNU publishes this as kern.hv_vmm_present; 24A446's bluetoothd then skips chip initialisation, and its power init
+  // succeeds only with transport 10, its own simulated controller (docs/hardware.md 4, "The virtual transport").
   xl_adt_set_u32(defaults, "vmm-present", 1);
   // The vnode limit XNU sizes from memory, (bytes / 64 KiB) + 1024: without it the BCM2837
   // configuration clips it to 1024 and the vnode jetsam kills every idle process.
