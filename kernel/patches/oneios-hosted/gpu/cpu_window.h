@@ -16,7 +16,7 @@
 #ifndef ONEIOS_CPU_WINDOW_H
 #define ONEIOS_CPU_WINDOW_H
 
-#include <stdint.h>
+// uint32_t and uint64_t come from the includer (the kernel's headers in OneiOSAdreno.cpp, <stdint.h> in the host test).
 
 // The span to divide by: the measured one, or the nominal one when there is no measurement (the first window, or a
 // measurement under a second, which only a clock fault gives).

@@ -123,8 +123,12 @@ diff --git a/osfmk/arm64/hosted/hosted_pmap.h b/osfmk/arm64/hosted/hosted_pmap.h
 diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 --- a/osfmk/arm64/hosted/hosted_user.c
 +++ b/osfmk/arm64/hosted/hosted_user.c
-@@ -63,7 +63,34 @@
- struct hosted_user_stats {
+@@ -60,10 +60,37 @@
+ #define HC(name, ...)   hosted_hc(HOSTED_FN(name), hosted_cpu(), HC_PAD(__VA_ARGS__ __VA_OPT__(, ) 0, 0, 0, 0, 0))
+ #define HC_PAD(a1, a2, a3, a4, a5, ...) (uint64_t)(a1), (uint64_t)(a2), (uint64_t)(a3), (uint64_t)(a4), (uint64_t)(a5)
+ 
+-struct hosted_user_stats {
++struct hosted_user_counts {
  	uint64_t runs, syscalls, faults, fills, refills, interrupts, illegal, brk, fpe, exited;
  	uint64_t twins_made, twins_dropped;
 -} hosted_user_stats;
@@ -140,15 +144,15 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 + * A counter of a thread that moved vCPU between two increments may lose one: it is a report, not an exact sum.
 + */
 +#define HOSTED_STATS_CPUS 16
-+static struct hosted_user_stats hosted_user_cpu[HOSTED_STATS_CPUS] __attribute__((aligned(128)));
++static struct hosted_user_counts hosted_user_cpu[HOSTED_STATS_CPUS] __attribute__((aligned(128)));
 +#define hosted_user_stats (hosted_user_cpu[(unsigned)cpu_number() & (HOSTED_STATS_CPUS - 1)])
 +
-+static struct hosted_user_stats
++static struct hosted_user_counts
 +hosted_user_stats_sum(void)
 +{
-+	struct hosted_user_stats s = {};
++	struct hosted_user_counts s = {};
 +	for (unsigned i = 0; i < HOSTED_STATS_CPUS; i++) {
-+		const struct hosted_user_stats *c = &hosted_user_cpu[i];
++		const struct hosted_user_counts *c = &hosted_user_cpu[i];
 +		s.runs += c->runs; s.syscalls += c->syscalls; s.faults += c->faults; s.fills += c->fills; s.refills += c->refills;
 +		s.interrupts += c->interrupts; s.illegal += c->illegal; s.brk += c->brk; s.fpe += c->fpe; s.exited += c->exited;
 +		s.twins_made += c->twins_made; s.twins_dropped += c->twins_dropped; s.fills_switched += c->fills_switched;
@@ -306,12 +310,20 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  			if (filled) {
  				hosted_user_stats.fills++;
  				continue;
-@@ -745,11 +875,11 @@
+@@ -738,18 +868,18 @@
+ static void
+ hosted_perf_report_thread(__unused void *arg, __unused wait_result_t result)
+ {
+-	static struct hosted_user_stats user_last;
++	static struct hosted_user_counts user_last;
+ 	static uint64_t pmap_last[18], copies_last, copy_faults_last;
+ 	uint64_t last = mach_absolute_time();
+ 	for (;;) {
  		assert_wait_timeout((event_t)&hosted_perf_every, THREAD_UNINT, hosted_perf_every * 1000, NSEC_PER_MSEC);
  		(void)thread_block(THREAD_CONTINUE_NULL);
  		uint64_t now = mach_absolute_time(), wall = now - last;
 -		struct hosted_user_stats u = hosted_user_stats;
-+		struct hosted_user_stats u = hosted_user_stats_sum();
++		struct hosted_user_counts u = hosted_user_stats_sum();
  		uint64_t pm[18];
  		hosted_pmap_perf(pm);
  		static struct hosted_perf_counts c;
