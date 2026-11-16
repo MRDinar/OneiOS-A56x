@@ -819,9 +819,14 @@ struct Web {
 
 impl Web {
     fn start(dir: &Path) -> Web {
+        Web::with(dir, None, &[])
+    }
+
+    /// With `rangeserve`'s options that make it a bad network; on `port` when the URL must stay the same.
+    fn with(dir: &Path, port: Option<u16>, options: &[&str]) -> Web {
         for _ in 0..20 {
-            let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-            let mut child = Command::new(tool()).arg("rangeserve").arg(dir).arg(port.to_string()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            let port = port.unwrap_or_else(|| std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port());
+            let mut child = Command::new(tool()).arg("rangeserve").arg(dir).arg(port.to_string()).args(options).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
             for _ in 0..100 {
                 if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
                     return Web { child, port };
@@ -914,7 +919,8 @@ fn downloads_over_http_ranges_checked_and_placed() {
 #[test]
 fn a_stopped_download_removes_its_part_or_keeps_it_for_resume() {
     let b = Box::new("download-stop");
-    // a server that answers the size and then never a byte: the download stays in its first range request
+    // a server that answers the size and the question whether it has ranges, and then never a byte: the download
+    // stays in its first range requests
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -923,8 +929,11 @@ fn a_stopped_download_removes_its_part_or_keeps_it_for_resume() {
             let mut stream = stream;
             let mut request = [0u8; 2048];
             let n = stream.read(&mut request).unwrap_or(0);
-            if request[..n].starts_with(b"HEAD") {
+            let request = String::from_utf8_lossy(&request[..n]).to_ascii_lowercase();
+            if request.starts_with("head") {
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 50000000\r\nConnection: close\r\n\r\n");
+            } else if request.contains("range: bytes=0-0\r\n") {
+                let _ = stream.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nContent-Range: bytes 0-0/50000000\r\nConnection: close\r\n\r\nx");
             } else {
                 // (kept open, silent)
                 held.push(stream);
@@ -938,9 +947,17 @@ fn a_stopped_download_removes_its_part_or_keeps_it_for_resume() {
         s.send(json!({"id": id, "cmd": "download", "url": url, "out": out, "sha256": "0".repeat(64), "resume": resume}));
         s.until(|v| v["id"] == id && v["ev"] == "progress");
         let until = Instant::now() + Duration::from_secs(10);
-        while !Path::new(&format!("{out}.part.done")).exists() {
-            assert!(Instant::now() < until, "the part is there while the download runs");
+        while !Path::new(&format!("{out}.part.state")).exists() {
+            assert!(Instant::now() < until, "the part and its state are there while the download runs");
             std::thread::sleep(Duration::from_millis(20));
+        }
+        if resume {
+            // a pause is said at once, also while every connection is inside a read that gets no byte
+            let began = Instant::now();
+            s.send(json!({"cmd": "pause", "id": id}));
+            let paused = s.until(|v| v["id"] == id && v["ev"] == "paused").pop().unwrap();
+            assert_eq!((paused["done"].as_u64(), paused["total"].as_u64(), paused["step"].as_str()), (Some(0), Some(50_000_000), Some("download")), "{paused}");
+            assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
         }
         let began = Instant::now();
         s.send(json!({"cmd": "cancel", "id": id}));
@@ -949,10 +966,409 @@ fn a_stopped_download_removes_its_part_or_keeps_it_for_resume() {
         // (a range request that gets no byte is given up after 5 s: the stop is seen then at the latest)
         assert!(began.elapsed() < Duration::from_secs(9), "{:?}", began.elapsed());
         assert_eq!(Path::new(&format!("{out}.part")).exists(), resume, "the part of {id}");
-        assert_eq!(Path::new(&format!("{out}.part.done")).exists(), resume);
+        assert_eq!(Path::new(&format!("{out}.part.state")).exists(), resume);
+        assert!(!Path::new(&format!("{out}.part.state.tmp")).exists());
         assert!(!Path::new(&out).exists());
     }
-    s.end(true);
+    let (_, rest, _) = s.end(true);
+    clean_bye(&rest, "eof");
+}
+
+// ---------------------------------------------------------------- downloads on a bad network
+
+/// The request's events of one kind.
+fn of<'a>(events: &'a [Value], ev: &str) -> Vec<&'a Value> {
+    events.iter().filter(|v| v["ev"] == ev).collect()
+}
+
+fn state_of(out: &str) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(format!("{out}.part.state")).expect("the state file")).expect("one JSON object")
+}
+
+/// Send a download and wait until it has at least `least` bytes; the events so far.
+fn download_until(s: &mut Serve, request: Value, least: u64) -> Vec<Value> {
+    let id = request["id"].as_str().unwrap().to_string();
+    s.send(request);
+    s.until(|v| v["id"] == id.as_str() && (is_last(v) || (v["ev"] == "progress" && v["step"] == "download" && v["done"].as_u64().unwrap() >= least)))
+}
+
+#[test]
+fn a_download_is_paused_and_resumed() {
+    let b = Box::new("pause");
+    let data = noise(20 << 20, 21);
+    b.put("web/xnu.macho", &data);
+    b.put("web/set.zip", &zip_of(&[("kernelcache", &data[..3 << 20])]));
+    // a slow line: 2.5 MB a second on each connection (the file is three pieces of 8 MiB: three connections)
+    let web = Web::with(&b.top.join("web"), None, &["--rate", "2500000"]);
+    let url = |name: &str| format!("http://127.0.0.1:{}/{name}", web.port);
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    let out = b.stage("dl/xnu.macho");
+    // what cannot be paused: a request that is not there, one that waits, one without a transfer
+    s.send(json!({"cmd": "pause", "id": "nothing"}));
+    assert_eq!(s.until(|v| v["ev"] == "error").pop().unwrap()["code"], "no-such-request");
+    s.send(json!({"id": "w", "cmd": "wait", "seconds": 0.6}));
+    s.until(|v| v["id"] == "w" && v["ev"] == "start");
+    s.send(json!({"cmd": "pause", "id": "w"}));
+    assert_eq!(s.until(|v| v["ev"] == "error").pop().unwrap()["code"], "not-pausable");
+    let before = download_until(&mut s, json!({"id": "d", "cmd": "download", "url": url("xnu.macho"), "out": out, "sha256": sha256(&data), "connections": 4}), 0);
+    assert_eq!(before.iter().find(|v| v["ev"] == "queued").map(|v| v["id"].as_str()), Some(Some("d")), "{before:#?}");
+    s.send(json!({"id": "q", "cmd": "wait", "seconds": 0}));
+    s.send(json!({"cmd": "pause", "id": "q"}));
+    assert_eq!(s.until(|v| v["ev"] == "error").pop().unwrap()["code"], "not-running");
+    s.send(json!({"cmd": "resume", "id": "d"}));
+    assert_eq!(s.until(|v| v["ev"] == "error").pop().unwrap()["code"], "not-paused");
+
+    // the pause: said at once with the bytes that are there; nothing is counted, nothing is removed, the queue waits
+    s.until(|v| v["id"] == "d" && v["ev"] == "progress" && v["done"].as_u64().unwrap() >= 1_500_000);
+    s.send(json!({"cmd": "pause", "id": "d"}));
+    let paused = s.until(|v| v["id"] == "d" && v["ev"] == "paused").pop().unwrap();
+    let at = paused["done"].as_u64().unwrap();
+    assert!((1_500_000..20 << 20).contains(&at), "{paused}");
+    assert_eq!((paused["total"].as_u64(), paused["step"].as_str(), paused["unit"].as_str()), (Some(20 << 20), Some("download"), Some("bytes")), "{paused}");
+    assert!(paused["text"].as_str().unwrap().starts_with("paused at "), "{paused}");
+    let mut quiet = Vec::new();
+    while let Some(line) = s.next_in(Duration::from_millis(1500)) {
+        quiet.push(line);
+    }
+    assert!(quiet.iter().all(|v| v["ev"] != "progress" && !is_last(v) && v["id"] != "q"), "nothing moves while it is paused: {quiet:#?}");
+    // the state file lists what `paused` said, and the part holds those bytes
+    let state = state_of(&out);
+    let listed: u64 = state["done"].as_array().unwrap().iter().map(|r| r[1].as_u64().unwrap() - r[0].as_u64().unwrap()).sum();
+    assert_eq!(listed, at, "{state}");
+    assert_eq!((state["v"].as_u64(), state["source"].as_str(), state["what"].as_str(), state["size"].as_u64(), state["ranges"].as_bool()), (Some(1), Some(url("xnu.macho").as_str()), Some("file"), Some(20 << 20), Some(true)), "{state}");
+    let part = std::fs::read(format!("{out}.part")).unwrap();
+    for range in state["done"].as_array().unwrap() {
+        let (first, end) = (range[0].as_u64().unwrap() as usize, range[1].as_u64().unwrap() as usize);
+        assert_eq!(part[first..end], data[first..end], "the bytes {first}..{end} of the part");
+    }
+    // a second pause says the same again; ping is answered while it is paused
+    s.send(json!({"cmd": "pause", "id": "d"}));
+    assert_eq!(s.until(|v| v["id"] == "d" && v["ev"] == "paused").pop().unwrap()["done"].as_u64(), Some(at));
+    assert_eq!(s.ask(json!({"id": "p", "cmd": "ping"}))["ev"], "ok");
+
+    // the resume: it goes on from those bytes, to the end, and the SHA-256 is the file's
+    s.send(json!({"cmd": "resume", "id": "d"}));
+    let resumed = s.until(|v| v["id"] == "d" && v["ev"] == "resumed").pop().unwrap();
+    assert_eq!((resumed["done"].as_u64(), resumed["total"].as_u64()), (Some(at), Some(20 << 20)), "{resumed}");
+    let events = s.request("d");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["sha256"].as_str(), ok["connections"].as_u64(), ok["ranges"].as_bool()), (Some("ok"), Some(sha256(&data).as_str()), Some(3), Some(true)), "{events:#?}");
+    assert!(of(&events, "progress").iter().all(|v| v["step"] != "download" || v["done"].as_u64().unwrap() >= at), "the count does not go back");
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+    let left: Vec<String> = std::fs::read_dir(b.stage("dl")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left, ["xnu.macho"], "no part and no state file are left");
+    assert_eq!(s.request("q").pop().unwrap()["ev"], "ok", "the queue went on");
+
+    // a member of an archive: the same pause, and a cancel of the paused request ends it at once
+    let outdir = b.stage("ipsw");
+    let get = |id: &str, resume: bool| json!({"id": id, "cmd": "zip-get", "source": url("set.zip"), "outdir": outdir, "members": [{"member": "kernelcache"}], "resume": resume, "connections": 2});
+    for (id, resume) in [("z1", false), ("z2", true)] {
+        download_until(&mut s, get(id, resume), 300_000);
+        s.send(json!({"cmd": "pause", "id": id}));
+        let paused = s.until(|v| v["id"] == id && v["ev"] == "paused").pop().unwrap();
+        assert!(paused["done"].as_u64().unwrap() >= 300_000, "{paused}");
+        let began = Instant::now();
+        s.send(json!({"cmd": "cancel", "id": id}));
+        let last = s.request(id).pop().unwrap();
+        assert_eq!((last["ev"].as_str(), last["by"].as_str()), (Some("cancelled"), Some("request")), "{last}");
+        assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
+        // (a cancel request removes the part unless the request said "resume")
+        assert_eq!(Path::new(&format!("{outdir}/kernelcache.part")).exists(), resume, "{id}");
+        assert_eq!(Path::new(&format!("{outdir}/kernelcache.part.state")).exists(), resume, "{id}");
+    }
+    // the member goes on from its part
+    let events = { s.send(get("z3", true)); s.request("z3") };
+    assert_eq!(events.last().unwrap()["ev"], "ok", "{events:#?}");
+    assert!(of(&events, "line").iter().any(|v| v["text"].as_str().unwrap().starts_with("kernelcache: going on from ")), "{events:#?}");
+    assert_eq!(std::fs::read(format!("{outdir}/kernelcache")).unwrap(), &data[..3 << 20]);
+    assert_eq!(std::fs::read_dir(&outdir).unwrap().count(), 1, "no part and no state file are left");
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn a_download_goes_on_in_a_new_process_unless_the_servers_file_changed() {
+    let b = Box::new("resume");
+    let data = noise(6 << 20, 22);
+    b.put("web/xnu.macho", &data);
+    let web = Web::with(&b.top.join("web"), None, &["--rate", "1000000", "--etag", "one"]);
+    let (port, url) = (web.port, format!("http://127.0.0.1:{}/xnu.macho", web.port));
+    let request = |id: &str, out: &str, resume: bool| json!({"id": id, "cmd": "download", "url": url, "out": out, "sha256": sha256(&data), "connections": 2, "resume": resume});
+    // Three downloads that end in the middle: (a) paused, then the app goes away (the pipe closes), without
+    // "resume"; (b) paused, then the process is killed; (c) "resume", and the pipe closes while it runs.
+    let outs = [b.stage("dl/a.macho"), b.stage("dl/b.macho"), b.stage("dl/c.macho")];
+    let mut had = Vec::new();
+    for (at, out) in outs.iter().enumerate() {
+        let mut s = Serve::start(&b, &["--jobs", "4"]);
+        download_until(&mut s, request("d", out, at == 2), 500_000);
+        let listed = |out: &str| state_of(out)["done"].as_array().unwrap().iter().map(|r| r[1].as_u64().unwrap() - r[0].as_u64().unwrap()).sum::<u64>();
+        if at < 2 {
+            s.send(json!({"cmd": "pause", "id": "d"}));
+            let paused = s.until(|v| v["id"] == "d" && v["ev"] == "paused").pop().unwrap();
+            // the state file is written at a pause (after the part was synced): a moment after `paused` is said
+            let until = Instant::now() + Duration::from_secs(10);
+            while listed(out) != paused["done"].as_u64().unwrap() {
+                assert!(Instant::now() < until, "the state file lists the bytes `paused` said: {} and {paused}", state_of(out));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        if at == 1 {
+            // Safety: a signal to the process this test started.
+            unsafe { libc::kill(s.pid(), libc::SIGKILL) };
+            let _ = s.child.wait();
+        } else {
+            let (status, rest, _) = s.end(true);
+            let last = rest.iter().find(|v| v["id"] == "d" && is_last(v)).expect("the request's last event");
+            assert_eq!((last["ev"].as_str(), last["by"].as_str(), last["removed"].as_u64(), status), (Some("cancelled"), Some("eof"), Some(0), 5), "{rest:#?}");
+            clean_bye(&rest, "eof");
+        }
+        let state = state_of(out);
+        assert_eq!(state["etag"], "\"one\"", "{state}");
+        had.push(listed(out));
+        assert!(had[at] >= 500_000 && had[at] < 6 << 20 && !Path::new(out).exists(), "{state}");
+    }
+    // A new process goes on from each part: `resumed_from` is what the state file listed.
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    for (out, had) in outs.iter().zip(&had).take(2) {
+        s.send(request("again", out, true));
+        let events = s.request("again");
+        let ok = events.last().unwrap();
+        assert_eq!((ok["ev"].as_str(), ok["resumed_from"].as_u64(), ok["sha256"].as_str()), (Some("ok"), Some(*had), Some(sha256(&data).as_str())), "{events:#?}");
+        assert!(of(&events, "line").iter().any(|v| v["text"] == format!("xnu.macho: going on from {had} of {} bytes", 6 << 20).as_str()), "{events:#?}");
+        // (the first progress line of the step has the earlier bytes already)
+        let first = of(&events, "progress").into_iter().find(|v| v["step"] == "download" && v["done"].as_u64().unwrap() > 0).unwrap();
+        assert!(first["done"].as_u64().unwrap() >= *had, "{first}");
+        assert_eq!(std::fs::read(out).unwrap(), data);
+        assert!(!Path::new(&format!("{out}.part")).exists() && !Path::new(&format!("{out}.part.state")).exists());
+    }
+    // The server's file changed (the same URL, another ETag): the third part is not gone on from, and a line says why.
+    drop(web);
+    let _web = Web::with(&b.top.join("web"), Some(port), &["--etag", "two"]);
+    s.send(request("changed", &outs[2], true));
+    let events = s.request("changed");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["resumed_from"].as_u64()), (Some("ok"), Some(0)), "{events:#?}");
+    let lines: Vec<&str> = of(&events, "line").iter().map(|v| v["text"].as_str().unwrap()).collect();
+    assert!(lines.contains(&"xnu.macho: the server's file changed (ETag \"one\" then, \"two\" now): starting again from the first byte"), "{lines:?}");
+    assert_eq!(std::fs::read(&outs[2]).unwrap(), data);
+    // without "resume" a part that is there is not gone on from either, and it is removed when the request is stopped
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn drops_and_503s_are_tried_again_and_the_app_is_told() {
+    let b = Box::new("drops");
+    let data = noise(3 << 20, 23);
+    b.put("web/xnu.macho", &data);
+    b.put("web/set.zip", &zip_of(&[("kernelcache", &data[..2 << 20])]));
+    // every body breaks off after 0.3 to 0.9 MB, and every 5th request is answered 503
+    let web = Web::with(&b.top.join("web"), None, &["--drop-every", "600000", "--fail-every", "5"]);
+    let url = |name: &str| format!("http://127.0.0.1:{}/{name}", web.port);
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    // one connection: every failure is the whole request's, and none of its tries brought a mebibyte, so each
+    // waits the time of its count and is said
+    let out = b.stage("dl/one.macho");
+    s.send(json!({"id": "one", "cmd": "download", "url": url("xnu.macho"), "out": out, "sha256": sha256(&data), "connections": 1}));
+    let events = s.request("one");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["sha256"].as_str(), ok["connections"].as_u64()), (Some("ok"), Some(sha256(&data).as_str()), Some(1)), "{events:#?}");
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+    let net = of(&events, "net");
+    let (waiting, resumed): (Vec<&Value>, Vec<&Value>) = net.iter().partition(|v| v["state"] == "waiting");
+    assert!(waiting.len() >= 3 && !resumed.is_empty(), "3 MiB in bodies of 0.9 MB at most: {net:#?}");
+    assert_eq!(ok["retries"].as_u64(), Some(waiting.len() as u64), "each repeated try was said: {net:#?}");
+    // a `waiting` counts from 1 after a byte came and one up after another failure; a `resumed` follows a
+    // `waiting` and says its count; the last word is `resumed`
+    let mut count = 0;
+    for v in &net {
+        if v["state"] == "waiting" {
+            count += 1;
+            assert_eq!(v["try"].as_u64(), Some(count), "{net:#?}");
+        } else {
+            assert!(count > 0 && v["state"] == "resumed" && v["tries"].as_u64() == Some(count), "{net:#?}");
+            count = 0;
+        }
+    }
+    assert_eq!(count, 0, "{net:#?}");
+    for v in &waiting {
+        let (count, next) = (v["try"].as_u64().unwrap(), v["next"].as_f64().unwrap());
+        // 1 s doubling, less a random part of up to half
+        let whole = (1u64 << (count - 1)) as f64;
+        assert!((whole / 2.0 - 0.06..=whole + 0.06).contains(&next), "{v}");
+        assert!(matches!(v["why"].as_str(), Some("dropped" | "server")) && v["left"].as_u64().unwrap() >= 1790, "{v}");
+        assert_eq!(v["why"] == "server", v["status"] == 503, "{v}");
+        let seconds = if next < 1.0 { format!("{next:.1}") } else { format!("{next:.0}") };
+        assert_eq!(v["text"].as_str().unwrap(), format!("waiting for the network (try {count}, next in {seconds} s): {}", v["error"].as_str().unwrap()), "{v}");
+    }
+    assert!(resumed.iter().all(|v| v["tries"].as_u64().unwrap() >= 1 && v["waited"].as_f64().unwrap() >= 0.4 && v["text"].as_str().unwrap().starts_with("the network is back after ")), "{resumed:#?}");
+    // no progress line goes back: a piece goes on from the byte it reached
+    let counts: Vec<u64> = of(&events, "progress").iter().filter(|v| v["step"] == "download").map(|v| v["done"].as_u64().unwrap()).collect();
+    assert!(counts.windows(2).all(|w| w[0] <= w[1]) && counts.last() == Some(&(3 << 20)), "{counts:?}");
+    // the members of an archive (its directory is read through the same tries)
+    let outdir = b.stage("ipsw");
+    assert_eq!(s.ask(json!({"id": "ls", "cmd": "zip-ls", "source": url("set.zip")}))["members"], 1);
+    let ok = s.ask(json!({"id": "zip", "cmd": "zip-get", "source": url("set.zip"), "outdir": outdir, "members": [{"member": "kernelcache"}]}));
+    assert_eq!(ok["ev"], "ok", "{ok}");
+    assert_eq!(std::fs::read(format!("{outdir}/kernelcache")).unwrap(), &data[..2 << 20]);
+    // the keys' limits
+    for (key, value) in [("connections", json!(0)), ("connections", json!(9)), ("give_up_s", json!(0)), ("give_up_s", json!(86_401)), ("connections", json!("4"))] {
+        let mut request = json!({"id": "bad", "cmd": "download", "url": url("xnu.macho"), "out": b.stage("dl/bad"), "sha256": sha256(&data)});
+        request[key] = value;
+        assert_eq!(s.ask(request)["code"], "usage", "{key}");
+    }
+    assert_eq!(s.ask(json!({"id": "bad", "cmd": "zip-ls", "source": url("set.zip"), "connections": 2}))["code"], "usage", "zip-ls fetches no file");
+
+    // Several connections (a file of three pieces of 8 MiB) to a server whose bodies break off after 1.5 to 4.5 MB:
+    // a connection that brought a mebibyte and then broke is opened again after a short sleep, and nothing is said.
+    drop(web);
+    let web = Web::with(&b.top.join("web"), None, &["--drop-every", "3000000"]);
+    let big = noise(20 << 20, 25);
+    b.put("web/big.img", &big);
+    let out = b.stage("dl/big.img");
+    let began = Instant::now();
+    s.send(json!({"id": "four", "cmd": "download", "url": format!("http://127.0.0.1:{}/big.img", web.port), "out": out, "sha256": sha256(&big), "connections": 4}));
+    let events = s.request("four");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["sha256"].as_str(), ok["connections"].as_u64()), (Some("ok"), Some(sha256(&big).as_str()), Some(3)), "{ok}");
+    assert!(ok["retries"].as_u64().unwrap() >= 4, "20 MiB in bodies of 4.5 MB at most: {ok}");
+    assert!(of(&events, "net").is_empty(), "no connection waited for the network: {events:#?}");
+    // (0.1 to 0.2 s after each drop; the waits of the tries' row would be 0.5 s and more each)
+    assert!(began.elapsed() < Duration::from_millis(400) * ok["retries"].as_u64().unwrap() as u32 + Duration::from_secs(3), "{:?} with {ok}", began.elapsed());
+    assert_eq!(std::fs::read(&out).unwrap(), big);
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn a_cancel_or_a_pause_during_the_wait_acts_at_once_and_the_wait_has_an_end() {
+    let b = Box::new("backoff");
+    b.put("web/xnu.macho", b"x");
+    // a server that answers every request 503: the request waits, longer each time
+    let web = Web::with(&b.top.join("web"), None, &["--fail-first", "1000000000"]);
+    let url = format!("http://127.0.0.1:{}/xnu.macho", web.port);
+    let mut s = Serve::start(&b, &[]);
+    let request = |id: &str| json!({"id": id, "cmd": "download", "url": url, "out": b.stage(&format!("dl/{id}")), "sha256": "0".repeat(64)});
+    // (the third wait is 2 to 4 s long: a stop that waited for its end would be seen)
+    let third = |s: &mut Serve, id: &str| {
+        let events = s.until(|v| v["id"] == id && v["ev"] == "net" && v["try"] == 3);
+        let tries: Vec<u64> = events.iter().filter(|v| v["ev"] == "net").map(|v| v["try"].as_u64().unwrap()).collect();
+        assert_eq!(tries, [1, 2, 3], "one `waiting` per try: {events:#?}");
+        assert!(events.last().unwrap()["next"].as_f64().unwrap() >= 1.9, "{events:#?}");
+        Instant::now()
+    };
+    s.send(request("c"));
+    let began = third(&mut s, "c");
+    s.send(json!({"cmd": "cancel", "id": "c"}));
+    let last = s.request("c").pop().unwrap();
+    assert_eq!((last["ev"].as_str(), last["by"].as_str()), (Some("cancelled"), Some("request")), "{last}");
+    assert!(began.elapsed() < Duration::from_millis(1000), "the cancel ended the wait: {:?}", began.elapsed());
+    // a pause during the wait: said at once; no try is made while it is paused; the resume starts the count anew
+    s.send(request("p"));
+    let began = third(&mut s, "p");
+    s.send(json!({"cmd": "pause", "id": "p"}));
+    s.until(|v| v["id"] == "p" && v["ev"] == "paused");
+    assert!(began.elapsed() < Duration::from_millis(1000), "{:?}", began.elapsed());
+    assert!(s.next_in(Duration::from_secs(5)).is_none(), "no try and no line while it is paused");
+    s.send(json!({"cmd": "resume", "id": "p"}));
+    let events = s.until(|v| v["id"] == "p" && v["ev"] == "net");
+    assert_eq!((events[0]["ev"].as_str(), events.last().unwrap()["try"].as_u64()), (Some("resumed"), Some(1)), "{events:#?}");
+    // the end of the pipe during a wait ends the process at once, with nothing left
+    let began = Instant::now();
+    let (status, rest, _) = s.end(true);
+    assert!(began.elapsed() < Duration::from_secs(8), "{:?}", began.elapsed());
+    assert_eq!((status, rest.iter().find(|v| v["id"] == "p" && is_last(v)).map(|v| v["ev"].as_str())), (5, Some(Some("cancelled"))), "{rest:#?}");
+    clean_bye(&rest, "eof");
+    assert_eq!(std::fs::read_dir(b.stage("dl")).map(|d| d.count()).unwrap_or(0), 0, "nothing was written");
+
+    // the time a request gives: after 2 s without a byte it fails with `network`, and says how long it waited
+    let mut s = Serve::start(&b, &[]);
+    let began = Instant::now();
+    let mut request = request("g");
+    request["give_up_s"] = json!(2);
+    s.send(request);
+    let events = s.request("g");
+    let last = events.last().unwrap();
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("failed"), Some("network")), "{events:#?}");
+    assert!(last["text"].as_str().unwrap().contains("no byte arrived for 2 s: gave up"), "{last}");
+    assert!((2..7).contains(&began.elapsed().as_secs()), "{:?}", began.elapsed());
+    assert!(of(&events, "net").iter().all(|v| v["left"].as_u64().unwrap() <= 2), "{events:#?}");
+    let (_, rest, _) = s.end(true);
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn a_server_without_ranges_is_fetched_in_one_stream() {
+    let b = Box::new("norange");
+    let data = noise(4 << 20, 24);
+    b.put("web/xnu.macho", &data);
+    let web = Web::with(&b.top.join("web"), None, &["--no-range", "--rate", "2000000"]);
+    let url = format!("http://127.0.0.1:{}/xnu.macho", web.port);
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    let out = b.stage("dl/xnu.macho");
+    let before = download_until(&mut s, json!({"id": "d", "cmd": "download", "url": url, "out": out, "sha256": sha256(&data), "resume": true}), 2_000_000);
+    assert!(of(&before, "line").iter().any(|v| v["text"].as_str().unwrap().contains("the server has no range requests: one stream")), "{before:#?}");
+    // a pause keeps the bytes, but such a stream can only begin again: the count goes back to 0 after the resume
+    s.send(json!({"cmd": "pause", "id": "d"}));
+    let at = s.until(|v| v["id"] == "d" && v["ev"] == "paused").pop().unwrap()["done"].as_u64().unwrap();
+    assert_eq!(state_of(&out)["ranges"], false);
+    // (long enough for the connection to see the pause: a resume that comes before it does lets the stream go on)
+    assert!(s.next_in(Duration::from_millis(600)).is_none(), "nothing moves while it is paused");
+    s.send(json!({"cmd": "resume", "id": "d"}));
+    let events = s.request("d");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["ranges"].as_bool(), ok["connections"].as_u64(), ok["sha256"].as_str()), (Some("ok"), Some(false), Some(1), Some(sha256(&data).as_str())), "{events:#?}");
+    let counts: Vec<u64> = of(&events, "progress").iter().filter(|v| v["step"] == "download").map(|v| v["done"].as_u64().unwrap()).collect();
+    assert!(counts.iter().any(|done| *done < at), "the stream began again: {counts:?} after {at}");
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn the_heat_limits_hold_and_stop_a_download() {
+    let b = Box::new("download-heat");
+    let data = noise(4 << 20, 26);
+    b.put("web/xnu.macho", &data);
+    let web = Web::with(&b.top.join("web"), None, &["--rate", "1000000"]);
+    let url = format!("http://127.0.0.1:{}/xnu.macho", web.port);
+    heat(&b, "380", "330", "80", "Discharging");
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    let out = b.stage("dl/xnu.macho");
+    let request = |id: &str| json!({"id": id, "cmd": "download", "url": url, "out": out, "sha256": sha256(&data), "resume": true});
+    // the case at its pause limit while the download runs: it waits (no byte is counted), and goes on when it is cool
+    download_until(&mut s, request("d"), 300_000);
+    heat(&b, "445", "330", "80", "Discharging");
+    let paused = s.until(|v| v["ev"] == "heat").pop().unwrap();
+    assert_eq!((paused["state"].as_str(), paused["why"].as_str(), paused["id"].as_str()), (Some("paused"), Some("case"), Some("d")), "{paused}");
+    let mut held = Vec::new();
+    while let Some(line) = s.next_in(Duration::from_millis(1500)) {
+        held.push(line);
+    }
+    let counts: Vec<u64> = of(&held, "progress").iter().map(|v| v["done"].as_u64().unwrap()).collect();
+    assert!(counts.windows(2).all(|w| w[0] == w[1]) && of(&held, "net").is_empty(), "nothing arrives, and the network is not blamed: {held:#?}");
+    heat(&b, "400", "330", "80", "Discharging");
+    let events = s.until(|v| v["id"] == "d" && v["ev"] == "progress" && v["done"].as_u64().unwrap() >= 1_500_000);
+    assert_eq!(of(&events, "heat").first().map(|v| v["state"].as_str()), Some(Some("resumed")), "{events:#?}");
+    assert!(of(&events, "net").is_empty(), "the connection that went stale in the pause is opened again without a word: {events:#?}");
+    // the battery at its stop limit: the request ends with refused, heat; its part stays (the request said "resume")
+    heat(&b, "380", "505", "80", "Discharging");
+    let last = s.request("d").pop().unwrap();
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("heat")), "{last}");
+    let had: u64 = state_of(&out)["done"].as_array().unwrap().iter().map(|r| r[1].as_u64().unwrap() - r[0].as_u64().unwrap()).sum();
+    assert!(had >= 1_500_000 && !Path::new(&out).exists(), "{had}");
+    // cool again: the same request goes on from the part
+    heat(&b, "380", "330", "80", "Discharging");
+    let ok = s.ask(request("again"));
+    assert_eq!((ok["ev"].as_str(), ok["resumed_from"].as_u64(), ok["sha256"].as_str()), (Some("ok"), Some(had), Some(sha256(&data).as_str())), "{ok}");
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
 }
 
 #[test]

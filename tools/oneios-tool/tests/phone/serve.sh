@@ -2,7 +2,7 @@
 # what the adb forms give of the same stage.
 #   serve_checks_closed   no session: `sums` against the stage's image.sha256 and against `phone sums`; `log-list`
 #                         and `log` against `phone log`; `cpu` (this machine's /sys, as the adb form's script reads
-#                         it on the stand-in); a write outside the stage is refused
+#                         it on the stand-in); a write outside the stage is refused; a download into the stage
 #   serve_checks_open     a session is open: the heavy requests are refused with `session`, the readings run
 # The requests go in with --request (the one-shot form): one JSON line each on standard output.
 # Uses: TOOL, W, P (the stand-in phone), S (its stage), FAKE_PROC; ok, bad (lib.sh).
@@ -80,6 +80,20 @@ serve_checks_closed() {
   serve '{"id":"h","cmd":"hashes","image":"'"$S"'/image/kernel.kc","out":"'"$S"'/work/kernel.kc.hashes"}'; st=$?
   "$TOOL" image hashes "$S/image/kernel.kc" "$W/kernel.kc.hashes" > /dev/null 2>&1
   [ $st = 0 ] && cmp -s "$S/work/kernel.kc.hashes" "$W/kernel.kc.hashes" && ok "serve hashes: the list \`image hashes\` writes, in the stage" || bad "serve hashes" "status $st"
+
+  # a download into the stage (from a file here: the same pieces, state file and SHA-256 check as from a server,
+  # which crates/oneios-tool/tests/serve.rs has): the file, byte for byte, and no part and no state file beside it;
+  # `hello` names the two requests that hold a download and let it go on
+  local sum; sum=$(sha256sum < "$S/image/kernel.kc" | cut -d' ' -f1)
+  serve '{"id":"d","cmd":"download","url":"'"$S"'/image/kernel.kc","out":"'"$S"'/work/dl/kernel.kc","sha256":"'"$sum"'","resume":true,"connections":2}'; st=$?
+  [ $st = 0 ] && cmp -s "$S/image/kernel.kc" "$S/work/dl/kernel.kc" && [ "$(ls "$S/work/dl" | tr '\n' ' ')" = "kernel.kc " ] \
+    && [ "$(field '"ev":"ok","id":"d"' sha256)" = "$sum" ] && [ "$(field '"ev":"ok","id":"d"' resumed_from)" = 0 ] \
+    && head -n 1 "$W/serve.out" | grep -q '"cmds":\["ping","health","cancel","pause","resume",' \
+    && ok "serve download: kernel.kc into the stage with its SHA-256, no part and no state file left; hello names pause and resume" || bad "serve download" "status $st: $(grep '"id":"d"' "$W/serve.out" | tail -n 1 | cut -c1-200) $(ls "$S/work/dl" 2>/dev/null | tr '\n' ' ')"
+  # another SHA-256 than the file's: refused, and nothing is kept (not the part either, whatever "resume" says)
+  serve '{"id":"d","cmd":"download","url":"'"$S"'/image/kernel.kc","out":"'"$S"'/work/dl/other.kc","sha256":"'"$(printf x | sha256sum | cut -d' ' -f1)"'","resume":true}'; st=$?
+  [ $st = 2 ] && grep -q '"ev":"refused","id":"d","cmd":"download","code":"mismatch"' "$W/serve.out" && [ "$(ls "$S/work/dl" | tr '\n' ' ')" = "kernel.kc " ] \
+    && ok "serve download: a file with another SHA-256 is refused (mismatch, status 2), nothing of it is kept" || bad "serve download of a wrong file" "status $st: $(ls "$S/work/dl" | tr '\n' ' ')"
   rm -rf "$S/work"
 }
 

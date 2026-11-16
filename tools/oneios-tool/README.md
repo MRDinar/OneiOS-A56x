@@ -142,10 +142,11 @@ oneios-tool serve --stage DIR --request '{"id":"1","cmd":"sums","dir":"DIR/image
 
 **State (2026-11-15): written and tested on a Linux PC; not run on a phone** (none on that box). The process, the
 protocol, every way it ends and every command have tests on stand-in inputs
-(`crates/oneios-tool/tests/serve.rs`: 21 tests start the process and read its lines; `crates/oneios-serve`: 8 unit
-tests; `oneios-common`'s `job`: 8; `oneios-phone`'s local forms: 3; `tests/phone/serve.sh`: 12 checks on the
+(`crates/oneios-tool/tests/serve.rs`: 27 tests start the process and read its lines, 7 of them downloads from a
+server that is a bad network; `crates/oneios-serve`: 8 unit tests; `oneios-common`'s `job`: 9; `oneios-image`'s
+`transfer` and `remotezip`: 8 and 4; `oneios-phone`'s local forms: 3; `tests/phone/serve.sh`: 14 checks on the
 stand-in phone's stage, in both of its /proc modes), and the heavy commands ran on the real image set and kernel
-there ("Measured on the Linux PC", below). The Android arm64 binary builds (14.6 MB stripped) and **was not run**.
+there ("Measured on the Linux PC", below). The Android arm64 binary builds (14.8 MB stripped) and **was not run**.
 The measurement for the phone: `tests/phone/serve-on-phone.sh` ("Build and tests", above).
 
 | Option | Default | Meaning |
@@ -190,12 +191,13 @@ The tool's standard error stays empty: what a step prints, on standard output or
 taken too, and comes back as text), chosen by the app, and not the id of a request that is still running or
 waiting; it is free again after the request's last event. Every other key is the command's own (the table below),
 or one of the two every command takes: `"jobs"` (1 to 8: fewer worker threads than `--jobs`) and `"lines"` (how
-many `line` events at most, default 5,000). An unknown key is refused (`usage`), so that a typing mistake is not
+many `line` events at most, default 5,000). The network requests take two more, `"connections"` and `"give_up_s"`
+("Downloads on a mobile network", below). An unknown key is refused (`usage`), so that a typing mistake is not
 silently ignored.
 
 **One request runs at a time.** A request that comes while another runs **waits in a queue** (first in, first out,
-at most 32 waiting; a 33rd is refused with `busy`). `ping`, `health` and `cancel` do not wait: they are answered at
-once, also while a request runs.
+at most 32 waiting; a 33rd is refused with `busy`). `ping`, `health`, `cancel`, `pause` and `resume` do not wait:
+they are answered at once, also while a request runs.
 
 **The events of a request,** in this order:
 
@@ -209,6 +211,8 @@ once, also while a request runs.
 | `row` | one item of the result | `id`, `kind`, and the command's own fields |
 | `line` | a line the step printed | `id`, `stream` (`out` or `err`), `text` (cut at 4,000 characters, then `"cut":true`). At most `lines` of them per request; the rest are counted in the last event's `lines_dropped` |
 | `heat` | the work pauses or goes on | `id`, `state` (`paused`, `resumed`), `why` (`case`, `battery`), `text`, and the reading: `case`, `battery` (degrees C), `level` (percent), `charging` |
+| `net` | a network request waits for the network, or the network is back | `id`, `state` (`waiting`, `resumed`), `text`, and with `waiting`: `try`, `next`, `left`, `why`, `error` (and `status`); with `resumed`: `tries`, `waited` ("Downloads on a mobile network", below) |
+| `paused`, `resumed` | the answer to a `pause` or `resume` request | `id`, `text`, and when a step counts bytes: `step`, `done`, `total`, `unit` (the same section) |
 | **one of the four last events** | it ends | below |
 
 **The last event of a request** is exactly one of these, and nothing with its id comes after it:
@@ -217,13 +221,15 @@ once, also while a request runs.
 |---|---|---|---|
 | `ok` | done | `id`, `cmd`, `seconds`, `text` (one line for the screen), the command's own result fields | 0 |
 | `refused` | the tool decided not to do it, or to stop it | `id`, `cmd`, `code` (a fixed word, below), `text` (the reason in plain words, for the screen) | 2 (`usage` and `unknown`: 3) |
-| `failed` | something broke | `id`, `cmd`, `code` (`io`: a file could not be read or written; `internal`: the tool itself; `failed`: anything else), `text` | 4 |
+| `failed` | something broke | `id`, `cmd`, `code` (`io`: a file could not be read or written; `internal`: the tool itself; `network`: no byte arrived for the request's `give_up_s`; `changed`: the server's file became another one while it was fetched; `failed`: anything else), `text` | 4 |
 | `cancelled` | it was stopped from outside | `id`, `cmd`, `by` (`request`, `eof`, `sigterm`), `removed` (how many temporary files and folders were removed), `text` | 5 |
 
 A request that is refused, fails or is cancelled **removes what it wrote**: its temporary files, and an output that
 was not complete (outputs are written under another name, `NAME.part`, and get their name last). A download
-keeps its part for a later run only when the request says `"resume":true`. A cancel that comes when the work is
-already done changes nothing: the request ends with `ok`.
+keeps its part and the part's state file for a later run when the request says `"resume":true`, or when it was
+paused and the end of the process stopped it ("Downloads on a mobile network", below); a part whose SHA-256 or
+CRC-32 is not the expected one is never kept. A cancel that comes when the work is already done changes nothing:
+the request ends with `ok`.
 
 **Refusal codes** (`code` of `refused`; the text says the same in plain words):
 
@@ -249,7 +255,7 @@ already done changes nothing: the request ends with `ok`.
 | Line | When |
 |---|---|
 | `{"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":[...],"note":"nice 10"}` | the first line, before any request is read. `cmds`: every command this build knows. `thermal` is `null` with `--thermal off`. `note`: what was done about the nice value and the class |
-| `{"ev":"error","text":"..."}` | a line that is not a request: not JSON, not an object, no usable `id`. With `"id"` and `"code"`: a `cancel` of an id that is neither running nor waiting (`no-such-request`), or a request whose id is one that is still running or waiting (`duplicate`: the line was not taken, the first request goes on) |
+| `{"ev":"error","text":"..."}` | a line that is not a request: not JSON, not an object, no usable `id`. With `"id"` and `"code"`: a `cancel`, `pause` or `resume` of an id that is neither running nor waiting (`no-such-request`), a `pause` or `resume` that the request cannot take (`not-running`, `not-pausable`, `not-paused`: "Downloads on a mobile network", below), or a request whose id is one that is still running or waiting (`duplicate`: the line was not taken, the first request goes on) |
 | `{"ev":"bye","why":"eof","requests":3,"cancelled":0,"threads":1,"children":0}` | the last line. `why`: `eof` (the app closed the pipe), `idle`, `sigterm`, `requests` (the one-shot form is done), `stdout` (never read: the reader is gone). `requests`: how many had their last event; `cancelled`: how many of them were cancelled. `threads` and `children` are what the process still has at that moment: 1 and 0 (`/proc/self/status` on Linux and Android, where there is one; `waitpid` says whether a child exists) |
 
 ### How it ends
@@ -263,14 +269,18 @@ already done changes nothing: the request ends with `ok`.
 - **SIGTERM, SIGINT, SIGHUP:** the same as EOF, `by` `sigterm`.
 - **Idle:** `bye` with `why` `idle` after `--idle` seconds without a request or a line.
 - **The reader went away** (a write to standard output fails): the same as EOF, without lines.
-- **How long a stop takes:** the work asks between chunks (1 to 8 MiB), files, kexts and steps. Two things can take
-  longer: a network connection that gives no byte is given up after 5 seconds (a `serve` request never waits longer
-  than that on a silent connection), and one step of the prelink runs to its end (the longest, `match`, took 4.2 s
-  of CPU on a 4-CPU PC; **not measured on the phone**). A request that has not stopped 10 seconds after the end
-  began is not waited for: the process removes the registered temporary files itself, says the request's
-  `cancelled` (with an empty `cmd`) and exits (`bye` then has `"forced":true`). An exit ends every thread. **This
-  path has no test** (no command of the tool refuses to stop). A process that is killed with SIGKILL removes
-  nothing: its `NAME.part` files stay, and the next request for the same output removes or replaces them.
+- **How long a stop takes:** the work asks between blocks (64 KiB to 1 MiB), files, kexts and steps, and a network
+  request that waits for its next try is woken at once. Three things can take longer: a network connection that
+  gives no byte is given up after 5 seconds (a `serve` request never waits longer than that on a silent
+  connection); a name lookup and a connect are the system's calls and end by their own time (a connect: 5 s for
+  each address of the host, 15 s at most; a lookup on a phone without a network: **not measured**); and one step of
+  the prelink runs to its end (the longest, `match`, took 4.2 s of CPU on a 4-CPU PC; **not measured on the
+  phone**). A request that has not stopped 10 seconds after the end began is not waited for: the process removes
+  the registered temporary files itself, says the request's `cancelled` (with an empty `cmd`) and exits (`bye` then
+  has `"forced":true`). An exit ends every thread. The part and the state file of a download with `"resume":true`,
+  or of one that was paused, are no temporary files: they stay. **This path has no test** (no command of the tool
+  refuses to stop in the tests). A process that is killed with SIGKILL removes nothing: its `NAME.part` files
+  stay, and the next request for the same output goes on from them (`"resume":true`) or removes them.
 - A line of standard input that has no line end when the pipe closes is not taken.
 - **Nothing is left behind:** the tool starts no other process in `serve` (no `adb`, no shell, no `git`, no
   `apfs-fuse`, no `llvm-mc`: the commands that need one are not in `serve`), a request's worker threads are made
@@ -278,10 +288,218 @@ already done changes nothing: the request ends with `ok`.
 - The exit status of `serve` on standard input: 0 when it ended in order, 5 when the end cut a request short, 3 for
   a wrong command line of `serve` itself.
 
+### Downloads on a mobile network: pause, resume, retries, parallel ranges
+
+(The owner's request of 2026-11-15, branch `tool-download-resume`.) Every network request of `serve` (`download`,
+`fetch`, `zip-get`, `zip-ls`) goes through one transfer layer (`crates/oneios-image/src/transfer.rs`). What the app
+can rely on:
+
+**Two more requests,** answered at once like `cancel` (they do not wait in the queue; `hello`'s `cmds` lists them, so
+an app can tell a tool that has them; `proto` stays 1: nothing that was there changed its form):
+
+| Request | Answer | Meaning |
+|---|---|---|
+| `{"cmd":"pause","id":"7"}` | `{"ev":"paused","id":"7","step":"download","done":1234567,"total":9876543,"unit":"bytes","text":"paused at 1 MB of 10 MB"}` | the running request 7 (a `download`, `zip-get` or `fetch`) stops its transfer and **keeps what has arrived**: nothing is removed. `done` is the bytes that are in the part file; no byte is counted and no `progress` comes after `paused`. Its connections are closed (one that is inside a read is closed when that read returns, 5 s later at most; what it read is not kept). The request **stays the running one**: the queue waits behind it and the idle time does not run. A `pause` of a request that is paused already gives its `paused` again |
+| `{"cmd":"resume","id":"7"}` | `{"ev":"resumed","id":"7","step":"download","done":1234567,"total":9876543,"unit":"bytes","text":"going on from 1 MB of 10 MB"}` | the paused request 7 goes on from the bytes it has. The count of failed tries and the give-up time start anew |
+
+`pause` and `resume` of an id that cannot take them are answered with an `error` line that has the `id` and a
+`code`: `no-such-request` (neither running nor waiting), `not-running` (it waits in the queue: nothing to pause yet),
+`not-pausable` (the running request is not a `download`, `zip-get` or `fetch`, or it is one whose work is done and
+whose last event comes now), `not-paused` (a `resume` of a request that is not paused). A `paused` or `resumed`
+that comes when no step counts bytes (before the size is known, between two members) has only `id` and `text`.
+**A paused request does not end before it is resumed:** a pause that came with the last byte holds the request
+before its next step, and one that came while a finished transfer is checked and placed (a `download`'s `check`
+and `place`, a member's CRC-32) lets that step end and holds the request before its last event. What a pause
+holds is the network: no request is made and no wait for a new try runs while it is paused. `cancel` ends a paused
+request at once (`cancelled`). To give the queue to other requests while a download is paused, cancel it with
+`"resume":true` and send the same request again later: it goes on from the part.
+
+**What is kept, and when a later request goes on from it.** A `download` writes `OUT.part` and, beside it, the state
+file `OUT.part.state` (a member of `zip-get` and `fetch`: `NAME.part` and `NAME.part.state`, or `NAME.deflate.part`
+and `NAME.deflate.part.state` for a deflated member). They are kept when the request ends before the file is whole
+- with `"resume":true`: however it ends (cancelled, failed, the give-up time, heat, the end of the process);
+- without it: only when the request **was paused** and the end of the process stopped it (`cancelled` by `eof` or
+  `sigterm`: the app went away while the user had the download paused). A `cancel` request removes them.
+
+A process that is killed (SIGKILL, the phone restarts) removes nothing. The same request with `"resume":true`, in
+the same process or in a new one, **goes on from what the state file lists**; without `"resume":true` it removes the
+part and starts again. **The app should send `"resume":true` with every download the user may pause or that should
+survive a restart.**
+
+The state file is one JSON object on one line:
+
+```
+{"v":1,"source":"https://host/xnu.macho","what":"file","size":104857600,"etag":"\"6917a5c1-6400000\"","last_modified":"Sat, 14 Nov 2026 21:41:21 GMT","offset":0,"length":104857600,"ranges":true,"done":[[0,58720256],[67108864,71303168]]}
+```
+
+| Key | Meaning |
+|---|---|
+| `v` | 1 |
+| `source` | the URL (or the file's path) |
+| `what` | `file` for a `download`; `member CRC32 NAME` for a member of an archive |
+| `size` | the source's size in bytes (for a member: the archive's) |
+| `etag`, `last_modified` | the server's `ETag` and `Last-Modified` headers as it sent them, `null` for one it did not send (a file's path: no `etag`, its modification time in nanoseconds as `last_modified`) |
+| `offset`, `length` | which bytes of the source the part holds (a `download`: 0 and the size; a member: where its packed bytes begin, and how many they are) |
+| `ranges` | false: the server has no range requests (below) |
+| `done` | the byte ranges that are in the part, each `[first, end)` counted from `offset`, in order and merged |
+
+It is written to `OUT.part.state.tmp`, synced and renamed over the state file, **after** the part's own data was
+synced (`fdatasync`): a state file never lists bytes that a power loss could take from the part. It is written
+when the transfer begins, at most every 3 seconds while bytes arrive, at a pause (a moment after `paused` is said:
+the sync comes first), and when the transfer ends, whole or not; a kill loses at most the bytes since the last
+write (they are fetched again). It holds no hashes of the segments: the sync order above makes the list true, and
+the whole file's SHA-256 (or the member's CRC-32) is checked from the disk at the end anyway. When the file gets its
+name the state file is removed. (The tool before this wrote a list of finished chunks, `OUT.part.done`: one that is
+found is removed, and its part is fetched again.)
+
+A later request **goes on only when** the state's `v`, `source`, `what`, `size`, `offset`, `length`, `etag` and
+`last_modified` are what the server says now and the part has `length` bytes. Otherwise it **starts again from the
+first byte** and says why in a `line`, for example `xnu.macho: the server's file changed (ETag "a" then, "b" now):
+starting again from the first byte`. A server that sends neither header is compared by size alone (a `line` says
+so). A range answer whose `ETag` or total size is another than the one the request began with ends the request
+(`failed`, code `changed`): the next request starts again.
+
+**Dropped connections.** A connection that drops or gives no byte for 5 s, a name lookup that fails, a refused or
+timed-out connect, a TLS failure, and the answers 408, 429 and 5xx are **tried again**; any other status (403, 404,
+416) ends the request. A piece goes on **from the byte it reached**, not from its start. **There is no retry
+without a sleep.** Before each new try the connection's thread sleeps:
+- **1 s after the first failure, doubling to 60 s,** each wait shortened by a random part of up to half (try 1:
+  0.5 to 1 s; try 2: 1 to 2 s; from try 7: 30 to 60 s), so that connections that failed together do not come back
+  together. A `Retry-After` of the server in seconds is waited when it is longer (60 s at most). Bytes that the
+  transfer did not have start the count again.
+- **0.1 to 0.2 s when the connection that broke had brought 1 MiB or more:** the network is there and nothing is
+  said. (Measured, "The speed", below: with the first row's wait after every drop, a server that breaks each
+  connection after about 4 MB made 1 GiB take 204 s instead of 41 s.) The next failure in a row waits the first
+  row's time.
+
+**Giving up:** when the network gave no new byte for `give_up_s` seconds (default 1,800) the request ends with
+`failed`, code `network`; with `"resume":true` the part stays for the next request. The time counts while the
+request tries, not while it is paused (by a `pause` or by the heat limit) or checks a member between two requests;
+an answer's headers alone, and the bytes a stream without ranges brings a second time, do not count as bytes.
+
+While it waits the request says so with a **`net` event:**
+
+```
+{"ev":"net","id":"7","state":"waiting","try":3,"next":3.4,"left":1771,"why":"dropped","error":"Connection reset by peer (os error 104)","text":"waiting for the network (try 3, next in 3 s): Connection reset by peer (os error 104)"}
+{"ev":"net","id":"7","state":"resumed","tries":3,"waited":7.9,"text":"the network is back after 3 tries and 8 s"}
+```
+
+| Field | Meaning |
+|---|---|
+| `state` | `waiting`: a try failed, its wait is of the first row above, and **no connection of the request receives bytes**; `resumed`: the first byte after a `waiting` |
+| `try` | the count of failed tries in a row, from 1. One `waiting` per count: eight connections that fail together give one event, not eight |
+| `next` | seconds until the next try (one decimal; the text has whole seconds from 1 s on) |
+| `left` | whole seconds until the request gives up |
+| `why` | `dns` (the name lookup), `connect` (also a TLS failure), `timeout` (no byte for 5 s), `dropped` (the connection ended or broke), `server` (408, 429, 5xx: then also `status`) |
+| `error` | the failure in the library's or the system's words |
+| `tries`, `waited` | of `resumed`: how many tries failed, and for how many seconds no byte came |
+
+One connection of several that fails while the others receive is tried again in the same way without an event (the
+request's `ok` counts every repeated try in `retries`). **A `cancel` or a `pause` during a wait acts at once** (the
+wait is a sleep on a condition variable, not a read and not a loop of short sleeps). No `progress` comes while
+nothing arrives.
+
+**Parallel ranges.** A file is fetched in pieces by up to `connections` connections at once (HTTP `Range`), each
+block written in place into the part (`pwrite`) as it arrives, the pieces in rising order. `connections` is a key
+of `download`, `zip-get` and `fetch`: 1 to 8, default 8, and never more than the request's `jobs`. The connections
+are threads of the request (scoped: joined before its last event); a `download` has one more thread for the
+SHA-256. **A piece is a 4th of a connection's share of the file, 8 to 256 MiB** (1 GiB by 8 connections: 32 pieces
+of 32 MiB; a file under 16 MiB: one piece, one connection), and **each piece is one request on a new
+connection.** The reason is ureq 2: a connection it takes back from its pool has no read timeout any more, so a
+reused connection that goes silent would hold its thread for good and a cancel would not be seen; a new one has the
+5 s. Large pieces keep the new connections few, and cost nothing when one breaks, because it goes on from its byte.
+While requests succeed the host's address is the one that connected last (for 30 s: no name lookup and no second
+connection per request); a request that fails looks the host up again and tries each address for 5 s.
+
+**A server without range requests** (it answers a `Range` request with 200) is fetched in **one stream**; a
+`line` says so. Such a download can go on only from its first byte: a drop, a pause and a later request all start
+the stream again (`progress` goes back to 0; a resume that comes before the connection has seen the pause lets it
+go on), and the state file says `"ranges":false`. Members of an archive need range requests: without them `zip-ls`,
+`zip-get` and `fetch` fail as before.
+
+**The SHA-256 of a `download`** is still checked before the file gets its name, on the bytes **read back from the
+part file**, not on the bytes as they arrive: a thread hashes the part's unbroken beginning as it grows, while the
+download runs. Pieces arrive out of order and SHA-256 has one order, so the hash follows at most `connections`
+pieces behind; when the last byte is there the `check` step shows what is left to hash (little, when hashing is
+faster than the network). After a resume in a new process the thread reads the bytes that were there already from
+the disk (a hash state is not kept in the state file), again while the rest downloads. A member's CRC-32 is still
+one pass over the finished part (a deflated member is inflated in that pass).
+
+**Request keys** (beside `resume`): `connections` (`download`, `zip-get`, `fetch`), `give_up_s` (the same and
+`zip-ls`: 1 to 86,400). `ok` of a `download` has also `connections`, `ranges` (false: one stream), `retries` (tries
+that failed and were repeated) and `resumed_from` (bytes that were in the part when the request began).
+
+**The library.** The transfer layer is ureq 2 (blocking, rustls with ring: no OpenSSL; it was in the tool already,
+with the resolver hook that carries the address rule) and scoped threads of our own. The crates that split a file
+into ranges and resume were looked at on crates.io on 2026-11-15: `http-downloader` 0.3 and `fast-down` 7 do both,
+`trauma` 3 resumes one stream and does not split, `downloader` 0.2 does neither (and is LGPL); **all four are built
+on reqwest and a tokio runtime.** That is a second HTTP and TLS stack in the binary and a runtime with threads of
+its own, where `serve` gives a request its threads and joins them before its last event (`bye` reports the ones
+left); and none has a place for the address rule or for this protocol's pause, `net` event and state file. They
+were not built for Android: the reasons above decided. What was written is the policy (when to try again, what to
+say, what a part is of): `crates/oneios-image/src/transfer.rs`, about 1,000 lines with its comments, without its
+tests.
+
+**What was tested (2026-11-15, Linux x86_64; not on a phone).** The server of the tests is `oneios-tool rangeserve`
+with its options that make it a bad network ("rangeserve", below: bodies that break off at a random byte, 503s, no
+range requests, another ETag, a slow line), started by each test on a free port of 127.0.0.1.
+`crates/oneios-tool/tests/serve.rs` starts `serve` and reads its lines, 7 tests:
+- **a pause and a resume in one process** (`a_download_is_paused_and_resumed`): `paused` has the bytes; for 1.5 s
+  no `progress` and no last event come and the queue waits; the state file lists exactly the bytes `paused` said
+  and the part holds them; `resumed`, then `ok` with the file's SHA-256, no part and no state file left. The same
+  for a member of an archive, a `cancel` of the paused request (at once; the part goes, or stays with
+  `"resume":true`), and the errors `no-such-request`, `not-running`, `not-pausable`, `not-paused`;
+- **a new process goes on** (`a_download_goes_on_in_a_new_process_unless_the_servers_file_changed`): after a pause
+  and the end of the pipe (without `"resume"`), after a pause and SIGKILL, and after the end of the pipe in the
+  middle of a download with `"resume":true`; `ok`'s `resumed_from` is what the state file listed. **Another ETag at
+  the same URL starts again,** and the `line` says why;
+- **drops and 503s** (`drops_and_503s_are_tried_again_and_the_app_is_told`): the file arrives with its SHA-256;
+  each `waiting` has its count, a `next` inside its row and its text; each `resumed` follows a `waiting`; no
+  `progress` goes back; `zip-ls` and `zip-get` through the same server; a connection that had brought 1 MiB comes
+  back without an event; the keys' limits;
+- **a cancel and a pause during the wait** (`a_cancel_or_a_pause_during_the_wait_acts_at_once_and_the_wait_has_an_end`):
+  in the third wait (2 to 4 s) a `cancel` gives `cancelled`, and a `pause` gives `paused`, in under a second; no try
+  is made while it is paused; the resume counts from try 1; the end of the pipe during a wait ends the process;
+  `give_up_s` 2 ends a request with `failed`, `network`, after 2 s;
+- a server without ranges (one stream; after a pause the count goes back to 0); **the heat limits** on a running
+  download (`heat` `paused` and `resumed` with no `net` event between, the stop limit ends it with `refused`,
+  `heat`, and the part is gone on from afterwards); a pause that is said at once while every connection is inside
+  a read that gets no byte.
+Every one of them ends with `bye` and its `"threads":1,"children":0`. `oneios-image`'s unit tests (8 of `transfer`,
+4 of `remotezip`) have the ranges, the waits' rows, the state file's line and each reason it is not gone on from,
+and the same downloads in one process; `oneios-common`'s `job` has the pause, the hold and the bell.
+**From Apple's server** (https, this PC's line, 2026-11-15): `zip-ls` of the profile's IPSW 0.6 s, `zip-get` of
+`BuildManifest.plist` 0.8 s, and the kernelcache member (23 MB, three pieces) stopped by SIGTERM after 1.2 s with
+8 MiB listed in its state file (with the server's `ETag` and `Last-Modified`) and gone on from by a second
+process, CRC-32 as the archive says. In 4 of 10 runs of that member one connection was reset by the server inside
+its TLS handshake and came back after its wait (`net` `waiting`, `connect`, then `resumed`). **Not tested: a phone, a
+mobile network, a change of network in the middle** (Wi-Fi to mobile data), **a name lookup without a network.**
+
+**The speed (2026-11-15, the 4-CPU Linux PC, 127.0.0.1, 1 GiB of random bytes; none of it is a phone's or a
+network's speed).** `oneios-tool serve --request` with a `download`, `rangeserve` as the server, each number one
+run of two that agreed within 0.1 s; "download" is the time from the `download` step's line to the `check`
+step's.
+
+| 1 GiB | The whole request | Of it the download step | |
+|---|---|---|---|
+| onto tmpfs, `origin/main` before this branch, `--jobs` 1 and 4 | 4.89 s, 4.74 s | 0.60 s, 0.45 s | then 4.3 s of SHA-256, one pass after the download |
+| onto tmpfs, 1 connection | 4.31 s | 0.68 s | the SHA-256 runs beside the download: the request is as long as the hash (250 MB/s on this CPU, which has no SHA instructions) |
+| onto tmpfs, 2 and 4 connections | 4.31 s, 4.33 s | 0.46 s, 0.40 s | 6, 10 and 18 requests for 1, 2 and 4 connections |
+| onto the SSD (btrfs), `origin/main`, `--jobs` 1 and 4 | 9.21 s, 6.94 s | 4.93 s, 2.70 s | |
+| onto the SSD, 1 and 4 connections | 5.48 s, 5.09 s | 5.48 s, 3.82 s | (the state file's syncs are in it) |
+| onto tmpfs, **each body breaks off after 2 to 6 MB**, 1 connection | 41.1 s | 41.1 s | 270 drops, each tried again after 0.1 to 0.2 s, none said |
+| the same, 4 connections | 10.4 s | 10.3 s | 254 drops |
+| the same with the first row's wait (0.5 to 1 s) after every drop, before the short wait was made: 1 and 4 connections | 203.6 s, 52.9 s | | 269 drops, 538 and 524 `net` events |
+
+On this PC the network is not the limit, so more connections only shorten the download step, by a third. What
+they are for is a line where each connection is slow, and a server that breaks them: four connections wait at
+the same time, not one after the other.
+
 ### Threads, nice, heat
 
 - A request's work runs in `jobs` threads: a rayon pool made for the request (`--jobs`, default the online CPUs, at
-  most 8), and for downloads that many scoped threads. The threads exist only while the request runs.
+  most 8). A transfer has `connections` scoped threads (at most `jobs`), the thread that started it writes the
+  state file, and a `download` has one more for the SHA-256. The threads exist only while the request runs.
 - The process runs at nice 10 (`--nice` 10 to 19) and never in a realtime class.
 - **Heat and battery, from named files only** (never a folder list or a walk of `/sys` or `/proc`: a root tree walk
   panicked the phone's kernel on 2026-11-12). The files are the thermal bridge's: the case

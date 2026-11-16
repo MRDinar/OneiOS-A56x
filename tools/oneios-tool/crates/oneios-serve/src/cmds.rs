@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -25,32 +26,34 @@ pub struct Spec {
     pub name: &'static str,
     /// Checked for heat, battery and an open session (README "Threads, nice, heat").
     pub heavy: bool,
+    /// A `pause` request holds its transfer (README "Downloads on a mobile network"): the network requests.
+    pub pausable: bool,
     pub steps: Steps,
     pub run: fn(&Rq) -> Result<Done, Fail>,
 }
 
 pub static ALL: &[Spec] = &[
-    Spec { name: "wait", heavy: false, steps: &[("wait", "Waiting")], run: wait },
-    Spec { name: "download", heavy: true, steps: &[("download", "Downloading"), ("check", "Checking the file"), ("place", "Putting the file in place")], run: download },
-    Spec { name: "zip-ls", heavy: false, steps: &[], run: zip_ls },
-    Spec { name: "zip-get", heavy: true, steps: &[("directory", "Reading the archive's directory"), ("download", "Downloading and checking the members")], run: zip_get },
-    Spec { name: "fetch", heavy: true, steps: &[("directory", "Reading the IPSW's directory"), ("download", "Downloading and checking the members")], run: fetch },
-    Spec { name: "im4p", heavy: true, steps: &[("decode", "Decoding")], run: im4p },
-    Spec { name: "receive", heavy: true, steps: &[("copy", "Copying the file"), ("check", "Checking the file"), ("place", "Putting the file in place")], run: receive },
-    Spec { name: "sums", heavy: true, steps: &[("scan", "Reading the list"), ("hash", "Checking the files")], run: sums },
-    Spec { name: "hashes", heavy: true, steps: &[("hash", "Hashing the file")], run: hashes },
-    Spec { name: "verify", heavy: true, steps: &[("verify", "Checking the image set")], run: verify },
-    Spec { name: "apfs-ls", heavy: false, steps: &[], run: apfs_ls },
-    Spec { name: "apfs-copy", heavy: true, steps: &[("scan", "Reading the volume"), ("copy", "Copying the files"), ("place", "Putting the folder in place")], run: apfs_copy },
-    Spec { name: "tweaks", heavy: true, steps: &[], run: tweaks },
-    Spec { name: "prelink", heavy: true, steps: &oneios_prelink::build::STEPS, run: prelink },
-    Spec { name: "stubs-check", heavy: true, steps: &[("check", "Checking the stubs")], run: stubs_check },
-    Spec { name: "package-check", heavy: true, steps: &[("check", "Checking the runtime's files")], run: package_check },
-    Spec { name: "ioslog-boots", heavy: true, steps: &[("read", "Reading iOS's log")], run: ioslog_boots },
-    Spec { name: "ioslog-show", heavy: true, steps: &[("read", "Reading iOS's log")], run: ioslog_show },
-    Spec { name: "log-list", heavy: false, steps: &[], run: log_list },
-    Spec { name: "log", heavy: false, steps: &[], run: log },
-    Spec { name: "cpu", heavy: false, steps: &[], run: cpu },
+    Spec { name: "wait", heavy: false, pausable: false, steps: &[("wait", "Waiting")], run: wait },
+    Spec { name: "download", heavy: true, pausable: true, steps: &[("download", "Downloading"), ("check", "Checking the file"), ("place", "Putting the file in place")], run: download },
+    Spec { name: "zip-ls", heavy: false, pausable: false, steps: &[], run: zip_ls },
+    Spec { name: "zip-get", heavy: true, pausable: true, steps: &[("directory", "Reading the archive's directory"), ("download", "Downloading and checking the members")], run: zip_get },
+    Spec { name: "fetch", heavy: true, pausable: true, steps: &[("directory", "Reading the IPSW's directory"), ("download", "Downloading and checking the members")], run: fetch },
+    Spec { name: "im4p", heavy: true, pausable: false, steps: &[("decode", "Decoding")], run: im4p },
+    Spec { name: "receive", heavy: true, pausable: false, steps: &[("copy", "Copying the file"), ("check", "Checking the file"), ("place", "Putting the file in place")], run: receive },
+    Spec { name: "sums", heavy: true, pausable: false, steps: &[("scan", "Reading the list"), ("hash", "Checking the files")], run: sums },
+    Spec { name: "hashes", heavy: true, pausable: false, steps: &[("hash", "Hashing the file")], run: hashes },
+    Spec { name: "verify", heavy: true, pausable: false, steps: &[("verify", "Checking the image set")], run: verify },
+    Spec { name: "apfs-ls", heavy: false, pausable: false, steps: &[], run: apfs_ls },
+    Spec { name: "apfs-copy", heavy: true, pausable: false, steps: &[("scan", "Reading the volume"), ("copy", "Copying the files"), ("place", "Putting the folder in place")], run: apfs_copy },
+    Spec { name: "tweaks", heavy: true, pausable: false, steps: &[], run: tweaks },
+    Spec { name: "prelink", heavy: true, pausable: false, steps: &oneios_prelink::build::STEPS, run: prelink },
+    Spec { name: "stubs-check", heavy: true, pausable: false, steps: &[("check", "Checking the stubs")], run: stubs_check },
+    Spec { name: "package-check", heavy: true, pausable: false, steps: &[("check", "Checking the runtime's files")], run: package_check },
+    Spec { name: "ioslog-boots", heavy: true, pausable: false, steps: &[("read", "Reading iOS's log")], run: ioslog_boots },
+    Spec { name: "ioslog-show", heavy: true, pausable: false, steps: &[("read", "Reading iOS's log")], run: ioslog_show },
+    Spec { name: "log-list", heavy: false, pausable: false, steps: &[], run: log_list },
+    Spec { name: "log", heavy: false, pausable: false, steps: &[], run: log },
+    Spec { name: "cpu", heavy: false, pausable: false, steps: &[], run: cpu },
 ];
 
 pub fn find(name: &str) -> Option<&'static Spec> {
@@ -242,32 +245,116 @@ fn quiet(line: String) {
     }
 }
 
+/// The keys every network request takes: `give_up_s` (seconds without a byte after which it gives up) and, where
+/// a file is fetched, `connections` (never more than the request's threads). Returns the connections.
+fn net_keys(rq: &Rq, connections: bool) -> Result<usize, Fail> {
+    use oneios_image::transfer::{begin_request, CONNECTIONS_MAX, GIVE_UP_DEFAULT};
+    let give_up = match rq.req.opt_u64("give_up_s")? {
+        None => GIVE_UP_DEFAULT,
+        Some(seconds) if (1..=86_400).contains(&seconds) => seconds,
+        Some(_) => return Err(Fail::usage(format!("{}: \"give_up_s\" must be 1 to 86400", rq.req.cmd))),
+    };
+    // (a key of the commands that fetch a file only: elsewhere it is an unknown key)
+    let count = match if connections { rq.req.opt_u64("connections")? } else { None } {
+        None => CONNECTIONS_MAX,
+        Some(n) if (1..=CONNECTIONS_MAX as u64).contains(&n) => n as usize,
+        Some(_) => return Err(Fail::usage(format!("{}: \"connections\" must be 1 to {CONNECTIONS_MAX}", rq.req.cmd))),
+    };
+    begin_request(give_up);
+    Ok(count.min(rq.jobs))
+}
+
+/// A transfer's failure, with the network's own code when it was the network's doing (`network`: it gave up;
+/// `changed`: the server's file is another one now).
+fn net_fail(text: String) -> Fail {
+    match oneios_image::transfer::take_failure() {
+        Some(code) => Fail::Failed(code, text),
+        None => Fail::failed(text),
+    }
+}
+
+/// The SHA-256 of a part's unbroken beginning, read from the part as the download fills it (SHA-256 has one order
+/// and the pieces arrive in any, so the hash follows the lowest piece that is not whole). `hashed` is how far it
+/// is, for the `check` step. Returns how many bytes it hashed, and their sum.
+fn hash_while_it_arrives(part: &str, frontier: &oneios_image::transfer::Frontier, hashed: &AtomicU64) -> Result<(u64, String), Fail> {
+    use sha2::Digest;
+    use std::os::unix::fs::FileExt;
+    let (mut hash, mut block, mut at, mut file) = (sha2::Sha256::new(), vec![0u8; 1 << 20], 0u64, None);
+    while let Some(reach) = frontier.wait(at) {
+        let file = match &file {
+            Some(file) => file,
+            None => file.insert(std::fs::File::open(part).map_err(|e| io(part, e))?),
+        };
+        while at < reach {
+            check()?;
+            let n = block.len().min((reach - at) as usize);
+            file.read_exact_at(&mut block[..n], at).map_err(|e| io(part, e))?;
+            hash.update(&block[..n]);
+            at += n as u64;
+            hashed.store(at, Ordering::Relaxed);
+        }
+    }
+    Ok((at, oneios_common::hex(&hash.finalize())))
+}
+
 fn download(rq: &Rq) -> Result<Done, Fail> {
     let url = source_of(rq, "url")?;
     let out = rq.write_path("out")?;
     let want = rq.req.str("sha256")?;
     let (bytes, resume) = (rq.req.opt_u64("bytes")?, rq.req.flag("resume")?);
+    let connections = net_keys(rq, true)?;
     rq.req.done()?;
     if !is_sha256(&want) {
         return Err(Fail::usage("download: \"sha256\" must be 64 lower-case hex digits"));
     }
+    let part = format!("{out}.part");
+    // the part, its state file (and that one's own temporary name), and the chunk list of the tool before it
+    let names = [part.clone(), format!("{part}.state"), format!("{part}.state.tmp"), format!("{part}.done")];
     if Path::new(&out).is_file() && oneios_image::sha256_of(&out).map_err(image_fail)? == want {
+        names.iter().for_each(|name| remove(Path::new(name)));
         let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
         return Ok(Done::new(format!("{out} is there already, with this SHA-256")).f("out", out.as_str()).f("bytes", size).f("sha256", want));
     }
     if let Some(parent) = Path::new(&out).parent() {
         std::fs::create_dir_all(parent).map_err(|e| io(&parent.display().to_string(), e))?;
     }
-    let part = format!("{out}.part");
-    let guards = [job::temp(&part), job::temp(format!("{part}.done"))];
+    // With "resume" the part and its state are no temporary files: whatever ends the request (also the process's
+    // end that does not wait for a thread inside a name lookup, which removes the temporary files) leaves them
+    // for the next run. Without it they go when the request ends early.
+    let guards: Vec<job::Temp> = if resume { Vec::new() } else { names.iter().map(job::temp).collect() };
     if !resume {
-        guards.iter().for_each(|g| remove(g.path()));
+        names.iter().for_each(|name| remove(Path::new(name)));
     }
+    // (true: the part is not what was asked for, and is not kept whatever the request says)
+    let mut wrong = false;
+    let done = download_part(rq, &url, &out, &part, &want, bytes, connections, &mut wrong);
+    match &done {
+        Ok(_) => {
+            guards.into_iter().for_each(job::Temp::keep);
+            names[1..].iter().for_each(|name| remove(Path::new(name)));
+        }
+        Err(_) if wrong => {
+            drop(guards);
+            names.iter().for_each(|name| remove(Path::new(name)));
+        }
+        // (a download that was paused when the process ended: the user had it on hold)
+        Err(_) if job::held_at_the_end() => guards.into_iter().for_each(job::Temp::keep),
+        Err(_) => {}
+    }
+    done
+}
+
+/// The download into `part`, its SHA-256 and the file's name. An error leaves the part to the caller.
+#[allow(clippy::too_many_arguments)]
+fn download_part(rq: &Rq, url: &str, out: &str, part: &str, want: &str, bytes: Option<u64>, connections: usize, wrong: &mut bool) -> Result<Done, Fail> {
+    use oneios_image::transfer::{self, Frontier};
     let refusal: Mutex<Option<Fail>> = Mutex::new(None);
     let begin = |size: u64| -> Result<(), String> {
+        // (the room: what the part does not hold yet)
+        let have = std::fs::metadata(part).map(|m| (m.blocks() * 512).min(size)).unwrap_or(0);
         let ok = match bytes {
             Some(bytes) if bytes != size => Err(Fail::refused("mismatch", format!("{url} has {size} bytes, {bytes} were expected"))),
-            _ => rq.space(Path::new(&out), size),
+            _ => rq.space(Path::new(out), size - have),
         };
         job::begin("download", "bytes", size);
         ok.map_err(|fail| {
@@ -278,39 +365,66 @@ fn download(rq: &Rq) -> Result<Done, Fail> {
             text
         })
     };
-    let fetched = oneios_image::remotezip::download(&url, &out, rq.jobs, oneios_image::remotezip::CHUNK, &begin, &quiet);
-    job::end();
-    let size = match (fetched, refusal.into_inner().unwrap()) {
-        (_, Some(fail)) => return Err(fail),
-        (Ok(size), None) => size,
-        (Err(text), None) => {
-            // (a download that broke or was stopped keeps its part for the next run when the request asked for that)
-            if resume {
-                guards.into_iter().for_each(job::Temp::keep);
+    let (frontier, hashed) = (Frontier::new(), AtomicU64::new(0));
+    let (fetched, sum) = std::thread::scope(|scope| {
+        // One more thread of the request: it hashes the part while the connections fill it.
+        let hasher = std::thread::Builder::new().name("serve-hash".into()).spawn_scoped(scope, || {
+            let sum = hash_while_it_arrives(part, &frontier, &hashed);
+            job::ring();
+            sum
+        });
+        let fetched = transfer::download(url, out, connections, transfer::CHUNK, Some(&frontier), &begin, &quiet);
+        job::end();
+        frontier.close();
+        let hasher = match hasher {
+            Ok(hasher) => hasher,
+            Err(e) => return (fetched, Err(Fail::failed(format!("the hash thread could not start: {e}")))),
+        };
+        if let Ok((size, _)) = &fetched {
+            // what is left to hash when the last byte is there
+            let progress = job::begin("check", "bytes", *size);
+            while !hasher.is_finished() {
+                progress.set(hashed.load(Ordering::Relaxed));
+                job::wait_bell(Duration::from_millis(200), || hasher.is_finished());
             }
-            return Err(Fail::failed(text));
+            progress.set(hashed.load(Ordering::Relaxed));
+            job::end();
         }
+        (fetched, hasher.join().unwrap_or_else(|_| Err(Fail::Failed("internal", "the hash thread failed".into()))))
+    });
+    let (size, how) = match (fetched, refusal.into_inner().unwrap()) {
+        (_, Some(fail)) => return Err(fail),
+        (Ok(fetched), None) => fetched,
+        (Err(text), None) => return Err(net_fail(text)),
     };
-    job::begin("check", "bytes", size);
-    let got = oneios_image::sha256_of(&part).map_err(image_fail)?;
-    job::end();
+    let (hashed, got) = sum?;
+    if hashed != size {
+        return Err(Fail::failed(format!("{part}: {hashed} of {size} bytes were hashed")));
+    }
     if got != want {
+        *wrong = true;
         return Err(Fail::refused("mismatch", format!("{url} did not arrive as expected: its SHA-256 is {got}, not {want}. Nothing was kept")));
     }
     job::step("place");
     check()?;
-    std::fs::rename(&part, &out).map_err(|e| io(&out, e))?;
-    guards.into_iter().for_each(job::Temp::keep);
-    remove(Path::new(&format!("{part}.done")));
-    Ok(Done::new(format!("{out}: {}, SHA-256 as expected", size_text(size))).f("out", out.as_str()).f("bytes", size).f("sha256", got))
+    std::fs::rename(part, out).map_err(|e| io(out, e))?;
+    Ok(Done::new(format!("{out}: {}, SHA-256 as expected", size_text(size)))
+        .f("out", out)
+        .f("bytes", size)
+        .f("sha256", got)
+        .f("connections", how.connections)
+        .f("ranges", how.ranges)
+        .f("retries", how.retries)
+        .f("resumed_from", how.resumed_from))
 }
 
 fn zip_ls(rq: &Rq) -> Result<Done, Fail> {
     let source = source_of(rq, "source")?;
     let pattern = rq.req.opt_str("match")?;
+    net_keys(rq, false)?;
     rq.req.done()?;
     let pattern = pattern.map(|p| regex::Regex::new(&p).map_err(|e| Fail::usage(format!("zip-ls: \"match\": {e}")))).transpose()?;
-    let zip = oneios_image::remotezip::RemoteZip::open(&source).map_err(Fail::failed)?;
+    let zip = oneios_image::remotezip::RemoteZip::open(&source).map_err(net_fail)?;
     let mut count = 0;
     for info in zip.infos().iter().filter(|i| pattern.as_ref().is_none_or(|p| p.is_match(&i.filename))) {
         count += 1;
@@ -329,9 +443,10 @@ fn zip_get(rq: &Rq) -> Result<Done, Fail> {
     let outdir = rq.write_path("outdir")?;
     let members = rq.req.objects("members", &["member", "name"])?;
     let resume = rq.req.flag("resume")?;
+    let connections = net_keys(rq, true)?;
     rq.req.done()?;
     job::step("directory");
-    let mut zip = oneios_image::remotezip::RemoteZip::open(&source).map_err(Fail::failed)?;
+    let mut zip = oneios_image::remotezip::RemoteZip::open(&source).map_err(net_fail)?;
     zip.keep_parts = resume;
     // (member, the file's name in OUTDIR): a name is one plain file name
     let mut wanted = Vec::new();
@@ -355,7 +470,7 @@ fn zip_get(rq: &Rq) -> Result<Done, Fail> {
     for (member, name) in &wanted {
         check()?;
         let out = format!("{}/{name}", outdir.trim_end_matches('/'));
-        let (bytes, crc) = zip.get(member, &out, rq.jobs, oneios_image::remotezip::CHUNK, &quiet).map_err(Fail::failed)?;
+        let (bytes, crc) = zip.get(member, &out, connections, oneios_image::remotezip::CHUNK, &quiet).map_err(net_fail)?;
         job::count_item();
         total += bytes;
         rq.row("member", &[("name", json!(member)), ("out", json!(out)), ("bytes", json!(bytes)), ("crc32", json!(format!("{crc:08x}")))]);
@@ -373,14 +488,18 @@ fn fetch(rq: &Rq) -> Result<Done, Fail> {
         None => None,
     };
     let resume = rq.req.flag("resume")?;
+    let connections = net_keys(rq, true)?;
     rq.req.done()?;
     job::step("directory");
     let only = (!only.is_empty()).then(|| only.join(","));
-    oneios_image::fetch(&profile, &indir, rq.jobs, only.as_deref(), source.as_deref(), resume).map_err(|e| {
+    oneios_image::fetch(&profile, &indir, connections, only.as_deref(), source.as_deref(), resume).map_err(|e| {
         let text = e.to_string();
         // the profile's pins: a member that is not the pinned one
         if text.contains("the profile pins") || text.contains("the profile does not match") {
             Fail::refused("mismatch", text)
+        } else if let Some(code) = oneios_image::transfer::take_failure() {
+            // (the network gave up, or the server's file changed)
+            Fail::Failed(code, text)
         } else {
             image_fail(e)
         }

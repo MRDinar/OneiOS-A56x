@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- the stop
@@ -41,19 +41,153 @@ impl std::fmt::Display for Stop {
 impl std::error::Error for Stop {}
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// The cancel is the end of the process (the app's pipe closed, a signal), not a `cancel` request.
+static ENDING: AtomicBool = AtomicBool::new(false);
 
-/// Ask the running work to stop at its next check.
+/// Ask the running work to stop at its next check. Whoever waits (`nap`, `hold`) is woken.
 pub fn cancel() {
     CANCEL.store(true, Ordering::SeqCst);
+    ring();
 }
 
-/// Before a new request: nothing is asked to stop.
+/// The same, when the process ends (a download that was paused keeps its part then: `ending`).
+pub fn cancel_at_the_end() {
+    ENDING.store(true, Ordering::SeqCst);
+    cancel();
+}
+
+/// The stop came from the end of the process, not from a request.
+pub fn ending() -> bool {
+    ENDING.load(Ordering::SeqCst)
+}
+
+/// Before a new request: nothing is asked to stop, nothing is paused.
 pub fn clear_cancel() {
     CANCEL.store(false, Ordering::SeqCst);
+    ENDING.store(false, Ordering::SeqCst);
+    PAUSED.store(false, Ordering::SeqCst);
 }
 
 pub fn cancelled() -> bool {
     CANCEL.load(Ordering::Relaxed)
+}
+
+// ---------------------------------------------------------------- the pause, and waiting without polling
+
+/// A `pause` request holds the running request's transfer (`serve`, README "Downloads on a mobile network").
+static PAUSED: AtomicBool = AtomicBool::new(false);
+/// Taken by a pause, a resume and every `count_live`: after a pause was said, nothing is counted.
+static HOLD: Mutex<()> = Mutex::new(());
+/// The waiters' lock and bell. Held only to wait and to ring (never while a line is written), so that a cancel
+/// never waits behind a writer.
+static BELL_LOCK: Mutex<()> = Mutex::new(());
+static BELL: Condvar = Condvar::new();
+
+/// Wake every thread that waits in `nap`, `hold` or `wait_bell` (a cancel, a pause, a resume, a worker that ended).
+pub fn ring() {
+    let _lock = BELL_LOCK.lock().unwrap();
+    BELL.notify_all();
+}
+
+/// Wait for the bell, `time` at most; not at all when `ready` says so already (asked under the bell's lock: a ring
+/// that follows the change `ready` looks at is not missed).
+pub fn wait_bell(time: Duration, ready: impl Fn() -> bool) {
+    let lock = BELL_LOCK.lock().unwrap();
+    if !ready() {
+        let _ = BELL.wait_timeout(lock, time).unwrap();
+    }
+}
+
+/// How many times a paused request was resumed (who keeps a count per pause looks at this).
+pub fn resumes() -> u64 {
+    RESUMES.load(Ordering::SeqCst)
+}
+
+static RESUMES: AtomicU64 = AtomicU64::new(0);
+
+/// Hold the running request's transfer. `said` gets the current step's numbers while nothing can be counted
+/// (`count_live` waits), so what it says stays true until the resume.
+pub fn pause(said: impl FnOnce(Option<Snapshot>)) {
+    {
+        let _hold = HOLD.lock().unwrap();
+        PAUSED.store(true, Ordering::SeqCst);
+        said(current_snapshot());
+    }
+    ring();
+}
+
+/// Let it go on. False, and nothing said, when it was not paused.
+pub fn resume(said: impl FnOnce(Option<Snapshot>)) -> bool {
+    {
+        let _hold = HOLD.lock().unwrap();
+        if !PAUSED.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        RESUMES.fetch_add(1, Ordering::SeqCst);
+        said(current_snapshot());
+    }
+    ring();
+    true
+}
+
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::SeqCst)
+}
+
+/// The request was paused when the end of the process stopped it (the app went away while the user had a download
+/// on hold): its part is kept for a later run, as with `"resume":true`.
+pub fn held_at_the_end() -> bool {
+    paused() && ending()
+}
+
+/// `n` more units of the current step, unless the request is paused or stopped: then nothing is counted and the
+/// caller drops what it has (false). `counted` runs with the count, before a pause can be said: what the caller
+/// keeps of its own (the list of the bytes that are in a part) then agrees with the count a pause says.
+pub fn count_live(n: u64, counted: impl FnOnce()) -> bool {
+    let _hold = HOLD.lock().unwrap();
+    if paused() || cancelled() {
+        return false;
+    }
+    counted();
+    count(n);
+    true
+}
+
+/// Wait while the request is paused (at once `Ok(false)` when it is not); `Ok(true)`: it was held. A stop ends the
+/// wait. The caller has nothing in flight: a connection is closed before this is called.
+pub fn hold() -> Result<bool, Stop> {
+    let mut held = false;
+    loop {
+        check()?;
+        let lock = BELL_LOCK.lock().unwrap();
+        if cancelled() {
+            return Err(Stop::Cancelled);
+        }
+        if !paused() {
+            return Ok(held);
+        }
+        held = true;
+        // (a second at most: the heat and battery limits are looked at while it waits)
+        let _ = BELL.wait_timeout(lock, Duration::from_secs(1)).unwrap();
+    }
+}
+
+/// Sleep on the bell until `time` is over. It ends early with `Ok` when a pause came (the caller then holds), and
+/// with `Err` at once when a stop came: no polling in short steps.
+pub fn nap(time: Duration) -> Result<(), Stop> {
+    let end = Instant::now() + time;
+    loop {
+        check()?;
+        let lock = BELL_LOCK.lock().unwrap();
+        if cancelled() {
+            return Err(Stop::Cancelled);
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() || paused() {
+            return Ok(());
+        }
+        let _ = BELL.wait_timeout(lock, left.min(Duration::from_secs(1))).unwrap();
+    }
 }
 
 /// The stop a failed step was ended by, when it was one (`check` remembers a heat or battery stop; a cancel is the
@@ -161,6 +295,9 @@ pub trait Sink: Send + Sync {
     /// One item of a result: its kind and its fields, in order.
     fn row(&self, kind: &str, fields: &[(&str, serde_json::Value)]);
     fn heat(&self, state: &str, why: &str, text: &str, reading: &Reading);
+    /// An event of the request with a name of its own (`net`: the network is waited for, or back), its fields in
+    /// order.
+    fn event(&self, _name: &str, _fields: &[(&str, serde_json::Value)]) {}
 }
 
 static SINK: RwLock<Option<Arc<dyn Sink>>> = RwLock::new(None);
@@ -191,6 +328,30 @@ pub fn row(kind: &str, fields: &[(&str, serde_json::Value)]) {
 /// Whether someone listens (`serve`): a command may then leave out text that its rows carry.
 pub fn listening() -> bool {
     SINK.read().unwrap().is_some()
+}
+
+/// An event of the running request with a name of its own. False without a listener: the caller then prints its
+/// text as a line.
+pub fn event(name: &str, fields: &[(&str, serde_json::Value)]) -> bool {
+    match sink() {
+        Some(sink) => {
+            sink.event(name, fields);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The numbers of the step that counts now.
+pub fn current_snapshot() -> Option<Snapshot> {
+    CURRENT.read().unwrap().as_ref().map(Progress::snapshot)
+}
+
+/// The current step's count starts again at `done` (a stream that can only begin at its first byte).
+pub fn recount(done: u64) {
+    if let Some(p) = CURRENT.read().unwrap().as_ref() {
+        p.set(done);
+    }
 }
 
 // The step whose bytes the low-level loops count (a hash pass, a copy), set by the request's handler.
@@ -735,6 +896,71 @@ mod tests {
         clear_cancel();
         assert_eq!(sleep(Duration::from_millis(10)), Ok(()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_pause_holds_until_the_resume_and_nothing_is_counted_after_it() {
+        let _state = STATE.lock().unwrap();
+        clear_cancel();
+        set_limits(None);
+        assert_eq!(hold(), Ok(false), "not paused: no wait");
+        let progress = begin("download", "bytes", 100);
+        assert!(count_live(10, || ()));
+        let mut said = None;
+        pause(|now| said = now.map(|s| (s.step, s.done, s.total)));
+        assert_eq!(said, Some(("download".to_string(), 10, 100)), "the pause says the step's numbers");
+        assert!(paused() && !count_live(5, || panic!("nothing is listed after a pause")));
+        assert_eq!(progress.done(), 10);
+        // a thread that holds wakes at the resume, and knows that it was held
+        let waiter = std::thread::spawn(|| {
+            let began = Instant::now();
+            (hold(), began.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        let before = resumes();
+        assert!(resume(|now| assert_eq!(now.map(|s| s.done), Some(10))));
+        assert!(!resume(|_| panic!("it is not paused")));
+        let (held, took) = waiter.join().unwrap();
+        assert_eq!(held, Ok(true));
+        assert!(took >= Duration::from_millis(100) && took < Duration::from_secs(1), "the resume's bell, not a poll: {took:?}");
+        assert_eq!(resumes(), before + 1);
+        assert!(count_live(5, || ()));
+        assert_eq!(progress.done(), 15);
+        end();
+        // the end of the process stops a paused request: its hold ends, and its part is one to keep
+        pause(|now| assert_eq!(now, None, "no step counts"));
+        let waiter = std::thread::spawn(hold);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!held_at_the_end());
+        cancel_at_the_end();
+        assert_eq!(waiter.join().unwrap(), Err(Stop::Cancelled));
+        assert!(held_at_the_end() && !count_live(1, || ()));
+        clear_cancel();
+        assert!(!paused() && !ending() && !held_at_the_end());
+        // a nap ends at once at a cancel (an error) and at a pause (the caller then holds), and else when its time is over
+        for stop in [true, false] {
+            let napper = std::thread::spawn(|| {
+                let began = Instant::now();
+                (nap(Duration::from_secs(30)), began.elapsed())
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            if stop {
+                cancel();
+            } else {
+                pause(|_| ());
+            }
+            let (napped, took) = napper.join().unwrap();
+            assert_eq!(napped, if stop { Err(Stop::Cancelled) } else { Ok(()) });
+            assert!(took < Duration::from_secs(1), "{took:?}");
+            clear_cancel();
+        }
+        let began = Instant::now();
+        assert_eq!(nap(Duration::from_millis(60)), Ok(()));
+        assert!(began.elapsed() >= Duration::from_millis(60));
+        // the bell: no wait when the thing waited for is there already
+        let began = Instant::now();
+        wait_bell(Duration::from_secs(30), || true);
+        assert!(began.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

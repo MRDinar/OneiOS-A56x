@@ -31,6 +31,7 @@ mod archive;
 mod ipsw;
 pub mod rangeserve;
 pub mod remotezip;
+pub mod transfer;
 mod tar;
 
 use oneios_common::pyjson::{self, Value};
