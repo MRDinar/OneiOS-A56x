@@ -1,9 +1,38 @@
-# Paused work (2026-11-13; stopped again 2026-11-15): what is done, what is next, how to resume
+# Paused work (2026-11-13; stopped again 2026-11-15; resumed 2026-11-16): what is done, what is next, how to resume
 
 The owner paused the work on 2026-11-13 at about 15:00 IST. This file is the hand-over. Two machines worked on it:
 the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyOS, x86_64, 4 CPUs: the kernel, the
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
+
+## Resumed 2026-11-16 (the Linux PC): the merge day's last PRs landed
+
+The 2026-11-15 stop ended on a provider rate limit; the work resumed here the next day and the three open merge-day
+PRs are in. Nothing in this section has run on the phone.
+
+- **#49 merged** (`99617ef`): `oneios-tool` ships in the runtime package (`bin/oneios-tool` + its `.sha256`,
+  `check-phone-tool.sh` in CI; the release job still has not run, no tag), and `oneos/interface.md` 9 is the
+  fork-tool contract (pause, resume, net).
+- **#61 merged** (`1ef92a8`): the tool's downloads for a mobile network. `pause`/`resume` requests, the `net` event
+  (`waiting`/`resumed`, the seconds to the next try), tries with backoff and jitter, parallel range connections
+  (`connections` and `give_up_s` request keys), a paused or resumed download keeps its part and its state file for a
+  later run (SHA-256 and CRC-32 checked), `failed` codes `network` and `changed`. Serve tests 21 -> 27 (7 of them
+  downloads on a bad network); 153 cargo tests and 14 phone stand-in checks green on the PC before the push. Its
+  first CI run failed `runtime/bridges/battery` (2 of 83 checks): a runner flake, not the PR (the battery bridge is
+  untouched by it, 83/83 passed locally, the re-run passed). The branch's last round (the finished "Downloads on a
+  mobile network", 360 lines) sat uncommitted in its agent's worktree after the agent died on the rate limit; it was
+  committed as `8d21547` after a local build and test.
+- **OneOS #10 merged** (`bb1ef38`): the app's side of the tool. Pause/resume/net UI as the tool's README has them,
+  POST_NOTIFICATIONS asked once (Android 13+), the `dataSync` foreground-service type (tests assert both),
+  KernelSU's `su -c` runs the staged `bin/oneios-tool` (its path and hash from `runtime.sha256`), cancel goes to the
+  tool as a request (the tool is root's, out of the app's reach), a flow resumed after the app was ended. Proven by
+  CI-test **#63** (`app/` at `e38648f`): all 5 checks, Linux and macOS gradle.
+- **This commit**: main's `app/` pin moves to `bb1ef38`.
+
+The tool's README ("Downloads on a mobile network") lists what a phone run must still measure: a lookup and a
+connect on a phone without a network, and the stops. Still waiting on the phone (it is on the Mac): the real-device
+proofs (a pause and a resume mid-download, airplane mode mid-download, the screens opening under KernelSU), and the
+8644ae9 and 8644ae9-b session logs copied to this box.
 
 ## Stopped 2026-11-15 (evening): what is done, what is open, what is next
 
