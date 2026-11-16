@@ -50,7 +50,9 @@ PRs are in. Nothing in this section has run on the phone.
 - **The version is automatic** (the owner, 2026-11-16): the app's versionCode/versionName read the fork's git
   history (`build.gradle.kts`, the commits since OneiOS 0.1.10's fork commit; the fork's Version step reads the
   same), so a release needs only its tag — the CI caches the NDK, Rust and cargo between runs (`docs/releases.md`).
-  v0.1.11 is the first release to ride it.
+  v0.1.11 is the first release to ride it. The pin push of `470d71f` recorded the old `app/` head (its submodule
+  checkout lacked the fetch and the pipe to `tail` hid the failure; its `v0.1.11` run dies at the deleted tag's
+  checkout and no release comes from it) — this pin is the real `68d48b1`.
 - **Other phones: warned, not refused** (the owner, 2026-11-16): the switch's two model refusals are one warning
   block that goes on; the app's gate warns until the confirm's third box (`oneios_not_this_phone_ack`); the setup
   flows as usual. **Merged** (OneOS #12, `e5004eb`; its CI's one test needed the script text joined — `68d48b1`, the
