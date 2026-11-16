@@ -47,10 +47,14 @@ PRs are in. Nothing in this section has run on the phone.
 - The token: **pushes fire the fork's CI** (the `oneios` branch's run for `bb1ef38` ran green 2026-11-16, the
   prerelease APK built); only a hand `workflow run` dispatch is refused (HTTP 403: the PAT has no Actions: write). Add
   it only if hand dispatch is wanted.
+- **The version is automatic** (the owner, 2026-11-16): the app's versionCode/versionName read the fork's git
+  history (`build.gradle.kts`, the commits since OneiOS 0.1.10's fork commit; the fork's Version step reads the
+  same), so a release needs only its tag — the CI caches the NDK, Rust and cargo between runs (`docs/releases.md`).
+  v0.1.11 is the first release to ride it.
 - **Other phones: warned, not refused** (the owner, 2026-11-16): the switch's two model refusals are one warning
   block that goes on; the app's gate warns until the confirm's third box (`oneios_not_this_phone_ack`); the setup
-  flows as usual. On the fork's branch `warn-other-phones` (`8b27d35`, its tests and docs with it): the owner opens
-  its PR and it rides the next pin.
+  flows as usual. **Merged** (OneOS #12, `e5004eb`; its CI's one test needed the script text joined — `68d48b1`, the
+  head this pin takes, also has the Version step reading the git count).
 - **Tag `v0.1.10` is cut** (the release job's first run ever): plan, runtime, apk and apk-macos all green — the
   runtime package, `bin/oneios-tool` (14,854,456 bytes) and the fork's APK (0.5.14, code 143, at `bb1ef38`) all
   built; the release job itself failed and published nothing: its checksums step `cd out/release` and wrote
