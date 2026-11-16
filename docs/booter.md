@@ -757,7 +757,8 @@ page in the task's process), and the host at 482 % of 800 with 212 % in Linux's 
   the core where the work ran. Now each release gives the iOS thread its vCPU's clamp (one `sched_setattr` per change,
   none otherwise; SCHED_OTHER stays SCHED_OTHER, nice is kept). The kernel's hint (`hostcall.h` `perf_hint`, hosted 0075:
   the thread's performance-control class) gives a UI, user-initiated or realtime thread its floor and a background or
-  utility one no floor and a ceiling (`uclamp.max` 512, `XH_HINT_BG_MAX`). drm2kgsl's own clamp looked for threads named
+  utility one no floor and no ceiling of ours (a ceiling, `uclamp.max` 512, stood here until 2026-11-16; it also slowed
+  chronod's widget extensions, newtodo's decision list). drm2kgsl's own clamp looked for threads named
   `crosvm_vcpu*` and logged `vCPU uclamp.min 1024: 0 of 0 threads`; its patch 0008 calls xnuhost's
   `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `xh_gpu_vcpu_boost`, the iOS threads).
 - **The same timer deadline again is not a host call** (`cpu.c` `xh_cpu_timer_set`): a future deadline equal to the
@@ -809,9 +810,10 @@ with its CPUs and the `cpufreq/boost` switch (`cpu: xnuhost's cpuset /..., CPUs 
 thread on an E or P vCPU (the Edge scheduler with DroidVMCpufreq's preferences), and cpu-pin keeps the vCPU, and the
 iOS thread it runs, on its core; and the clamp of section 2.6a: the kernel's `perf_hint` (hosted 0075) says the class of
 the thread a vCPU is about to run, and the release gives that Linux thread `uclamp.min` 1024 for realtime, UI and
-above-UI, 768 for user-initiated, the vCPU's own request for default, and 0 with `uclamp.max` 512 for utility,
+above-UI, 768 for user-initiated, the vCPU's own request for default, and 0 with no ceiling for utility,
 background and darwin-background threads (RunningBoard's background and suspended roles clamp an app's threads to
-background QoS, so they never hold a fast core at its top clock). The same word is readable by host code on the vCPU
+background QoS; the `uclamp.max` 512 that stood here until 2026-11-16 also slowed chronod's widget extensions, #57, and
+is gone: newtodo's decision list). The same word is readable by host code on the vCPU
 (the GPU path: `xh_cpu_self()->cpu.perf_hint`, for fix-gpu-perf's per-context priority).
 
 **The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
