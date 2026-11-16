@@ -124,7 +124,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  
  extern void sleh_synchronous(arm_context_t *context, uint64_t esr, vm_offset_t far, bool did_initiate_panic_lockdown);
  extern void psignal(void *, int);
-@@ -137,11 +138,172 @@
+@@ -137,11 +138,174 @@
  		out->fill_t += c->fill_t;
  	}
  }
@@ -223,12 +223,14 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 + * with where they came from (saved pc and lr, then four return addresses up the frame pointers: oneios-tool sym names
 + * them), as `oneios-srprot:` lines; noop says that 0080 found nothing to change and so left the region nested.
 + */
++extern bool hosted_shared_region_ready;
++
 +void hosted_top_note_protect(vm_map_t map, uint64_t start, uint64_t end, uint32_t prot, bool set_max, bool noop);
 +void
 +hosted_top_note_protect(vm_map_t map, uint64_t start, uint64_t end, uint32_t prot, bool set_max, bool noop)
 +{
 +	static uint32_t printed;
-+	if (current_task() == kernel_task || map != current_map()) {
++	if (!hosted_shared_region_ready || current_task() == kernel_task || map != current_map()) {
 +		return;
 +	}
 +	struct hosted_top_slot *s = hosted_top_slot();
@@ -472,7 +474,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
 --- a/osfmk/vm/vm_map.c
 +++ b/osfmk/vm/vm_map.c
-@@ -5789,6 +5789,44 @@
+@@ -5789,6 +5789,45 @@
  	return KERN_SUCCESS;
  }
  
@@ -489,6 +491,7 @@ diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
 + */
 +#include <mach/shared_region.h>
 +static TUNABLE(uint32_t, hosted_sr_protect_noop, "oneios-sr-protect-noop", 1);
++bool hosted_shared_region_ready = false;       /* vm_shared_region_create: the first region is fully made */
 +extern void hosted_top_note_protect(vm_map_t map, uint64_t start, uint64_t end, uint32_t prot, bool set_max, bool noop);
 +
 +static bool
@@ -517,13 +520,17 @@ diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
  /*
   *	vm_map_protect:
   *
-@@ -5828,6 +5866,21 @@
+@@ -5828,6 +5866,25 @@
  		return kr;
  	}
  
 +#if XNU_HOSTED
-+	/* 0080: a protection of the nested shared region that changes nothing leaves it nested */
-+	{
++	/* 0080: a protection of the nested shared region that changes nothing leaves it nested.
++	 * The whole block waits until vm_shared_region_create has finished making the first
++	 * shared region: its shared-range scan and saved-state reads are not valid during
++	 * early bootstrap (the first build halted one second after "VM bootstrap" even with
++	 * oneios-sr-protect-noop=0, which still ran hosted_top_note_protect). */
++	if (hosted_shared_region_ready) {
 +		bool noop = !set_max && !(new_prot & VM_PROT_COPY) && hosted_sr_protect_noop != 0 &&
 +		    original_map != kernel_map && start < end &&
 +		    start < SHARED_REGION_BASE_ARM64 + SHARED_REGION_SIZE_ARM64 && end > SHARED_REGION_BASE_ARM64 &&
@@ -539,6 +546,19 @@ diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
  	if (new_prot & VM_PROT_COPY) {
  		vm_map_offset_t         new_start;
  		vm_prot_t               cur_prot, max_prot;
+diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -926,1 +926,9 @@
+ done:
++#if XNU_HOSTED
++	{
++		/* 0080: vm_map_protect's hosted shortcut and report are valid from here on */
++		extern bool hosted_shared_region_ready;
++		hosted_shared_region_ready |= shared_region != NULL;
++	}
++#endif /* XNU_HOSTED */
++
 diff --git a/osfmk/vm/vm_map_lock.c b/osfmk/vm/vm_map_lock.c
 --- a/osfmk/vm/vm_map_lock.c
 +++ b/osfmk/vm/vm_map_lock.c

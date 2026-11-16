@@ -259,5 +259,7 @@
 # oneios-protect-flush-all=1 is the old way. vm_map_protect of the nested shared region that changes nothing answers
 # KERN_SUCCESS under a shared lock and leaves the region nested (oneios-sr-protect-noop=0 is the old way). oneios-top=N
 # (default 6, with oneios-perf): the processes the kernel's trap time went to, per period; oneios-srprot lines: the
-# first 24 shared-region vm_protects with where they came from. README.md, "0080". WIP: built, its first PC boot halted 1 s in.
+# first 24 shared-region vm_protects with where they came from. README.md, "0080". 2026-11-16: the early-halt guard
+# waits for the first completed shared region; the phone boots, newfs_apfs succeeds and session/ready arrives. The
+# pmap entries-kept path works; the shared-region no-op count was still 0, so that optimization and typing A/B stay open.
 0080-shared-region-protect.patch

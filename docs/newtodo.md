@@ -5,6 +5,40 @@ the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyO
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
 
+## 2026-11-16, phone fix: #60 is merged and iOS 27 reaches the first real frame again
+
+Main `ddcb356` includes PR **#60**. The follow-up work on top (not yet committed at the time of this note):
+0080's shared-region readiness guard, the fork's bare-mode `shmem_enabled` save/restore, and oneios-tool's macOS
+scheduler-class guard. Build: `HOSTED_OUT=phonefix kernel/build-hosted.sh`; collection
+`out/kernel/phonefix-24A446/kernel.kc`, sha256 `f171b71e8b1e2c58785c8f060e7a06a3021ef33c8f9ebab927baa3e8255d25d4`,
+96,813,056 bytes; prelink audit 2,712 paired, 92 function stubs, 9 data unpaired, **0 failures**.
+
+- The previous phone panic was `newfs_apfs` SIGSEGV after a DYLD unnest, then `offline scratch Data mount failed: 5`.
+  The original 0080 also halted during early VM bootstrap because its shared-region reporting path ran too early. Now
+  `vm_shared_region_create` sets `hosted_shared_region_ready` only after a region exists; both 0080's vm_map shortcut
+  and `hosted_top_note_protect` are inert before then. On the phone the new kernel passed VM bootstrap, `newfs_apfs`
+  completed, the new seed verified (6,030 files, 14,816 folders), launchd ran, and xnuhost logged `guest ready` and
+  made `session/ready`. Evidence: `out/session-logs/2026-11-16/phonefix-xnuhost.log`. `ram=auto` selected 6,912 MiB;
+  2 MiB host pages and the shmem advise mode were active. No PC A/B run has been done. `oneios-top` showed unchanged
+  pmap entries kept mapped, but **zero shared-region no-ops**, so the no-op optimisation and typing comparison remain.
+- The previous return failed Gate A because the switch saved `always within_size advise [never] deny force` and the
+  return wrote that annotated line back (`EINVAL`), causing a failsafe reboot. Both scripts now save and compare only
+  the bracketed bare mode (`never`); the phone's switch logged `shmem_enabled: never -> advise`, its baseline contains
+  `never`, and the staged scripts pass preflight. The full `OneiosScriptTest` Gradle task passes, including an
+  annotated-line restore test and an already-restored/no-write test. **Proven at the real return on 2026-11-16:**
+  `shmem_enabled back: never`, Gate A passed, Gates B/C passed and One UI restored in place; `return.outcome` is
+  `inplace 1794844068 ...`, not a failsafe/reboot.
+- The first successful boot ended xnuhost without its normal `exit N` or guest-panic lines during interaction; that
+  stop's cause is not established (it did not reboot the phone, and the return repaired One UI in place). A second
+  switch on the identical collection and image reached ready again. Live GPU logging showed Metal clients opening
+  successfully and, in one 10 s interaction window, 127 submits, 103 fenced, 72 frames at 7,952 us mean, no fence
+  timeouts and no refusals; backboardd's submit-to-retire mean was 5,430 us. The reported "no Metal" slowdown was therefore
+  not reproduced by that second boot. Before/after logs: `phonefix-xnuhost-end-full.log`, `phonefix-2/live.log`.
+  Keep watching for the unlogged host-side exit; do not mislabel it as a guest panic.
+- The complete oneios-tool release workspace now builds on macOS; `oneios-common` passes 16 tests. It staged the
+  kernel/config and the fork scripts, checked the image, started the session and read its logs. `ioslog health` against
+  the new Data store remains for the post-return checks.
+
 ## Resumed 2026-11-16 (the Linux PC): the merge day's last PRs landed
 
 The 2026-11-15 stop ended on a provider rate limit; the work resumed here the next day and the three open merge-day

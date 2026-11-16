@@ -1211,15 +1211,20 @@ What the patch changes:
   archive, with 3D only). **`oneios-srprot:`** lines: the first 24 vm_protects of the shared region in a boot, with the
   saved pc and lr and four return addresses (`oneios-tool sym` names them).
 
-**Status: WIP, not proven (work stopped by the owner, 2026-11-15 19:55).** Built (`HOSTED_OUT=dyldobjc`, 744 s; prelink
-audit 0 failures, `stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 5 of 5). The first PC boot of that build
-(`oneios-protect-flush-all=1 oneios-sr-protect-noop=0`, qemu-aarch64, 8 vCPUs, 2560 MiB) stopped 1 s into the kernel:
-the guest halted on cpu0 (reason 2) right after `VM bootstrap: 30 maps, 128 entries and 16 nodes available`, xnuhost
-exit 4. The cause was not looked into: the first thing to find before any other run (an early `vm_map_protect` through
-`hosted_top_note_protect`, or `vm_map_protect_hosted_noop` before the shared region exists, are the first suspects; a
-guess). No before/after numbers, not run on the phone. The plan: `runtime/xnuhost/tools/input-typing.script` (Search's
-keyboard, 100 keys per 70 s) on a before boot (the two switches above) and an after boot, `oneios-top` for kbd's
-faults, unmaps and protects, the `triggered unnest` count and `oneios-ubt=kbd` samples in dyld.
+The first build (`HOSTED_OUT=dyldobjc`, 744 s; prelink audit 0 failures, `stubs-check` 666 good, 0 bad;
+`kernel/tests/host.sh` 5 of 5) stopped 1 s into its first PC boot (`oneios-protect-flush-all=1
+oneios-sr-protect-noop=0`, qemu-aarch64, 8 vCPUs, 2560 MiB), right after `VM bootstrap: 30 maps, 128 entries and 16
+nodes available`, xnuhost exit 4.
+
+**Continuation, 2026-11-16: the early halt is fixed and the phone boots through the former `newfs_apfs` panic.**
+`vm_shared_region_create` now sets `hosted_shared_region_ready` only after it has made a region; both the vm_map shortcut
+and `hosted_top_note_protect` return before that. This covers the reporting call too, which still ran in the original
+halt's `oneios-sr-protect-noop=0` boot. Mac build `HOSTED_OUT=phonefix`; `kernel.kc` `f171b71e...`, prelink audit 2,712
+pairs and 0 failures. On the S24 Ultra (`ram=auto`, 6,912 MiB, `shmem_enabled=advise`): VM bootstrap continued,
+`newfs_apfs` finished instead of SIGSEGV, the seed verified (6,030 files, 14,816 folders), and xnuhost reported the
+first frame with content and `session/ready`. Log: `out/session-logs/2026-11-16/phonefix-xnuhost.log`. No PC A/B run yet.
+The report showed **0 shared-region no-ops** and continuing unnests, so the no-op half is not proven effective; the
+pmap report did show entries kept mapped (48,376 unchanged in one 30 s period). The typing comparison is still open.
 
 ## 0049-wifi-association-event.patch (radio2, 2026-11-12)
 

@@ -232,7 +232,7 @@ pub fn jobs_given() -> bool {
 /// SCHED_NORMAL).
 #[cfg(target_os = "android")]
 const SCHED_OTHER: libc::c_int = libc::SCHED_NORMAL;
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "linux")]
 const SCHED_OTHER: libc::c_int = libc::SCHED_OTHER;
 
 /// Put the process at nice `n` (10 to 19) and out of any realtime class. Call it before the first thread starts:
@@ -244,13 +244,18 @@ pub fn set_nice(n: i32) -> std::io::Result<String> {
     let mut said = String::new();
     // Safety: plain system calls on this process; no pointer but the zeroed parameter block.
     unsafe {
-        let policy = libc::sched_getscheduler(0);
-        if policy == libc::SCHED_FIFO || policy == libc::SCHED_RR {
-            let param: libc::sched_param = std::mem::zeroed();
-            if libc::sched_setscheduler(0, SCHED_OTHER, &param) != 0 {
-                return Err(std::io::Error::last_os_error());
+        // Linux's sched_getscheduler/sched_setscheduler have no macOS libc equivalent.
+        // On other hosts set_nice still sets the nice value; there is no realtime class to leave here.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            let policy = libc::sched_getscheduler(0);
+            if policy == libc::SCHED_FIFO || policy == libc::SCHED_RR {
+                let param: libc::sched_param = std::mem::zeroed();
+                if libc::sched_setscheduler(0, SCHED_OTHER, &param) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                said.push_str("left the realtime class it was started in; ");
             }
-            said.push_str("left the realtime class it was started in; ");
         }
         if libc::setpriority(libc::PRIO_PROCESS as _, 0, n) != 0 {
             return Err(std::io::Error::last_os_error());
@@ -264,8 +269,14 @@ pub fn set_nice(n: i32) -> std::io::Result<String> {
 pub fn nice_now() -> (i32, bool) {
     // Safety: plain system calls. getpriority's -1 may be a value: errno tells, and a failure reads as 0 here.
     unsafe {
-        let policy = libc::sched_getscheduler(0);
-        (libc::getpriority(libc::PRIO_PROCESS as _, 0), policy == libc::SCHED_FIFO || policy == libc::SCHED_RR)
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let realtime = {
+            let policy = libc::sched_getscheduler(0);
+            policy == libc::SCHED_FIFO || policy == libc::SCHED_RR
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let realtime = false;
+        (libc::getpriority(libc::PRIO_PROCESS as _, 0), realtime)
     }
 }
 
