@@ -87,6 +87,21 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the pinned NDK (setup-build.sh's sdkmanager install becomes a restore after the first run)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /usr/local/lib/android/sdk/ndk/28.2.13676358
+          key: ci-ndk-28.2.13676358
+      - name: Cache the Rust toolchain and cargo (the tool's warm build rides in the target dir)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.rustup
+            ~/.cargo
+            tools/oneios-tool/target
+          key: ci-cargo-${{ runner.os }}-rust-stable-${{ hashFiles('tools/oneios-tool/**/Cargo.lock') }}
+          restore-keys: |
+            ci-cargo-${{ runner.os }}-rust-stable-
       - name: The fork's tree is not in this checkout (app/ stays an empty submodule folder)
         run: |
           set -euo pipefail
@@ -253,7 +268,8 @@ jobs:
           vname=$(sed -n "s/.* versionName='\([^']*\)'.*/\1/p" <<< "$badging")
           vcode=$(sed -n "s/.* versionCode='\([0-9]*\)'.*/\1/p" <<< "$badging")
           [ -n "$vname" ] && [ -n "$vcode" ] || { echo "::error::no versionName or versionCode in the APK"; exit 1; }
-          grep -q "versionCode = $vcode\$" app/app-android/app/build.gradle.kts || { echo "::error::the APK's versionCode $vcode is not app/build.gradle.kts's"; exit 1; }
+          grep -q "versionCode = $vcode\$" app/app-android/app/build.gradle.kts >/dev/null 2>&1 ||
+          [ "$vcode" -gt 143 ] || { echo "::error::the APK's versionCode $vcode did not grow past v0.1.10's 143 (the fork's build.gradle.kts reads the version from its git history now)"; exit 1; }
           mkdir -p out/apk
           out="OneOS-oneios-$vname-debug.apk"
           cp "$src" "out/apk/$out"

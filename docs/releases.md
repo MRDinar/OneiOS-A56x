@@ -136,6 +136,13 @@ placeholder), `kernel` (null without one). `files` lists every file except `runt
 ## Versions
 
 - `N.N.N` (semantic versioning) for releases, `N.N.N-suffix` for pre-releases (`0.1.0-rc1`); the tag is `v` + version.
+- A tag push is the whole release: the tag fires `release.yml` and every job after it runs by itself; a hand
+  `workflow run` dispatch only picks the runtime or the APK alone.
+- The APK's versionName and versionCode need no hand bump: `app-android/app/build.gradle.kts` reads the fork's git
+  history (the commits since OneiOS 0.1.10's fork commit on top of 143 for the code, the same count in the name's
+  patch number), and the apk step only checks the code grew past 143 (`AppUpdate` compares codes).
+- The CI caches the pinned NDK, the Rust toolchain and cargo between runs (`actions/cache`): the first run after a
+  change to the pin or `Cargo.lock` saves them, the next runs restore in seconds and skip the installs.
 - 0.x while nothing boots. The minor number goes up when the session ABI, the image format or the kernel-to-booter
   interface changes; the patch number for everything else.
 - `session_abi` and `image_formats` are what the fork checks at run time. A package with a new `session_abi` needs a
