@@ -29,6 +29,27 @@ PRs are in. Nothing in this section has run on the phone.
   CI-test **#63** (`app/` at `e38648f`): all 5 checks, Linux and macOS gradle.
 - **This commit**: main's `app/` pin moves to `bb1ef38`.
 
+**Decided 2026-11-16 (the owner: "do those"):**
+- The root tweaks to Rust (`tweaks`), `build.sh`'s order and checks (`make-image`) and the AEA decryption: **started;
+  blocked on agents**. The Fable 5.2 agent was launched twice and died both times on the Claude provider's rate limit
+  (Opus is on the same limit; it resets 2026-11-21 2:30am IST). It waits for a working agent slot, or the owner says
+  the coordinator ports it directly.
+- The two caps: **the uclamp cap is dropped** (this commit): a background or utility hinted thread gets no floor and
+  no ceiling of ours (the 512 ceiling of fix-host-overhead slowed chronod's widget extensions, #57). The background
+  GPU class stays as fix-gpu-widgets narrowed it.
+- `shmem_enabled=advise`: **done in the fork** (branch `shmem-advise`, PR to `oneios`): the switch captures the mode
+  with One UI whole and writes `advise` for the 2 MiB host pages (One UI never advises, so it changes nothing for One
+  UI), the return writes the old value back before gate A and gate A failsafes if it did not; OneiosScriptTest covers
+  the restore and the untouched case.
+- The empty `app/`: **stays as #46 has it**: passed over with the note. A fresh worktree's empty `app/` must fall
+  through to the main checkout's `app/` (that is how an agent worktree finds the fork); a path named by hand already
+  stops with the fix command.
+- The token: **pushes fire the fork's CI** (the `oneios` branch's run for `bb1ef38` ran green 2026-11-16, the
+  prerelease APK built); only a hand `workflow run` dispatch is refused (HTTP 403: the PAT has no Actions: write). Add
+  it only if hand dispatch is wanted.
+- **Tag `v0.1.10` is cut** (the first release job run): runtime, apk, plan green; the release job itself failed on
+  its first run (its log tells; the runtime and the tool and the APK built).
+
 The tool's README ("Downloads on a mobile network") lists what a phone run must still measure: a lookup and a
 connect on a phone without a network, and the stops. Still waiting on the phone (it is on the Mac): the real-device
 proofs (a pause and a resume mid-download, airplane mode mid-download, the screens opening under KernelSU), and the

@@ -876,14 +876,15 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   }
   // Its vCPU's clamp (xnuhost.h xh_cpu_uclamp): the host's governor picks a core's clock from what runs there, and what
   // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.
-  // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and a ceiling,
-  // whatever its vCPU asked for last (a suspended or background process must not hold a fast core at its top clock); a UI or
-  // realtime thread at least the floor it names.
+  // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and no
+  // ceiling of ours, whatever its vCPU asked for last (a ceiling stood here, XH_HINT_BG_MAX 512, until 2026-11-16; the
+  // owner's rule is no caps of ours on the cores, and it also slowed chronod's widget extensions, #57); a UI or
+  // realtime thread at least the floor it names. The ceiling of 1024 clears a stale one either way.
   if (xh_cpu_uclamp) {
     const uint32_t hint = __atomic_load_n(&v->cpu.perf_hint, __ATOMIC_RELAXED);
     unsigned lo = xh_cpu_uclamp(v->cpu.index), hi = 1024;
     if (hint & XH_HINT_VALID) {
-      if (hint & XH_HINT_BACKGROUND) { lo = 0; hi = XH_HINT_BG_MAX; }
+      if (hint & XH_HINT_BACKGROUND) { lo = 0; }
       else if (XH_HINT_FLOOR(hint) > lo) lo = XH_HINT_FLOOR(hint) > 1024 ? 1024 : XH_HINT_FLOOR(hint);
     }
     const uint32_t want = (lo | hi << 11) + 1;

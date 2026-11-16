@@ -53,11 +53,10 @@ struct xh_cpu {
 // perf_hint: bits 0-10 the utilisation clamp floor the thread asks for (0-1024), and its role from XNU's own policy
 // (thread_get_perfcontrol_class, the task's effective QoS and darwin-background state: RunningBoard's roles reach it there).
 #define XH_HINT_VALID       (1u << 16)    // the kernel wrote this word
-#define XH_HINT_BACKGROUND  (1u << 17)    // background or utility QoS, darwin background: no floor, capped at XH_HINT_BG_MAX
+#define XH_HINT_BACKGROUND  (1u << 17)    // background or utility QoS, darwin background: no floor, no ceiling of ours
 #define XH_HINT_UI          (1u << 18)    // UI, above-UI or user-initiated class (an app's main thread, its frame workers)
 #define XH_HINT_REALTIME    (1u << 19)    // a realtime thread (the render server's, audio)
 #define XH_HINT_FLOOR(h)    ((h) & 0x7ffu)
-#define XH_HINT_BG_MAX      512u          // uclamp.max of a background thread: it never holds a core at its top clock
 
 // ---- saved register frames ---------------------------------------------------------------------
 struct xh_vreg { uint64_t lo, hi; };

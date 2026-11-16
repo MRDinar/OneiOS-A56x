@@ -1142,7 +1142,8 @@ From the phone session of main 3233fed (30 s): `1021984 user stays; 684514 sysca
 - **The hosted CLPC's hint** (`hostcall.h` `perf_hint`, ABI unchanged: a reserved word of `struct xh_cpu`): before each
   user stay the kernel writes the class of the thread (`thread_get_perfcontrol_class`, darwin background from the task's
   policy): realtime, UI and above-UI floor 1024, user-initiated 768, utility and background (and darwin-background) no
-  floor and a ceiling. xnuhost's `thread_run` turns it into the uclamp of the Linux thread that runs the user code
+  floor and, since 2026-11-16, no ceiling of ours (fix-host-overhead's 512 ceiling slowed chronod's widget extensions;
+  the owner's no-caps rule ended it). xnuhost's `thread_run` turns it into the uclamp of the Linux thread that runs the user code
   (`docs/booter.md` 2.6a, 2.6b). RunningBoard's background and suspended roles reach it through the task's QoS clamp. The
   same word is the role of the submitting thread for host code on the vCPU (the GPU path, fix-gpu-perf). `perf hints N`
   counts the changes.
