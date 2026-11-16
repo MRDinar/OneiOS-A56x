@@ -37,7 +37,7 @@ PRs are in. Nothing in this section has run on the phone.
 - The two caps: **the uclamp cap is dropped** (this commit): a background or utility hinted thread gets no floor and
   no ceiling of ours (the 512 ceiling of fix-host-overhead slowed chronod's widget extensions, #57). The background
   GPU class stays as fix-gpu-widgets narrowed it.
-- `shmem_enabled=advise`: **done in the fork** (branch `shmem-advise`, PR to `oneios`): the switch captures the mode
+- `shmem_enabled=advise`: **merged** (OneOS #11, `d189691`; the fork's CI built the APK with it): the switch captures the mode
   with One UI whole and writes `advise` for the 2 MiB host pages (One UI never advises, so it changes nothing for One
   UI), the return writes the old value back before gate A and gate A failsafes if it did not; OneiosScriptTest covers
   the restore and the untouched case.
@@ -47,8 +47,15 @@ PRs are in. Nothing in this section has run on the phone.
 - The token: **pushes fire the fork's CI** (the `oneios` branch's run for `bb1ef38` ran green 2026-11-16, the
   prerelease APK built); only a hand `workflow run` dispatch is refused (HTTP 403: the PAT has no Actions: write). Add
   it only if hand dispatch is wanted.
-- **Tag `v0.1.10` is cut** (the first release job run): runtime, apk, plan green; the release job itself failed on
-  its first run (its log tells; the runtime and the tool and the APK built).
+- **Other phones: warned, not refused** (the owner, 2026-11-16): the switch's two model refusals are one warning
+  block that goes on; the app's gate warns until the confirm's third box (`oneios_not_this_phone_ack`); the setup
+  flows as usual. On the fork's branch `warn-other-phones` (`8b27d35`, its tests and docs with it): the owner opens
+  its PR and it rides the next pin.
+- **Tag `v0.1.10` is cut** (the release job's first run ever): plan, runtime, apk and apk-macos all green — the
+  runtime package, `bin/oneios-tool` (14,854,456 bytes) and the fork's APK (0.5.14, code 143, at `bb1ef38`) all
+  built; the release job itself failed and published nothing: its checksums step `cd out/release` and wrote
+  `../release-files.txt` (into `out/`), the Release step read it from the root (#65 fixed it, merged). The tag had
+  made no release, so it is deleted and made again at the fixed main, and the release comes out.
 
 The tool's README ("Downloads on a mobile network") lists what a phone run must still measure: a lookup and a
 connect on a phone without a network, and the stops. Still waiting on the phone (it is on the Mac): the real-device
