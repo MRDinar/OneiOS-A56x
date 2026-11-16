@@ -1161,14 +1161,15 @@ fn a_download_goes_on_in_a_new_process_unless_the_servers_file_changed() {
 #[test]
 fn drops_and_503s_are_tried_again_and_the_app_is_told() {
     let b = Box::new("drops");
-    let data = noise(5 << 20, 23);
+    let data = noise(3 << 20, 23);
     b.put("web/xnu.macho", &data);
     b.put("web/set.zip", &zip_of(&[("kernelcache", &data[..2 << 20])]));
-    // every body breaks off after 0.75 to 2.25 MB, and every 5th request is answered 503
-    let web = Web::with(&b.top.join("web"), None, &["--drop-every", "1500000", "--fail-every", "5"]);
+    // every body breaks off after 0.3 to 0.9 MB, and every 5th request is answered 503
+    let web = Web::with(&b.top.join("web"), None, &["--drop-every", "600000", "--fail-every", "5"]);
     let url = |name: &str| format!("http://127.0.0.1:{}/{name}", web.port);
     let mut s = Serve::start(&b, &["--jobs", "4"]);
-    // one connection: every failure is the whole request's, so each is said
+    // one connection: every failure is the whole request's, and none of its tries brought a mebibyte, so each
+    // waits the time of its count and is said
     let out = b.stage("dl/one.macho");
     s.send(json!({"id": "one", "cmd": "download", "url": url("xnu.macho"), "out": out, "sha256": sha256(&data), "connections": 1}));
     let events = s.request("one");
@@ -1177,7 +1178,7 @@ fn drops_and_503s_are_tried_again_and_the_app_is_told() {
     assert_eq!(std::fs::read(&out).unwrap(), data);
     let net = of(&events, "net");
     let (waiting, resumed): (Vec<&Value>, Vec<&Value>) = net.iter().partition(|v| v["state"] == "waiting");
-    assert!(waiting.len() >= 2 && !resumed.is_empty(), "5 MB in bodies of 2.25 MB at most: {net:#?}");
+    assert!(waiting.len() >= 3 && !resumed.is_empty(), "3 MiB in bodies of 0.9 MB at most: {net:#?}");
     assert_eq!(ok["retries"].as_u64(), Some(waiting.len() as u64), "each repeated try was said: {net:#?}");
     // a `waiting` counts from 1 after a byte came and one up after another failure; a `resumed` follows a
     // `waiting` and says its count; the last word is `resumed`
@@ -1199,21 +1200,14 @@ fn drops_and_503s_are_tried_again_and_the_app_is_told() {
         assert!((whole / 2.0 - 0.06..=whole + 0.06).contains(&next), "{v}");
         assert!(matches!(v["why"].as_str(), Some("dropped" | "server")) && v["left"].as_u64().unwrap() >= 1790, "{v}");
         assert_eq!(v["why"] == "server", v["status"] == 503, "{v}");
-        assert_eq!(v["text"].as_str().unwrap(), format!("waiting for the network (try {count}, next in {:.0} s): {}", next.max(1.0), v["error"].as_str().unwrap()), "{v}");
+        let seconds = if next < 1.0 { format!("{next:.1}") } else { format!("{next:.0}") };
+        assert_eq!(v["text"].as_str().unwrap(), format!("waiting for the network (try {count}, next in {seconds} s): {}", v["error"].as_str().unwrap()), "{v}");
     }
     assert!(resumed.iter().all(|v| v["tries"].as_u64().unwrap() >= 1 && v["waited"].as_f64().unwrap() >= 0.4 && v["text"].as_str().unwrap().starts_with("the network is back after ")), "{resumed:#?}");
     // no progress line goes back: a piece goes on from the byte it reached
     let counts: Vec<u64> = of(&events, "progress").iter().filter(|v| v["step"] == "download").map(|v| v["done"].as_u64().unwrap()).collect();
-    assert!(counts.windows(2).all(|w| w[0] <= w[1]) && counts.last() == Some(&(5 << 20)), "{counts:?}");
-    // several connections (a file of three pieces of 8 MiB), and the members of an archive (its directory is read
-    // through the same tries)
-    let big = noise(20 << 20, 25);
-    b.put("web/big.img", &big);
-    let out = b.stage("dl/big.img");
-    let ok = s.ask(json!({"id": "four", "cmd": "download", "url": url("big.img"), "out": out, "sha256": sha256(&big), "connections": 4}));
-    assert_eq!((ok["ev"].as_str(), ok["sha256"].as_str(), ok["connections"].as_u64()), (Some("ok"), Some(sha256(&big).as_str()), Some(3)), "{ok}");
-    assert!(ok["retries"].as_u64().unwrap() >= 9, "20 MiB in bodies of 2.25 MB at most: {ok}");
-    assert_eq!(std::fs::read(&out).unwrap(), big);
+    assert!(counts.windows(2).all(|w| w[0] <= w[1]) && counts.last() == Some(&(3 << 20)), "{counts:?}");
+    // the members of an archive (its directory is read through the same tries)
     let outdir = b.stage("ipsw");
     assert_eq!(s.ask(json!({"id": "ls", "cmd": "zip-ls", "source": url("set.zip")}))["members"], 1);
     let ok = s.ask(json!({"id": "zip", "cmd": "zip-get", "source": url("set.zip"), "outdir": outdir, "members": [{"member": "kernelcache"}]}));
@@ -1226,6 +1220,24 @@ fn drops_and_503s_are_tried_again_and_the_app_is_told() {
         assert_eq!(s.ask(request)["code"], "usage", "{key}");
     }
     assert_eq!(s.ask(json!({"id": "bad", "cmd": "zip-ls", "source": url("set.zip"), "connections": 2}))["code"], "usage", "zip-ls fetches no file");
+
+    // Several connections (a file of three pieces of 8 MiB) to a server whose bodies break off after 1.5 to 4.5 MB:
+    // a connection that brought a mebibyte and then broke is opened again after a short sleep, and nothing is said.
+    drop(web);
+    let web = Web::with(&b.top.join("web"), None, &["--drop-every", "3000000"]);
+    let big = noise(20 << 20, 25);
+    b.put("web/big.img", &big);
+    let out = b.stage("dl/big.img");
+    let began = Instant::now();
+    s.send(json!({"id": "four", "cmd": "download", "url": format!("http://127.0.0.1:{}/big.img", web.port), "out": out, "sha256": sha256(&big), "connections": 4}));
+    let events = s.request("four");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["sha256"].as_str(), ok["connections"].as_u64()), (Some("ok"), Some(sha256(&big).as_str()), Some(3)), "{ok}");
+    assert!(ok["retries"].as_u64().unwrap() >= 4, "20 MiB in bodies of 4.5 MB at most: {ok}");
+    assert!(of(&events, "net").is_empty(), "no connection waited for the network: {events:#?}");
+    // (0.1 to 0.2 s after each drop; the waits of the tries' row would be 0.5 s and more each)
+    assert!(began.elapsed() < Duration::from_millis(400) * ok["retries"].as_u64().unwrap() as u32 + Duration::from_secs(3), "{:?} with {ok}", began.elapsed());
+    assert_eq!(std::fs::read(&out).unwrap(), big);
     let (status, rest, stderr) = s.end(true);
     assert_eq!((status, stderr.as_str()), (0, ""));
     clean_bye(&rest, "eof");
@@ -1311,6 +1323,48 @@ fn a_server_without_ranges_is_fetched_in_one_stream() {
     assert_eq!((ok["ev"].as_str(), ok["ranges"].as_bool(), ok["connections"].as_u64(), ok["sha256"].as_str()), (Some("ok"), Some(false), Some(1), Some(sha256(&data).as_str())), "{events:#?}");
     let counts: Vec<u64> = of(&events, "progress").iter().filter(|v| v["step"] == "download").map(|v| v["done"].as_u64().unwrap()).collect();
     assert!(counts.iter().any(|done| *done < at), "the stream began again: {counts:?} after {at}");
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn the_heat_limits_hold_and_stop_a_download() {
+    let b = Box::new("download-heat");
+    let data = noise(4 << 20, 26);
+    b.put("web/xnu.macho", &data);
+    let web = Web::with(&b.top.join("web"), None, &["--rate", "1000000"]);
+    let url = format!("http://127.0.0.1:{}/xnu.macho", web.port);
+    heat(&b, "380", "330", "80", "Discharging");
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    let out = b.stage("dl/xnu.macho");
+    let request = |id: &str| json!({"id": id, "cmd": "download", "url": url, "out": out, "sha256": sha256(&data), "resume": true});
+    // the case at its pause limit while the download runs: it waits (no byte is counted), and goes on when it is cool
+    download_until(&mut s, request("d"), 300_000);
+    heat(&b, "445", "330", "80", "Discharging");
+    let paused = s.until(|v| v["ev"] == "heat").pop().unwrap();
+    assert_eq!((paused["state"].as_str(), paused["why"].as_str(), paused["id"].as_str()), (Some("paused"), Some("case"), Some("d")), "{paused}");
+    let mut held = Vec::new();
+    while let Some(line) = s.next_in(Duration::from_millis(1500)) {
+        held.push(line);
+    }
+    let counts: Vec<u64> = of(&held, "progress").iter().map(|v| v["done"].as_u64().unwrap()).collect();
+    assert!(counts.windows(2).all(|w| w[0] == w[1]) && of(&held, "net").is_empty(), "nothing arrives, and the network is not blamed: {held:#?}");
+    heat(&b, "400", "330", "80", "Discharging");
+    let events = s.until(|v| v["id"] == "d" && v["ev"] == "progress" && v["done"].as_u64().unwrap() >= 1_500_000);
+    assert_eq!(of(&events, "heat").first().map(|v| v["state"].as_str()), Some(Some("resumed")), "{events:#?}");
+    assert!(of(&events, "net").is_empty(), "the connection that went stale in the pause is opened again without a word: {events:#?}");
+    // the battery at its stop limit: the request ends with refused, heat; its part stays (the request said "resume")
+    heat(&b, "380", "505", "80", "Discharging");
+    let last = s.request("d").pop().unwrap();
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("heat")), "{last}");
+    let had: u64 = state_of(&out)["done"].as_array().unwrap().iter().map(|r| r[1].as_u64().unwrap() - r[0].as_u64().unwrap()).sum();
+    assert!(had >= 1_500_000 && !Path::new(&out).exists(), "{had}");
+    // cool again: the same request goes on from the part
+    heat(&b, "380", "330", "80", "Discharging");
+    let ok = s.ask(request("again"));
+    assert_eq!((ok["ev"].as_str(), ok["resumed_from"].as_u64(), ok["sha256"].as_str()), (Some("ok"), Some(had), Some(sha256(&data).as_str())), "{ok}");
     assert_eq!(std::fs::read(&out).unwrap(), data);
     let (status, rest, stderr) = s.end(true);
     assert_eq!((status, stderr.as_str()), (0, ""));

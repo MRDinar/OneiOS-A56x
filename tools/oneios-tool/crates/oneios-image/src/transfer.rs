@@ -66,6 +66,9 @@ const SAVE_EVERY: Duration = Duration::from_secs(3);
 /// The first wait before a new try, and the longest.
 const WAIT_FIRST: f64 = 1.0;
 const WAIT_MOST: f64 = 60.0;
+/// The wait before a connection is opened again after one that brought at least `QUICK_BYTES` and then broke.
+const WAIT_QUICK: f64 = 0.2;
+const QUICK_BYTES: u64 = 1 << 20;
 
 /// One line for the caller.
 pub type Result<T> = std::result::Result<T, String>;
@@ -97,12 +100,25 @@ pub fn take_failure() -> Option<&'static str> {
 
 /// The address families (true: IPv6) that failed to connect: tried last from then on.
 static FAILED_FAMILIES: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+/// The address of a host that connected last, and when. Every request is a new connection (the module comment),
+/// and a try is itself a connection that is opened and closed: while this is fresh the address is handed to ureq
+/// without a lookup and without a try, which is one connection per request instead of two. A request that fails
+/// forgets it (`forget_address`), so the next one looks the host up and tries its addresses again.
+static GOOD_ADDRESS: Mutex<Option<(String, SocketAddr, Instant)>> = Mutex::new(None);
+const GOOD_FOR: Duration = Duration::from_secs(30);
+
+fn forget_address() {
+    *GOOD_ADDRESS.lock().unwrap() = None;
+}
 
 /// The host's addresses, with a short try of each: the first that connects is the one ureq gets.
 struct Resolver;
 
 impl ureq::Resolver for Resolver {
     fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+        if let Some((_, addr, _)) = GOOD_ADDRESS.lock().unwrap().as_ref().filter(|(host, _, at)| host == netloc && at.elapsed() < GOOD_FOR) {
+            return Ok(vec![*addr]);
+        }
         let mut addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
         let failed = |addr: &SocketAddr| FAILED_FAMILIES.lock().unwrap().contains(&addr.is_ipv6());
         addrs.sort_by_key(failed);
@@ -111,6 +127,7 @@ impl ureq::Resolver for Resolver {
             match TcpStream::connect_timeout(addr, CONNECT_TRY) {
                 Ok(_) => {
                     FAILED_FAMILIES.lock().unwrap().retain(|family| *family != addr.is_ipv6());
+                    *GOOD_ADDRESS.lock().unwrap() = Some((netloc.to_string(), *addr, Instant::now()));
                     return Ok(vec![*addr]);
                 }
                 Err(e) => {
@@ -287,7 +304,7 @@ impl Health {
         }
         said.count = tries;
         let next = (wait.as_secs_f64() * 10.0).round() / 10.0;
-        let text = format!("waiting for the network (try {tries}, next in {:.0} s): {error}", next.max(1.0));
+        let text = format!("waiting for the network (try {tries}, next in {} s): {error}", if next < 1.0 { format!("{next:.1}") } else { format!("{next:.0}") });
         let mut fields = vec![("state", json!("waiting")), ("try", json!(tries)), ("next", json!(next)), ("left", json!(left_ms / 1000)), ("why", json!(why))];
         fields.extend(status.map(|status| ("status", json!(status))));
         fields.extend([("error", json!(error)), ("text", json!(text))]);
@@ -562,13 +579,16 @@ impl Shared {
 impl Source {
     pub fn open(spec: &str) -> Result<Source> {
         let remote = spec.starts_with("http://") || spec.starts_with("https://");
-        // (no connect timeout of ureq's own: it would start before the resolver's tries, and end the request while
-        // they run; the resolver hands over an address that has just answered)
+        // ureq's connect timeout starts before the resolver's tries and must not end the request while they run:
+        // it is three tries long (an address family that failed is tried last from then on, so the tries before
+        // the good address are few). The resolver hands over an address that has just answered, or one that
+        // answered in the last 30 s: that one may be dead by now (the phone changed its network), and this is how
+        // long its connect may hang.
         // A connection that gives no byte for the stall time is given up and tried again from the byte it reached.
         // For a request of `serve` (someone listens) that is 5 s, so that a stop of the request is seen within it.
         // No connection is kept for a second request: the module comment says why.
         let stall = if job::listening() { STALL } else { STALL_ALONE };
-        let agent = ureq::AgentBuilder::new().resolver(Resolver).user_agent(AGENT).timeout_read(stall).timeout_write(stall).max_idle_connections(0).build();
+        let agent = ureq::AgentBuilder::new().resolver(Resolver).user_agent(AGENT).timeout_connect(3 * CONNECT_TRY).timeout_read(stall).timeout_write(stall).max_idle_connections(0).build();
         let mut source = Source { spec: spec.to_string(), size: 0, etag: None, last_modified: None, remote, agent, health: Health::new(), ranges: OnceLock::new() };
         if remote {
             let answer = source.retried(|| source.call("HEAD", None)).map_err(|e| format!("{spec}: {e}"))?;
@@ -619,11 +639,17 @@ impl Source {
             *tries = 0;
             self.health.resumed();
         }
+        // The give-up clock counts the time the network gave nothing, not the time nothing was asked of it (a
+        // member's check and inflating between two requests, a pause by the heat limit): a try that follows a
+        // success, or a hold, starts it again. Tries that follow a failure do not.
+        if *tries == 0 {
+            self.health.last_byte_ms.fetch_max(now_ms(), Ordering::Relaxed);
+        }
         Ok(())
     }
 
     /// A try failed. `Ok`: try again now (the wait is over, or it was no failure); `Err`: the request ends.
-    fn failed(&self, tries: &mut u32, trouble: Trouble) -> Result<()> {
+    fn failed(&self, tries: &mut u32, trouble: Trouble, brought: u64) -> Result<()> {
         let (why, status, text, after) = match trouble {
             Trouble::Held => return Ok(()),
             Trouble::Final(text) => return Err(text),
@@ -634,6 +660,8 @@ impl Source {
             Trouble::NoRanges(status) => return Err(format!("the server ignores range requests (status {status})")),
             Trouble::Again { why, status, text, after } => (why, status, text, after),
         };
+        // (the next try looks the host up and tries its addresses: the network may be another one now)
+        forget_address();
         // (a connection that was given up because of a pause or a stop did not fail)
         if job::paused() || job::cancelled() {
             return Ok(());
@@ -645,8 +673,17 @@ impl Source {
             *FAILURE.lock().unwrap() = Some("network");
             return Err(format!("no byte arrived for {} s: gave up ({text})", idle / 1000));
         }
-        let wait = backoff(*tries).max(after.unwrap_or_default().min(Duration::from_secs_f64(WAIT_MOST))).min(Duration::from_millis(give_up - idle));
-        self.health.waiting(*tries, wait, give_up - idle, why, status, &text);
+        // A connection that worked (it brought a mebibyte or more) and then broke is opened again after a short
+        // sleep (0.1 to 0.2 s), and nothing is said: the network is there. Measured on 2026-11-15, on 127.0.0.1:
+        // 1 GiB from a server that breaks every body after about 4 MB took 204 s by one connection when each of
+        // the 269 drops waited the first time of the row below (0.5 to 1 s), and 41 s with this one. Every other
+        // failure waits the row's time.
+        let quick = *tries == 1 && brought >= QUICK_BYTES;
+        let wait = if quick { Duration::from_secs_f64(WAIT_QUICK * (0.5 + 0.5 * random())) } else { backoff(*tries) };
+        let wait = wait.max(after.unwrap_or_default().min(Duration::from_secs_f64(WAIT_MOST))).min(Duration::from_millis(give_up - idle));
+        if !quick {
+            self.health.waiting(*tries, wait, give_up - idle, why, status, &text);
+        }
         // (on the bell: a cancel ends it at once, a pause too and the gate then holds)
         job::nap(wait).map_err(|stop| stop.to_string())
     }
@@ -661,7 +698,7 @@ impl Source {
                     self.health.advance();
                     return Ok(value);
                 }
-                Err(trouble) => self.failed(&mut tries, trouble)?,
+                Err(trouble) => self.failed(&mut tries, trouble, 0)?,
             }
         }
     }
@@ -884,6 +921,8 @@ impl Source {
                     shared.dirty.store(true, Ordering::SeqCst);
                     job::recount(0);
                 }
+                // (how far the transfer was before this try: what the try brings that is new counts for its wait)
+                let began = best;
                 let fetched = self.stream(p.offset + at, p.offset + end, !ranges, &mut |block| {
                     // between blocks: the heat and battery limits of `serve`. A pause by them was waited out
                     // here, with a connection that is stale now: it is given up, which is no failure
@@ -918,7 +957,7 @@ impl Source {
                     Ok(())
                 });
                 if let Err(trouble) = fetched {
-                    if let Err(text) = self.failed(&mut tries, trouble) {
+                    if let Err(text) = self.failed(&mut tries, trouble, best.saturating_sub(began)) {
                         return shared.fail(text);
                     }
                 }

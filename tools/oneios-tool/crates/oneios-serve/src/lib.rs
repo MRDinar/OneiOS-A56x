@@ -854,8 +854,9 @@ pub fn main(cli: Cli) -> i32 {
     }
     if forced {
         // The request does not stop: its temporary files go now, its last event is said for it, and the exit
-        // below ends its threads.
-        let removed = job::remove_temps();
+        // below ends its threads. (A download that was paused keeps its part, as when it stops in time; one with
+        // "resume" has no temporary files.)
+        let removed = if job::held_at_the_end() { 0 } else { job::remove_temps() };
         if let Some(id) = running {
             shared.finish(&id, cancelled_ev(&id, "", by, removed, "did not stop in time: the process ended it"));
         }

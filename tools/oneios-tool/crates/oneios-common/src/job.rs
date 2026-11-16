@@ -899,6 +899,71 @@ mod tests {
     }
 
     #[test]
+    fn a_pause_holds_until_the_resume_and_nothing_is_counted_after_it() {
+        let _state = STATE.lock().unwrap();
+        clear_cancel();
+        set_limits(None);
+        assert_eq!(hold(), Ok(false), "not paused: no wait");
+        let progress = begin("download", "bytes", 100);
+        assert!(count_live(10, || ()));
+        let mut said = None;
+        pause(|now| said = now.map(|s| (s.step, s.done, s.total)));
+        assert_eq!(said, Some(("download".to_string(), 10, 100)), "the pause says the step's numbers");
+        assert!(paused() && !count_live(5, || panic!("nothing is listed after a pause")));
+        assert_eq!(progress.done(), 10);
+        // a thread that holds wakes at the resume, and knows that it was held
+        let waiter = std::thread::spawn(|| {
+            let began = Instant::now();
+            (hold(), began.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        let before = resumes();
+        assert!(resume(|now| assert_eq!(now.map(|s| s.done), Some(10))));
+        assert!(!resume(|_| panic!("it is not paused")));
+        let (held, took) = waiter.join().unwrap();
+        assert_eq!(held, Ok(true));
+        assert!(took >= Duration::from_millis(100) && took < Duration::from_secs(1), "the resume's bell, not a poll: {took:?}");
+        assert_eq!(resumes(), before + 1);
+        assert!(count_live(5, || ()));
+        assert_eq!(progress.done(), 15);
+        end();
+        // the end of the process stops a paused request: its hold ends, and its part is one to keep
+        pause(|now| assert_eq!(now, None, "no step counts"));
+        let waiter = std::thread::spawn(hold);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!held_at_the_end());
+        cancel_at_the_end();
+        assert_eq!(waiter.join().unwrap(), Err(Stop::Cancelled));
+        assert!(held_at_the_end() && !count_live(1, || ()));
+        clear_cancel();
+        assert!(!paused() && !ending() && !held_at_the_end());
+        // a nap ends at once at a cancel (an error) and at a pause (the caller then holds), and else when its time is over
+        for stop in [true, false] {
+            let napper = std::thread::spawn(|| {
+                let began = Instant::now();
+                (nap(Duration::from_secs(30)), began.elapsed())
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            if stop {
+                cancel();
+            } else {
+                pause(|_| ());
+            }
+            let (napped, took) = napper.join().unwrap();
+            assert_eq!(napped, if stop { Err(Stop::Cancelled) } else { Ok(()) });
+            assert!(took < Duration::from_secs(1), "{took:?}");
+            clear_cancel();
+        }
+        let began = Instant::now();
+        assert_eq!(nap(Duration::from_millis(60)), Ok(()));
+        assert!(began.elapsed() >= Duration::from_millis(60));
+        // the bell: no wait when the thing waited for is there already
+        let began = Instant::now();
+        wait_bell(Duration::from_secs(30), || true);
+        assert!(began.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
     fn a_temporary_path_goes_unless_kept() {
         let _state = STATE.lock().unwrap();
         let dir = sys("temp");

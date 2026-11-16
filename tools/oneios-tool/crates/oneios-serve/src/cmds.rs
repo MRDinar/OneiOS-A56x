@@ -318,9 +318,12 @@ fn download(rq: &Rq) -> Result<Done, Fail> {
     if let Some(parent) = Path::new(&out).parent() {
         std::fs::create_dir_all(parent).map_err(|e| io(&parent.display().to_string(), e))?;
     }
-    let guards = names.clone().map(job::temp);
+    // With "resume" the part and its state are no temporary files: whatever ends the request (also the process's
+    // end that does not wait for a thread inside a name lookup, which removes the temporary files) leaves them
+    // for the next run. Without it they go when the request ends early.
+    let guards: Vec<job::Temp> = if resume { Vec::new() } else { names.iter().map(job::temp).collect() };
     if !resume {
-        guards.iter().for_each(|g| remove(g.path()));
+        names.iter().for_each(|name| remove(Path::new(name)));
     }
     // (true: the part is not what was asked for, and is not kept whatever the request says)
     let mut wrong = false;
@@ -330,9 +333,12 @@ fn download(rq: &Rq) -> Result<Done, Fail> {
             guards.into_iter().for_each(job::Temp::keep);
             names[1..].iter().for_each(|name| remove(Path::new(name)));
         }
-        // A download that broke or was stopped keeps its part and its state for the next run when the request
-        // asked for that, or when it was paused and the process ended (the user had it on hold).
-        Err(_) if !wrong && (resume || job::held_at_the_end()) => guards.into_iter().for_each(job::Temp::keep),
+        Err(_) if wrong => {
+            drop(guards);
+            names.iter().for_each(|name| remove(Path::new(name)));
+        }
+        // (a download that was paused when the process ended: the user had it on hold)
+        Err(_) if job::held_at_the_end() => guards.into_iter().for_each(job::Temp::keep),
         Err(_) => {}
     }
     done
