@@ -43,6 +43,17 @@ PY
 ok "package, checksum, member order, manifest"
 zstd -dc "$P" | tar -tv | awk '$1 !~ /^-/ {bad=1} END {exit bad}' || fail "a member is not a regular file"
 ok "regular files only"
+# The phone's oneios-tool: in the package (0755, listed in runtime.json), and beside it with its .sha256, the same bytes.
+TA=$OUT_DIR/oneios-tool-$V-android-arm64
+[ -x "$T/x/bin/oneios-tool" ] || fail "no bin/oneios-tool in the package"
+grep -q '"path": "bin/oneios-tool"' "$T/x/runtime.json" || fail "bin/oneios-tool is not in runtime.json"
+( cd "$OUT_DIR" && "${SHA256[@]}" -c "$(basename "$TA").sha256" > /dev/null ) || fail "oneios-tool's .sha256"
+cmp -s "$TA" "$T/x/bin/oneios-tool" || fail "oneios-tool beside the package is not the package's bin/oneios-tool"
+[ "$(od -An -tx1 -N20 "$TA" | tr -d ' \n')" = 7f454c460201010000000000000000000300b700 ] || fail "oneios-tool is not an arm64 PIE"
+ok "bin/oneios-tool and $(basename "$TA") ($(wc -c < "$TA" | tr -d ' ') bytes, stripped)"
+cmp -s "$T/x/lib/profiles/ios-27.0.1-iPhone18-2.toml" "$ROOT/profiles/ios-27.0.1-iPhone18,2.toml" || fail "lib/profiles/ is not profiles/"
+grep -q '"path": "lib/profiles/ios-27.0.1-iPhone18-2.toml"' "$T/x/runtime.json" || fail "lib/profiles/ is not in runtime.json"
+ok "lib/profiles/: the IPSW profiles for the phone's fetch"
 # Its dynamic ELF files were checked against the NDK's API 30 stubs (elf-check.sh), twice: runtime/build.sh on its
 # stage, then package.sh on the package's content.
 [ "$(grep -c '^elf-check: .* 0 failures$' "$T/log")" = 2 ] || { cat "$T/log"; fail "package.sh did not run elf-check.sh twice"; }
