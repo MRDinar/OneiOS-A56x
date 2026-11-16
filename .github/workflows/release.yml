@@ -464,7 +464,7 @@ jobs:
       - name: Release (assets are added, never replaced)
         run: |
           set -euo pipefail
-          mapfile -t files < release-files.txt
+          mapfile -t files < out/release-files.txt
           flags=()
           [[ $VERSION == *-* ]] && flags+=(--prerelease)
           [ "$HAS_RUNTIME" = true ] || flags+=(--latest=false)
