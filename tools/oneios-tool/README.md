@@ -66,7 +66,11 @@ It built in 26 s on the Mac (13.9 MB stripped, a PIE for `/system/bin/linker64`)
 for Android. Run as root on the S24 Ultra, on the staged files of `/data/local/tmp/oneios` (One UI up, no session):
 `ioslog boots data/data.img` 3.1 s, `ioslog show data/data.img --boot last -o FILE` 4.0 s (540,553 entries),
 `image apfs-ls image/os.img /` 0.07 s. Not run on the phone yet: `prelink`, `remotezip`, `image apfs-copy`, the
-`package` check. Not built in CI or released yet.
+`package` check. **In the runtime package** (branch `app-oneios-tool`): `runtime/package.sh` builds it this way
+(API 30 linker, `llvm-strip --strip-all`) into `bin/oneios-tool` and beside the package as
+`oneios-tool-VERSION-android-arm64` with its `.sha256`, in CI and in the release (`docs/releases.md`, "oneios-tool for
+the phone"); the OneOS app runs that file as root, one `serve` per flow (`oneos/interface.md` section 9). On the
+4-CPU Linux PC the first Android build took 23 min with `-j 2`.
 
 With `serve` (2026-11-15, "serve" below) the same lines build on the Linux PC (NDK r28c, `linux-x86_64`, API 30;
 `rustup target add aarch64-linux-android`): **14,556,592 bytes stripped** (13.9 MB before), a PIE for
