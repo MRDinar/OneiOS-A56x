@@ -63,6 +63,11 @@ The board (`docs/agents.md`) is for coordination between agents; it is **not** a
   (`git commit -- <your paths>`), never `git add -A`; `git pull --rebase origin main` before `git push origin main`
   (if other agents' unstaged files block the rebase, fetch and rebase only when origin moved). Never commit another
   agent's hunks; leave other agents' uncommitted files alone.
+- **Forks send PRs back here.** If you forked OneiOS for another phone (or anything else), the way to land your work
+  is a pull request against `akshaynexus/OneiOS` `main`, following [CONTRIBUTING.md](CONTRIBUTING.md) (device ports:
+  its "Add a device" section). Keep device-specific code behind a backend option, a per-device profile or config, or
+  a clearly-marked opt-in — never change the S24 Ultra defaults. One tree supports many phones; a fork that drifts
+  cannot be merged later. `docs/forks.md` maps every known fork and what flowed back.
 - **Kernel builds:** use your own tree with `HOSTED_OUT=<name>`; the default tree belongs to the lead. tmux does not
   carry environment variables: pass them inside the command (`scripts/bg.sh NAME env HOSTED_OUT=x kernel/build-hosted.sh`).
   Never edit a build script while a build that runs it is going.
