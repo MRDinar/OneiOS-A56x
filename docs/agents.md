@@ -2127,3 +2127,8 @@ persistent: a reboot costs a manual re-root.
 - 2026-11-21, full S25 port merged (assistant): host profile, Adreno 830 fence-wait patch, gpu3d fence-table init,
   ssh-forward/verify-host scripts, dropbear/zsh helpers, S25 docs. Host suites green (bridges incl. SM8750 fixture,
   xnuhost 14086, drm2kgsl + 956 leak checks). Phone proof still open (verify-host.sh on SM-S938).
+
+- 2026-11-21, metal/haptics merged (assistant): metal2vulkan 0101–0103, trace tooling (env-gated), native haptics
+  impact path (opt-in, features=0 default), 0073 mac-exec triage. Verified: host suites green, kernel builds+links
+  with 0073 inside, prelink audit 0 failures, PC bench boot to SpringBoard, no panics. Guest→HAL haptics delivery
+  still needs a safety-qualified phone session (upstream).
