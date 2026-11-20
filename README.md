@@ -87,10 +87,17 @@ Hardware checks, and the iOS user-space cross toolchain with the Metal plug-in b
 (not loaded by any boot yet). Not done: the camera's iOS-side capture device, auto-brightness past Apple's light
 sensor service (it attaches to our HID device; no reading has gone through it). Never: passcode, Face ID, Wallet, calls, SMS.
 
+## Devices
+
+Primary target: the rooted Galaxy S24 Ultra (SM-S928). S25 Ultra, S26 Ultra and Galaxy A-series ports live in
+forks and land here as portable pieces; the map — which fork runs what, what was ported, what it taught `main`,
+and the one-tree-many-phones pattern — is [docs/forks.md](docs/forks.md).
+
 ## Layout
 
 ```
 docs/architecture.md  how the parts fit; docs/building.md  how to build and test; docs/*.md  each part in detail
+docs/forks.md         device forks: what runs where, what was ported back, the multi-device pattern
 profiles/             the pinned IPSW profile (iPhone18,2 iOS 27.0.1 24A446)
 scripts/fetch/        fetch only the needed IPSW members from Apple's CDN (never from here)
 scripts/image/        build the image set (MysticGSI-style manifest, SHA-256, .tar.zst)
