@@ -1287,7 +1287,10 @@ addresses are the binary's, unslid):
   thread (overdrive, minimum on-time, duty limit, watchdog). Those protected an ERM on a bare LDO; here the chip's
   DSP brakes and protects the LRA. New: each write's loud span is sent with its peak as the intensity and its
   zero-crossing rate as the frequency.
-- Messages: `OB_HAPTIC_VIB {on_ms, intensity 0..1000, frequency_hz}`, `OB_HAPTIC_STOP`.
+- Messages: `OB_HAPTIC_VIB {on_ms, intensity 0..1000, frequency_hz}`, `OB_HAPTIC_STOP`,
+  `OB_HAPTIC_IMPACT {kind 1..3}` (an explicit one-shot, never a short VIB segment; only when the host
+  advertised `OB_FEAT_HAPTIC_IMPACT` in a length-extended v1 `OB_CTL_HELLO`, else the guest sends none and an
+  old host's 8-byte hello reads as features=0).
 
 ### UI haptics: the Actuator audio device (media, 2026-11-12; built, not run on the phone)
 
@@ -1314,12 +1317,20 @@ What is built:
   latency one period (not the speaker's 6480 frames: the haptic synth keeps haptics in step with a device's
   latency). Each period goes to `oneios_haptic_actuator_play()`, not to virtio-snd. Published only when
   `drivers/haptics` has the host's actuator and UI haptics are on; `oneios-actuator=0` leaves it out.
-- **The requests** (`drivers/haptics/oneios_actuator.h`, host-tested by `drivers/haptics/test_actuator.c`, 16 checks):
+- **The requests** (`drivers/haptics/oneios_actuator.h`, host-tested by `drivers/haptics/test_actuator.c`, 19 checks):
   a period is loud above 256 of 32768; the first loud period asks 20 ms (a tap), the run renews when less than 12 ms
   is left (50 ms segments after 20 ms) or the level moves by more than 100 of 1000; a run of 30 ms or more is stopped
   after 10 ms of silence, a tap runs out. Intensity = the period's peak; frequency = the run's zero crossings with
   hysteresis, after 10 ms. A tap is one request; a long vibration about 20 a second (each is an effect upload on
   the CS40L26's I2C).
+- **Native impacts** (off by default, both sides opt in): with the guest boot argument `oneios_native_impacts=1`
+  and the host started with `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` on a HAL whose `getSupportedEffects` advertises
+  TICK, CLICK and HEAVY_CLICK, a short isolated run (under 30 ms, confirmed by 10 ms of silence) becomes one
+  `OB_HAPTIC_IMPACT` instead of 20 ms motor starts; the intensity maps to LIGHT (<=250), MEDIUM (<=800), HEAVY.
+  The host plays the matching `IVibrator.perform()` preset through the same serialized worker; a later STOP never
+  cancels an already-finished preset (its HAL-reported duration bounds `off()`), so One UI's own vibration is not
+  interrupted. Longer runs keep VIB/STOP semantics, malformed or unsupported impacts are dropped, never mapped to
+  VIB. Host-tested (`test_bridges` native-impacts case, `test_hal_binder` preset case); not run on the phone.
 - **The closed-loop node**: `oneios_haptic.c` waits (5 s at most) for the audio archive's decision
   (`oneios_haptic_actuator_published`), then publishes `/product/haptics {closed-loop 1, supports-3rd-party-haptics 1}`
   when the device exists (the old rule, an Actuator HAL plug-in in the root, stays as the second way in). Not copied

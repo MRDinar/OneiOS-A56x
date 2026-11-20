@@ -66,6 +66,24 @@ stage() {
   mkdir -p "$R/drivers" "$R/kits" "$R/.cache/gpu-reference" "$R/.cache/mesa-venv/bin" "$R/.cache/mesa-tools/bin" "$R/build"
   rsync -a --delete "$BASE/scripts/" "$R/scripts/"
   rsync -a --delete "$BASE/patches/" "$R/patches/"
+  # This project's extra metal2vulkan patches (userland/metal/patches/metal2vulkan: the Adreno-generic shader
+  # translation fixes of hakios-arm64e-dada, rebased on the pin): added after the base's own, numbered 9xxx so that
+  # they sort last. The base's build script is assumed to apply patches/metal2vulkan/*.patch in name order;
+  # `.github/workflows/gpu-patch-check.yml` checks that they apply to the pin, the build log shows if they did.
+  if ls "$HERE"/patches/metal2vulkan/*.patch >/dev/null 2>&1; then
+    mkdir -p "$R/patches/metal2vulkan"
+    for p in "$HERE"/patches/metal2vulkan/*.patch; do cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"; done
+    say "added $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx)"
+  fi
+  # Lasting debug tooling, off by default (each patch only logs when its environment variable is set:
+  # ONEIOS_VK_INIT, ONEIOS_SURFACE_TRACE): the trace patches staged beside the base's own, applied by the
+  # python below. Re-running stage is idempotent: the mesa-work copy is applied only once.
+  cp "$HERE/trace-turnip-init.patch" "$R/patches/mesa/"
+  if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/trace-turnip-init.patch" 2>/dev/null; then
+    git -C "$R/.cache/mesa-work" apply "$HERE/trace-turnip-init.patch"
+  fi
+  cp "$HERE/trace-metal-vulkan-init.patch" "$R/patches/metal2vulkan/"
+  cp "$HERE/trace-metal-surfaces.patch" "$R/patches/"
   rsync -a --delete --exclude .git "$EXT/NativeMetal/" "$R/drivers/AdrenoMetal/"
   rsync -a --delete --exclude .git "$EXT/NativeAdreno/" "$R/drivers/Adreno740/"
   rsync -a --delete --exclude .git "$EXT/NativeMobileDisplay/" "$R/drivers/GopFramebuffer/"
@@ -96,6 +114,11 @@ import json, re, sys
 from pathlib import Path
 root, hooks, jobs, knows = Path(sys.argv[1]), json.load(open(sys.argv[2])), sys.argv[3], sys.argv[4] == '1'
 
+pins = root / 'scripts/data/adreno-compiler-inputs.json'
+source = json.loads(pins.read_text())
+source['patches'].append('patches/mesa/trace-turnip-init.patch')
+pins.write_text(json.dumps(source, indent=2) + '\n')
+
 def edit(path, pairs):
     text = (root / path).read_text()
     for old, new, why in pairs:
@@ -113,10 +136,17 @@ edit('scripts/build-turnip-darwin.py', [
 ])
 edit('scripts/build-adreno-metal-bridge.py', [
     ('timeout=1800)', 'timeout=10800)', 'a longer limit for the fat-LTO Rust build'),
+    ('\n\ndef git_tree(*steps):',
+     "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\n\n\ndef git_tree(*steps):",
+     'record Vulkan initialization diagnostics in the translator patch stack'),
 ])
 edit('scripts/build-adreno-metal-plugin.py', [
     ("subprocess.run(['python3', ROOT / 'scripts/gen-turnip-replay.py'], check=True)\n", '',
      "no TurnipReplay.h: it is recorded on a Mac's host simulation, and NativeAdrenoUserTest.h includes it only when it exists"),
+    ('staged_frontend.write_text(frontend)\n',
+     'staged_frontend.write_text(frontend)\n'
+     "subprocess.run(['patch', '-s', '-F', '0', '-d', OUT, '-p1', '-i', ROOT / 'patches/trace-metal-surfaces.patch'], check=True)\n",
+     'instrument the frontend after the upstream replacements'),
 ] + ([
     ("'-Wall', '-Wextra', '-Werror',", "'-Wall', '-Wextra', '-Werror', '-Wno-error=unused-but-set-global',",
      "clang 23's -Wunused-but-set-global (gZeroRest), which Xcode's clang does not have, is not an error"),

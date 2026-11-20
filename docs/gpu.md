@@ -1017,7 +1017,7 @@ scripts/bg.sh metal userland/metal/build.sh      # stage, turnip, plugin, finish
 | Piece | Source | Notes |
 |---|---|---|
 | `libvulkan_freedreno.dylib` | `external/mesa-droidvm` cecc0e9 (Droid-VM/mesa, `droidvm`) + the 30 patches listed in Droid-VM-UniXNU `scripts/data/adreno-compiler-inputs.json` (`patches/mesa/`: `turnip-darwin-kmd`, `turnip-darwin-virtgpu`, ...) | meson cross build, `-Dvulkan-drivers=freedreno -Dfreedreno-kmds=darwin`, release. Its 5633 weak flat-namespace imports are bound to the image itself (`macho-weak-self-binds.py`) |
-| `libadreno_metal_bridge.a` | `external/metal2vulkan` 624bab3 + NativeMetal `bridge/patches` 0001-0024 (without 0020) + Droid-VM-UniXNU `patches/metal2vulkan` 0011-0038, behind `bridge/NativeMetalBridge.rs` | Rust 1.98.0, target `arm64e-apple-ios`, std built from `rust-src`, fat LTO. No `Cargo.lock` is pinned upstream: the crates are the newest that fit at build time |
+| `libadreno_metal_bridge.a` | `external/metal2vulkan` 624bab3 + NativeMetal `bridge/patches` 0001-0024 (without 0020) + Droid-VM-UniXNU `patches/metal2vulkan` 0011-0038 + this project's `userland/metal/patches/metal2vulkan/` 0101-0103 (staged as 9xxx so they sort last: the Adreno-generic shader-translation fixes of hakios-arm64e-dada; `0104…NEEDS-REBASE` stays out, and the Mesa/nativemetal sets stay out as the wrong tree), behind `bridge/NativeMetalBridge.rs` | Rust 1.98.0, target `arm64e-apple-ios`, std built from `rust-src`, fat LTO. No `Cargo.lock` is pinned upstream: the crates are the newest that fit at build time |
 | `NativeAdrenoMetal` | `external/NativeMetal` b0d6a07 (`NativeAdrenoMetalPlugin.mm`, `NativeBridgeMetalFrontend.mm`), `external/AdrenoPM4`, the bridge | The Rust objects' callback imports go through `RustPacBoundary.c`; their indirect branches through its trampolines (`rust-pac-rewrite.py`) |
 
 The steps are the kernel base's own scripts (`build-turnip-darwin.py`, `build-adreno-metal-bridge.py`,
@@ -1047,6 +1047,12 @@ framebuffer is `RGhA` half floats and the display path keeps them whole
 (`kernel/patches/oneios-hosted/display/README.md`, "Colour, depth and the panel"). iOS's log then has `OneiOS display:
 half-float framebuffer asked (...)`. The headroom, threshold and virtualized overrides below stay as they are. Not
 built or compiled yet (the plug-in builds on the Mac).
+
+**Lasting debug tooling, off by default** (`stage`): `userland/metal/trace-turnip-init.patch` (into
+`patches/mesa/` and the staged mesa-work tree, and appended to `adreno-compiler-inputs.json`),
+`trace-metal-vulkan-init.patch` (into `patches/metal2vulkan/`), and `trace-metal-surfaces.patch` (into `patches/`,
+applied to the staged frontend after the upstream replacements). Each only logs when its environment variable is
+set (`ONEIOS_VK_INIT`, `ONEIOS_SURFACE_TRACE`), so a normal build is unchanged.
 
 **The shared cache addresses.** Upstream's plug-in writes QuartzCore's options at fixed addresses of the iPad17,3
 24A446 cache, relative to `CARenderServerStart`. They were re-found in this guest's cache
