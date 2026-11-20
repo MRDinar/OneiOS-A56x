@@ -44,6 +44,11 @@ $(A)/oneios-display.dex: java/OneiOSDisplay.java
 $(H)/test_display: tests/test_display.c src/xhd.c $(XHD_H)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_display.c src/xhd.c -lpthread -lm -o $@
+# Bounded frame-timing statistics (src/frame_perf.c): host unit tests only for
+# now; the helper-side log wiring is still open (fork's frame-pacing work).
+$(H)/test_frame_perf: tests/test_frame_perf.c src/frame_perf.c src/frame_perf.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Isrc -fsanitize=address,undefined tests/test_frame_perf.c src/frame_perf.c -lm -o $@
 $(H)/displayctl: src/displayctl.c src/xhd.c $(XHD_H)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) src/displayctl.c src/xhd.c -lm -o $@
@@ -53,8 +58,9 @@ $(H)/modes/TestModes.class: tests/TestModes.java java/OneiOSDisplay.java
 	@mkdir -p $(H)/modes
 	$(JAVAC) --release 11 -Xlint:all -Werror -d $(H)/modes java/OneiOSDisplay.java tests/TestModes.java
 
-test: $(H)/test_display $(H)/displayctl $(H)/modes/TestModes.class
+test: $(H)/test_display $(H)/test_frame_perf $(H)/displayctl $(H)/modes/TestModes.class
 	$(H)/test_display $(H)/displayctl
+	$(H)/test_frame_perf
 	$(JAVA) -cp $(H)/modes TestModes
 
 clean:

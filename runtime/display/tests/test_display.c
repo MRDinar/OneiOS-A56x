@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 static int checks, failed;
-static int as_helper(const char *session);
+static int as_helper(const char *socket_path);
 #define CHECK(c) do { checks++; if (!(c)) { failed++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
 
 static void test_fit(void)
@@ -406,7 +406,7 @@ static void test_protocol(const char *dir)
   unlink(s.path);
 }
 
-// displayctl with a stand-in for the helper: a shell script that takes the session, and leaves.
+// displayctl with a stand-in for the helper: a shell script that takes the socket path, and leaves.
 static const char *self_path;
 static void test_displayctl(const char *displayctl, const char *dir)
 {

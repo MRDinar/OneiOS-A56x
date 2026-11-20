@@ -31,6 +31,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->gpu, "auto");
   c->input = true;
   c->display_direct = -1;
+  c->touch_exclusive = false;  // bench-only touchscreen grab; never on in takeover
   c->touch_sleep = true;
   c->tasks = true;
   c->task_uid = -1;
@@ -151,6 +152,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   }
   else if (!strcmp(key, "input")) return flag(value, &c->input);
   else if (!strcmp(key, "display-direct")) { bool on; if (flag(value, &on)) return -1; c->display_direct = on; }
+  else if (!strcmp(key, "touch-exclusive")) return flag(value, &c->touch_exclusive);
   else if (!strcmp(key, "input-script")) return copy(c->input_script, sizeof c->input_script, value);
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
@@ -226,7 +228,7 @@ static void usage(void)
         "               [--boot-args TEXT] [--display shm|drm|none] [--gpu auto|3d|2d] [--width W --height H]\n"
         "               [--hz N] [--scale 2|3] [--display-format bgrx|rgba16f]\n"
         "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
-        "               [--no-input] [--input-script FILE] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
+        "               [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
 }
@@ -282,6 +284,13 @@ int xh_config_finish(xh_config *c)
   if (strcmp(c->display, "shm") && strcmp(c->display, "drm") && strcmp(c->display, "none")) { fprintf(stderr, "xnuhost: display %s is not supported\n", c->display); return -1; }
   // The host bridges change the phone's state (a tap, routing rules, the motor): on in a session.
   if (c->bridges < 0) c->bridges = !strcmp(c->mode, "takeover");
+  // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
+  // Never let an input-grabbing guest take control of Android outside a SHM bench.
+  if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+                            !c->input || c->bridges)) {
+    fprintf(stderr, "xnuhost: touch-exclusive=1 requires mode=bench, display=shm, input=1, bridges=0\n");
+    return -1;
+  }
   if (c->selftest) return 0;
   if (!*c->image) { fprintf(stderr, "xnuhost: --image DIR is required\n"); return -1; }
   // The image set may carry settings of its own; the command line was applied first and a setting
