@@ -203,6 +203,18 @@ parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
 	   --display none --no-input --width 64 --height 64 --boot-args testkernel-parallel$(PAR_SCALE:%==%) $(PAR_SET) 2>&1 | \
 	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
 
+# The Mach RPC round trip (docs/booter.md 2.6d, fix-mach-rpc): a client task's thread on vCPU 0 and a server task's on
+# vCPU 1 trade a request and a reply as a synchronous Mach message does under the hosted XNU (two user stays, two IPIs, two
+# wakes of an idle vCPU, two interrupts), once per interrupt path: RPC_MODES 0 (ArmCpu's trapped GIC registers and
+# stores, the kernel before hosted 0076), 1 (host calls: 0076), 2 (one vCPU, no IPI: the floor). Each mode is its own
+# run, so xnuhost's perf report and `emulated:` lines at the stop are that mode's. RPC_SET="--set cpu-pin=2" pins.
+RPC_MODES ?= 0 1 2
+rpc-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
+	@for m in $(RPC_MODES); do rm -f $(A)/testdata/data.img; \
+	  timeout 120 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 2 --ram 256M --set ram-giveback=1 \
+	   --display none --no-input --width 64 --height 64 --boot-args "testkernel-rpc$(RPC_SCALE:%==%) testkernel-rpc-mode=$$m" $(RPC_SET) 2>&1 | \
+	   grep -E 'RPC|BENCH|perf: [0-9.]+ s since|perf:   (up|down|queue|release)|emulated: insn|TESTKERNEL: (all|FAIL)'; done
+
 # The tests create devices and never free them: leak detection off, the other checks on.
 test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost
@@ -214,4 +226,4 @@ test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_
 
 clean:
 	rm -rf build
-.PHONY: all test check-arm64 bench-arm64 parallel-arm64 clean
+.PHONY: all test check-arm64 bench-arm64 parallel-arm64 rpc-arm64 clean

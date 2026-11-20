@@ -425,6 +425,7 @@ void     xh_gic_set_spi(unsigned intid, bool level);          // device line
 void     xh_gic_set_ppi(unsigned cpu, unsigned intid, bool level);
 void     xh_gic_send_sgi(unsigned cpu, unsigned sgi);
 uint32_t xh_gic_ack(unsigned cpu);
+uint32_t xh_gic_take(unsigned cpu);                         // irq_take: the timer, SGIs, IPI SPIs only
 void     xh_gic_eoi(unsigned cpu, uint32_t intid);
 void     xh_gic_enable(unsigned cpu, uint32_t intid, bool enable);
 bool     xh_gic_pending(unsigned cpu);
@@ -469,6 +470,8 @@ typedef struct {
   uint64_t ops_joined;                    // task_map/task_unmap calls joined to the queue's last entry (stub_abi.h xs_queue_join)
   uint64_t uclamp_sets;                   // sched_setattr calls that gave an iOS thread its vCPU's uclamp.min (task.c)
   uint64_t kicks, kicks_skipped;          // raises of another vCPU's line that signalled or woke it; those it had up already
+  uint64_t places, prep_ticks;            // fix-mach-rpc: sched_setaffinity calls that put an iOS thread with its vCPU (thread_run),
+                                          // and the ticks thread_run spent before the release (placement, uclamp, the queue)
   // thread_run's bookkeeping between two calls
   uint64_t ret_at, ret_idle;
   uint32_t ret_kind;

@@ -57,6 +57,13 @@ uint32_t xh_impl_irq_ack(struct xh_cpu *cpu)
   return id;
 }
 
+uint32_t xh_impl_irq_take(struct xh_cpu *cpu)
+{
+  uint32_t id = xh_gic_take(cpu->index);
+  if (!(id & XH_INTID_UNTAKEN)) xh_cpu_line(cpu->index, false);  // recomputed: more may be pending
+  return id;
+}
+
 void xh_impl_irq_eoi(struct xh_cpu *cpu, uint32_t intid) { xh_gic_eoi(cpu->index, intid); xh_cpu_line(cpu->index, false); }
 void xh_impl_irq_enable(struct xh_cpu *cpu, uint32_t intid, uint32_t enable) { xh_gic_enable(cpu->index, intid, enable != 0); xh_cpu_line(cpu->index, false); }
 void xh_impl_ipi(struct xh_cpu *cpu, uint32_t target, uint32_t sgi) { (void)cpu; xh_gic_send_sgi(target, sgi); }
@@ -132,6 +139,7 @@ THUNK(irq_ack) THUNK(irq_eoi) THUNK(irq_enable) THUNK(ipi) THUNK(timer_set) THUN
 THUNK(mmio_read) THUNK(mmio_write) THUNK(ram_discard) THUNK(text_fixup) THUNK(task_create) THUNK(task_destroy)
 THUNK(task_map) THUNK(task_unmap) THUNK(task_protect) THUNK(task_read) THUNK(task_write) THUNK(thread_create)
 THUNK(thread_destroy) THUNK(thread_run) THUNK(thread_set_pac) THUNK(kernel_map) THUNK(kernel_unmap) THUNK(mmio_emulate)
+THUNK(irq_take)
 
 const struct xh_vector *xh_vector(void)
 {
@@ -145,6 +153,7 @@ const struct xh_vector *xh_vector(void)
   SET(mmio_read); SET(mmio_write); SET(ram_discard); SET(text_fixup); SET(task_create); SET(task_destroy);
   SET(task_map); SET(task_unmap); SET(task_protect); SET(task_read); SET(task_write); SET(thread_create);
   SET(thread_destroy); SET(thread_run); SET(thread_set_pac); SET(kernel_map); SET(kernel_unmap); SET(mmio_emulate);
+  SET(irq_take);
   return &v;
 }
 

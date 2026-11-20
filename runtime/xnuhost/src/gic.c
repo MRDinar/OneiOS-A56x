@@ -144,6 +144,22 @@ uint32_t xh_gic_ack(unsigned cpu)
   return id;
 }
 
+// irq_take (hostcall.h): xh_gic_ack for the timer, an SGI or a software-IPI SPI; any other INTID stays pending and is
+// returned with XH_INTID_UNTAKEN, for the kernel's controller driver to take by ICC_IAR1_EL1 (fix-mach-rpc).
+uint32_t xh_gic_take(unsigned cpu)
+{
+  pthread_mutex_lock(&g.lock);
+  uint32_t id = best(cpu);
+  bool mine = id == XH_INTID_VTIMER || id < XH_SGI_COUNT || (id >= XH_IPI_SPI_FIRST && id < XH_IPI_SPI_FIRST + XH_IPI_SPI_COUNT);
+  if (id != XH_INTID_NONE && !mine) {
+    pthread_mutex_unlock(&g.lock);
+    return id | XH_INTID_UNTAKEN;
+  }
+  id = xh_gic_ack(cpu);                         // the lock is recursive: the same choice, now acknowledged
+  pthread_mutex_unlock(&g.lock);
+  return id;
+}
+
 void xh_gic_eoi(unsigned cpu, uint32_t intid)
 {
   pthread_mutex_lock(&g.lock);

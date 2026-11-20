@@ -277,6 +277,16 @@
 # waits for the first completed shared region; the phone boots, newfs_apfs succeeds and session/ready arrives. The
 # pmap entries-kept path works; the shared-region no-op count was still 0, so that optimization and typing A/B stay open.
 0080-shared-region-protect.patch
+# fix-mach-rpc (2026-11-15): interrupts and IPIs by host call. ArmCpu sent each IPI as a store to GICD_ISPENDR and took
+# each interrupt with ICC_IAR1_EL1, a GICD_ICPENDR store, ICC_EOIR1_EL1 and ICC_IAR1_EL1 again: under xnuhost every one a
+# trapped instruction (a signal round trip on the vCPU's thread), ten per Mach RPC between two processes (two IPIs to idle
+# vCPUs) and three per timer interrupt. Now cpu_signal_internal sends with the `ipi` host call and sleh_irq takes the
+# timer and IPIs with xnuhost's new `irq_take` and `irq_eoi` (a device's interrupt still goes to ArmCpu's handler);
+# oneios-fast-irq=0 is ArmCpu's way, =2 the two in turn by oneios-perf period (an A/B in one boot). oneios-perf gains
+# four lines: `rpc:` (Mach RPCs, mach_msg send + receive: count, round-trip mean and maximum, bands), `wake:` (a thread
+# woken by an IPI: made runnable -> IPI sent -> taken -> running), `0081:` (interrupts and IPIs by path, the mean time of
+# a dispatch) and `syscalls:` (calls back to their own thread against calls that blocked). README.md, "0081".
+0081-irq-host-calls-rpc-stats.patch
 # fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush

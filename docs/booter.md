@@ -571,7 +571,7 @@ and does the same swap. So the kernel may keep its current-thread pointer in `TP
 Apple's kexts' inlined `mrs xN, TPIDR_EL1` be rewritten to `mrs xN, TPIDR_EL0` in place at prelink.
 
 The contract is one header, `runtime/xnuhost/include/xnuhost/hostcall.h` (freestanding C, ABI 1): entry
-registers, `struct xh_cpu`, `struct xh_vector` (31 calls; additions are appended and `vector->size` says which exist), `struct xh_upcalls`, `struct xh_info`, frames
+registers, `struct xh_cpu`, `struct xh_vector` (32 calls; additions are appended and `vector->size` says which exist; the 32nd, `irq_take`, since fix-mach-rpc 2026-11-15), `struct xh_upcalls`, `struct xh_info`, frames
 and traps.
 
 ### 2.4 Interrupts and the timer
@@ -592,7 +592,9 @@ and traps.
 - The timer is CNTVCT_EL0 (the kernel and iOS tasks read it directly; `/cpus` timebase = CNTFRQ_EL0) with a
   per-CPU POSIX timer (`SIGEV_THREAD_ID`) for the deadline; its line is INTID 27, a level, as ArmCpu takes it.
 - The controller is a GICv3 model (`gic.c`): distributor and redistributor frames by trapped MMIO, the CPU
-  interface by trapped `ICC_*` registers, or the `irq_ack/irq_eoi/irq_enable/ipi` host calls.
+  interface by trapped `ICC_*` registers, or the `irq_ack/irq_take/irq_eoi/irq_enable/ipi` host calls (the hosted
+  kernel uses `ipi`, `irq_take` and `irq_eoi` for IPIs and the timer since hosted 0081; ArmCpu's trapped registers for
+  devices' interrupts: 2.6d).
 
 ### 2.5 What is emulated from traps
 
@@ -994,6 +996,73 @@ and the PC cannot show more than its 4 cores; the phone's run (below) is the mea
    - `display: ... flushes` and the frame times of `oneios-gpu-report` while scrolling and typing.
 4. The trace (`ui.perfetto.dev`): the CPU each `xnu-cpuN` and iOS thread ran on, the clocks of cpu7 (up to 3.39 GHz with
    boost on) and of the A720s while scrolling.
+
+### 2.6d A Mach RPC round trip, and the interrupt path (fix-mach-rpc, 2026-11-15)
+
+**What a round trip is under xnuhost.** A synchronous XPC message (`_xpc_connection_send_message_with_reply_sync`) is one
+`mach_msg2` trap that sends and then receives the reply. XNU's `ipc_mqueue_post` makes the server's thread, blocked in its
+own receive, runnable with `thread_go`; `thread_setrun` puts it on an idle processor and sends that CPU an IPI
+(`sched_ipi_perform` -> `cpu_signal_internal`); the client then blocks in its receive and its vCPU idles. XNU never hands
+the CPU straight to the receiver for Mach messages (only semaphores and eventlinks use `thread_handoff`). So one round trip
+is: the client's user stay (svc, up hand-off), the kernel's send, an IPI, the server's vCPU woken from `cpu_idle` (a futex
+wake of its thread), the interrupt taken there, the switch to the server thread and its release (down hand-off); the
+server's work; then the same back. Two user stays (four hand-offs), two IPIs, two wakes of an idle vCPU, two interrupts.
+
+**Where it spent its time that was ours.** The hosted kernel drove the interrupt controller through ArmCpu
+(`external/Droid-VM-UniXNU/drivers/ArmCpu/ArmCpu.cpp`): `signalCPU` -> `spiIpiSend` is a store to GICD_ISPENDR (with
+`armcpu-spi-ipi=1`), and `ArmCpu::interrupt` takes each interrupt with `mrs ICC_IAR1_EL1`, a store to GICD_ICPENDR (for an
+IPI SPI), `msr ICC_EOIR1_EL1`, and `mrs ICC_IAR1_EL1` again to see 1023. At EL0 each is a trapped instruction: a SIGSEGV or
+SIGILL on the vCPU's thread, `xh_mmio_emulate` or `xh_sysreg_emulate` under the GIC's lock (a distributor store
+recomputes all eight CPUs' lines, `gic.c` `dist_write` -> `update()`), and the signal return. Five signals per IPI, ten per
+round trip, and three per timer interrupt. A PC boot (fix-host-overhead's `run-fpr/off`, 2,400 s) emulated `ICC_IAR1_EL1`
+2,293,015 times and `ICC_EOIR1_EL1` 1,171,059 times: more than every other trapped instruction together.
+
+**The fix (hosted 0081 and xnuhost's `irq_take`).** The kernel sends IPIs with the `ipi` host call (SGI 0, which ArmCpu also
+takes as an IPI) and takes the timer and IPIs with a new host call, `irq_take` (`hostcall.h`, appended: it acknowledges only
+the timer, an SGI or an IPI SPI; a device's interrupt comes back with `XH_INTID_UNTAKEN` and stays pending, for ArmCpu's own
+path), then `irq_eoi`: function calls instead of signals. `oneios-fast-irq=0` is the old path, `=2` the two in turn by `oneios-perf` period. The lasting lines it adds to
+each `oneios-perf:` period (kernel/patches/oneios-hosted/README.md, "0081"):
+
+```text
+oneios-perf:   rpc: N Mach RPCs (mach_msg send + receive), round trip mean X us, max Y us; under 100 us A, 100 us-1 ms B, 1-10 ms C, over 10 ms D (R per s)
+oneios-perf:   wake: N threads woken by an IPI: made runnable -> IPI sent S us, -> interrupt taken T us, -> running U us (means), W us in all (max M us); other dispatches O, mean wait Q us
+oneios-perf:   0081: interrupts by host call N (timer T, IPI I; X us a dispatch), by ArmCpu's trapped registers D (Y us a dispatch); IPIs sent by host call H, by ArmCpu A (oneios-fast-irq=1)
+oneios-perf:   syscalls: N back to their own thread, X us each (the call's own kernel work); M blocked, Y us each to the vCPU's next user entry or idle (the switch, the next thread's way back)
+```
+
+The `rpc:` round trip includes the server's own work (a slow wifid shows as a long tail, not as a slow trap path); `wake:`
+splits the wait of a thread an IPI woke at the IPI; `syscalls:` splits 0041's per-call mean (which runs to the vCPU's next user
+entry) into calls that came back to their own thread and calls that blocked. xnuhost's `perf:   release:` line (new) counts
+the `sched_setaffinity` calls that put an iOS thread with another vCPU's core and the host's work in `thread_run` before
+each release (placement, uclamp, the deferred queue): time the `down` line does not include.
+
+**The bench** (`make -C runtime/xnuhost rpc-arm64`, the test kernel's `testkernel-rpc`, docs/building.md section 4): a client
+task's thread on vCPU 0 and a server task's on vCPU 1 trade a request and a reply as above, 4,000 round trips per mode:
+mode 0 = ArmCpu's trapped registers and GICD stores, mode 1 = the host calls of 0081, mode 2 = both threads on one vCPU, no
+IPI (the floor: what a direct hand-off of the CPU would cost). On the x86_64 PC under qemu-aarch64 (times are qemu's, about
+ten times the phone's; the box had a load of 30-42 from other agents' builds and boots throughout), two rounds, us:
+
+| | round trip p50 | mean | IPI sent -> the idle vCPU out of `cpu_idle`, p50 | 4,000 round trips |
+|---|---|---|---|---|
+| mode 0, ArmCpu's way (before) | 485 / 672 | 2,167 / 1,742 | 21.0 / 21.0 | 8.7 / 7.0 s |
+| mode 1, host calls (0081) | 184 / 144 | 1,323 / 1,210 | 7.9 / 7.9 | 5.3 / 4.9 s |
+| mode 2, one vCPU, no IPI | 52 / 52 | 485 / 569 | - | 2.0 / 2.3 s |
+
+xnuhost's stop report for mode 0: `emulated: insn 0xd538cc08 16000 times` (ICC_IAR1_EL1) and `0xd518cc28 8000 times`
+(ICC_EOIR1_EL1) for 8,000 interrupts, plus the 8,000 GICD_ISPENDR and 8,000 GICD_ICPENDR stores; mode 1: none. Both modes:
+one futex sleep per hand-off on each side (`futex sleeps: vCPU ~7,900, iOS thread ~8,000 of 8,001 hand-offs`), the host's
+work before each release 1.2-2.0 us. So on this box the host calls take the round trip's p50 to about a third, and what is
+left over the floor is the two wakes of an idle vCPU (a futex wake of a sleeping thread on another core, and its way out).
+
+**What one system call costs, and where** (`make bench-arm64`, the same PC and load, p50): the null system call 24.0 us
+kernel to kernel, of it svc -> the kernel has the trap 11.0 us (seccomp's or, under qemu, the marked instruction's signal,
+the stub's register copy, the store and the vCPU's futex wake) and the release -> user code 12.0 us (the store, the futex
+wake of the iOS thread, its way out of the futex and the signal return); each side sleeps in a futex every time (`futex
+sleeps` = hand-offs). The phone's 36-37 us per call in `oneios-perf:` is not this: it is the kernel's own time after the
+trap up to the vCPU's next user entry (0041), which for a call that blocks includes the switch and the next thread's way
+back; the new `syscalls:` line says how much of it is which. On the phone (2026-11-12) each hand-off was 10-12 us at p50
+(2.6a). Not measured on the phone yet: the same bench there (the command lines of 2.6c step 2 with `testkernel-rpc
+testkernel-rpc-mode=0|1|2`).
 
 ### 2.7 Devices
 

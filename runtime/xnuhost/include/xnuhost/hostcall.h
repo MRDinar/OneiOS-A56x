@@ -120,6 +120,11 @@ struct xh_trap {
 #define XH_INTID_NONE   1023u
 #define XH_INTID_VTIMER 27u      // per-CPU virtual timer (PPI), as ArmCpu takes it
 #define XH_SGI_COUNT    16u
+#define XH_IPI_SPI_FIRST 1008u   // ArmCpu's software IPIs (armcpu-spi-ipi=1): SPI 1008 + core
+#define XH_IPI_SPI_COUNT 8u
+// irq_take (appended to the vector) sets this bit in the INTID it returns when it did not acknowledge it: a device
+// interrupt, which stays pending for the controller driver's own ICC_IAR1_EL1 path.
+#define XH_INTID_UNTAKEN 0x80000000u
 
 // ---- halt reasons -------------------------------------------------------------------------------
 #define XH_HALT_OFF      0u      // guest shut down: xnuhost exits 0
@@ -242,6 +247,15 @@ struct xh_vector {
   // aperture or pc is not kernel text; -ENOTSUP: not a load or store the host emulates (SIMD,
   // exclusive, atomics): the frame is unchanged. May be called with interrupts masked.
   int64_t  (*mmio_emulate)(struct xh_cpu *, struct xh_frame *frame, uint64_t phys);
+
+  // Appended (check vector->size; fix-mach-rpc, 2026-11-15). The interrupt path of a kernel whose controller driver
+  // reads ICC_IAR1_EL1 and writes ICC_EOIR1_EL1 (ArmCpu): each is a trapped instruction, a signal round trip on the
+  // vCPU's thread, three per interrupt and a fourth (GICD_ICPENDR) per software-IPI SPI. irq_take is irq_ack for the
+  // interrupts the kernel handles itself: the highest pending INTID of the calling CPU, acknowledged (active) and
+  // returned when it is the timer (XH_INTID_VTIMER), an SGI or a software-IPI SPI (XH_IPI_SPI_FIRST + n);
+  // another (a device's SPI) is returned with XH_INTID_UNTAKEN set and left pending, for the driver; XH_INTID_NONE
+  // when nothing is pending. End a taken one with irq_eoi. Call masked.
+  uint32_t (*irq_take)(struct xh_cpu *);
 };
 #define XH_PAC_ALL 0xfu          // APIA, APIB, APDA, APDB
 

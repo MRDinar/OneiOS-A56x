@@ -878,7 +878,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   const uint8_t epoch = (uint8_t)__atomic_load_n(&xh_cpu_place_epoch, __ATOMIC_ACQUIRE);
   if (xh_cpu_place && (th->placed != v->cpu.index + 1 || th->epoch != epoch)) {
     uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
-    if (tid) { xh_cpu_place((int)tid, v->cpu.index); th->placed = (uint8_t)(v->cpu.index + 1); th->epoch = epoch; }
+    if (tid) { xh_cpu_place((int)tid, v->cpu.index); th->placed = (uint8_t)(v->cpu.index + 1); th->epoch = epoch; p->places++; }
   }
   // Its vCPU's clamp (xnuhost.h xh_cpu_uclamp): the host's governor picks a core's clock from what runs there, and what
   // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.
@@ -929,6 +929,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   tp->spin_ticks = T.spin_task;
   __atomic_store_n(&tp->to_host, 0, __ATOMIC_RELEASE);
   uint64_t released = xh_counter();
+  p->prep_ticks += released - entered;         // placement, uclamp, the queue: host work of the release, before the hand-off
   th->released_at = released;
   // stub_abi.h: store, then wake only a sleeper.
   __atomic_store_n(&tp->to_task, 1, __ATOMIC_RELEASE);
