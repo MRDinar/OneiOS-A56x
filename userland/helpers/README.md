@@ -26,3 +26,6 @@ Not built here. Two sources that fit, both signed for the same trust path:
 Copy `dropbear` (and the shell it logs into) into the helpers output directory before `roottweak apply`:
 `services.d/dropbear.conf` starts it on port 2222 (`-R`: host keys made at first use) when the binary is there.
 Keys go in `/private/var/root/.ssh/authorized_keys`, which the image build may add to the Data tree.
+In-tree builders for both (macOS + iOS SDK + network; arm64e, signed, 4 KiB pages): `build-dropbear.sh [OUT_DIR]`
+(dropbear 2022.83, pubkey-only, fixed shell and authorized-keys path) and `build-zsh.sh [OUT_DIR]` (the login
+shell). OUT defaults to `out/userland/helpers` (git-ignored).

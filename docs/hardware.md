@@ -2926,5 +2926,7 @@ shallow clone of the 748 KiB devicetrees repository; nothing of them is in this 
 
 The second target; the facts, what changed for it and what is unknown are in [s25.md](s25.md). Ported here so far:
 the CPU topology rule (`runtime/bridges/cpu/topology.c`: a Qualcomm core, MIDR implementer 0x51, is never E, and a
-host whose cores are all P but of different speeds lends its slowest cores to the guest as E vCPUs) and the
-read-only phone probe (`tools/probe/s25-probe.sh`). The S24 Ultra sections above stay as they were.
+host whose cores are all P but of different speeds lends its slowest cores to the guest as E vCPUs), the
+read-only phone probe (`tools/probe/s25-probe.sh`), and — for the S25 Ultra (SM-S938, pa3q) — the Adreno 830 fence
+default (`0007-a830`), `virgl_fence_table_init`, the host profile, `scripts/port/verify-host.sh`,
+`scripts/phone/ssh-forward.sh` and the guest shell builders ([s25.md](s25.md), "Galaxy S25 Ultra"). The S24 Ultra sections above stay as they were.
