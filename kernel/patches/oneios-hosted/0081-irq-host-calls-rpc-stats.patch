@@ -239,8 +239,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 index 7312da9..eaae45d 100644
 --- a/osfmk/arm64/hosted/hosted_user.c
 +++ b/osfmk/arm64/hosted/hosted_user.c
-@@ -303,8 +303,9 @@ hosted_perf_sum(struct hosted_perf_counts *out)
- }
+@@ -303,8 +303,9 @@ hosted_top_note_unnest(vm_map_t map)
  static struct {
  	uint64_t at;
 +	thread_t who;                   /* 0081: the thread that trapped */
@@ -248,8 +247,9 @@ index 7312da9..eaae45d 100644
  	struct hosted_top_slot *slot;           /* 0080 */
  	int32_t pid;
  } hosted_perf_open[HOSTED_PERF_CPUS];
- static uint32_t hosted_perf_every = 30;
-@@ -322,8 +322,9 @@ hosted_perf_trap(uint32_t kind, uint32_t number)
+ 
+ static inline uint64_t
+@@ -322,8 +323,9 @@ hosted_perf_trap(uint32_t kind, uint32_t number)
  		hosted_perf_open[cpu].at = hosted_perf_now();
  		hosted_perf_open[cpu].kind = kind;
  		hosted_perf_open[cpu].number = number;
@@ -259,8 +259,7 @@ index 7312da9..eaae45d 100644
  		hosted_perf_open[cpu].pid = s != NULL ? s->pid : 0;
  	}
  }
-
-@@ -171,6 +173,17 @@ hosted_perf_enter_user(void)
+@@ -338,6 +340,17 @@ hosted_perf_enter_user(void)
  	}
  	uint64_t ticks = hosted_perf_now() - hosted_perf_open[cpu].at;
  	uint32_t kind = hosted_perf_open[cpu].kind, number = hosted_perf_open[cpu].number;
@@ -278,7 +277,7 @@ index 7312da9..eaae45d 100644
  	hosted_perf_open[cpu].at = 0;
  	os_atomic_inc(&hosted_perf.kind_n[kind], relaxed);
  	os_atomic_add(&hosted_perf.kind_t[kind], ticks, relaxed);
-@@ -205,6 +218,73 @@ hosted_perf_syscall(const arm_saved_state64_t *ss)
+@@ -385,6 +398,73 @@ hosted_perf_syscall(const arm_saved_state64_t *ss)
  	}
  }
  
@@ -352,7 +351,7 @@ index 7312da9..eaae45d 100644
  /* ---- the thread's Linux twin ------------------------------------------------------------------ */
  
  /*
-@@ -225,6 +305,7 @@ hosted_twin_drop(thread_t thread)
+@@ -405,6 +485,7 @@ hosted_twin_drop(thread_t thread)
  	thread->machine.hosted_pmap = NULL;
  	thread->machine.hosted_pac = 0;
  	thread->machine.hosted_refill = 0;
@@ -360,7 +359,7 @@ index 7312da9..eaae45d 100644
  	if (twin != 0) {
  		uint32_t old = hosted_irq_mask();
  		(void)HC(thread_destroy, twin - 1);
-@@ -718,6 +799,9 @@ hosted_user_loop(void)
+@@ -897,6 +978,9 @@ hosted_user_loop(void)
  		    (ARM_MACHINE_THREAD_PRESERVE_X18_SAVE | ARM_MACHINE_THREAD_PRESERVE_X18_INITIAL)) != 0;
  		hosted_perf_enter_user();               /* 0041 */
  		hosted_perf_hint(thread);               /* 0075 */
@@ -370,7 +369,7 @@ index 7312da9..eaae45d 100644
  		int64_t rc = hosted_user_enter(twin, context, thread->machine.cthread_self, keep_x18, &trap);
  #if PRECISE_USER_KERNEL_TIME
  		recount_leave_user();
-@@ -773,6 +857,7 @@ hosted_user_loop(void)
+@@ -957,6 +1041,7 @@ hosted_user_loop(void)
  		case XH_TRAP_SYSCALL:
  			hosted_user_stats.syscalls++;
  			hosted_perf_syscall(&context->ss.ss_64);
@@ -378,7 +377,7 @@ index 7312da9..eaae45d 100644
  			break;
  		case XH_TRAP_ILLEGAL:
  			hosted_user_stats.illegal++;
-@@ -810,6 +895,61 @@ hosted_perf_us(uint64_t ticks)
+@@ -994,6 +1079,61 @@ hosted_perf_us(uint64_t ticks)
  	absolutetime_to_nanoseconds(ticks, &ns);
  	return ns / 1000;
  }
@@ -440,12 +439,13 @@ index 7312da9..eaae45d 100644
  
  /* The `count` numbers with the most calls in n[0..size), as " NUMBER CALLS xMEAN_US" items. */
  static void
-@@ -949,6 +1089,8 @@ hosted_perf_report_thread(__unused void *arg, __unused wait_result_t result)
+@@ -1237,7 +1377,9 @@ hosted_perf_report_thread(__unused void *arg, __unused wait_result_t result)
  		hosted_perf_top("bsd (number calls x mean)", c.bsd_n, c.bsd_t, c0->bsd_n, c0->bsd_t, HOSTED_PERF_BSD, 12, false);
  		hosted_perf_top("mach traps", c.mach_n, c.mach_t, c0->mach_n, c0->mach_t, HOSTED_PERF_MACH, 8, true);
  		hosted_perf_kernel_threads(wall_us);    /* 0051 */
 +		hosted_irq_report(wall_us);             /* 0081 */
 +		hosted_fast_irq_period();               /* 0081, oneios-fast-irq=2: the other path next */
+ 		hosted_top_report(wall_us);             /* 0080 */
  		hosted_perf_last = c;
  		user_last = u;
  		for (unsigned i = 0; i < 18; i++) {
