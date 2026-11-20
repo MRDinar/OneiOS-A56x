@@ -239,22 +239,27 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
 index 7312da9..eaae45d 100644
 --- a/osfmk/arm64/hosted/hosted_user.c
 +++ b/osfmk/arm64/hosted/hosted_user.c
-@@ -139,6 +139,7 @@ hosted_perf_sum(struct hosted_perf_counts *out)
+@@ -303,8 +303,9 @@ hosted_perf_sum(struct hosted_perf_counts *out)
  }
  static struct {
  	uint64_t at;
 +	thread_t who;                   /* 0081: the thread that trapped */
  	uint32_t kind, number;
+ 	struct hosted_top_slot *slot;           /* 0080 */
+ 	int32_t pid;
  } hosted_perf_open[HOSTED_PERF_CPUS];
  static uint32_t hosted_perf_every = 30;
-@@ -158,6 +159,7 @@ hosted_perf_trap(uint32_t kind, uint32_t number)
+@@ -322,8 +322,9 @@ hosted_perf_trap(uint32_t kind, uint32_t number)
  		hosted_perf_open[cpu].at = hosted_perf_now();
  		hosted_perf_open[cpu].kind = kind;
  		hosted_perf_open[cpu].number = number;
 +		hosted_perf_open[cpu].who = current_thread();
+ 		struct hosted_top_slot *s = hosted_top_slot();         /* 0080 */
+ 		hosted_perf_open[cpu].slot = s;
+ 		hosted_perf_open[cpu].pid = s != NULL ? s->pid : 0;
  	}
  }
- 
+
 @@ -171,6 +173,17 @@ hosted_perf_enter_user(void)
  	}
  	uint64_t ticks = hosted_perf_now() - hosted_perf_open[cpu].at;
