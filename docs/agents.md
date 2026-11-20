@@ -2103,3 +2103,12 @@ persistent: a reboot costs a manual re-root.
   (fully merged already; `out/bt-wt` has uncommitted in-progress LE-scan work, left alone), `fix-mach-rpc` (needs a
   renumber: its patch is also numbered 0076, taken now by the compressor patch; plus it needs a PC boot), `rustport`
   (needs golden-compare verification), `fix-wifi-late-enable`/`hevc-guest`/`wip/perf-deferred-unmaps` (paused WIP).
+
+- 2026-11-20, main triage+merges, second round (assistant): merged `fix-mach-rpc` (renumbered 0076 -> 0081, rebased onto
+  post-0080; verified: loader/xnuhost host tests green, kernel builds, prelink audit 0 failures, PC boot shows the
+  `rpc:`/`0081:`/`wake:`/`syscalls:` lines with interrupts by host call and ArmCpu's trapped registers near zero).
+  Fixed `0080`'s vm_shared_region hunk on the way (its 1-line hunk never applied on main; no successful kernel build
+  had existed since 7b81012). Infra lessons: `out/toolchain` had absolute symlinks into a deleted worktree (repointed
+  to `out/toolchain/cctools`, `xnu-host-cc` wrapper likewise) — do not delete a worktree other builds' toolchain links
+  point into; built `unifdef` from source to `~/.local/bin` (CachyOS, no sudo). Added root `AGENTS.md` -> `CLAUDE.md`
+  symlink. All active subagents were pointed at CLAUDE.md and the no-Python rule.
