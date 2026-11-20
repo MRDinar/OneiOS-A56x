@@ -1,0 +1,103 @@
+# Typing on the keyboard, for a PC boot (xnuhost --input-script FILE --no-input; format: src/input_script.c): unlock,
+# Home, Spotlight's search field (a swipe down on the Home Screen raises the keyboard), then 40 key taps, 0.5 s apart,
+# along the three letter rows, again and again. Each key tap is a keyboard click and, where the system has haptics,
+# a Core Haptics transient (audiomxd's com.apple.audio.hapticd; docs/hardware.md 5, "Core Haptics' server").
+# The axes are input-demo.script's (a 1440 x 3120 panel); the key rows are where iOS's keyboard has them at 480 x 1040
+# points @3x (not measured: a tap between keys still types). The first wait is for a PC boot's SpringBoard (about
+# 4 minutes after xnuhost's start on a used Data store, under qemu-aarch64); `repeat` starts again from the wake
+# (a round is about 80 s), so a late SpringBoard only costs a round.
+abs 0x2f 0 9             # ABS_MT_SLOT
+abs 0x39 0 65535         # ABS_MT_TRACKING_ID
+abs 0x35 0 1439 10       # ABS_MT_POSITION_X
+abs 0x36 0 3119 10       # ABS_MT_POSITION_Y
+wait 420000                # a PC boot: SpringBoard and audiomxd are up by then (xnuhost start + 7 min)
+ready
+key 116                  # power: wake the display if it slept
+wait 3000
+swipe 720 3100 720 1500 300   # up from the bottom edge: unlock (no passcode), or Home
+wait 8000
+swipe 720 3100 720 1500 300   # Home
+wait 8000
+swipe 720 1000 720 2000 400   # down on the Home Screen: Spotlight's search field and the keyboard
+wait 15000
+tap 130 2290
+wait 500
+tap 274 2290
+wait 500
+tap 418 2290
+wait 500
+tap 562 2290
+wait 500
+tap 706 2290
+wait 500
+tap 850 2290
+wait 500
+tap 994 2290
+wait 500
+tap 1138 2290
+wait 500
+tap 1282 2290
+wait 500
+tap 200 2460
+wait 500
+tap 344 2460
+wait 500
+tap 488 2460
+wait 500
+tap 632 2460
+wait 500
+tap 776 2460
+wait 500
+tap 920 2460
+wait 500
+tap 1064 2460
+wait 500
+tap 1208 2460
+wait 500
+tap 344 2630
+wait 500
+tap 488 2630
+wait 500
+tap 632 2630
+wait 500
+tap 776 2630
+wait 500
+tap 920 2630
+wait 500
+tap 1064 2630
+wait 500
+tap 130 2290
+wait 500
+tap 418 2290
+wait 500
+tap 706 2290
+wait 500
+tap 994 2290
+wait 500
+tap 1282 2290
+wait 500
+tap 344 2460
+wait 500
+tap 632 2460
+wait 500
+tap 920 2460
+wait 500
+tap 1208 2460
+wait 500
+tap 488 2630
+wait 500
+tap 776 2630
+wait 500
+tap 1064 2630
+wait 500
+tap 274 2290
+wait 500
+tap 562 2290
+wait 500
+tap 850 2290
+wait 500
+tap 1138 2290
+wait 500
+tap 776 2460
+wait 20000
+repeat

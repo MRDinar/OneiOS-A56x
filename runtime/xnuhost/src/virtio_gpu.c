@@ -101,6 +101,11 @@ typedef struct {
   // figures (blob_note). Set where the worker changes the table.
   uint64_t blob_bytes, blobs_made, blobs_unref, blob_note_us, noted_made, noted_unref;
   struct { uint32_t width, height, format, stride, offset; } scan;      // the scanout when it is a blob
+  // A flush of the blob scanout handed to the display helper (xh_display_post): set by flush_blob, posted by work()
+  // once the command's reply is held on `fences` as the display's (ctx 0, which no context has), and answered when
+  // the helper has the frame in its layer.
+  struct { bool on; const blob *b; gpu_rect rect; uint64_t seq; } post;
+  uint64_t display_seq;
   pthread_mutex_t pl;
   pthread_cond_t idle;
   pending *fences;
@@ -281,7 +286,43 @@ static void flush_note(uint64_t took, uint64_t bytes)
   }
 }
 
-// RESOURCE_FLUSH of a blob: when it is the scanout (SET_SCANOUT_BLOB), its rows go from the guest's pages to the display.
+// Copies `length` bytes at linear `offset` of a guest blob into `out`.
+static bool blob_read(const blob *b, uint64_t offset, uint8_t *out, uint64_t length)
+{
+  for (unsigned i = 0; i < b->nentries && length; i++) {
+    uint64_t size = b->entries[i].length;
+    if (offset >= size) { offset -= size; continue; }
+    uint64_t n = size - offset < length ? size - offset : length;
+    const uint8_t *p = xh_virtio_translate(b->entries[i].addr + offset, n);
+    if (!p) return false;
+    memcpy(out, p, n);
+    out += n; length -= n; offset = 0;
+  }
+  return length == 0;
+}
+
+// The rows of a blob scanout's rectangle (clipped to the display) into xnuhost's frame, then the helper is told.
+// B,G,R,X/A (the guest's display driver's format) goes straight from the guest's pages into the frame.
+static uint32_t flush_copy(gpu_state *g, const blob *b, const gpu_rect *rect)
+{
+  xh_display *d = xh_display_get();
+  if (!d || !d->pixels) return RESP_OK_NODATA;
+  bool same = g->scan.format == FMT_BGRX || g->scan.format == FMT_BGRA;
+  uint8_t *row = same ? NULL : malloc((size_t)rect->w * 4 + 4);
+  if (!same && !row) return RESP_ERR_OUT_OF_MEMORY;
+  uint32_t status = RESP_OK_NODATA;
+  for (uint32_t y = 0; y < rect->h && rect->w; y++) {
+    uint8_t *to = d->pixels + (size_t)(rect->y + y) * d->stride + (size_t)rect->x * 4;
+    if (!blob_read(b, g->scan.offset + (uint64_t)(rect->y + y) * g->scan.stride + (uint64_t)rect->x * 4, same ? to : row, (uint64_t)rect->w * 4)) { status = RESP_ERR_INVALID_PARAMETER; break; }
+    if (!same) convert(to, row, g->scan.format, rect->w);
+  }
+  free(row);
+  if (status == RESP_OK_NODATA && rect->w && rect->h) xh_display_flush(rect->x, rect->y, rect->w, rect->h);
+  return status;
+}
+
+// RESOURCE_FLUSH of a blob: when it is the scanout (SET_SCANOUT_BLOB), its rows go from the guest's pages to the display:
+// handed to a helper that copies them itself (work() posts it), else copied here.
 static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
 {
   xh_display *d = xh_display_get();
@@ -289,6 +330,13 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   if (!rect_ok(rect, g->scan.width, g->scan.height)) return RESP_ERR_INVALID_PARAMETER;
   uint32_t w = rect->x < d->width ? (rect->w < d->width - rect->x ? rect->w : d->width - rect->x) : 0;
   uint32_t hgt = rect->y < d->height ? (rect->h < d->height - rect->y ? rect->h : d->height - rect->y) : 0;
+  if (!w || !hgt) return RESP_OK_NODATA;
+  gpu_rect clipped = { rect->x, rect->y, w, hgt };
+  if (g->b && (g->scan.format == FMT_BGRX || g->scan.format == FMT_BGRA) && xh_display_direct()) {
+    g->post.on = true; g->post.b = b; g->post.rect = clipped; g->post.seq = ++g->display_seq;
+    frame_shown(g, b->entries, b->nentries);
+    return RESP_OK_NODATA;
+  }
   // Rows straight from the guest's pages into the display's buffer, the blob's segments walked once for the whole
   // rectangle: rows lie at rising offsets. (Each row used to be read into a buffer of its own, the segment list searched
   // from its start for every row: 3120 rows of a 1440x3120 frame over about 1100 segments of 16 KiB pages.)
@@ -357,6 +405,9 @@ static void gpu_retire(xh_virtio *dev, uint32_t ctx, uint32_t ring, uint64_t fen
 {
   retire(xh_virtio_opaque(dev), ctx, (int)ring, fence);
 }
+
+// The display helper has a posted frame in its layer (or it was given up on): its flush goes back to the guest.
+static void display_done(void *opaque, uint64_t seq) { retire(opaque, 0, 0, seq); }
 
 // The 3D commands and the blob ones. 0: not one of them (command() goes on to the 2D ones).
 static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, size_t left, uint8_t *resp, size_t resp_max, size_t *resp_size)
@@ -783,8 +834,26 @@ static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint
   // the device's own ring has nothing to wait for: the 2D commands are done when they return).
   bool hold = written > 0 && status < RESP_ERR_UNSPEC && (in.flags & FLAG_FENCE) && (in.flags & FLAG_RING_IDX) && ctx_find(g, in.ctx);
   pending *p = calloc(1, sizeof *p);
-  if (!p) return status;                             // the chain is lost; so is the guest's command
+  if (!p) { g->post.on = false; return status; }                       // the chain is lost; so is the guest's command
   *p = (pending){ .head = head, .written = (uint32_t)written, .ctx = in.ctx, .ring = in.ring, .fence = in.fence, .gen = gen };
+  if (g->post.on) {
+    // A frame for the helper: its flush is answered when the helper has it in the layer. Held before it is posted,
+    // since the answer may come first. Not posted after all (the helper went): copied here, answered now.
+    g->post.on = false;
+    p->ctx = 0; p->ring = 0; p->fence = g->post.seq;
+    pthread_mutex_lock(&g->pl);
+    p->next = g->fences;
+    g->fences = p;
+    pthread_mutex_unlock(&g->pl);
+    const blob *b = g->post.b;
+    const gpu_rect *r = &g->post.rect;
+    if (xh_display_post(b->entries, b->nentries, g->scan.offset, g->scan.stride, g->scan.width, g->scan.height, r->x, r->y, r->w, r->h,
+                        g->post.seq, display_done, g)) {
+      flush_copy(g, b, r);
+      retire(g, 0, 0, g->post.seq);
+    }
+    return status;
+  }
   if (!hold) { push_pending(g, p); return status; }
   pthread_mutex_lock(&g->pl);
   p->next = g->fences;

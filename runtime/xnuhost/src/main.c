@@ -488,6 +488,34 @@ static int image_set_disk(unsigned i, xh_blk *disk)
   return 0;
 }
 
+// The speaker's output latency for the guest (DroidVMAudio.cpp as staged publishes the boot argument
+// oneios-audio-latency=FRAMES as the device's "output latency"): what the helper measures on its stream before the
+// guest boots (br_audio_probe_latency; the guest's speaker hands each period on as it starts, so nothing is added
+// for the guest), unless the boot arguments already say it. ONEIOS_AUDIO_PROBE=0: no probe, the kernel's default.
+static void audio_latency_arg(const br_audio_backend *audio, void *ctx)
+{
+  const char *given = strstr(config.boot_args, "oneios-audio-latency=");
+  if (given) {
+    unsigned frames = (unsigned)strtoul(given + strlen("oneios-audio-latency="), NULL, 10);
+    br_audio_told(audio, ctx, frames);
+    LOGI("audio: output latency %u frames (%u ms): the boot arguments' oneios-audio-latency, not measured", frames, frames / 48);
+    return;
+  }
+  const char *probe = getenv("ONEIOS_AUDIO_PROBE");
+  if (probe && !strcmp(probe, "0")) { LOGI("audio: ONEIOS_AUDIO_PROBE=0: the kernel's default output latency"); return; }
+  int frames = br_audio_probe_latency(audio, ctx, 2000);
+  if (frames <= 0) { LOGI("audio: speaker latency not measured (%s): the kernel's default output latency", strerror(frames ? -frames : EIO)); return; }
+  size_t used = strlen(config.boot_args);
+  if (snprintf(config.boot_args + used, sizeof config.boot_args - used, "%soneios-audio-latency=%d", used ? " " : "", frames) >=
+      (int)(sizeof config.boot_args - used)) {
+    config.boot_args[used] = 0;
+    LOGE("audio: no room in the boot arguments for oneios-audio-latency=%d: the kernel's default output latency", frames);
+    return;
+  }
+  br_audio_told(audio, ctx, (unsigned)frames);
+  LOGI("audio: speaker latency %d frames (%d ms) measured by the helper: oneios-audio-latency=%d", frames, frames / 48, frames);
+}
+
 static int boot(void)
 {
   const char *error = NULL;
@@ -522,11 +550,34 @@ static int boot(void)
        (unsigned long long)g_mem.fd_phys, (unsigned long long)(g_mem.head >> 10));
   uint64_t phys = g_mem.phys;                       // physical = where it is mapped (mem.c)
   uint64_t media_pool_pa = phys + window + pool_bytes;              // after the GPU pool, before the framebuffer
+  xh_display_set_ram(g_mem.fd, phys, g_mem.size);   // a direct display helper copies frames from it
   boot_fb_pa = phys + window + pool_bytes + media_bytes;
   if (xh_mem_kva() == 0) { g_info.kva_base = g_mem.kva; g_info.kva_size = g_mem.kva_size; }
   LOGI("memory: %llu MiB at 0x%llx, physical = virtual (slide 0x%llx); I/O aperture 0x%llx",
        (unsigned long long)(window >> 20), (unsigned long long)phys,
        (unsigned long long)((uintptr_t)g_mem.host - kernel.base), (unsigned long long)(uintptr_t)g_mem.io_host);
+  // ram-view=SIZE (docs/booter.md 2.2, "The memory view"): iOS is told SIZE of DRAM over this same RAM. XNU cannot
+  // manage more pages than the RAM has (hw.memsize is max_mem, every page of boot_args memSize goes on the free lists:
+  // arm_vm_init.c, vm_resident.c), and a page above the locked RAM would be the host's to swap. So the RAM stays what
+  // it is; the view is boot_args memSizeActual (max_mem_actual: hw.memsize_physical), the per-process limits of an
+  // iPhone18,2 of that size in /defaults (machine.c), and the compressor's room to hold that much in this RAM.
+  uint64_t view = config.ram_view > window ? config.ram_view : 0;
+  if (config.ram_view && !view)
+    LOGE("memory: ram-view=%llu MiB is not more than the guest's RAM (%llu MiB): off", (unsigned long long)(config.ram_view >> 20),
+         (unsigned long long)(window >> 20));
+  int view_multiplier = xh_view_boot_args(config.boot_args, sizeof config.boot_args, view, window);
+  if (view_multiplier < 0) { LOGE("no room in the boot arguments for ram-view's compressor setting"); return -1; }
+  // The view is meant over locked RAM (the owner's rule: iOS's RAM is never swapped): with ram=auto and the lock that is
+  // the most that fits locked (config.ram_lock_fit, config.c). A bigger or unlocked RAM under a view is said, not refused.
+  if (view && (!config.ram_lock || !config.ram_lock_fit || config.ram_bytes > config.ram_lock_fit))
+    LOGE("memory: ram-view over a RAM that is not all locked (%llu MiB asked, %llu MiB fits locked%s): the host may swap "
+         "iOS's RAM; ram=auto with the lock (the default) is the mode", (unsigned long long)(config.ram_bytes >> 20),
+         (unsigned long long)(config.ram_lock_fit >> 20), config.ram_lock ? "" : ", ram-lock off");
+  if (view)
+    LOGI("memory: ram-view: iOS is told %llu MiB of DRAM (hw.memsize_physical, and an iPhone18,2's per-process limits for "
+         "it) over %llu MiB of RAM (hw.memsize); its compressor may hold up to %d x the RAM's pages "
+         "(kern.compressor_pool_multiplier) in that RAM",
+         (unsigned long long)(view >> 20), (unsigned long long)(window >> 20), view_multiplier);
   ram_fix_start();
 
   // The board: GIC, console, disks, input, display.
@@ -537,6 +588,10 @@ static int boot(void)
   xh_gic_map();
   xh_uart_init(XL_BOARD_UART);
   if (image_set_open()) return -1;
+  // A writable disk's flush on a thread of its own when the guest's driver takes it (virtio_blk.c, blk-late-flush).
+  xh_blk_late_flush = config.blk_late_flush != 0;
+  LOGI("disk: a flush of a writable disk runs %s (blk-late-flush=%d)",
+       xh_blk_late_flush ? "on the disk's flush thread when the guest's driver asks for that" : "on the vCPU that sent it", xh_blk_late_flush ? 1 : 0);
   for (unsigned i = 0; i < config.ndisk; i++) {
     xh_blk *disk = xh_blk_open(&config.disk[i], &error);
     if (!disk) { LOGE("disk %s: %s (%s)", config.disk[i].path, error, strerror(errno)); return -1; }
@@ -723,7 +778,10 @@ static int boot(void)
     const br_audio_backend *audio = NULL;
     if (*config.runtime && snprintf(helper, sizeof helper, "%s/bin/oneios-audio", config.runtime) < (int)sizeof helper) audio = br_audio_helper(helper, &audio_ctx);
     if (!audio) audio = br_audio_null(&audio_ctx);
-    if (audio && br_virtio_snd_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, audio, audio_ctx)) kinds[ndev++] = XL_DEV_SND;
+    if (audio && br_virtio_snd_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, audio, audio_ctx)) {
+      kinds[ndev++] = XL_DEV_SND;
+      audio_latency_arg(audio, audio_ctx);
+    }
 
     // The camera: a helper process (Android's camera libraries are shared libraries) that opens a camera only
     // when the guest asks. ONEIOS_CAMERA=0 leaves it out; ONEIOS_CAMERA_BACKEND picks its back end (auto).
@@ -803,7 +861,9 @@ static int boot(void)
   machine.timebase_hz = (uint32_t)g_info.timebase_hz;
   machine.dram_base = phys;
   machine.dram_size = window;
+  machine.view_size = view;
   machine.model = "iPhone18,2";
+  machine.target_type = "V54";           // its board: iOS finds com.apple.jetsamproperties.V54.plist by it (loader machine.c)
   machine.display_width = fb_width;
   machine.display_height = fb_height;
   machine.display_scale = config.scale;
@@ -897,7 +957,7 @@ static int boot(void)
   }
 
   xl_boot_request request = {
-    .image = { image, image_size }, .kernel = &kernel, .ram = g_mem.host, .window = window, .phys_base = phys,
+    .image = { image, image_size }, .kernel = &kernel, .ram = g_mem.host, .window = window, .phys_base = phys, .mem_size_actual = view,
     .virt_base = (uint64_t)(uintptr_t)g_mem.host, .tree = tree, .command_line = config.boot_args,
     .video = { boot_fb_pa, 1, (uint64_t)fb_width * 4, fb_width, fb_height, 32 },
     .legacy_boot_args = config.legacy_boot_args, .ramdisk = ramdisk, .trustcache = trust, .gpu_addon = addon, .root_policies = policies,

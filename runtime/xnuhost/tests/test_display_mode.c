@@ -2,6 +2,10 @@
 // The real display.c against a stand-in helper on the real socket: where the guest's mode comes from.
 #define _GNU_SOURCE
 #include "xnuhost.h"
+#include "xhd.h"
+#include <stdatomic.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,6 +76,85 @@ static int run(const char *dir, const char *mode, unsigned cw, unsigned ch, unsi
   _exit(0);
 }
 
+// Direct frames, the helper being the display helper's own xhd.c: it says it is direct, gets guest RAM and the table,
+// copies a frame from scattered guest pages and answers; one that never answers is answered for.
+#define RAM_PA 0x800000000ull
+#define RAM_BYTES 0x40000u
+enum { DW = 16, DH = 40, DSTRIDE = 80 };
+static struct { char path[300]; int answer; atomic_int copied, ok; uint64_t seq; } dh;
+static uint8_t *ram_map;
+
+static void *direct_helper(void *arg)
+{
+  (void)arg;
+  int fd = xhd_connect(dh.path, 3000, NULL);
+  struct xhd_frame frame;
+  if (fd < 0 || xhd_send_panel(fd, DW, DH, 120, XHD_PANEL_DIRECT) || xhd_recv_hello(fd, &frame, 3000)) return NULL;
+  struct xhd_direct d;
+  xhd_direct_init(&d);
+  struct xhd_rect damage = { 0, 0, 0, 0 };
+  for (int i = 0; i < 300 && !d.pending; i++) { if (xhd_drain_direct(fd, &frame, &damage, &d) < 0) break; usleep(10000); }
+  if (d.pending) {
+    static uint8_t dst[DW * 4 * DH];
+    struct xhd_rect done;
+    int ok = xhd_copy_direct(&d, dst, DW * 4, DW, DH, 0, NULL, &done) == 0 && done.w == DW && done.h == DH;
+    // the guest's frame: rows of DSTRIDE bytes over pages 3, 1 and 2 of its RAM (4 KiB each), in that order
+    for (uint32_t y = 0; y < DH && ok; y++) for (uint32_t x = 0; x < DW * 4; x++) {
+      uint64_t at = (uint64_t)y * DSTRIDE + x, page = at / 4096 == 0 ? 3 : at / 4096 == 1 ? 1 : 2;
+      if (dst[y * DW * 4 + x] != ram_map[page * 4096 + at % 4096]) ok = 0;
+    }
+    dh.ok = ok;
+    dh.seq = d.seq;
+    dh.copied = 1;
+    if (dh.answer) xhd_send_done(fd, d.seq, dh.answer == 2 ? XHD_DONE_FAILED : 0);
+  }
+  usleep(400000);                                     // still connected while xnuhost waits (or gives up)
+  xhd_direct_close(&d);
+  xhd_frame_close(&frame);
+  close(fd);
+  return NULL;
+}
+
+static atomic_int answered;
+static atomic_ullong answered_seq;
+static void on_done(void *opaque, uint64_t seq) { (void)opaque; answered_seq = seq; answered++; }
+
+static int run_direct(const char *dir, int answer)
+{
+  pid_t child = fork();
+  if (child) { int status = 1; waitpid(child, &status, 0); return WIFEXITED(status) ? WEXITSTATUS(status) : 99; }
+  xh_config c;
+  xh_config_defaults(&c);
+  strcpy(c.mode, "takeover");
+  strcpy(c.session, dir);
+  c.scale = 3; c.width = DW; c.height = DH; c.hz = 120;                 // pinned: the report comes later, to the reader
+  snprintf(dh.path, sizeof dh.path, "%s/display.sock", dir);
+  dh.answer = answer;
+  int ram = (int)syscall(SYS_memfd_create, "test-ram", 0u);
+  if (ram < 0 || ftruncate(ram, RAM_BYTES)) _exit(2);
+  ram_map = mmap(NULL, RAM_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED, ram, 0);
+  for (unsigned i = 0; i < RAM_BYTES; i++) ram_map[i] = (uint8_t)(i * 7 + i / 4096);
+  unsigned w, h, hz;
+  if (xh_display_init(&c, &w, &h, &hz)) _exit(2);
+  pthread_t thread;
+  pthread_create(&thread, NULL, direct_helper, NULL);
+  xh_display_set_ram(ram, RAM_PA, RAM_BYTES);
+  for (int i = 0; i < 300 && !xh_display_direct(); i++) usleep(10000);
+  if (!xh_display_direct()) _exit(3);
+  const xh_gpu_entry segs[] = { { RAM_PA + 0x3000, 0x1000, 0 }, { RAM_PA + 0x1000, 0x2000, 0 } };   // pages 3, then 1 and 2
+  const xh_gpu_entry outside[] = { { RAM_PA + RAM_BYTES, 0x1000, 0 } };
+  if (xh_display_post(outside, 1, 0, DSTRIDE, DW, DH, 0, 0, DW, DH, 1, on_done, NULL) != -1) _exit(4);   // not RAM: not posted
+  if (xh_display_post(segs, 2, 0, DSTRIDE, DW, DH, 0, 0, DW, DH, 2, on_done, NULL)) _exit(5);
+  for (int i = 0; i < 300 && !answered; i++) usleep(10000);
+  if (!answered || answered_seq != 2 || !dh.copied || !dh.ok || dh.seq != 2) _exit(6);
+  if (answer == 2) {                                   // it said it could not copy: xnuhost copies again
+    for (int i = 0; i < 100 && xh_display_direct(); i++) usleep(10000);
+    if (xh_display_direct()) _exit(7);
+  }
+  pthread_join(thread, NULL);
+  _exit(0);
+}
+
 int main(void)
 {
   char dir[] = "/tmp/xnuhost-display-XXXXXX";
@@ -85,6 +168,12 @@ int main(void)
   report_w = 1440; report_h = 3120; report_hz = 120;
   CASE("a configured mode wins, without waiting", "takeover", 1080, 2340, 60, 1080, 2340, 60, 1.0);
   CASE("a bench run assumes the S24 Ultra's, without waiting", "bench", 0, 0, 0, 1440, 3120, 120, 1.0);
+  r = run_direct(dir, 1);
+  printf("direct frames: the helper copies from guest RAM and answers: %s (%d)\n", r ? "FAILED" : "ok", r); failures += r != 0;
+  r = run_direct(dir, 2);
+  printf("direct frames: a helper that could not copy one turns them off: %s (%d)\n", r ? "FAILED" : "ok", r); failures += r != 0;
+  r = run_direct(dir, 0);
+  printf("direct frames: a helper that never answers is answered for: %s (%d)\n", r ? "FAILED" : "ok", r); failures += r != 0;
   char command[100];
   snprintf(command, sizeof command, "rm -rf %s", dir);
   if (system(command)) failures++;

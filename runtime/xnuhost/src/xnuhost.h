@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <sys/types.h>
 #include "xnuhost/hostcall.h"
+#include "gpu3d.h"
 #include "xnuhost/pixels.h"
 #include "bridges/hw_backend.h"     // br_hw_settings: hw-backend, hw-backend-<bridge>, hw-backend-fallback (runtime/bridges)
 
@@ -49,6 +50,11 @@ typedef struct {
   // ram_bytes is then the guest's size and ram_auto_total/available what was read (both 0: not auto).
   uint64_t ram_bytes;       // 0 = auto
   bool  ram_given;          // ram= was set here (the command line wins over the image set's xnuhost.conf)
+  // ram-view=SIZE|auto|off (off; auto = 12 GiB): the DRAM iOS is told it has (hw.memsize_physical, the per-process limits of /defaults) and
+  // the compressor's room for it, over the same locked RAM (main.c; docs/booter.md 2.2, "The memory view"). 0 = off.
+  uint64_t ram_view;
+#define XH_RAM_VIEW_AUTO (12ull << 30)   // ram-view=auto: an iPhone18,2's DRAM
+  bool  ram_view_given;
   int   ram_percent;        // ram-percent=: the guest's share of MemTotal for ram=auto, 10-100; -1 = unset (90)
   int64_t ram_host_floor;   // ram-host-floor=: what ram=auto always leaves the host, bytes; -1 = unset (1.5 GiB)
   char  ram_meminfo[256];   // ram-meminfo=FILE: where ram=auto reads MemTotal (tests); default /proc/meminfo
@@ -97,6 +103,7 @@ typedef struct {
   char  text_fixups[1024];  // text-fixup=FILE,OFFSET,ORIGINAL,REPLACEMENT entries for /chosen text-fixups, NUL-separated
   unsigned text_fixups_length;
   bool  input;              // read /dev/input
+  int   display_direct;     // 1: a helper that can copies frames from guest RAM itself (display.c); 0: xnuhost copies; -1 unset (1)
   bool  touch_sleep;        // touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
   char  pen[8];             // pen=off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.c,
@@ -112,6 +119,7 @@ typedef struct {
   int   log_level;
   bool  legacy_boot_args;
   int   setway_skip;        // a trapped dc set/way ends the guest's set/way loop of its level at once (sysreg.c): 1 (default), 0, -1 = unset
+  int   blk_late_flush;     // virtio_blk.c: the Data store's flushes on a thread of their own, completed later (the guest driver asks): 1 (default), 0, -1 = unset
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
@@ -223,6 +231,9 @@ xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel);
 // offline-legacy-unit-scale=SCALE (/chosen display-scale) and sheng-vsync=HZ (the vsync tick and, above 60 Hz,
 // the refresh properties). -1: no room.
 int  xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, unsigned format);
+// ram-view=: kern.compressor_pool_multiplier for a view of `view` bytes over `window` bytes of RAM, added unless set (config.c).
+// Returns the multiplier, 0 for no view (view not over window), -1 with no room.
+int  xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window);
 // True when the boot arguments' owner-hide-vmm=NAME[,NAME...] (the kernel's per-process vmm-present switch) names
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);
@@ -615,12 +626,17 @@ void       xh_virtio_push(xh_virtio *dev, unsigned queue, uint16_t head, uint32_
 void       xh_virtio_config_changed(xh_virtio *dev);
 // Whether the guest's driver has set DRIVER_OK: the device's queues are in use.
 bool       xh_virtio_ready(xh_virtio *dev);
+// The features the guest's driver accepted (bits 0-63).
+uint64_t   xh_virtio_driver_features(xh_virtio *dev);
 // Test hook: guest memory translation (default xh_ram).
 extern void *(*xh_virtio_translate)(uint64_t pa, uint64_t len);
 uint64_t   xh_virtio_mmio_read(xh_virtio *dev, uint64_t offset, unsigned size);
 void       xh_virtio_mmio_write(xh_virtio *dev, uint64_t offset, unsigned size, uint64_t value);
 
+// xh_blk_late_flush (set before the disks are made): offer VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) on a writable disk; a flush the driver sends after
+// accepting it is run on the disk's flush thread and completed from there (config blk-late-flush; docs/booter.md "Disks").
 xh_virtio *xh_virtio_blk_create(uint64_t base, unsigned spi, xh_blk *disk);
+extern bool xh_blk_late_flush;
 xh_virtio *xh_virtio_input_create(uint64_t base, unsigned spi);
 xh_virtio *xh_virtio_gpu_create(uint64_t base, unsigned spi, unsigned width, unsigned height);
 
@@ -634,6 +650,16 @@ int   xh_display_init(const xh_config *c, unsigned *width, unsigned *height, uns
 xh_display *xh_display_get(void);
 // The rectangle changed (already copied into pixels).
 void  xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h);
+// Direct frames (display.c, docs/booter.md 2.8): guest RAM is the memfd `fd`, guest physical `phys` at offset 0.
+void  xh_display_set_ram(int fd, uint64_t phys, uint64_t size);
+// Whether a helper that copies frames from guest RAM itself is connected and has the RAM.
+bool  xh_display_direct(void);
+// Hands the helper a frame: rows of `stride` bytes from byte `offset` of the guest segments, `width` x `height`, the
+// rectangle x, y, w, h changed, in B,G,R,X/A bytes. 0: posted, and `done(opaque, seq)` is called once (from another
+// thread, maybe before this returns) when it is in the layer or was given up on; -1: not posted (copy it here).
+typedef void (*xh_display_done)(void *opaque, uint64_t seq);
+int   xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, uint32_t stride, uint32_t width, uint32_t height,
+                      uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t seq, xh_display_done done, void *opaque);
 void  xh_display_close(void);
 
 // Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on

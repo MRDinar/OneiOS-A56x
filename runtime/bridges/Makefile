@@ -13,7 +13,7 @@ WARN := -Wall -Wextra -Werror
 INC := -Iinclude -I../../drivers/bridge -I../../drivers/net -I$(XNUHOST)/src -I$(XNUHOST)/include
 CFLAGS ?= -O2 -g
 WIFI := wifi/frames wifi/station wifi/wlan wifi/sim wifi/aidl_parcel wifi/aidl_binder wifi/supplicant
-CORE := cpu/topology hw/hw_backend hw/hw_log hal/hal haptics/haptic net/net bt/hci bt/hci_sim bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery thermal/thermal $(WIFI)
+CORE := cpu/topology hw/hw_backend hw/hw_log hal/hal haptics/haptic net/net bt/hci bt/le_scan bt/hci_sim bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery thermal/thermal $(WIFI)
 DEVICES := devices/bridge_dev devices/virtio_net devices/virtio_snd
 HDR := $(wildcard include/bridges/*.h hal/*.h bt/*.h audio/*.h brightness/*.h battery/*.h thermal/*.h wifi/*.h ../../drivers/bridge/*.h ../../drivers/net/*.h $(XNUHOST)/src/xnuhost.h)
 A := build/android
@@ -51,6 +51,7 @@ $(H)/test_bridges: tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c -lpthread -o $@
 
+BINDER_TEST := tests/test_hidl_binder.c bt/hci.c bt/le_scan.c bt/hidl_parcel.c bt/hci_hidl.c cpu/topology.c
 # The backend layer (hw/): the settings, the choice, its log lines.
 $(H)/test_hw_backend: hw/test_hw_backend.c hw/hw_backend.c hw/hw_log.c cpu/topology.c $(HDR)
 	@mkdir -p $(H)
@@ -62,9 +63,7 @@ $(H)/test_wifi: $(WIFI_TEST) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined $(WIFI_TEST) -lpthread -o $@
 
-BINDER_TEST := tests/test_hidl_binder.c bt/hci.c bt/hidl_parcel.c bt/hci_hidl.c cpu/topology.c
 $(H)/test_hidl_binder: $(BINDER_TEST) $(HDR)
-	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined $(BINDER_TEST) -lpthread -o $@
 # The supplicant client against a fake service manager and supplicant (tests/test_aidl_binder.c), both ends on aidl.h.
 AIDL_TEST := tests/test_aidl_binder.c wifi/aidl_parcel.c wifi/aidl_binder.c wifi/supplicant.c cpu/topology.c

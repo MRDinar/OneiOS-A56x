@@ -45,6 +45,21 @@ static xh_display fake_display;
 static unsigned flush_rect[4];
 xh_display *xh_display_get(void) { return fake_display.pixels ? &fake_display : NULL; }
 void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; flushes++; }
+// A display helper that copies frames itself (display.c's direct path): what it was handed, and its answer.
+static bool fake_direct, fake_refuse;
+static struct { xh_gpu_entry entries[4]; unsigned n, posts; uint64_t offset, seq; uint32_t stride, width, height, x, y, w, h; xh_display_done done; void *opaque; } fake_post;
+void xh_display_set_ram(int fd, uint64_t phys, uint64_t size) { (void)fd; (void)phys; (void)size; }
+bool xh_display_direct(void) { return fake_direct; }
+int xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, uint32_t stride, uint32_t width, uint32_t height,
+                    uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t seq, xh_display_done done, void *opaque)
+{
+  if (fake_refuse) return -1;
+  fake_post.n = n; memcpy(fake_post.entries, entries, (n < 4 ? n : 4) * sizeof *entries);
+  fake_post.offset = offset; fake_post.stride = stride; fake_post.width = width; fake_post.height = height;
+  fake_post.x = x; fake_post.y = y; fake_post.w = w; fake_post.h = h; fake_post.seq = seq; fake_post.done = done; fake_post.opaque = opaque;
+  fake_post.posts++;
+  return 0;
+}
 unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t text_hi, int ram_fd, int trap_fd);
 
 // ---- instructions -------------------------------------------------------------------------------
@@ -437,6 +452,32 @@ static void test_virtio_blk(const char *dir)
   *req = (__typeof__(*req)){ 4, 0, 0 };                                        // flush
   CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true) == 1 && *status == 0);
   CHECK(xh_blk_read(store, 9 * 512, sector, 512) == 0 && sector[5] == 0x77);
+  // A driver that takes F_LATE_FLUSH (bit 23): a flush is completed by the disk's flush thread after the notify
+  // returned; reads and writes are still done inside the notify.
+  W(&w, 0x14, 0);
+  CHECK(R(&w, 0x10) & (1u << 23));                                             // offered on a writable disk
+  CHECK(driver_init(&w, 1u << 23 | 1u << 9, 1, GUEST_PA + 0x10000));
+  *req = (__typeof__(*req)){ 1, 0, 10 };
+  memset(data, 0x55, 512);
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == 1 && *status == 0);
+  *req = (__typeof__(*req)){ 4, 0, 0 };
+  *status = 0xff;
+  (void)driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true);
+  volatile uint16_t *wused = xh_ram(w.queue_pa[0] + 0x2000, 0x1000);
+  for (int i = 0; i < 5000 && wused[1] == w.used_seen[0]; i++) usleep(1000);
+  CHECK(wused[1] == (uint16_t)(w.used_seen[0] + 1) && *status == 0);          // completed later, from the thread
+  w.used_seen[0] = wused[1];
+  CHECK(R(&w, 0x60) & 1);                                                     // and the interrupt raised, as for any completion
+  W(&w, 0x64, 1);
+  *req = (__typeof__(*req)){ 0, 0, 10 };                                       // the next request is served in the notify
+  memset(data, 0, 512);
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 1 }, { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == 513 && data[7] == 0x55);
+  // With blk-late-flush=0 the bit is not offered.
+  xh_blk_late_flush = false;
+  driver w2 = { .dev = xh_virtio_blk_create(0, 43, store) };
+  W(&w2, 0x14, 0);
+  CHECK(!(R(&w2, 0x10) & (1u << 23)));
+  xh_blk_late_flush = true;
   xh_blk_close(store);
   snprintf(path, sizeof path, "%s/seed.tar", dir);
   f = fopen(path, "wb");
@@ -833,6 +874,28 @@ static void test_virtio_gpu3d(void)
   CHECK(flush_rect[0] == 1 && flush_rect[1] == 2 && flush_rect[2] == 3 && flush_rect[3] == 2);
   const uint8_t *px = fake_display.pixels + 2 * 32 + 1 * 4;
   CHECK(px[0] == 21 && px[1] == 0x20 && px[2] == 0x10 && fake_display.pixels[3 * 32 + 3 * 4] == 33 && fake_display.pixels[0] == 0 && fake_display.pixels[2 * 32 + 4 * 4] == 0);
+  // a helper that copies the frame itself: the flush is handed over, not copied here, and answered when it says so
+  fake_direct = true;
+  memset(fake_display.pixels, 0, 4 * 32);
+  flush_rect[2] = 0;
+  CLEAR(); cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 1; cmd[8] = 8; cmd[9] = 3; cmd[10] = 20;                 // (0,1) 8x3
+  CHECK(G(12, 24) == 0 && fake_post.posts == 1 && flush_rect[2] == 0 && fake_display.pixels[1 * 32] == 0);
+  CHECK(fake_post.n == 1 && fake_post.entries[0].addr == GUEST_PA + 0x40000 && fake_post.stride == 40 && fake_post.offset == 0);
+  CHECK(fake_post.width == 8 && fake_post.height == 4 && fake_post.x == 0 && fake_post.y == 1 && fake_post.w == 8 && fake_post.h == 3);
+  uint64_t first_seq = fake_post.seq;
+  CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
+  CHECK(G(12, 24) == 0 && fake_post.posts == 2 && fake_post.seq == first_seq + 1);                       // a second one, held too
+  fake_post.done(fake_post.opaque, first_seq);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 1);                                                       // the first answered
+  fake_post.done(fake_post.opaque, fake_post.seq);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 2 && resp[0] == 0x1100);
+  d.used_seen[0] = used[1];
+  fake_post.done(fake_post.opaque, fake_post.seq);                                                         // twice: nothing
+  CHECK(used[1] == d.used_seen[0]);
+  fake_refuse = true;                                                                                      // the helper went: copied here
+  CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
+  CHECK(G(12, 24) == 1 && resp[0] == 0x1100 && flush_rect[2] == 8 && fake_display.pixels[3 * 32 + 3 * 4] == 33);
+  fake_direct = fake_refuse = false;
   {
     // Half floats (display-format=rgba16f, oneios-display-wide=1): a 'RGhA' scanout's rows go to a half-float display as
     // they are, and a B,G,R,X one is decoded to linear light; onto the 8-bit display half floats are encoded and clamped.
@@ -1939,6 +2002,24 @@ static void test_config(const char *dir)
   CHECK(!xh_panel_report(&report, sizeof report, &native));
   report.a = 1440; report.magic[3] = 'Q';
   CHECK(!xh_panel_report(&report, sizeof report, &native));
+  // ram-view=: the compressor's room for the view (the view over the RAM, rounded up), added once; a given value stays
+  {
+    char view_args[96] = "-v";
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 0, 7ull << 30) == 0 && !strcmp(view_args, "-v"));              // off
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 6ull << 30, 7ull << 30) == 0 && !strcmp(view_args, "-v"));     // not over the RAM
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    strcpy(view_args, "kern.compressor_pool_multiplier=4");
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 4ull << 30) == 3 && !strcmp(view_args, "kern.compressor_pool_multiplier=4"));
+    view_args[0] = 0;
+    CHECK(xh_view_boot_args(view_args, 20, 12ull << 30, 4ull << 30) == -1);                                             // no room
+    xh_config vc;
+    xh_config_defaults(&vc);
+    CHECK(vc.ram_view == 0 && xh_config_set(&vc, "ram-view", "12G") == 0 && vc.ram_view == 12ull << 30 && vc.ram_view_given);
+    CHECK(xh_config_set(&vc, "ram-view", "off") == 0 && vc.ram_view == 0);
+    CHECK(xh_config_set(&vc, "ram-view", "auto") == 0 && vc.ram_view == 12ull << 30);
+    CHECK(xh_config_set(&vc, "ram-view", "lots") != 0);
+  }
   // the display driver's switches on the kernel's command line: added once, a given value stays
   char args[128] = "-v debug=0x8";
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_BGRX8) == 0 && !strcmp(args, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120"));

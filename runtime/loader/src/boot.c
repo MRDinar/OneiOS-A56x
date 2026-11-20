@@ -176,7 +176,7 @@ int xl_boot_place(const xl_boot_request *r, xl_boot_layout *out, const char **er
     memcpy(a.video, r->video, sizeof a.video);
     a.device_tree = va + tree; a.device_tree_length = (uint32_t)tree_size;
     memcpy(a.command_line, command, command_length);
-    a.boot_flags = r->boot_flags; a.mem_size_actual = r->window;
+    a.boot_flags = r->boot_flags; a.mem_size_actual = r->mem_size_actual > r->window ? r->mem_size_actual : r->window;
     memcpy(r->ram + args, &a, sizeof a);
   } else {
     xl_boot_args a;
@@ -186,7 +186,7 @@ int xl_boot_place(const xl_boot_request *r, xl_boot_layout *out, const char **er
     memcpy(a.video, r->video, sizeof a.video);
     a.device_tree = va + tree; a.device_tree_length = (uint32_t)tree_size;
     memcpy(a.command_line, command, command_length);
-    a.boot_flags = r->boot_flags; a.mem_size_actual = r->window;
+    a.boot_flags = r->boot_flags; a.mem_size_actual = r->mem_size_actual > r->window ? r->mem_size_actual : r->window;
     memcpy(r->ram + args, &a, sizeof a);
   }
 

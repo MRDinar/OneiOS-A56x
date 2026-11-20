@@ -400,6 +400,15 @@ come: `display: 10 s: flushes N, copy mean X us max Y us (Z MiB)`. The fast lane
 next commands wait behind it. The guest's `oneios-display-report` `done=` of a swap (128-211 ms on the phone,
 2026-11-12) runs from the swap's validation to its transfer: the frame's GPU work, then this flush, each behind
 whatever the device thread is doing (blob creations: 0.8 ms each, up to 45 ms in a storm).
+
+**Display.** `SET_SCANOUT_BLOB` makes a guest blob the scanout. At `RESOURCE_FLUSH` its rows go from the guest's pages
+to the display in one CPU copy: made by the helper from guest RAM (direct frames, `docs/booter.md` 2.8), with the flush
+answered when the frame is in the layer; without a direct helper xnuhost copies them into the memfd, walking the
+blob's segments once per flush (before, each of the 3120 rows went through a row buffer and searched the segment list
+from its start: about 1100 segments of 16 KiB pages for a 1440x3120 frame). On an M4, for that frame: 4.2-10.6 ms
+before, 2.0-3.3 ms after (a stand-alone copy of both loops; not measured on the phone). Not zero copies: see 2.8 for
+why. xnuhost logs the copy every 10 s while frames come (`display: 10 s: flushes N, copy mean X us max Y us (Z MiB)`;
+the direct path's own 10 s line is in 2.8).
 The guest side is `kernel/patches/oneios-hosted/display/` (its README): iOS's framebuffer hands each of
 `backboardd`'s surfaces to this device, as a guest blob with a renderer and as a 2D resource over the surface's
 pages without one (the PC). What the 3D path still needs from the display is listed there.
@@ -989,7 +998,8 @@ member `AGXAccelerator::superClass` keeps the parent's unslid link address (noth
 4. **Hosted mappings of the pool and of guest blobs.** The driver maps the pool with
    `IOMemoryDescriptor::withPhysicalAddress` and blobs into tasks; under the hosted pmap these are pages of the RAM
    memfd outside the kernel's window (the pool: allowed by `0024-gpu-pool.patch`) and ordinary pages (blobs). Not run.
-5. **Zero-copy scanout**, EDID (refresh rate), cursor: not done; the display is a row copy per flush.
+5. **Zero-copy scanout**, EDID (refresh rate), cursor: not done; the display is one row copy per flush, by the helper
+   (direct frames). A GPU blit would need a host Vulkan or KGSL path that imports a udmabuf; not done.
 6. **`gpuctl` passing on the phone** with the VBO fix and the split (section 4.1): not run yet. Until it does,
    whether this KGSL binds several imported udmabufs in a row and runs commands from them is unproven.
 

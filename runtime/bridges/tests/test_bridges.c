@@ -360,6 +360,72 @@ typedef struct { unsigned packets, states; int state; uint8_t type; size_t lengt
 static void hr_rx(void *ctx, uint8_t type, const uint8_t *packet, size_t length) { hci_record *r = ctx; (void)packet; r->packets++; r->type = type; r->length = length; }
 static void hr_state(void *ctx, int state) { hci_record *r = ctx; r->states++; r->state = state; }
 
+// The LE scan shim (bt/le_scan.c) through br_hci: idle while the controller takes the extended commands; when it
+// refuses 0x2041, legacy commands go out and the guest sees the extended answers and reports.
+typedef struct { unsigned n; uint8_t last[300]; size_t length; uint8_t first[16]; } le_scan_record;
+static void lsr_rx(void *ctx, uint8_t type, const uint8_t *packet, size_t length)
+{
+  le_scan_record *r = ctx;
+  (void)type;
+  if (r->n == 0) memcpy(r->first, packet, length < 16 ? length : 16);
+  r->n++; r->length = length; memcpy(r->last, packet, length);
+}
+static void test_le_scan(void)
+{
+  static const uint8_t mask[] = { 0x01, 0x20, 8, 0x10, 0x10, 0, 0, 0, 0, 0, 0 };                 // ext adv report on, legacy off
+  static const uint8_t params[] = { 0x41, 0x20, 8, 0x01, 0x00, 0x01, 0x01, 0x60, 0x00, 0x30, 0x00 }; // own 1, filter 0, 1M: active 0x60/0x30
+  static const uint8_t enable[] = { 0x42, 0x20, 6, 0x01, 0x02, 0, 0, 0, 0 };
+  static const uint8_t refused[] = { 0x0e, 4, 1, 0x41, 0x20, 0x01 }, ok_200b[] = { 0x0e, 4, 1, 0x0b, 0x20, 0x00 };
+  static const uint8_t ok_2041[] = { 0x0e, 4, 1, 0x41, 0x20, 0x00 }, ok_2001[] = { 0x0e, 4, 1, 0x01, 0x20, 0x00 };
+  static const uint8_t ok_200c[] = { 0x0e, 4, 1, 0x0c, 0x20, 0x00 };
+  // one ADV_IND from 11:22:33:44:55:66 (public), 3 bytes of data, RSSI -60
+  static const uint8_t report[] = { 0x3e, 15, 0x02, 1, 0x00, 0x00, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 3, 0x02, 0x01, 0x06, 0xc4 };
+
+  // A controller that takes the extended commands: nothing changes.
+  fake_radio radio = { 0 };
+  le_scan_record rec = { 0 };
+  br_hci *h = br_hci_create(&fake_radio_backend, &radio, lsr_rx, NULL, &rec);
+  CHECK(br_hci_open(h) == 0);
+  br_hci_set_state(h, 1);
+  CHECK(br_hci_send(h, 1, mask, sizeof mask) == 0 && radio.last_length == sizeof mask && !memcmp(radio.last, mask, sizeof mask));
+  CHECK(br_hci_send(h, 1, params, sizeof params) == 0 && radio.sends == 2 && !memcmp(radio.last, params, sizeof params));
+  br_hci_deliver(h, 4, ok_2041, sizeof ok_2041);
+  CHECK(rec.n == 1 && !memcmp(rec.last, ok_2041, sizeof ok_2041));
+  br_hci_deliver(h, 4, report, sizeof report);
+  CHECK(rec.n == 2 && rec.length == sizeof report);                  // a legacy report stays one
+  br_hci_destroy(h);
+
+  // A controller that refuses them (the Mi A3's WCN3950 in iOSPlus10's log).
+  memset(&radio, 0, sizeof radio); memset(&rec, 0, sizeof rec);
+  h = br_hci_create(&fake_radio_backend, &radio, lsr_rx, NULL, &rec);
+  CHECK(br_hci_open(h) == 0);
+  br_hci_set_state(h, 1);
+  CHECK(br_hci_send(h, 1, mask, sizeof mask) == 0 && br_hci_send(h, 1, params, sizeof params) == 0 && radio.sends == 2);
+  br_hci_deliver(h, 4, refused, sizeof refused);
+  CHECK(rec.n == 0);                                                  // the refusal is not the guest's
+  CHECK(radio.sends == 4 && radio.last_length == 10);                 // the mask with legacy reports on, then 0x200b
+  CHECK(!memcmp(radio.last, "\x0b\x20\x07\x01\x60\x00\x30\x00\x01\x00", 10));
+  br_hci_deliver(h, 4, ok_2001, sizeof ok_2001);
+  CHECK(rec.n == 0);                                                  // the mask's answer: ours
+  br_hci_deliver(h, 4, ok_200b, sizeof ok_200b);
+  CHECK(rec.n == 1 && rec.length == 6 && !memcmp(rec.last, ok_2041, 6));          // answered as 0x2041
+  CHECK(br_hci_send(h, 1, enable, sizeof enable) == 0 && radio.last_length == 5 && !memcmp(radio.last, "\x0c\x20\x02\x01\x01", 5));
+  br_hci_deliver(h, 4, ok_200c, sizeof ok_200c);
+  CHECK(rec.n == 2 && rec.last[3] == 0x42 && rec.last[4] == 0x20 && rec.last[5] == 0);
+  br_hci_deliver(h, 4, report, sizeof report);
+  CHECK(rec.n == 3 && rec.length == 2 + 2 + 24 + 3);                  // one extended report
+  CHECK(rec.last[0] == 0x3e && rec.last[1] == 2 + 24 + 3 && rec.last[2] == 0x0d && rec.last[3] == 1 && rec.last[4] == 0x13 && rec.last[5] == 0);
+  CHECK(!memcmp(rec.last + 7, "\x66\x55\x44\x33\x22\x11", 6) && rec.last[13] == 1 && rec.last[16] == 0x7f && rec.last[17] == 0xc4);
+  CHECK(rec.last[27] == 3 && !memcmp(rec.last + 28, "\x02\x01\x06", 3));
+  // After a close the controller is still known to refuse: the next 0x2041 goes out as 0x200b at once.
+  br_hci_close(h);
+  CHECK(br_hci_open(h) == 0);
+  br_hci_set_state(h, 1);
+  unsigned sends = radio.sends;
+  CHECK(br_hci_send(h, 1, params, sizeof params) == 0 && radio.sends == sends + 1 && radio.last[0] == 0x0b);
+  br_hci_destroy(h);
+}
+
 static void test_bt(const char *tmp)
 {
   static const uint8_t reset[] = { 0x03, 0x0c, 0x00 }, complete[] = { 0x0e, 0x04, 0x01, 0x03, 0x0c, 0x00 };
@@ -871,6 +937,9 @@ static void test_snd_device(void)
   void *ctx;
   const br_audio_backend *null = br_audio_null(&ctx);
   CHECK(null->start(ctx, true, 48000, 2) == 0 && null->write(ctx, period, 240) == 240);
+  // The latency probe is the helper's only (xnuhost then leaves the kernel's default); telling the null back end is a no-op.
+  CHECK(br_audio_probe_latency(null, ctx, 10) == -ENOTSUP && br_audio_probe_latency(&fake_sound_backend, &sound, 10) == -ENOTSUP);
+  br_audio_told(null, ctx, 480);
 }
 
 // The stand-in controller (bt/hci_sim.c): what bluetoothd's first commands get back.
@@ -920,6 +989,7 @@ int main(void)
   test_haptic();
   test_net();
   test_bt(tmp);
+  test_le_scan();
   test_bt_sim();
   test_bridge_device(tmp);
   test_bridge_brightness(tmp);
