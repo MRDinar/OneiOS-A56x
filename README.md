@@ -62,7 +62,7 @@ Primary target: the rooted Galaxy S24 Ultra. S25 Ultra, S26 Ultra and Galaxy A-s
 | ![Galaxy S26 Ultra](docs/images/s26-ultra.jpg) | Galaxy S26 Ultra (SM-S988, SM8850) — [YMGPwcca/OneiOS](https://github.com/YMGPwcca/OneiOS) | ~600 s iOS run on device | Haptics + backend tests ported |
 | ![Galaxy A56](docs/images/a56.jpg) | Galaxy A56 (SM-A566E, Exynos 1580) — [Musicalista/OneiOS-A56](https://github.com/Musicalista/OneiOS-A56) | iOS 16.5 to lock screen on device | GPU template, bootstrap, triage tools |
 
-Device photos: [S24 Ultra by Ra Boe](https://commons.wikimedia.org/wiki/File:Samsung_Galaxy_S24_Ultra_-_by-RaBoe_001.jpg) (CC BY-SA 3.0 de), [S25 Ultra by Jakub CA](https://commons.wikimedia.org/wiki/File:Samsung_Galaxy_S25_Ultra.jpg) (CC BY 4.0), [S26 Ultra by Kyu3a](https://commons.wikimedia.org/wiki/File:Galaxy_S26_Ultra_-_1.jpg) (CC BY-SA 4.0), [A56 by OnionBulb](https://commons.wikimedia.org/wiki/File:SmsnGlxA565gFront2026040500.jpg) (CC BY-SA 4.0), via Wikimedia Commons.
+Device photos: official Samsung product images ([samsung.com](https://www.samsung.com/us/smartphones/galaxy-s25-ultra/), Samsung Newsroom press kits), © Samsung Electronics — used for device identification.
 
 ## Layout
 
