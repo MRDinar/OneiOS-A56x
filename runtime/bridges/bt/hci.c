@@ -3,6 +3,7 @@
 // state the guest's transport (drivers/bluetooth) follows. The back end for the phone is
 // hci_hidl.c (the vendor's Bluetooth HAL, free once the Bluetooth app is gone with zygote).
 #include "bridges/bridges.h"
+#include "le_scan.h"
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
@@ -20,6 +21,7 @@ struct br_hci {
   int state;
   bool open;
   uint64_t sent, received, dropped;
+  br_le_scan scan;                // extended LE scan as legacy commands, if the controller refuses them (le_scan.c)
 };
 
 bool br_hci_packet_ok(uint8_t type, const uint8_t *p, size_t length)
@@ -63,6 +65,19 @@ int br_hci_send(br_hci *h, uint8_t type, const uint8_t *packet, size_t length)
   pthread_mutex_unlock(&h->lock);
   if (!ready) { h->dropped++; return -ENOTCONN; }
   h->sent++;
+  if (type == 1) {
+    struct { uint8_t data[64]; size_t length; } out[BR_LE_SCAN_OUT];
+    pthread_mutex_lock(&h->lock);
+    bool changed = br_le_scan_command(&h->scan, packet, length);
+    unsigned n = h->scan.out_n;
+    memcpy(out, h->scan.out, sizeof out);
+    pthread_mutex_unlock(&h->lock);
+    if (changed) {
+      int rc = 0;
+      for (unsigned i = 0; i < n && !rc; i++) rc = h->backend->send(h->backend_ctx, 1, out[i].data, out[i].length);
+      return rc;
+    }
+  }
   return h->backend->send(h->backend_ctx, type, packet, length);
 }
 
@@ -71,6 +86,9 @@ void br_hci_close(br_hci *h)
   pthread_mutex_lock(&h->lock);
   bool was = h->open;
   h->open = false;
+  bool legacy = h->scan.legacy;                   // what the controller refused stays known; nothing is in flight
+  memset(&h->scan, 0, sizeof h->scan);
+  h->scan.legacy = legacy;
   pthread_mutex_unlock(&h->lock);
   if (was) h->backend->close(h->backend_ctx);
   br_hci_set_state(h, 0);
@@ -87,6 +105,26 @@ void br_hci_deliver(br_hci *h, uint8_t type, const uint8_t *packet, size_t lengt
 {
   if (!br_hci_packet_ok(type, packet, length)) { h->dropped++; return; }
   h->received++;
+  if (type == 4) {
+    static _Thread_local struct { uint8_t data[64]; size_t length; } out[BR_LE_SCAN_OUT];
+    static _Thread_local uint8_t up[BR_LE_SCAN_UP][BR_LE_SCAN_EVENT];
+    static _Thread_local size_t up_length[BR_LE_SCAN_UP];
+    pthread_mutex_lock(&h->lock);
+    unsigned switched = h->scan.switched;
+    unsigned what = br_le_scan_event(&h->scan, packet, length);
+    unsigned n = h->scan.out_n, m = h->scan.up_n;
+    memcpy(out, h->scan.out, sizeof out);
+    for (unsigned i = 0; i < m; i++) { memcpy(up[i], h->scan.up[i], h->scan.up_length[i]); up_length[i] = h->scan.up_length[i]; }
+    bool first = h->scan.switched != switched && switched == 0;
+    pthread_mutex_unlock(&h->lock);
+    if (first) br_log(1, "bluetooth: the controller refused LE Set Extended Scan Parameters: LE scans go out as the legacy commands");
+    for (unsigned i = 0; i < n; i++) (void)h->backend->send(h->backend_ctx, 1, out[i].data, out[i].length);
+    if (what == BR_LE_SCAN_DROP) return;
+    if (what == BR_LE_SCAN_REPLACE) {
+      for (unsigned i = 0; i < m; i++) if (h->rx) h->rx(h->ctx, 4, up[i], up_length[i]);
+      return;
+    }
+  }
   if (h->rx) h->rx(h->ctx, type, packet, length);
 }
 

@@ -12,7 +12,7 @@ XNUHOST := ../xnuhost
 WARN := -Wall -Wextra -Werror
 INC := -Iinclude -I../../drivers/bridge -I$(XNUHOST)/src -I$(XNUHOST)/include
 CFLAGS ?= -O2 -g
-CORE := cpu/topology haptics/haptic net/net bt/hci bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery
+CORE := cpu/topology haptics/haptic net/net bt/hci bt/le_scan bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery
 DEVICES := devices/bridge_dev devices/virtio_net devices/virtio_snd
 HDR := $(wildcard include/bridges/*.h bt/*.h audio/*.h brightness/*.h battery/*.h ../../drivers/bridge/*.h $(XNUHOST)/src/xnuhost.h)
 A := build/android
@@ -41,7 +41,7 @@ $(H)/test_bridges: tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_bridges.c $(CORE:%=%.c) $(DEVICES:%=%.c) $(XNUHOST)/src/virtio.c -lpthread -o $@
 
-BINDER_TEST := tests/test_hidl_binder.c bt/hci.c bt/hidl_parcel.c bt/hci_hidl.c cpu/topology.c
+BINDER_TEST := tests/test_hidl_binder.c bt/hci.c bt/le_scan.c bt/hidl_parcel.c bt/hci_hidl.c cpu/topology.c
 $(H)/test_hidl_binder: $(BINDER_TEST) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined $(BINDER_TEST) -lpthread -o $@
