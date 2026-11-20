@@ -2123,3 +2123,7 @@ persistent: a reboot costs a manual re-root.
   SoCs; S24 behavior unchanged), SM8750 fixture, `tools/probe/s25-probe.sh`, S25 record + hardware/building docs.
   Bridges tests green incl. new fixture; phone run.sh 216 ok. (gpu-patch-check CI skipped: metal patch dir absent;
   hw-backend stand-in tests already in tree via the hw-backend merge.)
+
+- 2026-11-21, full S25 port merged (assistant): host profile, Adreno 830 fence-wait patch, gpu3d fence-table init,
+  ssh-forward/verify-host scripts, dropbear/zsh helpers, S25 docs. Host suites green (bridges incl. SM8750 fixture,
+  xnuhost 14086, drm2kgsl + 956 leak checks). Phone proof still open (verify-host.sh on SM-S938).
