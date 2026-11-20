@@ -359,8 +359,8 @@ after):
   (`docs/booter.md` 2.6a has the numbers). Not part of `make test`.
 - `make -C runtime/xnuhost rpc-arm64` (fix-mach-rpc, 2026-11-15; the same runners) times the round trip of a synchronous
   Mach message between two tasks as the hosted kernel makes it (two user stays, two IPIs, two wakes of an idle vCPU),
-  once per interrupt path: `RPC_MODES="0 1 2"` = ArmCpu's trapped GIC registers (the kernel before hosted 0076), host
-  calls (0076), one vCPU without an IPI (the floor). Each mode is its own run, with xnuhost's `perf:` lines and
+  once per interrupt path: `RPC_MODES="0 1 2"` = ArmCpu's trapped GIC registers (the kernel before hosted 0081), host
+  calls (0081), one vCPU without an IPI (the floor). Each mode is its own run, with xnuhost's `perf:` lines and
   `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips
   (`docs/booter.md` 2.6d has the numbers). On the phone: the same command line, as the parallel test's (2.6c step 2).
   Not part of `make test`.

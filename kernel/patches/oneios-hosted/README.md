@@ -1151,7 +1151,7 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
-## 0076-irq-host-calls-rpc-stats.patch (fix-mach-rpc, 2026-11-15)
+## 0081-irq-host-calls-rpc-stats.patch (fix-mach-rpc, 2026-11-15)
 
 The keyboard lagged everywhere (phone session 8644ae9-b: Preferences at 102-104 % while typing in Settings' search, its main
 thread sampled in `_xpc_connection_send_message_with_reply_sync`; `oneios-perf` mach traps 37 us each). A synchronous
@@ -1170,7 +1170,7 @@ idle processor by an IPI, and the reply wakes the client's vCPU the same way (`d
   with its trapped `ICC_IAR1_EL1`/`ICC_EOIR1_EL1` as before. Before, every interrupt went through ArmCpu: three trapped
   system registers (IAR, EOIR, IAR again for 1023) and, for an IPI SPI, a trapped GICD_ICPENDR store.
 - `oneios-fast-irq=0` (boot argument): ArmCpu's way for everything, as before; `oneios-fast-irq=2`: the two paths in turn,
-  one `oneios-perf` period each (the `0076:` line says which: an A/B test in one boot, under the same load; any mix is safe,
+  one `oneios-perf` period each (the `0081:` line says which: an A/B test in one boot, under the same load; any mix is safe,
   ArmCpu takes SGI 0 as an IPI and `irq_take` takes ArmCpu's IPI SPIs). An xnuhost without `irq_take` (vector
   size) gets ArmCpu's way too.
 - **The lasting lines** of each `oneios-perf:` period:
@@ -1182,14 +1182,14 @@ idle processor by an IPI, and the reply wakes the client's vCPU the same way (`d
   - `wake:` threads dispatched after an IPI to their CPU (`thread_dispatch`'s `latency`, `osfmk/kern/sched_prim.c`): made
     runnable -> IPI sent (the waker's scheduler) -> the interrupt taken on this CPU (the host: the futex wake or signal of
     the vCPU's thread, its way out of `cpu_idle`) -> running (the idle exit, the switch); the other dispatches' mean wait.
-  - `0076:` interrupts by host call (timer, IPI) and by ArmCpu's trapped registers, with the mean time of a dispatch on
+  - `0081:` interrupts by host call (timer, IPI) and by ArmCpu's trapped registers, with the mean time of a dispatch on
     each path (the handler's own work included); IPIs sent each way.
   - `syscalls:` 0041's bsd and mach calls split into those that came back to their own thread (the call's own kernel
     work) and those that blocked (to the vCPU's next user entry or idle: the switch and the next thread's way back).
 
 Tested: built with the series (`HOSTED_OUT=rpc`), prelinked (audit and stubs-check below), and booted on the PC: see
 `docs/booter.md` 2.6d for the bench and the boots. Not run on the phone. On the phone: the four lines in a session's
-`xnuhost.log`, `oneios-fast-irq=1` in the `0076:` line, `by ArmCpu's trapped registers` near zero, the `rpc:` mean and
+`xnuhost.log`, `oneios-fast-irq=1` in the `0081:` line, `by ArmCpu's trapped registers` near zero, the `rpc:` mean and
 maximum while typing, and xnuhost's `emulated: insn 0xd538cc..` (ICC_IAR1_EL1) and `0xd518cc..` (ICC_EOIR1_EL1) counts at
 the stop or on SIGQUIT (millions before, devices' only after).
 

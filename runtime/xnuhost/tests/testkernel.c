@@ -791,10 +791,10 @@ static void parallel_bench(struct xh_cpu *cpu, unsigned scale)
 // wakes, takes it and releases A. So one round trip is what XNU's is under xnuhost minus its IPC code: two user stays
 // (four hand-offs), two IPIs, two wakes of an idle vCPU, two interrupts taken. The round trip is A's (its stamp at one
 // svc to its stamp at the next). The mode is how the kernel drives the interrupt controller:
-//   0  ArmCpu's way (what the hosted kernel did before 0076): the IPI is a store to GICD_ISPENDR (a trapped MMIO
+//   0  ArmCpu's way (what the hosted kernel did before 0081): the IPI is a store to GICD_ISPENDR (a trapped MMIO
 //      store: a SIGSEGV on the sender's thread), the interrupt is ICC_IAR1_EL1, a store to GICD_ICPENDR, ICC_EOIR1_EL1
 //      and ICC_IAR1_EL1 again (three trapped system registers and one trapped store: four signals on the receiver's);
-//   1  host calls (0076): ipi; irq_take, irq_eoi, irq_take;
+//   1  host calls (0081): ipi; irq_take, irq_eoi, irq_take;
 //   2  one vCPU: vCPU 0 releases B itself, no IPI and no wake (the floor: what a direct hand-off of the CPU would cost).
 // xnuhost's perf report at the stop says the futex sleeps and wakes, the signals (`emulated:` lines) of the mode.
 static volatile struct { uint64_t req, rep, a, b; uint32_t mode, stop; volatile uint8_t *gicd; uint64_t woke_at, sent_at; } rpc;
@@ -892,7 +892,7 @@ static void rpc_bench(struct xh_cpu *cpu, unsigned scale, unsigned mode)
   }
   // (no table of strings: this program has no fixups, a pointer in data holds its link address)
   put("RPC: mode "); dec(mode); put(", ");
-  put(mode == 0 ? "ArmCpu's way (trapped GIC registers and stores)\n" : mode == 1 ? "host calls (0076)\n" : "one vCPU, no IPI (the floor)\n");
+  put(mode == 0 ? "ArmCpu's way (trapped GIC registers and stores)\n" : mode == 1 ? "host calls (0081)\n" : "one vCPU, no IPI (the floor)\n");
   uint64_t n = 4000ull * scale, last = 0, bad = 0;
   struct xh_trap trap;
   for (uint64_t i = 0; i < n + 1; i++) {

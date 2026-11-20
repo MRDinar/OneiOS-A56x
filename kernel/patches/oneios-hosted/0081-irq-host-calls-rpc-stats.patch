@@ -8,7 +8,7 @@ index 9b89ec3..ad7f0c6 100644
  
 +#if XNU_HOSTED
 +		/*
-+		 * OneiOS hosted 0076: the IPI by xnuhost's ipi host call, not ArmCpu's store to GICD_ISPENDR (a trapped store, a
++		 * OneiOS hosted 0081: the IPI by xnuhost's ipi host call, not ArmCpu's store to GICD_ISPENDR (a trapped store, a
 +		 * signal on this vCPU's thread). A deferred one too: the board has no deferred IPI (IOCPU sends it at once).
 +		 */
 +		extern bool hosted_ipi_send(unsigned int phys);
@@ -27,7 +27,7 @@ index ee171b5..1e7c31c 100644
  #endif
  	struct perfcontrol_state  perfctrl_state;
 +#if XNU_HOSTED
-+	uint64_t                  hosted_rpc_at;              /* OneiOS hosted 0076: counter at the thread's Mach RPC trap, 0 = none */
++	uint64_t                  hosted_rpc_at;              /* OneiOS hosted 0081: counter at the thread's Mach RPC trap, 0 = none */
 +#else
  	uint64_t                  reserved5;
 +#endif
@@ -75,7 +75,7 @@ index 3512193..cf3fce7 100644
  extern void hosted_user_interrupt(struct arm_saved_state *state);
  
 +
-+/* 0076 (fix-mach-rpc): interrupts and IPIs by host call (hosted_machine.c), the Mach RPC round trip and the wake by IPI
++/* 0081 (fix-mach-rpc): interrupts and IPIs by host call (hosted_machine.c), the Mach RPC round trip and the wake by IPI
 + * (hosted_user.c's report). One block per vCPU. */
 +#define HOSTED_IRQ_CPUS 16
 +struct hosted_irq_counts {
@@ -106,7 +106,7 @@ index 92ce253..ef5593d 100644
  	return off != 0;
  }
 +
-+/* ---- 0076: interrupts and IPIs by host call (fix-mach-rpc, 2026-11-15) --------------------------- */
++/* ---- 0081: interrupts and IPIs by host call (fix-mach-rpc, 2026-11-15) --------------------------- */
 +/*
 + * ArmCpu, the board's interrupt controller driver, sends an IPI as a store to GICD_ISPENDR and takes each interrupt with
 + * ICC_IAR1_EL1, a store to GICD_ICPENDR (an IPI), ICC_EOIR1_EL1 and ICC_IAR1_EL1 again. Under xnuhost every one of them
@@ -243,7 +243,7 @@ index 7312da9..eaae45d 100644
  }
  static struct {
  	uint64_t at;
-+	thread_t who;                   /* 0076: the thread that trapped */
++	thread_t who;                   /* 0081: the thread that trapped */
  	uint32_t kind, number;
  } hosted_perf_open[HOSTED_PERF_CPUS];
  static uint32_t hosted_perf_every = 30;
@@ -260,7 +260,7 @@ index 7312da9..eaae45d 100644
  	uint64_t ticks = hosted_perf_now() - hosted_perf_open[cpu].at;
  	uint32_t kind = hosted_perf_open[cpu].kind, number = hosted_perf_open[cpu].number;
 +	if (kind == HOSTED_PERF_K_BSD || kind == HOSTED_PERF_K_MACH) {
-+		/* 0076: a call that came back to its own thread, or one that blocked (another thread, or idle, came next) */
++		/* 0081: a call that came back to its own thread, or one that blocked (another thread, or idle, came next) */
 +		struct hosted_irq_counts *ic = &hosted_irq_cpu[cpu & (HOSTED_IRQ_CPUS - 1)];
 +		if (hosted_perf_open[cpu].who == current_thread()) {
 +			ic->sys_same_n++;
@@ -278,7 +278,7 @@ index 7312da9..eaae45d 100644
  }
  
 +
-+/* ---- 0076: the Mach RPC round trip and the wake by IPI (fix-mach-rpc, 2026-11-15) ---------------- */
++/* ---- 0081: the Mach RPC round trip and the wake by IPI (fix-mach-rpc, 2026-11-15) ---------------- */
 +/*
 + * A Mach RPC is a mach_msg trap that sends and then receives (mach_msg2_trap -47 or mach_msg_trap -31/-32 with
 + * MACH_SEND_MSG | MACH_RCV_MSG in x1): a synchronous XPC message, a MIG call. Its round trip is the thread's, from the
@@ -360,7 +360,7 @@ index 7312da9..eaae45d 100644
  		hosted_perf_enter_user();               /* 0041 */
  		hosted_perf_hint(thread);               /* 0075 */
 +		if (__improbable(thread->machine.hosted_rpc_at != 0)) {
-+			hosted_rpc_end(thread);         /* 0076: the RPC this thread trapped with returns */
++			hosted_rpc_end(thread);         /* 0081: the RPC this thread trapped with returns */
 +		}
  		int64_t rc = hosted_user_enter(twin, context, thread->machine.cthread_self, keep_x18, &trap);
  #if PRECISE_USER_KERNEL_TIME
@@ -369,7 +369,7 @@ index 7312da9..eaae45d 100644
  		case XH_TRAP_SYSCALL:
  			hosted_user_stats.syscalls++;
  			hosted_perf_syscall(&context->ss.ss_64);
-+			hosted_rpc_begin(thread, &context->ss.ss_64);   /* 0076 */
++			hosted_rpc_begin(thread, &context->ss.ss_64);   /* 0081 */
  			break;
  		case XH_TRAP_ILLEGAL:
  			hosted_user_stats.illegal++;
@@ -419,7 +419,7 @@ index 7312da9..eaae45d 100644
 +	    wakes, wakes ? hosted_perf_us(S(wake_to_sent)) / wakes : 0, wakes ? hosted_perf_us(S(wake_to_taken)) / wakes : 0,
 +	    wakes ? hosted_perf_us(S(wake_to_run)) / wakes : 0, wakes ? hosted_perf_us(S(wake_ipi_t)) / wakes : 0,
 +	    hosted_perf_us(wake_max), others, others ? hosted_perf_us(S(wake_other_t)) / others : 0);
-+	printf("oneios-perf:   0076: interrupts by host call %llu (timer %llu, IPI %llu; %llu.%02llu us a dispatch), by ArmCpu's "
++	printf("oneios-perf:   0081: interrupts by host call %llu (timer %llu, IPI %llu; %llu.%02llu us a dispatch), by ArmCpu's "
 +	    "trapped registers %llu (%llu.%02llu us a dispatch); IPIs sent by host call %llu, by ArmCpu %llu (oneios-fast-irq=%u; this period %s)\n",
 +	    S(timer_hc) + S(ipi_hc), S(timer_hc), S(ipi_hc), hc ? hosted_perf_us(S(hc_ticks) * 100 / hc) / 100 : 0,
 +	    hc ? hosted_perf_us(S(hc_ticks) * 100 / hc) % 100 : 0, drv, drv ? hosted_perf_us(S(driver_ticks) * 100 / drv) / 100 : 0,
@@ -439,8 +439,8 @@ index 7312da9..eaae45d 100644
  		hosted_perf_top("bsd (number calls x mean)", c.bsd_n, c.bsd_t, c0->bsd_n, c0->bsd_t, HOSTED_PERF_BSD, 12, false);
  		hosted_perf_top("mach traps", c.mach_n, c.mach_t, c0->mach_n, c0->mach_t, HOSTED_PERF_MACH, 8, true);
  		hosted_perf_kernel_threads(wall_us);    /* 0051 */
-+		hosted_irq_report(wall_us);             /* 0076 */
-+		hosted_fast_irq_period();               /* 0076, oneios-fast-irq=2: the other path next */
++		hosted_irq_report(wall_us);             /* 0081 */
++		hosted_fast_irq_period();               /* 0081, oneios-fast-irq=2: the other path next */
  		hosted_perf_last = c;
  		user_last = u;
  		for (unsigned i = 0; i < 18; i++) {
@@ -453,7 +453,7 @@ index d8d69a3..8f6ab1c 100644
  #if USE_APPLEARMSMP
  	PE_handle_ext_interrupt();
 +#elif XNU_HOSTED
-+	/* OneiOS hosted 0076: the timer and IPIs by host call, a device's interrupt by the registered handler (ArmCpu) */
++	/* OneiOS hosted 0081: the timer and IPIs by host call, a device's interrupt by the registered handler (ArmCpu) */
 +	extern void hosted_irq_dispatch(cpu_data_t *cdp);
 +	hosted_irq_dispatch(cdp);
  #else
@@ -469,7 +469,7 @@ index b2aae03..bdc60c3 100644
  		latency = processor->last_dispatch - self->last_made_runnable_time;
 +#if XNU_HOSTED
 +		{
-+			/* OneiOS hosted 0076: the wait of a woken thread, split at the IPI that woke this CPU (oneios-perf wake:) */
++			/* OneiOS hosted 0081: the wait of a woken thread, split at the IPI that woke this CPU (oneios-perf wake:) */
 +			extern void hosted_perf_wake(uint64_t latency, uint64_t at);
 +			hosted_perf_wake(latency, processor->last_dispatch);
 +		}

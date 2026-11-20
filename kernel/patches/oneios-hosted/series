@@ -246,9 +246,9 @@
 # timer and IPIs with xnuhost's new `irq_take` and `irq_eoi` (a device's interrupt still goes to ArmCpu's handler);
 # oneios-fast-irq=0 is ArmCpu's way, =2 the two in turn by oneios-perf period (an A/B in one boot). oneios-perf gains
 # four lines: `rpc:` (Mach RPCs, mach_msg send + receive: count, round-trip mean and maximum, bands), `wake:` (a thread
-# woken by an IPI: made runnable -> IPI sent -> taken -> running), `0076:` (interrupts and IPIs by path, the mean time of
-# a dispatch) and `syscalls:` (calls back to their own thread against calls that blocked). README.md, "0076".
-0076-irq-host-calls-rpc-stats.patch
+# woken by an IPI: made runnable -> IPI sent -> taken -> running), `0081:` (interrupts and IPIs by path, the mean time of
+# a dispatch) and `syscalls:` (calls back to their own thread against calls that blocked). README.md, "0081".
+0081-irq-host-calls-rpc-stats.patch
 # radio2: no numbered patch for the Wi-Fi: net/ is an archive of this build (kernel/build-hosted.sh,
 # oneios-tool kernel gen net), started by oneios_drivers_start's oneios_net_start (weak in drivers/bridge/OneiOSBridge.c).
 # net/README.md: IO80211Controller/IO80211Interface under the collection's original IOEthernetController and

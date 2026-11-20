@@ -506,7 +506,7 @@ and traps.
   per-CPU POSIX timer (`SIGEV_THREAD_ID`) for the deadline; its line is INTID 27, a level, as ArmCpu takes it.
 - The controller is a GICv3 model (`gic.c`): distributor and redistributor frames by trapped MMIO, the CPU
   interface by trapped `ICC_*` registers, or the `irq_ack/irq_take/irq_eoi/irq_enable/ipi` host calls (the hosted
-  kernel uses `ipi`, `irq_take` and `irq_eoi` for IPIs and the timer since hosted 0076; ArmCpu's trapped registers for
+  kernel uses `ipi`, `irq_take` and `irq_eoi` for IPIs and the timer since hosted 0081; ArmCpu's trapped registers for
   devices' interrupts: 2.6d).
 
 ### 2.5 What is emulated from traps
@@ -921,16 +921,16 @@ recomputes all eight CPUs' lines, `gic.c` `dist_write` -> `update()`), and the s
 round trip, and three per timer interrupt. A PC boot (fix-host-overhead's `run-fpr/off`, 2,400 s) emulated `ICC_IAR1_EL1`
 2,293,015 times and `ICC_EOIR1_EL1` 1,171,059 times: more than every other trapped instruction together.
 
-**The fix (hosted 0076 and xnuhost's `irq_take`).** The kernel sends IPIs with the `ipi` host call (SGI 0, which ArmCpu also
+**The fix (hosted 0081 and xnuhost's `irq_take`).** The kernel sends IPIs with the `ipi` host call (SGI 0, which ArmCpu also
 takes as an IPI) and takes the timer and IPIs with a new host call, `irq_take` (`hostcall.h`, appended: it acknowledges only
 the timer, an SGI or an IPI SPI; a device's interrupt comes back with `XH_INTID_UNTAKEN` and stays pending, for ArmCpu's own
 path), then `irq_eoi`: function calls instead of signals. `oneios-fast-irq=0` is the old path, `=2` the two in turn by `oneios-perf` period. The lasting lines it adds to
-each `oneios-perf:` period (kernel/patches/oneios-hosted/README.md, "0076"):
+each `oneios-perf:` period (kernel/patches/oneios-hosted/README.md, "0081"):
 
 ```text
 oneios-perf:   rpc: N Mach RPCs (mach_msg send + receive), round trip mean X us, max Y us; under 100 us A, 100 us-1 ms B, 1-10 ms C, over 10 ms D (R per s)
 oneios-perf:   wake: N threads woken by an IPI: made runnable -> IPI sent S us, -> interrupt taken T us, -> running U us (means), W us in all (max M us); other dispatches O, mean wait Q us
-oneios-perf:   0076: interrupts by host call N (timer T, IPI I; X us a dispatch), by ArmCpu's trapped registers D (Y us a dispatch); IPIs sent by host call H, by ArmCpu A (oneios-fast-irq=1)
+oneios-perf:   0081: interrupts by host call N (timer T, IPI I; X us a dispatch), by ArmCpu's trapped registers D (Y us a dispatch); IPIs sent by host call H, by ArmCpu A (oneios-fast-irq=1)
 oneios-perf:   syscalls: N back to their own thread, X us each (the call's own kernel work); M blocked, Y us each to the vCPU's next user entry or idle (the switch, the next thread's way back)
 ```
 
@@ -942,14 +942,14 @@ each release (placement, uclamp, the deferred queue): time the `down` line does 
 
 **The bench** (`make -C runtime/xnuhost rpc-arm64`, the test kernel's `testkernel-rpc`, docs/building.md section 4): a client
 task's thread on vCPU 0 and a server task's on vCPU 1 trade a request and a reply as above, 4,000 round trips per mode:
-mode 0 = ArmCpu's trapped registers and GICD stores, mode 1 = the host calls of 0076, mode 2 = both threads on one vCPU, no
+mode 0 = ArmCpu's trapped registers and GICD stores, mode 1 = the host calls of 0081, mode 2 = both threads on one vCPU, no
 IPI (the floor: what a direct hand-off of the CPU would cost). On the x86_64 PC under qemu-aarch64 (times are qemu's, about
 ten times the phone's; the box had a load of 30-42 from other agents' builds and boots throughout), two rounds, us:
 
 | | round trip p50 | mean | IPI sent -> the idle vCPU out of `cpu_idle`, p50 | 4,000 round trips |
 |---|---|---|---|---|
 | mode 0, ArmCpu's way (before) | 485 / 672 | 2,167 / 1,742 | 21.0 / 21.0 | 8.7 / 7.0 s |
-| mode 1, host calls (0076) | 184 / 144 | 1,323 / 1,210 | 7.9 / 7.9 | 5.3 / 4.9 s |
+| mode 1, host calls (0081) | 184 / 144 | 1,323 / 1,210 | 7.9 / 7.9 | 5.3 / 4.9 s |
 | mode 2, one vCPU, no IPI | 52 / 52 | 485 / 569 | - | 2.0 / 2.3 s |
 
 xnuhost's stop report for mode 0: `emulated: insn 0xd538cc08 16000 times` (ICC_IAR1_EL1) and `0xd518cc28 8000 times`
