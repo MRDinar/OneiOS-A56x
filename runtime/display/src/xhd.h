@@ -58,11 +58,28 @@ struct xhd_direct {
 };
 void xhd_direct_init(struct xhd_direct *d);
 void xhd_direct_close(struct xhd_direct *d);
-// Copy the pending frame's rectangle (clipped to dst_width x dst_height) from guest RAM into a B,G,R,X/A buffer (swap:
-// R,G,B,X, alpha 0xff). 0, with *done the rectangle, or -errno: a slot that changed or does not fit RAM copies nothing.
+// Copy a rectangle of the pending frame (`only`, or NULL: the slot's changed rectangle; clipped to the frame and to
+// dst_width x dst_height) from guest RAM into a B,G,R,X/A buffer (swap: R,G,B,X, alpha 0xff). 0, with *done the
+// rectangle, or -errno: a slot that changed or does not fit RAM copies nothing.
 int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride, uint32_t dst_width, uint32_t dst_height, int swap,
-                    struct xhd_rect *done);
+                    const struct xhd_rect *only, struct xhd_rect *done);
+
+// What changed: the guest flushes its whole surface every frame (its swap carries no dirty region), so the helper finds
+// the damage itself. Each row is cut into XHD_TILES tiles; a tile's hash is of its pixels' B,G,R bytes (not X) as a
+// stream, so the same picture in another surface (the compositor rotates three, scattered differently over RAM) hashes
+// the same. `shown` holds the hashes of what the layer shows, valid once a whole frame was posted.
+#define XHD_TILES 4
+struct xhd_damage { uint32_t width, height, tile; uint64_t *shown, *next; int valid; };
+int  xhd_damage_init(struct xhd_damage *d, uint32_t width, uint32_t height);   // 0 or -ENOMEM
+void xhd_damage_free(struct xhd_damage *d);
+// Hashes the pending frame (all of it) and compares: 0 with *dirty the bounding rectangle of the tiles that differ from
+// what is shown (w == 0: the frame is what the layer already shows; nothing to post), or -errno (as xhd_copy_direct).
+int  xhd_direct_damage(const struct xhd_direct *dir, struct xhd_damage *d, struct xhd_rect *dirty);
+// The frame just hashed is in the layer now (posted whole or its damage over the rest).
+void xhd_damage_commit(struct xhd_damage *d);
+uint64_t xhd_hash_pixels(uint64_t state[4], const uint8_t *p, size_t bytes, size_t at);   // (for the tests)
 #define XHD_DONE_FAILED 1u
+#define XHD_DONE_UNCHANGED 2u                         // the frame was what the layer showed: nothing was posted
 int xhd_send_done(int fd, uint64_t seq, uint32_t flags);
 // Receive the hello and map the frame. 0 or -errno.
 int xhd_recv_hello(int fd, struct xhd_frame *frame, int timeout_ms);

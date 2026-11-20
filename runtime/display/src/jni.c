@@ -106,10 +106,14 @@ static long long cpu_us(void)
 }
 
 // Posts frames until the socket closes (0) or a signal asks to stop (1); negative on an error.
-// Pacing: the next buffer is only handed out when surfaceflinger has taken the last one, so
-// ANativeWindow_lock blocks to the panel's vsync, and every flush that came meanwhile is one post.
-// A direct frame (xnuhost's "frame") is copied from the guest's own pages into the buffer, and answered ("done") once
-// the buffer is posted: xnuhost then answers the guest's flush, so the guest may draw into that surface again.
+// Every wait is on an event: the socket, the stop pipe, or a free buffer (ANativeWindow_lock blocks until surfaceflinger
+// has taken the last one, which paces the loop to the panel). With nothing from xnuhost the thread sleeps in poll().
+// A direct frame (xnuhost's "frame") is hashed against what the layer shows (xhd_direct_damage): unchanged, it is
+// answered at once and nothing is locked or posted, so surfaceflinger has nothing to compose and the panel's refresh
+// rate can drop by itself; changed, only the rectangle of the changed tiles is locked and copied from the guest's pages,
+// the window keeping the rest from the last buffer (Surface::lock copies back the last post's damage into the buffer it
+// hands out, whichever of the queue's buffers that is). The answer ("done") goes after the post: xnuhost then answers
+// the guest's flush, so the guest may draw into that surface again.
 JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong handle, jobject surface, jint format)
 {
   (void)type;
@@ -120,9 +124,13 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
   ANativeWindow_setBuffersGeometry(window, (int32_t)f->width, (int32_t)f->height, format);
   struct xhd_rect pending = { 0, 0, f->width, f->height };
   struct xhd_direct *direct = &c->direct;
+  struct xhd_damage damage;
+  bool hashing = !xhd_damage_init(&damage, f->width, f->height);
+  if (!hashing) fprintf(stderr, "oneios-display: no memory for the damage hashes: every direct frame is copied whole\n");
   unsigned long frames = 0, direct_frames = 0, refused = 0;
   bool announced = false;
-  struct { unsigned long frames, direct; long long lock_us, copy_us, copy_max, since, cpu; } st = { 0, 0, 0, 0, 0, now_us(), cpu_us() };
+  struct { unsigned long posted, direct, unchanged; long long lock_us, copy_us, copy_max, hash_us, rows, since, cpu; } st =
+    { 0, 0, 0, 0, 0, 0, 0, 0, now_us(), cpu_us() };
   int result;
   for (;;) {
     struct pollfd fds[2] = { { c->fd, POLLIN, 0 }, { signal_pipe[0], POLLIN, 0 } };
@@ -131,13 +139,21 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
     if (stopping || (ready > 0 && fds[1].revents)) { result = 1; break; }
     if (xhd_drain_direct(c->fd, f, &pending, direct) < 0) { result = 0; break; }
     if (!pending.w && !direct->pending) continue;
-    // The first posts fill whole buffers; after that the window copies back what the last frame
-    // had and hands out the rectangle that has to be drawn (it may be larger than what was asked).
-    struct xhd_rect want = pending;
+    // What has to be drawn: xnuhost's own damage (the memfd), and the direct frame's changed tiles.
+    struct xhd_rect want = pending, changed = { 0, 0, 0, 0 };
+    int hashed = -1;
+    long long th = now_us();
     if (direct->pending) {
-      const struct xhd_slot *s = (const struct xhd_slot *)(direct->table + (size_t)direct->slot * direct->slot_bytes);
-      struct xhd_rect r = { s->x, s->y, s->w, s->h };
-      if (xhd_rect_clip(&r, f->width, f->height)) xhd_rect_union(&want, &r);
+      hashed = hashing ? xhd_direct_damage(direct, &damage, &changed) : -ENOMEM;
+      if (hashed) changed = (struct xhd_rect){ 0, 0, f->width, f->height };        // copied whole (or refused below)
+      st.hash_us += now_us() - th;
+      if (!hashed && !changed.w && !pending.w && frames >= 4) {
+        xhd_send_done(c->fd, direct->seq, XHD_DONE_UNCHANGED);                   // the layer shows it already
+        direct->pending = 0;
+        st.unchanged++;
+        goto stats;
+      }
+      xhd_rect_union(&want, &changed);
     }
     ARect dirty = { (int32_t)want.x, (int32_t)want.y, (int32_t)(want.x + want.w), (int32_t)(want.y + want.h) };
     if (frames < 4 || !want.w) dirty = (ARect){ 0, 0, (int32_t)f->width, (int32_t)f->height };
@@ -157,47 +173,69 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       result = -2;
       break;
     }
-    struct xhd_rect r = { 0, 0, 0, 0 };
-    if (dirty.left < 0) dirty.left = 0;
-    if (dirty.top < 0) dirty.top = 0;
     uint32_t width = (uint32_t)buffer.width < f->width ? (uint32_t)buffer.width : f->width;
     uint32_t height = (uint32_t)buffer.height < f->height ? (uint32_t)buffer.height : f->height;
     bool usable = buffer.width > 0 && buffer.height > 0 && buffer.stride >= buffer.width;
     int swap = buffer.format != FORMAT_BGRA_8888;
-    // What only xnuhost's frame has (its own copies, the boot console) comes from the memfd: the first whole buffers, the
-    // window's dirty rectangle while every frame is xnuhost's, and only xnuhost's own damage once frames come direct
-    // (the memfd does not have them, so it must not paint over what the window kept of the last one).
-    if (usable && (pending.w || frames < 4)) {
-      if (frames < 4) r = (struct xhd_rect){ 0, 0, f->width, f->height };
-      else if (direct->pending || direct_frames) r = pending;
-      else if (dirty.right > dirty.left && dirty.bottom > dirty.top)
-        r = (struct xhd_rect){ (uint32_t)dirty.left, (uint32_t)dirty.top, (uint32_t)(dirty.right - dirty.left), (uint32_t)(dirty.bottom - dirty.top) };
-      if (xhd_rect_clip(&r, width, height)) xhd_copy(buffer.bits, (size_t)buffer.stride * 4, f->pixels, f->stride, r, swap);
-    }
+    // The rectangle the window wants drawn (it may hand out more than was asked: a new buffer, the first ones).
+    if (dirty.left < 0) dirty.left = 0;
+    if (dirty.top < 0) dirty.top = 0;
+    struct xhd_rect fill = { 0, 0, 0, 0 };
+    if (dirty.right > dirty.left && dirty.bottom > dirty.top)
+      fill = (struct xhd_rect){ (uint32_t)dirty.left, (uint32_t)dirty.top, (uint32_t)(dirty.right - dirty.left), (uint32_t)(dirty.bottom - dirty.top) };
+    if (frames < 4) fill = (struct xhd_rect){ 0, 0, f->width, f->height };
     int direct_failed = 0;
-    if (direct->pending) {
-      struct xhd_rect done;
-      int copied = usable ? xhd_copy_direct(direct, buffer.bits, (size_t)buffer.stride * 4, width, height, swap, &done) : -EINVAL;
-      if (copied) { refused++; direct_failed = 1; } else { direct_frames++; st.direct++; }
-      if (copied && refused == 1) fprintf(stderr, "oneios-display: a direct frame could not be copied (%s)\n", strerror(-copied));
+    if (usable && xhd_rect_clip(&fill, width, height)) {
+      if (direct->pending) {
+        // The guest's surface has the whole frame: all of `fill` comes from it. What xnuhost drew itself in the memfd
+        // (pending) goes over it, and the layer then no longer matches the hashes there.
+        struct xhd_rect done;
+        int copied = xhd_copy_direct(direct, buffer.bits, (size_t)buffer.stride * 4, width, height, swap, &fill, &done);
+        if (copied) { refused++; direct_failed = 1; if (refused == 1) fprintf(stderr, "oneios-display: a direct frame could not be copied (%s)\n", strerror(-copied)); }
+        else { direct_frames++; st.direct++; st.rows += done.h; }
+        struct xhd_rect own = pending;
+        if (own.w && xhd_rect_clip(&own, width, height)) xhd_copy(buffer.bits, (size_t)buffer.stride * 4, f->pixels, f->stride, own, swap);
+        if (copied || pending.w) damage.valid = 0;
+      } else {
+        // Every pixel is xnuhost's: the window's rectangle comes from the memfd, as before direct frames. Once frames
+        // come direct the memfd is stale, so then only xnuhost's own damage does.
+        struct xhd_rect r = direct_frames ? pending : fill;
+        if (r.w && xhd_rect_clip(&r, width, height)) xhd_copy(buffer.bits, (size_t)buffer.stride * 4, f->pixels, f->stride, r, swap);
+        damage.valid = 0;
+      }
     }
     long long t2 = now_us();
     ANativeWindow_unlockAndPost(window);
-    if (direct->pending) { xhd_send_done(c->fd, direct->seq, direct_failed ? XHD_DONE_FAILED : 0); direct->pending = 0; }
+    if (direct->pending) {
+      if (!direct_failed && !hashed && !pending.w) xhd_damage_commit(&damage);
+      xhd_send_done(c->fd, direct->seq, direct_failed ? XHD_DONE_FAILED : 0);
+      direct->pending = 0;
+    }
     if (frames++ == 0)
       fprintf(stderr, "oneios-display: first frame posted (%dx%d buffer, stride %d, format %d)\n", buffer.width, buffer.height, buffer.stride, buffer.format);
-    if (direct_frames && !announced) { announced = true; fprintf(stderr, "oneios-display: frames come straight from guest RAM now (one copy, none in xnuhost)\n"); }
+    if (direct_frames && !announced) {
+      announced = true;
+      fprintf(stderr, "oneios-display: frames come straight from guest RAM now, only their changed tiles copied and posted\n");
+    }
     pending = (struct xhd_rect){ 0, 0, 0, 0 };
-    st.frames++; st.lock_us += t1 - t0; st.copy_us += t2 - t1;
+    st.posted++; st.lock_us += t1 - t0; st.copy_us += t2 - t1;
     if (t2 - t1 > st.copy_max) st.copy_max = t2 - t1;
-    if (t2 - st.since >= 10000000) {
+  stats:;
+    // Reported when a frame comes and 10 s have passed since the last report: no timer, so nothing at all when idle.
+    long long now = now_us();
+    if (now - st.since >= 10000000) {
       long long cpu = cpu_us();
-      fprintf(stderr, "oneios-display: 10 s: %lu frames (%lu from guest RAM), %.1f/s; buffer wait mean %.1f ms; copy mean %.1f ms, max %.1f ms; "
-              "this process %.0f%% of a core\n", st.frames, st.direct, st.frames * 1e6 / (double)(t2 - st.since), st.lock_us / 1000.0 / st.frames,
-              st.copy_us / 1000.0 / st.frames, st.copy_max / 1000.0, (cpu - st.cpu) * 100.0 / (double)(t2 - st.since));
-      st = (__typeof__(st)){ 0, 0, 0, 0, 0, t2, cpu };
+      unsigned long seen = st.posted + st.unchanged;
+      fprintf(stderr, "oneios-display: %.0f s: %lu frames from xnuhost, %lu unchanged (nothing posted), %lu posted (%lu from guest RAM, "
+              "%.0f%% of the rows copied); hash mean %.1f ms; buffer wait mean %.1f ms; copy mean %.1f ms, max %.1f ms; this process %.0f%% of a core\n",
+              (now - st.since) / 1e6, seen, st.unchanged, st.posted, st.direct,
+              st.direct ? st.rows * 100.0 / ((double)st.direct * f->height) : 0.0, seen ? st.hash_us / 1000.0 / seen : 0.0,
+              st.posted ? st.lock_us / 1000.0 / st.posted : 0.0, st.posted ? st.copy_us / 1000.0 / st.posted : 0.0, st.copy_max / 1000.0,
+              (cpu - st.cpu) * 100.0 / (double)(now - st.since));
+      st = (__typeof__(st)){ 0, 0, 0, 0, 0, 0, 0, 0, now, cpu };
     }
   }
+  xhd_damage_free(&damage);
   ANativeWindow_release(window);
   fprintf(stderr, "oneios-display: %s after %lu frames\n", result == 0 ? "the socket closed" : result == 1 ? "asked to stop" : "error", frames);
   return result;

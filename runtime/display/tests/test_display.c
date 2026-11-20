@@ -162,17 +162,17 @@ static void test_direct(void)
     want[y * DS + x * 4 + (uint32_t)b] = rp[(at < 0x1000 ? 0x8000 : 0x2000 - 0x1000) + at];
   }
   struct xhd_rect done;
-  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == 0 && done.x == 1 && done.w == 8 && done.h == H);
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, NULL, &done) == 0 && done.x == 1 && done.w == 8 && done.h == H);
   CHECK(!memcmp(dst, want, sizeof dst));                                 // every row, across the two pages, nothing else
-  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 1, &done) == 0);
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 1, NULL, &done) == 0);
   CHECK(dst[85 * DS + 4] == want[85 * DS + 6] && dst[85 * DS + 6] == want[85 * DS + 4] && dst[85 * DS + 7] == 0xff);   // swapped
-  CHECK(xhd_copy_direct(&d, dst, DS, 4, 3, 0, &done) == 0 && done.w == 3 && done.h == 3);                // clipped to the buffer
+  CHECK(xhd_copy_direct(&d, dst, DS, 4, 3, 0, NULL, &done) == 0 && done.w == 3 && done.h == 3);                // clipped to the buffer
   slot->nsegs = 1;
-  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == -EINVAL);                                         // rows past the segments
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, NULL, &done) == -EINVAL);                                         // rows past the segments
   slot->nsegs = 2; segs[1].offset = RAM - 0x800;
-  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == -EINVAL);                                         // a segment past the RAM
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, NULL, &done) == -EINVAL);                                         // a segment past the RAM
   segs[1].offset = 0x2000; slot->seq = 11;
-  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, &done) == -ESTALE);                                         // the slot was reused
+  CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, NULL, &done) == -ESTALE);                                         // the slot was reused
   frame.b = 5;                                                                                              // an older frame: the newer stays
   send(pair[0], &frame, sizeof frame, 0);
   CHECK(xhd_drain_direct(pair[1], &f, &damage, &d) == 0 && d.seq == 7);

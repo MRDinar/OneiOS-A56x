@@ -94,7 +94,7 @@ static void *direct_helper(void *arg)
   if (d.pending) {
     static uint8_t dst[DW * 4 * DH];
     struct xhd_rect done;
-    int ok = xhd_copy_direct(&d, dst, DW * 4, DW, DH, 0, &done) == 0 && done.w == DW && done.h == DH;
+    int ok = xhd_copy_direct(&d, dst, DW * 4, DW, DH, 0, NULL, &done) == 0 && done.w == DW && done.h == DH;
     // the guest's frame: rows of DSTRIDE bytes over pages 3, 1 and 2 of its RAM (4 KiB each), in that order
     for (uint32_t y = 0; y < DH && ok; y++) for (uint32_t x = 0; x < DW * 4; x++) {
       uint64_t at = (uint64_t)y * DSTRIDE + x, page = at / 4096 == 0 ? 3 : at / 4096 == 1 ? 1 : 2;
