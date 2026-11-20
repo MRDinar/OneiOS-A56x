@@ -2132,3 +2132,7 @@ persistent: a reboot costs a manual re-root.
   impact path (opt-in, features=0 default), 0073 mac-exec triage. Verified: host suites green, kernel builds+links
   with 0073 inside, prelink audit 0 failures, PC bench boot to SpringBoard, no panics. Guest→HAL haptics delivery
   still needs a safety-qualified phone session (upstream).
+
+- 2026-11-21, SM8850 port merged (assistant): brightctl inspect, cpu-hw-trip exclusion, native-touch priority,
+  displayctl takeover-refusal + --socket, union-flush packet counts, touch-exclusive grab, frame_perf lib (17
+  cherry-picks + 1 adapted hand-port; S26-only reverts/refactors explicitly skipped). Host suites green.
