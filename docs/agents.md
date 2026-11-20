@@ -2112,3 +2112,9 @@ persistent: a reboot costs a manual re-root.
   to `out/toolchain/cctools`, `xnu-host-cc` wrapper likewise) — do not delete a worktree other builds' toolchain links
   point into; built `unifdef` from source to `~/.local/bin` (CachyOS, no sudo). Added root `AGENTS.md` -> `CLAUDE.md`
   symlink. All active subagents were pointed at CLAUDE.md and the no-Python rule.
+
+- 2026-11-20, wifi-late-enable merged (assistant): en0 force-up 50 ms after attach (`oneios-wifi-up=0` opts out) plus
+  per-disk/flush stat lines. Verified: host tests green (xnuhost 14079/0), kernel builds, prelink audit 0 failures,
+  two PC boots (plain: SpringBoard reached, no regression; wifi=sim: sim radio works, en0 named+enabled by configd at
+  +332 s — the driver's force-up never fires on sim because the driver's attach path does not run there, so the
+  PC cannot prove this fix; phone session still needed for the `brought up by the driver` line).
