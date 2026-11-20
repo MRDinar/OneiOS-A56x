@@ -157,6 +157,10 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     }
   } else {
     xl_adt_set_str(root, "model", m->model ? m->model : "oneios-xnuhost");
+    // The board (24A446's DeviceTree: target-type "V54" for the iPhone18,2). iOS names its jetsam properties by it:
+    // without it runningboardd logs "Can't find jetsamproperties ('/System/Library/LaunchDaemons/com.apple.jetsamproperties'
+    // | '' | 'plist')" (a PC boot, 2026-11-15) and has none of com.apple.jetsamproperties.V54.plist's bands and limits.
+    if (m->target_type) xl_adt_set_str(root, "target-type", m->target_type);
   }
   memcpy(compatible + used, "oneios,xnuhost", sizeof "oneios,xnuhost");
   used += sizeof "oneios,xnuhost";
@@ -261,11 +265,27 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   }
   xl_adt_node *defaults = xl_adt_add(root, "defaults");
   xl_adt_set_u32(defaults, "sleep-disabled", 1);
-  // XNU publishes this as kern.hv_vmm_present; bluetoothd then skips chip initialisation.
+  // XNU publishes this as kern.hv_vmm_present; 24A446's bluetoothd then skips chip initialisation, and its power init
+  // succeeds only with transport 10, its own simulated controller (docs/hardware.md 4, "The virtual transport").
   xl_adt_set_u32(defaults, "vmm-present", 1);
   // The vnode limit XNU sizes from memory, (bytes / 64 KiB) + 1024: without it the BCM2837
   // configuration clips it to 1024 and the vnode jetsam kills every idle process.
   xl_adt_set_u32(defaults, "kern.maxvnodes", (uint32_t)(m->dram_size / 0x10000 + 1024));
+  // ram-view= (xnuhost): the per-process memory limits an iPhone18,2 has, from its own device tree (24A446's
+  // DeviceTree /defaults: kern.max_task_pmem 3376, kern.entitled_max_task_pmem 6144, kern.entitled_dev_max_task_pmem
+  // 6656 MB, for its 12 GiB), scaled by the view. XNU reads them in task_init (max_task_footprint) and
+  // memorystatus_init (the entitled raise of apps with com.apple.developer.kernel.increased-memory-limit). A footprint
+  // counts the task's compressed pages too (phys_footprint), so these are limits on what the compressor holds as well.
+  // Without the view: the iPhone18,2's own default task limit (kern.max_task_pmem 3376 MB; before 2026-11-15 the tree had
+  // none, so a task with no limit of its own from launchd or RunningBoard had none at all) and no entitled raise, as before.
+  if (!m->view_size) xl_adt_set_u32(defaults, "kern.max_task_pmem", 3376);
+  else {
+    static const struct { const char *name; uint32_t mb; } limits[] = {
+      { "kern.max_task_pmem", 3376 }, { "kern.entitled_max_task_pmem", 6144 }, { "kern.entitled_dev_max_task_pmem", 6656 },
+    };
+    for (unsigned i = 0; i < sizeof limits / sizeof *limits; i++)
+      xl_adt_set_u32(defaults, limits[i].name, (uint32_t)((uint64_t)limits[i].mb * (m->view_size >> 20) / (12u << 10)));
+  }
   xl_adt_add(root, "options");
 
   // bluetoothd finds its controller by name; transport-encoding 10 is the virtual transport.
@@ -342,6 +362,7 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     case XL_DEV_SND:        snprintf(name, sizeof name, "virtio-snd"); compat = "droidvm,virtio-snd"; break;
     case XL_DEV_BRIDGE:     snprintf(name, sizeof name, "bridge"); compat = "oneios,bridge"; break;
     case XL_DEV_CAMERA:     snprintf(name, sizeof name, "camera"); compat = "oneios,camera"; break;
+    case XL_DEV_MEDIA:      snprintf(name, sizeof name, "virtio-media-0"); compat = "droidvm,virtio-media"; break;
     default: FAIL("unknown device kind");
     }
     if (xl_adt_child(io, name)) FAIL("two devices of a kind that has one node");
@@ -356,6 +377,10 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     if (d->kind == XL_DEV_GPU && m->gpu_pool_size) {
       uint64_t pool[2] = { m->gpu_pool_base, m->gpu_pool_size };
       xl_adt_set(n, "drm-host-pool", pool, sizeof pool);
+    }
+    if (d->kind == XL_DEV_MEDIA && m->media_pool_size) {
+      uint64_t pool[2] = { m->media_pool_base, m->media_pool_size };
+      xl_adt_set(n, "media-host-pool", pool, sizeof pool);
     }
   }
   if (m->cpufreq_size) {

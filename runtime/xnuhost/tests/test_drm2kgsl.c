@@ -8,11 +8,14 @@
 //     (kgsl_mem_entry_attach_to_process -> kgsl_mmu_get_gpuaddr), ENOMEM when nothing is left;
 //   - a VBO may be as large as the range (gpumem_max_va_size), not larger (EINVAL);
 //   - BIND_RANGES takes children of the same process, whole pages, inside the child and inside the VBO.
-// Each scenario runs in a process of its own (the renderer is one per process). Skipped without /dev/udmabuf.
+// Each scenario runs in a process of its own (the renderer is one per process). Without /dev/udmabuf (root:kvm on a PC)
+// only the policy's scenarios run, on a stand-in for it (fake_udmabuf); the memory scenarios need the real one.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 #include "gpu3d.h"
+#include "oneios_drm2kgsl.h"
+#include "oneios_gpu_policy.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -25,18 +28,27 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <linux/types.h>
+#include <linux/udmabuf.h>
 #define __user
 #include "drm2kgsl/msm_kgsl.h"
 
 // ---- the stand-in -----------------------------------------------------------------------------------------------------
 #define VA_BASE 0x4000000000ull
 #define VA_END  0x8000000000ull
-typedef struct { uint32_t id; uint64_t base, size; bool vbo; } object;
+typedef struct { uint32_t id; uint64_t base, size, flags; bool vbo; } object;
 static object objects[256];
 static unsigned nobjects, next_id = 1, imports, frees;
+// As KGSL on an MMU without IO coherence (kgsl_memdesc_init): an import keeps every flag it asked but that one.
+static bool no_io_coherence;
 typedef struct { uint32_t vbo, child, op; uint64_t target, length, child_offset; unsigned call; } bound;
 static bound binds[256];
 static unsigned nbinds, bind_calls;
+// Queues made (DRAWCTXT_CREATE's flags; queue i + 1 is id i + 1) and power constraints set (patch 0008).
+static uint32_t queue_flags[64];
+static unsigned nqueues;
+typedef struct { uint32_t context, type, level; } constraint;
+static constraint constraints[64];
+static unsigned nconstraints;
 
 static object *object_find(uint32_t id)
 {
@@ -76,7 +88,7 @@ static int fake_kgsl(unsigned long request, void *arg)
     struct kgsl_gpuobj_info *i = arg;
     object *o = object_find(i->id);
     if (!o) { errno = ENOENT; return -1; }
-    i->gpuaddr = o->base; i->size = o->size;
+    i->gpuaddr = o->base; i->size = o->size; i->flags = o->flags;
     return 0;
   }
   case IOCTL_KGSL_GPUOBJ_IMPORT: {
@@ -85,6 +97,7 @@ static int fake_kgsl(unsigned long request, void *arg)
     off_t size = i->type == KGSL_USER_MEM_TYPE_DMABUF ? lseek(d->fd, 0, SEEK_END) : -1;
     if (size <= 0 || (i->flags & KGSL_MEMFLAGS_VBO)) { errno = EINVAL; return -1; }
     if (object_new((uint64_t)size, false, &i->id)) return -1;
+    object_find(i->id)->flags = no_io_coherence ? i->flags & ~(uint64_t)KGSL_MEMFLAGS_IOCOHERENT : i->flags;
     imports++;
     return 0;
   }
@@ -113,9 +126,38 @@ static int fake_kgsl(unsigned long request, void *arg)
     bind_calls++;
     return 0;
   }
-  case IOCTL_KGSL_SETPROPERTY: return 0;
+  case IOCTL_KGSL_SETPROPERTY: {
+    struct kgsl_device_getproperty *p = arg;
+    if (p->type == KGSL_PROP_PWR_CONSTRAINT && p->sizebytes == sizeof(struct kgsl_device_constraint) && nconstraints < 64) {
+      const struct kgsl_device_constraint *c = p->value;
+      const struct kgsl_device_constraint_pwrlevel *l = c->data;
+      constraints[nconstraints++] = (constraint){ .context = c->context_id, .type = c->type, .level = l ? l->level : ~0u };
+    }
+    return 0;
+  }
+  // Queues (patch 0008): their flags as asked, a priority over 15 refused as KGSL does.
+  case IOCTL_KGSL_DRAWCTXT_CREATE: {
+    struct kgsl_drawctxt_create *d = arg;
+    if (nqueues == 64) { errno = ENOMEM; return -1; }
+    queue_flags[nqueues++] = d->flags;
+    d->drawctxt_id = nqueues;
+    return 0;
+  }
+  case IOCTL_KGSL_DRAWCTXT_DESTROY: return 0;
   default: errno = ENOTTY; return -1;
   }
+}
+
+// Without this host's /dev/udmabuf (root:kvm on a PC): a stand-in for it too, for the scenarios that never read pages
+// through it (the classes, the surface sharing): UDMABUF_CREATE_LIST gives a memfd of the list's size, not the guest's pages.
+static bool fake_udmabuf;
+static int fake_udmabuf_create(const struct udmabuf_create_list *list)
+{
+  uint64_t bytes = 0;
+  for (unsigned i = 0; i < list->count; i++) bytes += list->list[i].size;
+  int fd = (int)syscall(SYS_memfd_create, "fake-udmabuf", 1u);
+  if (fd >= 0 && ftruncate(fd, (off_t)bytes)) { close(fd); return -1; }
+  return fd;
 }
 
 int __real_ioctl(int fd, unsigned long request, ...);
@@ -126,6 +168,7 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
   va_start(ap, request);
   void *arg = va_arg(ap, void *);
   va_end(ap);
+  if (fake_udmabuf && request == UDMABUF_CREATE_LIST) return fake_udmabuf_create(arg);
   return _IOC_TYPE(request) == KGSL_IOC_TYPE ? fake_kgsl(request, arg) : __real_ioctl(fd, request, arg);
 }
 
@@ -137,7 +180,8 @@ int __wrap_open(const char *path, int flags, ...)
   va_start(ap, flags);
   int mode = va_arg(ap, int);
   va_end(ap);
-  if (!strcmp(path, "/dev/kgsl-3d0") || !strcmp(path, "/dev/dma_heap/system")) return __real_open("/dev/null", O_RDWR | O_CLOEXEC);
+  if (!strcmp(path, "/dev/kgsl-3d0") || !strcmp(path, "/dev/dma_heap/system") || (fake_udmabuf && !strcmp(path, "/dev/udmabuf")))
+    return __real_open("/dev/null", O_RDWR | O_CLOEXEC);
   return __real_open(path, flags, mode);
 }
 
@@ -150,7 +194,8 @@ typedef struct { uint32_t seqno, rsp_mem_offset, async_error, global_faults; } m
 static unsigned checks, failed;
 #define CHECK(x) do { checks++; if (!(x)) { failed++; printf("FAILED %s:%d: %s\n", __FILE__, __LINE__, #x); } } while (0)
 static char last_error[512];
-static void log_line(int level, const char *line) { if (level == 0) snprintf(last_error, sizeof last_error, "%s", line); if (getenv("TEST_VERBOSE")) printf("  %d %s\n", level, line); }
+static char last_context[512];   // the last "gpu: context" line (the policy's)
+static void log_line(int level, const char *line) { if (level == 0) snprintf(last_error, sizeof last_error, "%s", line); if (!strncmp(line, "gpu: context", 12)) snprintf(last_context, sizeof last_context, "%s", line); if (getenv("TEST_VERBOSE")) printf("  %d %s\n", level, line); }
 
 static uint8_t *ram;
 static xh_gpu3d *gpu;
@@ -183,12 +228,12 @@ static int ccmd(context *c, void *request, uint32_t size)
   return r ? r : c->shmem->seqno != c->seqno ? -EIO : 0;
 }
 
-static bool context_open(context *c, uint32_t id, uint32_t shmem_res)
+static bool context_named(context *c, uint32_t id, uint32_t shmem_res, const char *name)
 {
   uint64_t offset = 0;
   uint32_t info = 0;
   *c = (context){ .id = id };
-  if (gpu->ctx_create(gpu, id, XH_GPU_CAPSET_DRM, "test", 4)) return false;
+  if (gpu->ctx_create(gpu, id, XH_GPU_CAPSET_DRM, name, strlen(name))) return false;
   if (gpu->create_blob(gpu, id, shmem_res, XH_GPU_BLOB_HOST3D, XH_GPU_BLOB_FLAG_MAPPABLE, 0, 16384, NULL, 0) || gpu->map_blob(gpu, shmem_res, &offset, &info)) return false;
   c->shmem = (msm_shmem *)(ram + RAM_BYTES - POOL_BYTES + offset);
   // GET_PARAM(VA_START): this context's slice of the VBO
@@ -199,6 +244,7 @@ static bool context_open(context *c, uint32_t id, uint32_t shmem_res)
   memcpy(&c->slice, (uint8_t *)c->shmem + c->shmem->rsp_mem_offset + 8 + 8, 8);
   return c->slice >= va_start && c->slice < va_start + va_size;
 }
+static bool context_open(context *c, uint32_t id, uint32_t shmem_res) { return context_named(c, id, shmem_res, "test"); }
 
 static int guest_buffer(context *c, uint32_t res, uint32_t blob, uint64_t iova, uint64_t bytes, const xh_gpu_entry *pages, unsigned n)
 {
@@ -300,6 +346,134 @@ static int with_room(void)
   return 0;
 }
 
+// drm2kgsl patch 0007: each import's flags read back. A guest buffer asks IO coherence and keeps it; on a KGSL that drops
+// the flag (an MMU without IO coherence) the loss is counted and said; an attach by a second context asks none.
+typedef struct { uint64_t imports, checked, kept, dropped, plain, unreadable; } import_stats;
+static import_stats imports_now(void)
+{
+  import_stats s;
+  drm2kgsl_renderer_import_stats(&s.imports, &s.checked, &s.kept, &s.dropped, &s.plain, &s.unreadable);
+  return s;
+}
+
+static int coherence(void)
+{
+  CHECK(renderer());
+  context c, d;
+  CHECK(context_open(&c, 1, 1));
+  import_stats was = imports_now();
+  xh_gpu_entry pages = { .addr = RAM_PHYS + (1u << 20), .length = 0x4000 };
+  CHECK(guest_buffer(&c, 2, 1, c.slice + (16u << 20), 0x4000, &pages, 1) == 0);
+  import_stats now = imports_now();
+  CHECK(now.imports == was.imports + 1 && now.checked == was.checked + 1 && now.kept == was.kept + 1 && now.dropped == was.dropped &&
+        now.unreadable == was.unreadable);
+  no_io_coherence = true;
+  was = now;
+  xh_gpu_entry more = { .addr = RAM_PHYS + (2u << 20), .length = 0x4000 };
+  CHECK(guest_buffer(&c, 3, 2, c.slice + (32u << 20), 0x4000, &more, 1) == 0);
+  now = imports_now();
+  CHECK(now.imports == was.imports + 1 && now.dropped == was.dropped + 1 && now.kept == was.kept);
+  no_io_coherence = false;
+  CHECK(context_open(&d, 2, 11));
+  was = imports_now();
+  CHECK(gpu->attach(gpu, 2, 2, true) == 0);
+  now = imports_now();
+  CHECK(now.imports == was.imports + 1 && now.plain == was.plain + 1);
+  gpu->unref(gpu, 2); gpu->unref(gpu, 3); gpu->unref(gpu, 1); gpu->unref(gpu, 11);
+  gpu->ctx_destroy(gpu, 1);
+  gpu->ctx_destroy(gpu, 2);
+  return 0;
+}
+
+// Patch 0008: each queue's KGSL priority is its owner's class (oneios_gpu_policy.h), by name or by the guest's hint; a
+// background context's queues can carry KGSL's lowest level; the level setter drives the render server's deadline queue.
+static uint32_t queue_new(context *c, uint32_t flags)
+{
+  struct { ccmd_req hdr; uint32_t cmd; struct { uint32_t flags, prio, id; } q; } __attribute__((packed, aligned(4))) req =
+    { .hdr.cmd = 2, .cmd = 0xc00c644au, .q = { .flags = flags, .prio = 1 } };      // IOCTL_SIMPLE, DRM_IOCTL_MSM_SUBMITQUEUE_NEW
+  uint32_t want = 8 + sizeof req.q;
+  memcpy((uint8_t *)c->shmem + c->shmem->rsp_mem_offset, &want, 4);
+  if (ccmd(c, &req, sizeof req)) return 0;
+  int32_t ret;
+  uint32_t id;
+  memcpy(&ret, (uint8_t *)c->shmem + c->shmem->rsp_mem_offset + 4, 4);
+  memcpy(&id, (uint8_t *)c->shmem + c->shmem->rsp_mem_offset + 8 + 8, 4);
+  return ret ? 0 : id;
+}
+
+static unsigned priority_of(uint32_t id) { return id && id <= nqueues ? (queue_flags[id - 1] & KGSL_CONTEXT_PRIORITY_MASK) >> KGSL_CONTEXT_PRIORITY_SHIFT : 99; }
+
+static int classes(void)
+{
+  CHECK(renderer());
+  context render, icons, app, other, photos;
+  CHECK(context_named(&render, 1, 1, "xnu:backboardd"));
+  CHECK(context_named(&icons, 2, 2, "xnu:iconservicesagent"));
+  CHECK(context_named(&app, 3, 3, "xnu:MobileSafari"));
+  CHECK(context_named(&other, 4, 4, "xnu:MobileSafari"));
+  CHECK(context_named(&photos, 5, 5, "xnu:photoanalysisd"));
+  // The guest's hint: Safari in front (role 1), the other one sent to the background (role 2).
+  gpu->hint(gpu, 3, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_FOREGROUND, OG_QOS_USER_INTERACTIVE, 0 });
+  gpu->hint(gpu, 4, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_BACKGROUND, OG_QOS_USER_INTERACTIVE, 0 });
+  uint32_t q1 = queue_new(&render, 0x80000000u);          // DRM2KGSL_SUBMITQUEUE_DEADLINE: the compositor's
+  uint32_t q2 = queue_new(&icons, 0), q3 = queue_new(&app, 0), q4 = queue_new(&other, 0), q5 = queue_new(&photos, 0);
+  CHECK(q1 && q2 && q3 && q4 && q5);
+  CHECK(priority_of(q1) == 4 && (queue_flags[q1 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  // iconservicesagent draws icons the user sees: no longer background by name (fix-gpu-widgets).
+  CHECK(priority_of(q2) == 8 && !(queue_flags[q2 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  CHECK(priority_of(q3) == 4 && !(queue_flags[q3 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  // Background, by role or by name: the default's ringbuffer (never under it), and able to carry the lowest level.
+  CHECK(priority_of(q4) == 8 && (queue_flags[q4 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  CHECK(priority_of(q5) == 8 && (queue_flags[q5 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  // No constraint was set by making them, and the level setter alone sets none (the next submission does).
+  drm2kgsl_renderer_set_level(0);
+  CHECK(nconstraints == 0);
+  for (uint32_t i = 1; i <= 5; i++) gpu->ctx_destroy(gpu, i);
+  return 0;
+}
+
+// A widget renderer that the guest calls non-UI (background by its role) is not background once the render server makes a
+// blob over the same guest pages as one of its blobs (it reads the surface): its next queue is the default's, with no
+// lowest level; a later hint keeps it so. Two contexts of one process sharing pages, or a blob over other pages, change nothing.
+static int shown_surfaces(void)
+{
+  CHECK(renderer());
+  context render, widget, other, twin;
+  CHECK(context_named(&render, 1, 1, "xnu:backboardd"));
+  CHECK(context_named(&widget, 2, 2, "xnu:WidgetRenderer_Default"));
+  CHECK(context_named(&other, 3, 3, "xnu:Extension"));
+  CHECK(context_named(&twin, 4, 4, "xnu:Extension"));
+  gpu->hint(gpu, 2, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_USER_INITIATED, 0 });
+  gpu->hint(gpu, 3, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_USER_INITIATED, 0 });
+  gpu->hint(gpu, 4, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_USER_INITIATED, 0 });
+  CHECK(strstr(last_context, "context 4 xnu:Extension: background (by the guest's role"));
+  uint32_t q1 = queue_new(&widget, 0);
+  CHECK(q1 && priority_of(q1) == 8 && (queue_flags[q1 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));      // background by role
+  // The widget draws into a surface; the extension and its twin (one process) share another; the render server imports a
+  // page nobody else has, then the widget's.
+  const xh_gpu_entry surface = { .addr = RAM_PHYS + (4u << 20), .length = 0x8000 }, shared = { .addr = RAM_PHYS + (6u << 20), .length = 0x4000 },
+                     alone = { .addr = RAM_PHYS + (8u << 20), .length = 0x4000 };
+  CHECK(guest_buffer(&widget, 10, 1, widget.slice + (16u << 20), 0x8000, &surface, 1) == 0);
+  CHECK(guest_buffer(&other, 11, 1, other.slice + (16u << 20), 0x4000, &shared, 1) == 0);
+  CHECK(guest_buffer(&twin, 12, 1, twin.slice + (16u << 20), 0x4000, &shared, 1) == 0);
+  CHECK(guest_buffer(&render, 13, 1, render.slice + (16u << 20), 0x4000, &alone, 1) == 0);
+  CHECK(!strstr(last_context, "reads its surfaces"));
+  CHECK(guest_buffer(&render, 14, 2, render.slice + (32u << 20), 0x8000, &surface, 1) == 0);
+  CHECK(strstr(last_context, "context 2 xnu:WidgetRenderer_Default: the render server reads its surfaces: default now, not background"));
+  uint32_t q2 = queue_new(&widget, 0);
+  CHECK(q2 && priority_of(q2) == 8 && !(queue_flags[q2 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));     // not background now
+  // A new hint (a utility thread now) keeps it out of the background.
+  gpu->hint(gpu, 2, (const uint8_t[3]){ OG_HINT_VALID | OG_ROLE_NONUI, OG_QOS_UTILITY, 0 });
+  uint32_t q3 = queue_new(&widget, 0);
+  CHECK(q3 && !(queue_flags[q3 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  // The extension is still background: its pages are shared with its own twin only.
+  uint32_t q4 = queue_new(&other, 0);
+  CHECK(q4 && (queue_flags[q4 - 1] & KGSL_CONTEXT_PWR_CONSTRAINT));
+  for (uint32_t r = 10; r <= 14; r++) gpu->unref(gpu, r);
+  for (uint32_t i = 1; i <= 4; i++) gpu->ctx_destroy(gpu, i);
+  return 0;
+}
+
 static bool scenario(const char *name, int (*run)(void))
 {
   fflush(stdout);
@@ -312,9 +486,20 @@ static bool scenario(const char *name, int (*run)(void))
 int main(void)
 {
   int node = __real_open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
-  if (node < 0) { printf("drm2kgsl on a stand-in KGSL: no /dev/udmabuf here (%s): skipped\n", strerror(errno)); return 0; }
+  if (node < 0) {
+    // The scenarios that read the guest's pages need the real one; the policy's run on the stand-in.
+    printf("drm2kgsl on a stand-in KGSL: no /dev/udmabuf here (%s): the memory scenarios skipped, the policy's on a stand-in udmabuf\n",
+           strerror(errno));
+    fake_udmabuf = true;
+    bool ok = scenario("queue priorities by the owner's class (patch 0008)", classes);
+    ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
+    return ok ? 0 : 1;
+  }
   close(node);
   bool ok = scenario("a VBO over the whole address range (the phone, runtime 0.1.3)", whole_range);
   ok = scenario("a VBO that leaves room; buffers past udmabuf's limits", with_room) && ok;
+  ok = scenario("each import's IO coherence read back (patch 0007)", coherence) && ok;
+  ok = scenario("queue priorities by the owner's class (patch 0008)", classes) && ok;
+  ok = scenario("a context whose surfaces the render server reads is not background", shown_surfaces) && ok;
   return ok ? 0 : 1;
 }

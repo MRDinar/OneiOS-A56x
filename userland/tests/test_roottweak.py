@@ -105,7 +105,7 @@ class Policy(unittest.TestCase):
         self.assertFalse(set(chosen) & d.keep)
         self.assertFalse(set(chosen) & set(d.idle))
         # vphone's base list of 134, less generativeexperiencesd (kept) and the four OTA jobs (replace)
-        self.assertEqual(len(d.groups['base']['labels']), 129)
+        self.assertEqual(len(d.groups['base']['labels']), 128)          # analyticsd went to keep (2026-11-12)
         for label in ('com.apple.SpringBoard', 'com.apple.backboardd', 'com.apple.CommCenter', 'com.apple.sleepd',
                       'com.apple.generativeexperiencesd', 'com.apple.bluetoothd', 'com.apple.locationd'):
             self.assertIn(label, d.keep)
@@ -170,7 +170,7 @@ class Sealed(Case):
         self.apply()
         disabled = self.plist(self.data, 'db/com.apple.xpc.launchd/disabled.plist')
         self.assertEqual(set(disabled), {
-            'com.apple.watchdogd', 'com.apple.mobile.softwareupdated', 'com.apple.OTATaskingAgent', 'com.apple.analyticsd',
+            'com.apple.watchdogd', 'com.apple.mobile.softwareupdated', 'com.apple.OTATaskingAgent',
             'com.apple.nfcd', 'com.apple.seld', 'com.apple.assistantd', 'com.apple.nearbyd', 'com.apple.momentsd',
             'com.apple.coreduetd'})
         self.assertTrue(all(v is True for v in disabled.values()))
@@ -182,7 +182,7 @@ class Sealed(Case):
         self.assertEqual(sorted(contract['launch_policy']['disable_jobs']), sorted(disabled))
         # iOS 27's DisableAllowed = false: said, since a sealed root cannot change it
         self.assertEqual(contract['launch_policy']['force_enabled'],
-                         ['com.apple.OTATaskingAgent', 'com.apple.analyticsd', 'com.apple.mobile.softwareupdated'])
+                         ['com.apple.OTATaskingAgent', 'com.apple.mobile.softwareupdated'])
         # labels the fake root does not have are reported, not written
         missing = [r for r in self.read('report.json')['results'] if r['item'] == 'jobs not in this root'][0]
         self.assertIn('com.apple.weatherd', missing['labels'])
@@ -268,8 +268,22 @@ class Sealed(Case):
         self.assertEqual(digest(self.data), first)
         self.assertEqual(entries(), manifest)
         states = self.states()
-        for item in ('disabled.plist', 'preferences: setup', 'preferences: coreanimation', 'data layout'):
+        for item in ('disabled.plist', 'preferences: setup', 'preferences: coreanimation', 'data layout', 'CoreLocation flags'):
             self.assertEqual(states[item], 'kept', item)
+
+    def test_corelocation_cohorts_are_off_on_the_data_volume(self):
+        flags = 'preferences/FeatureFlags/Domain/CoreLocation.plist'
+        os.makedirs(os.path.join(self.data, os.path.dirname(flags)))
+        with open(os.path.join(self.data, flags), 'wb') as f:
+            plistlib.dump({'Somebody': {'Enabled': True}}, f)
+        self.apply()
+        have = self.plist(self.data, flags)
+        self.assertEqual(have, {'Somebody': {'Enabled': True}, 'CLAutoCohort': {'Enabled': False}})
+        with open(os.path.join(self.data, flags), 'rb') as f:
+            self.assertTrue(f.read().startswith(b'<?xml'), 'XML, as the kernel (hosted 0048) reads it')
+        self.assertEqual(self.states()['CoreLocation flags'], 'applied')
+        # the sealed root keeps Apple's defaults and gets no ExtensionKit flag
+        self.assertFalse(os.path.exists(os.path.join(self.data, 'preferences/FeatureFlags/Domain/ExtensionKit.plist')))
 
     def test_the_data_layout(self):
         cache = 'containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches'
@@ -278,6 +292,10 @@ class Sealed(Case):
             plistlib.dump({'CacheExtra': {'h9jDsbgj7xIVeIQ8S3/X3Q': 'iPad17,3'}}, f)
         self.apply()
         self.assertFalse(os.path.exists(os.path.join(self.data, cache, 'com.apple.MobileGestalt.plist')))
+        # the swap files' folder (XNU's /private/var/vm/swapfileN), root 0755 as the kernel (hosted 0057) makes it
+        vm = os.path.join(self.data, 'vm')
+        self.assertTrue(os.path.isdir(vm))
+        self.assertEqual(os.stat(vm).st_mode & 0o7777, 0o755)
         self.assertEqual(self.states()['MobileGestalt cache'], 'applied')
         self.assertEqual(self.entry('data', 'containers/Bundle')['uid'], 33)
         self.assertEqual(self.entry('data', 'tmp')['mode'], '1777')
@@ -378,6 +396,24 @@ class Sealed(Case):
             self.assertEqual(f.read(), '*\n')
         self.apply('--metal-plugin', self.top, expect=1)
 
+    def test_the_camera_plugin_goes_to_the_mediacapture_view(self):
+        self.apply()
+        self.assertEqual(self.states()['camera plugin'], 'off')
+        folder = os.path.join(self.top, 'camera')
+        os.mkdir(folder)
+        self.apply('--camera-plugin', folder, expect=1)            # no H9ISP.mediacapture in it
+        data, cdhash = fakeroot.signed_macho('com.oneios.H9ISP')
+        with open(os.path.join(folder, 'H9ISP.mediacapture'), 'wb') as f:
+            f.write(data)
+        self.apply('--camera-plugin', folder)
+        self.assertEqual(self.states()['camera plugin'], 'applied')
+        self.assertEqual(self.entry('data', 'oneios/addons/MediaCapture/H9ISP.mediacapture')['mode'], '0755')
+        contract = self.read('boot-contract.json')
+        mounts = {m['over']: m for m in contract['addon_mounts']}
+        self.assertEqual(mounts['/System/Library/MediaCapture']['source'], '/private/var/oneios/addons/MediaCapture')
+        self.assertEqual(contract['camera']['symbol'], 'H9ISPCaptureDeviceCreate')
+        self.assertIn(cdhash, self.read('owner-trust.json')['cdhashes'])
+
     def test_the_app_cryptex_is_carried_on_the_data_volume(self):
         appos = os.path.join(self.top, 'appos')
         os.makedirs(os.path.join(appos, 'usr/libexec'))
@@ -457,7 +493,7 @@ class Hook(Case):
         os.mkdir(overlay)
         env = {'PATH': os.environ['PATH'], 'ONEIOS_HOOK_API': '1', 'ONEIOS_OS_ROOT': self.root, 'ONEIOS_DATA': self.data,
                'ONEIOS_OVERLAY': overlay, 'ONEIOS_OWNERS': owners, 'ONEIOS_INFO': info, 'ONEIOS_BUILD': fakeroot.BUILD,
-               'ONEIOS_HELPERS': os.path.join(self.top, 'none'), 'ONEIOS_METAL_PLUGIN': os.path.join(self.top, 'none'),
+               'ONEIOS_HELPERS': os.path.join(self.top, 'none'), 'ONEIOS_METAL_PLUGIN': os.path.join(self.top, 'none'), 'ONEIOS_CAMERA_PLUGIN': os.path.join(self.top, 'none'),
                'ONEIOS_ROOTTWEAK_ARGS': '--keep com.apple.momentsd', 'ONEIOS_SCALE': '2'}
         hook = os.path.join(os.path.dirname(HERE), 'image-hook')
         before = digest(self.root)
@@ -477,7 +513,7 @@ class Hook(Case):
         self.assertEqual(rules['tmp'], '0\t0\t1777')
         with open(info) as f:
             summary = json.load(f)
-        self.assertEqual((summary['layout'], summary['disabled_jobs'], summary['build']), ('sealed', 9, fakeroot.BUILD))
+        self.assertEqual((summary['layout'], summary['disabled_jobs'], summary['build']), ('sealed', 8, fakeroot.BUILD))
         self.assertTrue(any(line.startswith('oneios-init') for line in summary['off']))
         self.assertNotIn('com.apple.momentsd', self.plist(self.data, 'db/com.apple.xpc.launchd/disabled.plist'))
         # with built helpers: the first-start unpacker goes to the overlay, not into the seed, and is trusted
@@ -518,7 +554,7 @@ class Hook(Case):
 
         env = {'PATH': os.environ['PATH'], 'ONEIOS_HOOK_API': '1', 'ONEIOS_OS_ROOT': self.root, 'ONEIOS_DATA': self.data,
                'ONEIOS_OVERLAY': overlay, 'ONEIOS_INFO': info, 'ONEIOS_BUILD': fakeroot.BUILD,
-               'ONEIOS_HELPERS': os.path.join(self.top, 'none'), 'ONEIOS_METAL_PLUGIN': bundle}
+               'ONEIOS_HELPERS': os.path.join(self.top, 'none'), 'ONEIOS_METAL_PLUGIN': bundle, 'ONEIOS_CAMERA_PLUGIN': os.path.join(self.top, 'none')}
         hook = os.path.join(os.path.dirname(HERE), 'image-hook')
         write(sorted(hashes))
         done = subprocess.run([sys.executable, '-I', hook], env=env, capture_output=True, text=True)
@@ -544,8 +580,9 @@ class ReadWrite(Case):
         helpers, hashes = self.helpers()
         self.apply('--helpers', helpers, layout='rw')
         have = launchd.jobs(self.cache())
-        for label in ('com.apple.nfcd', 'com.apple.watchdogd', 'com.apple.analyticsd', 'com.apple.momentsd'):
+        for label in ('com.apple.nfcd', 'com.apple.watchdogd', 'com.apple.momentsd'):
             self.assertNotIn(label, have)
+        self.assertIn('com.apple.analyticsd', have)              # kept: its clients spin without it
         for label in ('com.apple.SpringBoard', 'com.apple.CommCenter', 'com.apple.example.unknownd', 'com.apple.example.boot'):
             self.assertIn(label, have)
         # our manager is a launchd job whose program is on the root file system
@@ -607,6 +644,7 @@ class ReadWrite(Case):
 class Trees(unittest.TestCase):
     def test_links_are_followed_inside_the_tree_only(self):
         with tempfile.TemporaryDirectory() as top:
+            top = os.path.realpath(top)        # macOS: the temporary folder is under /var, a link to /private/var
             outside = os.path.join(top, 'outside')
             tree_top = os.path.join(top, 'tree')
             os.makedirs(os.path.join(tree_top, 'private/var'))
@@ -660,13 +698,13 @@ class BootCheck(Case):
 
     def test_a_disabled_job_that_ran_is_a_problem_unless_launchd_may_not_disable_it(self):
         self.booted('2026-11-10 14:12:00.000000 (system/com.apple.nfcd) <Notice>: service state: spawning\n'
-                    '2026-11-10 14:12:01.000000 (system/com.apple.analyticsd [70]) <Notice>: service state: spawning\n')
+                    '2026-11-10 14:12:01.000000 (system/com.apple.OTATaskingAgent [70]) <Notice>: service state: spawning\n')
         lines, problems = bootcheck.check(self.data, self.root, ignore_owner=True)
         self.assertEqual(problems, ['1 disabled jobs were started: com.apple.nfcd'])
-        self.assertIn('run although disabled (DisableAllowed = false): com.apple.analyticsd', lines)
+        self.assertIn('run although disabled (DisableAllowed = false): com.apple.OTATaskingAgent', lines)
         # without the OS volume's files only launchd's own line says a job may not be disabled
         _, problems = bootcheck.check(self.data, None, ignore_owner=True)
-        self.assertEqual(problems, ['2 disabled jobs were started: com.apple.analyticsd, com.apple.nfcd'])
+        self.assertEqual(problems, ['2 disabled jobs were started: com.apple.OTATaskingAgent, com.apple.nfcd'])
 
     def test_what_launchd_asks_of_the_override_file(self):
         self.booted()

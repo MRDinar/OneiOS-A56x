@@ -9,13 +9,17 @@ export OUT_DIR=$T/out KERNEL_DIR=$T/no-kernel
 V=0.0.0-test
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass=0
+if command -v sha256sum >/dev/null; then SHA256=(sha256sum); else SHA256=(shasum -a 256); fi
 ok() { pass=$((pass + 1)); echo "ok $pass: $*"; }
+# The NDK's compiler, found as package.sh finds the NDK (for the faulty library of the refusals).
+if [ "$(uname -s)" = Darwin ]; then SDK_DEFAULT=$HOME/Library/Android/sdk; else SDK_DEFAULT=$HOME/Android/Sdk; fi
+NDK_CC=$(echo "${ANDROID_NDK_ROOT:-${ANDROID_SDK_ROOT:-$SDK_DEFAULT}/ndk/28.2.13676358}"/toolchains/llvm/prebuilt/*/bin)/aarch64-linux-android30-clang
 
 # 1. A plain package: verifies, runtime.json first, manifest equals the content.
 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package.sh"; }
 P=$OUT_DIR/oneios-runtime-$V-arm64.tar.zst
-( cd "$OUT_DIR" && sha256sum -c --quiet "$(basename "$P").sha256" ) || fail "sha256 file"
-[ "$(wc -l < "$P.sha256")" = 1 ] || fail ".sha256 is not one line"
+( cd "$OUT_DIR" && "${SHA256[@]}" -c "$(basename "$P").sha256" > /dev/null ) || fail "sha256 file"
+[ "$(wc -l < "$P.sha256" | tr -d ' ')" = 1 ] || fail ".sha256 is not one line"
 [ "$(zstd -dc "$P" | tar -t | head -1)" = runtime.json ] || fail "runtime.json is not the first member"
 mkdir "$T/x" && zstd -dc "$P" | tar -x -C "$T/x"
 python3 -I - "$T/x" $V <<'PY' || fail "manifest does not match the content"
@@ -33,12 +37,28 @@ for path, f in listed.items():
     assert f['mode'] == ('0755' if os.access(os.path.join(root, path), os.X_OK) else '0644'), path
 assert listed['bin/xnuhost']['mode'] == '0755'
 # the phone checks the OneOS fork's Hardware checks screen runs (runtime/build.sh stages them)
-for tool in ('gpuctl', 'bridgectl', 'brightctl', 'displayctl', 'camctl', 'oneios-camera', 'oneios-audio', 'oneios-display'):
+for tool in ('gpuctl', 'bridgectl', 'wifictl', 'brightctl', 'displayctl', 'camctl', 'oneios-camera', 'oneios-audio', 'oneios-display', 'oneios-encoder', 'encctl'):
     assert listed['bin/' + tool]['mode'] == '0755', tool
 PY
 ok "package, checksum, member order, manifest"
 zstd -dc "$P" | tar -tv | awk '$1 !~ /^-/ {bad=1} END {exit bad}' || fail "a member is not a regular file"
 ok "regular files only"
+# The phone's oneios-tool: in the package (0755, listed in runtime.json), and beside it with its .sha256, the same bytes.
+TA=$OUT_DIR/oneios-tool-$V-android-arm64
+[ -x "$T/x/bin/oneios-tool" ] || fail "no bin/oneios-tool in the package"
+grep -q '"path": "bin/oneios-tool"' "$T/x/runtime.json" || fail "bin/oneios-tool is not in runtime.json"
+( cd "$OUT_DIR" && "${SHA256[@]}" -c "$(basename "$TA").sha256" > /dev/null ) || fail "oneios-tool's .sha256"
+cmp -s "$TA" "$T/x/bin/oneios-tool" || fail "oneios-tool beside the package is not the package's bin/oneios-tool"
+[ "$(od -An -tx1 -N20 "$TA" | tr -d ' \n')" = 7f454c460201010000000000000000000300b700 ] || fail "oneios-tool is not an arm64 PIE"
+ok "bin/oneios-tool and $(basename "$TA") ($(wc -c < "$TA" | tr -d ' ') bytes, stripped)"
+cmp -s "$T/x/lib/profiles/ios-27.0.1-iPhone18-2.toml" "$ROOT/profiles/ios-27.0.1-iPhone18,2.toml" || fail "lib/profiles/ is not profiles/"
+grep -q '"path": "lib/profiles/ios-27.0.1-iPhone18-2.toml"' "$T/x/runtime.json" || fail "lib/profiles/ is not in runtime.json"
+ok "lib/profiles/: the IPSW profiles for the phone's fetch"
+# Its dynamic ELF files were checked against the NDK's API 30 stubs (elf-check.sh), twice: runtime/build.sh on its
+# stage, then package.sh on the package's content.
+[ "$(grep -c '^elf-check: .* 0 failures$' "$T/log")" = 2 ] || { cat "$T/log"; fail "package.sh did not run elf-check.sh twice"; }
+grep -q '^elf-check: bin/liboneios-display.so: NEEDED .*libnativewindow.so' "$T/log" || { cat "$T/log"; fail "bin/liboneios-display.so was not checked"; }
+ok "NEEDED and symbol check: $(grep -m1 '^elf-check: .* 0 failures$' "$T/log" | sed 's/^elf-check: //')"
 
 # 2. The same inputs give the same bytes.
 first=$(cut -d' ' -f1 "$P.sha256")
@@ -97,6 +117,18 @@ m6() { macho kernel/xnu.macho 2; record kernel/xnu.macho 'restricted_sources=["c
 refuse "kernel that links a non-redistributable source" m6
 link() { ln -s /etc/passwd "$T/extra/link"; }
 refuse "symbolic link" link
+# A library that Android cannot load, in the display helper's place: what liboneios-display.so of 1f7dd1f was.
+# elf-fault.c calls libnativewindow's dataspace functions and is linked `-landroid -lm` only, without -z defs.
+faulty_library() {
+  mkdir -p "$T/extra/bin"
+  "$NDK_CC" -fPIC -shared "$ROOT/runtime/package/elf-fault.c" -landroid -lm -o "$T/extra/bin/liboneios-display.so"
+}
+refuse "a shared object with a symbol that none of its NEEDED libraries has" faulty_library
+for symbol in ANativeWindow_getBuffersDataSpace ANativeWindow_setBuffersDataSpace; do
+  grep -qxF "bin/liboneios-display.so: symbol $symbol is in none of its NEEDED libraries (NEEDED: libandroid.so, libm.so, libdl.so, libc.so); it is in libnativewindow.so" "$T/log" ||
+    { cat "$T/log"; fail "the refusal does not name $symbol and libnativewindow.so"; }
+done
+ok "the refusal names it: $(grep -m1 -o 'symbol ANativeWindow_getBuffersDataSpace.*' "$T/log")"
 
 # 4. Our own kernel with its record is accepted and named in the manifest.
 rm -rf "$T/extra" "$OUT_DIR" "$T/k"; mkdir -p "$T/k" "$T/extra/kernel"

@@ -110,6 +110,13 @@ static void battery_send(void *ctx, const br_battery_sample *b)
   to_guest(ctx, OB_CH_BATTERY, OB_BATTERY_STATE, &state, sizeof state);
 }
 
+static void thermal_send(void *ctx, const br_thermal_state *t)
+{
+  const br_thermal_raw *r = &t->raw;
+  struct ob_thermal_state state = { t->level, t->reason, t->cap, r->skin, r->soc, r->cpu, r->gpu, r->ddr, r->xo, r->ap, r->battery };
+  to_guest(ctx, OB_CH_THERMAL, OB_THERMAL_STATE, &state, sizeof state);
+}
+
 static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t *payload)
 {
   switch (h->channel) {
@@ -118,7 +125,8 @@ static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t
       struct ob_ctl_hello hello = { OB_PROTO_VERSION, 1u << OB_CH_CONTROL | (s->config.haptic ? 1u << OB_CH_HAPTIC : 0) |
                                                        (s->config.hci_factory ? 1u << OB_CH_HCI : 0) |
                                                        (s->config.brightness ? 1u << OB_CH_BRIGHTNESS : 0) |
-                                                       (s->config.battery ? 1u << OB_CH_BATTERY : 0) };
+                                                       (s->config.battery ? 1u << OB_CH_BATTERY : 0) |
+                                                       (s->config.thermal ? 1u << OB_CH_THERMAL : 0) };
       to_guest(s, OB_CH_CONTROL, OB_CTL_HELLO, &hello, sizeof hello);
     }
     break;
@@ -146,6 +154,10 @@ static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t
       struct ob_bright_set set;
       memcpy(&set, payload, sizeof set);
       br_bright_set(s->config.brightness, set.level, set.flags & OB_BRIGHT_LINEAR, set.fade_ms);
+    } else if (h->type == OB_BRIGHT_POWER && h->length >= sizeof(struct ob_bright_power)) {
+      struct ob_bright_power power;
+      memcpy(&power, payload, sizeof power);
+      br_bright_display(s->config.brightness, power.on != 0, power.source == OB_POWER_FRAMEBUFFER ? "the framebuffer's power request" : "the guest");
     } else if (h->type == OB_BRIGHT_QUERY) {
       bright_state(s);
       br_bright_listen(s->config.brightness, bright_als, s);      // light readings from now on
@@ -157,6 +169,14 @@ static void from_guest(bridge_state *s, const struct ob_header *h, const uint8_t
       (void)br_battery_query(s->config.battery, &sample);         // on a failed read: the last good sample
       battery_send(s, &sample);
       br_battery_listen(s->config.battery, battery_send, s);      // changes from now on
+    }
+    break;
+  case OB_CH_THERMAL:
+    if (s->config.thermal && h->type == OB_THERMAL_QUERY) {
+      br_thermal_state state;
+      br_thermal_get(s->config.thermal, &state);                  // the worker reads every 5 s from xnuhost's start
+      br_thermal_on_report(s->config.thermal, thermal_send, s);   // changes from now on
+      thermal_send(s, &state);
     }
     break;
   }
@@ -192,6 +212,7 @@ static void bridge_reset(xh_virtio *dev)
   br_haptic_stop(s->config.haptic);                  // a guest that resets (or panics into a reset) leaves no motor running
   if (s->hci) br_hci_close(s->hci);
   if (s->config.battery) br_battery_listen(s->config.battery, NULL, NULL);  // no reads and no backlog for a guest that is gone
+  if (s->config.thermal) br_thermal_on_report(s->config.thermal, NULL, NULL);   // the reads go on: xnuhost's own step needs them
 }
 
 static uint32_t bridge_config_read(xh_virtio *dev, uint32_t offset, unsigned size)
@@ -203,6 +224,9 @@ static uint32_t bridge_config_read(xh_virtio *dev, uint32_t offset, unsigned siz
 static const xh_virtio_ops bridge_ops = { .device_id = OB_VIRTIO_DEVICE_ID, .nqueues = 2, .handle = bridge_handle, .config_read = bridge_config_read,
                                           .reset = bridge_reset, .manual = 1u << OB_QUEUE_RX, .kick = bridge_kick };
 
+// The one bridge of a session, for br_bridge_request_shutdown (the host has at most one).
+static bridge_state *g_active_bridge;
+
 xh_virtio *br_bridge_create(uint64_t base, unsigned spi, const br_bridge_config *config)
 {
   bridge_state *s = calloc(1, sizeof *s);
@@ -210,5 +234,16 @@ xh_virtio *br_bridge_create(uint64_t base, unsigned spi, const br_bridge_config 
   s->config = *config;
   s->dev = xh_virtio_create(base, spi, &bridge_ops, s, "oneios-bridge");
   if (!s->dev) { free(s); return NULL; }
+  g_active_bridge = s;
   return s->dev;
+}
+
+// The return's graceful-shutdown ask (OB_CTL_SHUTDOWN on the control channel). Queued like any host->guest message
+// (it waits in the backlog until the guest's driver reads it); false when there is no bridge to ask through. The
+// caller does not depend on the guest acting: it kills at return-graceful-ms regardless.
+bool br_bridge_request_shutdown(void)
+{
+  if (!g_active_bridge) return false;
+  to_guest(g_active_bridge, OB_CH_CONTROL, OB_CTL_SHUTDOWN, NULL, 0);
+  return true;
 }

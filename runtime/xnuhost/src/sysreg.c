@@ -56,10 +56,46 @@ static int64_t psci(xh_vcpu *v, xh_regs *r)
   return -1;                                                 // NOT_SUPPORTED
 }
 
+// Which instructions the kernel traps on, and how often (each is a signal round trip on the vCPU's thread): the
+// table xh_sysreg_stats_log prints at the stop and on SIGQUIT. An idle guest that keeps its vCPUs busy shows here.
+bool xh_setway_skip;
+#define INSN_SLOTS 256u
+static struct { uint32_t insn; uint64_t count, pc; } insn_seen[INSN_SLOTS];
+static uint64_t insn_other;
+static void insn_count(uint32_t insn, uint64_t pc)
+{
+  unsigned h = (insn * 2654435761u) >> 24;
+  for (unsigned k = 0; k < 8; k++) {
+    unsigned i = (h + k) % INSN_SLOTS;
+    uint32_t key = __atomic_load_n(&insn_seen[i].insn, __ATOMIC_RELAXED);
+    if (!key) {
+      uint32_t zero = 0;
+      if (!__atomic_compare_exchange_n(&insn_seen[i].insn, &zero, insn, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) key = zero;
+      else { __atomic_store_n(&insn_seen[i].pc, pc, __ATOMIC_RELAXED); key = insn; }
+    }
+    if (key == insn) { __atomic_fetch_add(&insn_seen[i].count, 1, __ATOMIC_RELAXED); return; }
+  }
+  __atomic_fetch_add(&insn_other, 1, __ATOMIC_RELAXED);
+}
+
+void xh_sysreg_stats_log(void)
+{
+  unsigned order[INSN_SLOTS], n = 0;
+  for (unsigned i = 0; i < INSN_SLOTS; i++) if (insn_seen[i].count) order[n++] = i;
+  for (unsigned a = 0; a < n; a++)
+    for (unsigned b = a + 1; b < n; b++)
+      if (insn_seen[order[b]].count > insn_seen[order[a]].count) { unsigned t = order[a]; order[a] = order[b]; order[b] = t; }
+  for (unsigned k = 0; k < n && k < 12; k++)
+    LOGI("emulated: insn 0x%08x %llu times (first at pc 0x%llx)", insn_seen[order[k]].insn, (unsigned long long)insn_seen[order[k]].count,
+         (unsigned long long)insn_seen[order[k]].pc);
+  if (insn_other) LOGI("emulated: %llu of other instructions", (unsigned long long)insn_other);
+}
+
 bool xh_sysreg_emulate(xh_vcpu *v, xh_regs *r, uint32_t insn)
 {
   xh_sys_insn s;
   v->stat_sysreg++;
+  insn_count(insn, r->pc);
   if (xh_log_level() >= XH_LOG_DEBUG) xh_log_signal("emulated instruction, pc", insn, r->pc);
   if (insn == 0xd4000002 || insn == 0xd4000003) {            // hvc #0, smc #0
     r->x[0] = (uint64_t)psci(v, r);
@@ -72,6 +108,24 @@ bool xh_sysreg_emulate(xh_vcpu *v, xh_regs *r, uint32_t insn)
     return true;
   }
   if ((insn & 0xfff80000) == 0xd5080000) {                   // sys: tlbi, at, dc, ic at EL1: nothing to do
+    // dc isw/csw/cisw (set/way): with setway-skip, the operand becomes the last set and way of its level, so the
+    // guest's set/way loop (XNU's DCACHE_SET_WAY: FlushPoU_Dcache at every idle entry) ends after this one trap instead
+    // of one trap per line (1024 for L1). The geometry is the one CCSIDR_EL1 answers below (4 ways of 64 KiB at L1,
+    // 8 of 1 MiB beyond, the host's line size). The operation does nothing here either way.
+    uint32_t op = insn & 0xffffffe0u;
+    if (xh_setway_skip && (op == 0xd5087640u || op == 0xd5087a40u || op == 0xd5087e40u) && (insn & 31) != 31) {
+      uint64_t ctr = 4u << 16, x = xh_reg_get(r, insn & 31);
+#if defined(__aarch64__)
+      __asm__("mrs %0, ctr_el0" : "=r"(ctr));
+#endif
+      unsigned line = 4u << ((ctr >> 16) & 15), level = (unsigned)(x >> 1) & 7, ways = level == 0 ? 4 : 8, bytes = level == 0 ? 64u << 10 : 1u << 20;
+      unsigned lg_line = 0, lg_ways = 0;
+      while ((1u << lg_line) < line) lg_line++;
+      while ((1u << lg_ways) < ways) lg_ways++;
+      uint64_t sets = bytes / (line * ways);
+      x = (x & 0xe) | (sets - 1) << lg_line | (uint64_t)(ways - 1) << (32 - lg_ways);
+      xh_reg_set(r, insn & 31, x);
+    }
     r->pc += 4;
     return true;
   }

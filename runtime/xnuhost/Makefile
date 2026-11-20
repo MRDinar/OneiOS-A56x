@@ -1,21 +1,24 @@
 # xnuhost: XNU as a process on Android's Linux kernel.
 #   make            the Android binary: build/android/xnuhost (static, aarch64-linux-android)
 #   make test       unit tests on the build host (portable parts; no Apple files), then, when
-#                   qemu-aarch64 is installed, the Android binary booting the test kernel under it
+#                   qemu-aarch64 is installed, the Android binary booting the test kernel under it (on an arm64
+#                   Linux host the binary runs as it is). A Linux test: on a Mac, ../host-tests.sh
 #   make check-arm64   only the second half
 # The loader library is ../loader.
-NDK ?= $(HOME)/Android/Sdk/ndk/28.2.13676358
-TOOLS := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin
+include $(dir $(lastword $(MAKEFILE_LIST)))../host.mk
 ANDROID_CC ?= $(TOOLS)/aarch64-linux-android30-clang
 LLD := $(TOOLS)/ld.lld
 OBJCOPY := $(TOOLS)/llvm-objcopy
 QEMU ?= $(shell command -v qemu-aarch64 2>/dev/null)
+# On an arm64 Linux host (the Mac's container of ../host-tests.sh) the Android binary runs as it is, without qemu.
+ARM64_NATIVE := $(if $(filter Linux,$(HOST_OS)),$(filter aarch64 arm64,$(HOST_ARCH)))
+ARM64_RUN := $(if $(ARM64_NATIVE),,$(QEMU))
 
 WARN := -Wall -Wextra -Werror
-INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../../drivers/bridge -I../../drivers/camera
+INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../bridges/encoder -I../../drivers/bridge -I../../drivers/camera
 CFLAGS ?= -O2 -g
-SRC := main log config insn mem mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display input input_script cpu hostcalls task
-PORTABLE := log config insn mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input_script virtio_gpu gpu3d cpu task
+SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display input input_script pen cpu hostcalls task
+PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d cpu task
 LOADER_SRC := $(wildcard ../loader/src/*.c)
 HDR := $(wildcard include/xnuhost/*.h src/*.h stub/*.h ../loader/include/xnuloader/*.h)
 A := build/android
@@ -120,23 +123,33 @@ $(BRIDGES): FORCE
 CAMERA := ../bridges/camera/build/android/libonecamera.a
 $(CAMERA): FORCE
 	$(MAKE) -s -C ../bridges/camera NDK=$(NDK) build/android/libonecamera.a
+# The video encoder's end in xnuhost (runtime/bridges/encoder): the "droidvm,virtio-media" device and the backend that
+# talks to the oneios-encoder helper. No MediaCodec (it is in the helper), so xnuhost stays static.
+ENCODER := ../bridges/encoder/build/android/liboneencoder.a
+$(ENCODER): FORCE
+	$(MAKE) -s -C ../bridges/encoder NDK=$(NDK) build/android/liboneencoder.a
 FORCE:
-$(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src/%.c,$(A)/loader_%.o,$(LOADER_SRC)) $(CAMERA) $(BRIDGES) $(GPU3D)
+$(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src/%.c,$(A)/loader_%.o,$(LOADER_SRC)) $(CAMERA) $(ENCODER) $(BRIDGES) $(GPU3D)
 	$(ANDROID_CC) -static -o $@ $^ -lm
 
 # ---- host unit tests ----
-$(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) $(HDR)
+$(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c -lpthread -o $@
-# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket.
-# With the display helper's own protocol code (runtime/display/src/xhd.c) on the other end for the direct frames.
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/log.c ../display/src/xhd.c ../display/src/xhd.h $(HDR)
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
+# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket, with the display
+# helper's own protocol code (runtime/display/src/xhd.c) on the other end for the direct frames. (config.c asks ramfix.c
+# whether a lock can work: xh_ram_can_lock)
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../display/src/xhd.c ../display/src/xhd.h ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -I../display/src -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/log.c ../display/src/xhd.c -lpthread -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -I../display/src -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../display/src/xhd.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_imageset.c src/imageset.c ../loader/src/adt.c ../loader/src/boot.c -lpthread -o $@
+# The GPU's per-process policy (drm2kgsl/oneios_gpu_policy.h): classes, priorities, the deadline level. No KGSL, no udmabuf.
+$(H)/test_gpu_policy: tests/test_gpu_policy.c drm2kgsl/oneios_gpu_policy.h
+	@mkdir -p $(H)
+	$(CC) -std=gnu11 -O1 -g $(WARN) -Idrm2kgsl -fsanitize=address,undefined tests/test_gpu_policy.c -o $@
 
 # ---- the test kernel: our own freestanding AArch64 program wrapped as a Mach-O (no Apple files) ----
 KERNEL_FLAGS := --target=aarch64-unknown-none-elf -O2 -ffreestanding -fno-builtin -fno-stack-protector -fpie -fvisibility=hidden \
@@ -153,25 +166,52 @@ $(A)/testimage/kernel.kc: $(A)/testkernel.elf $(H)/mkkernel
 	$(H)/mkkernel $(A)/testkernel.elf $@ $(A)/testimage/os.img
 
 check-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
-	@if [ -z "$(QEMU)" ]; then echo "check-arm64: qemu-aarch64 not installed: skipped"; else \
+	@if [ -z "$(ARM64_NATIVE)$(QEMU)" ]; then echo "check-arm64: qemu-aarch64 not installed: skipped"; else \
 	  rm -f $(A)/testdata/data.img; \
-	  echo "check-arm64: booting the test kernel under $(QEMU)"; \
-	  timeout 30 $(QEMU) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --ram 256M \
+	  echo "check-arm64: booting the test kernel under $(or $(ARM64_RUN),this arm64 Linux kernel)"; \
+	  timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --ram 256M --set ram-giveback=1 \
 	     --display none --no-input --width 64 --height 64 2>&1 | tee $(A)/check.log; \
 	  grep -q 'TESTKERNEL: all passed' $(A)/check.log && \
+	  echo "check-arm64: ram=auto on a host of 4 GiB, 2.5 GiB available (ram-meminfo): the guest gets what fits, 1024 MiB (1280 where the lock can work: a smaller headroom), held fixed and locked by default (ram-giveback=0; where mlock fails, a clean fallback)" && \
+	  printf 'MemTotal:        4194304 kB\nMemAvailable:    2621440 kB\n' > $(A)/meminfo-3g && rm -f $(A)/testdata/data.img && \
+	  { timeout 30 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --set ram-meminfo=$(A)/meminfo-3g \
+	     --display none --no-input --width 64 --height 64 > $(A)/ramauto.log 2>&1; \
+	    grep -Eq 'ram=auto: host MemTotal 4096 MiB, MemAvailable 2560 MiB; the guest gets (1024|1280) MiB' $(A)/ramauto.log && grep -Eq 'memory: the guest.s RAM is held for the session: (1024|1280) MiB, prefaulted' $(A)/ramauto.log && \
+	    grep -Eq 'memory: the guest.s RAM is held: [0-9]+ MiB prefaulted in [0-9]+ ms, (locked \(mlock|not locked \(mlock: .*so not prefaulted)' $(A)/ramauto.log && \
+	    grep -q 'TESTKERNEL: all passed' $(A)/ramauto.log || { grep -E 'memory|FAIL|TESTKERNEL' $(A)/ramauto.log | tail -8; echo "check-arm64: ram=auto failed"; false; }; } && \
 	  echo "check-arm64: a guest that keeps restarting: xnuhost starts again in place 8 times, then exit 3" && \
-	  { XNUHOST_RUNNER="$(QEMU)" timeout 60 $(QEMU) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 1 --ram 256M \
+	  { XNUHOST_RUNNER="$(ARM64_RUN)" timeout 60 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 1 --ram 256M \
 	     --display none --no-input --width 64 --height 64 --boot-args testkernel-restart > $(A)/restart.log 2>&1; code=$$?; \
 	    [ $$code = 3 ] && [ "$$(grep -c 'TESTKERNEL: restart' $(A)/restart.log)" = 9 ] || { tail -5 $(A)/restart.log; echo "check-arm64: restart: exit $$code"; false; }; }; fi
 
+# The trap path's costs (docs/booter.md 2.6a): the test kernel's benchmarks, then xnuhost's "perf:" report at the stop.
+# BENCH_SET="--set spin-host=5 ..." tries other settings. Native on an arm64 Linux host; on an x86_64 PC under
+# qemu-aarch64, where the times are qemu's (about 10x, no seccomp: `svc #0x80` rewritten by text_fixup): compare
+# runs on the same host only. In the Mac's container: add -o build/android/xnuhost -o build/android/testkernel.elf.
+bench-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
+	@rm -f $(A)/testdata/data.img
+	timeout 120 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus 3 --ram 256M --set ram-giveback=1 \
+	   --display none --no-input --width 64 --height 64 --boot-args testkernel-bench$(BENCH_SCALE:%==%) $(BENCH_SET) 2>&1 | \
+	   grep -E 'BENCH|perf:|TESTKERNEL: (all|FAIL)|hand-off'
+
+# The parallel test (docs/booter.md 2.6b): N threads of one task, one per vCPU, the same busy work at once; the speed-up
+# for 1, 2, 4 and 8 threads. PAR_CPUS=8 vCPUs; PAR_SET="--set cpu-pin=2" pins vCPU i (and its thread) on host CPU i.
+PAR_CPUS ?= 8
+parallel-arm64: $(A)/xnuhost $(A)/testimage/kernel.kc
+	@rm -f $(A)/testdata/data.img
+	timeout 300 $(ARM64_RUN) $(A)/xnuhost --mode bench --image $(A)/testimage --data $(A)/testdata --cpus $(PAR_CPUS) --ram 256M --set ram-giveback=1 \
+	   --display none --no-input --width 64 --height 64 --boot-args testkernel-parallel$(PAR_SCALE:%==%) $(PAR_SET) 2>&1 | \
+	   grep -E 'PARALLEL|perf:   queue|TESTKERNEL: (all|FAIL)'
+
 # The tests create devices and never free them: leak detection off, the other checks on.
-test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
+test: $(H)/test_xnuhost $(H)/test_display_mode $(H)/test_imageset $(H)/test_gpu_policy $(TEST_DRM2KGSL) $(TEST_GPU_LEAKS) check-arm64
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_xnuhost
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_display_mode
 	$(if $(TEST_DRM2KGSL),ASAN_OPTIONS=detect_leaks=0 $(TEST_DRM2KGSL))
 	$(if $(TEST_GPU_LEAKS),ASAN_OPTIONS=detect_leaks=1 $(TEST_GPU_LEAKS))
 	ASAN_OPTIONS=detect_leaks=0 $(H)/test_imageset
+	$(H)/test_gpu_policy
 
 clean:
 	rm -rf build
-.PHONY: all test check-arm64 clean
+.PHONY: all test check-arm64 bench-arm64 parallel-arm64 clean

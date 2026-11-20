@@ -37,7 +37,8 @@ drm2kgsl (external/virglrenderer src/drm/drm2kgsl, linked in) -> ioctl on /dev/k
 | `src/gpu3d_kgsl.c` | The renderer: drm2kgsl, with what virglrenderer.c and crosvm's rutabaga are around it in a DroidVM; the chunk lists of resources made of several udmabufs |
 | `drm2kgsl/config.h` | The `config.h` of the virglrenderer sources the Makefile compiles |
 | `drm2kgsl/patches/*.patch` | This project's changes to `drm2kgsl_renderer.c` (section 2.1). The Makefile applies them, in name order, to a copy in `build/android/drm2kgsl/patched/` and compiles that; `external/virglrenderer` stays at its pin |
-| `drm2kgsl/oneios_drm2kgsl.h` | The two functions the patch adds for `gpu3d_kgsl.c` |
+| `drm2kgsl/oneios_drm2kgsl.h` | The functions the patches add for `gpu3d_kgsl.c` |
+| `drm2kgsl/oneios_gpu_policy.h` | The GPU's per-process policy as pure functions: each context's class, its KGSL priority, the level by frame deadline (section 2.2b; `tests/test_gpu_policy.c`) |
 | `drm2kgsl/host_c11.h` | Only for the host test's build of those sources |
 | `tools/gpuctl.c` | The renderer alone, for the phone (section 4) |
 
@@ -73,6 +74,22 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
   context's 16 KiB response buffer; drm2kgsl keeps its first 2 MiB unused. The kernel's window is 8 MiB smaller
   for it unless `--gpu 2d`.
 
+- **No separate GPU pool (fix-fixed-memory, 2026-11-13: asked for, not built, and why).** The owner asked for a
+  preallocated host pool (1.0-1.3 GiB, `gpu-pool=`) serving the guest's blobs as udmabufs over pool ranges. Read end to
+  end, there is no per-blob host allocation to pool: every Turnip BO is `HOST3D_GUEST` / `MSM_BO_GUEST_ALLOC`
+  (`DroidVMVirtioGpu3D.cpp` `createBlob`: `taskPages`/`guestPages` from XNU's own VM; drm2kgsl's `gem_new` refuses any
+  other: "this host allocates no BO backing"), and the udmabufs are over **the guest's RAM memfd**. backboardd's
+  936 MiB of "own task" blobs in the c2d281a session were part of the guest's 6,254 MiB in the host's RAM, not beside
+  it. A host pool would be memory iOS cannot use unless the guest kernel driver carved its BOs from a host range
+  (Droid-VM's `--pre-alloc drm-guest-mb` with a guest-side buddy allocator): a change in `DroidVMVirtioGpu3D.cpp`, the
+  widgets agent's IOSurface path, a larger `0024` pool range (64 MiB today, and pool pages fail `copyin`), and nothing
+  of it runs on the PC (no KGSL). So the GPU's memory is held fixed by holding the RAM fixed (`ram-giveback=0`, the
+  default since fix-ram-locked, 2026-11-15;
+  [booter.md](booter.md) 2.2): the blobs' pages are prefaulted and locked with the rest and never given back. What stays
+  per blob on the host is KGSL's and udmabuf's own kernel memory (page arrays, sg tables, IOMMU tables: about 1 % of the
+  blob bytes [estimate]); the fixed-RAM `memory:` line prints KGSL's per-process files for xnuhost so the next phone boot
+  shows whether that grows. The cost per blob (udmabuf, import, bind: `blobs made N, mean X us`) is unchanged.
+
 ### 2.1 The drm2kgsl patch (`drm2kgsl/patches/0001-vbo-headroom-and-chunked-guest-blobs.patch`)
 
 Two changes to Droid-VM's `drm2kgsl_renderer.c` at the pin, marked `ONEIOS` in the code:
@@ -89,15 +106,270 @@ Two changes to Droid-VM's `drm2kgsl_renderer.c` at the pin, marked `ONEIOS` in t
    `GEM_SET_IOVA` as a whole, and freed chunk by chunk (unbind, free, close). With one dma-buf everything goes the
    way it went.
 
-### 2.2 `drm2kgsl/patches/0002-power-constraint-from-the-first-frame.patch`
+### 2.2 `drm2kgsl/patches/0002-power-constraint-at-the-start-of-a-burst.patch`
 
-drm2kgsl runs a compositor queue's submissions at the GPU's highest level (a KGSL power constraint) only while it submits at
-`DRM2KGSL_PWR_CONSTRAINT_MIN_RATE` a second, 60 upstream. iOS's render server draws sparse frames when the screen changes
-little (1-5 in 10 s at the lock screen), and each ran at the governor's idle clock: 22-31 ms from submission to done. With the
-rate 0 (the environment variable, phone, 2026-11-11) frames took 8-10 ms at 40-60 a second. The patch makes 0 the default; the
-variable still overrides it. Only queues that ask are constrained (the render server's: `context N: constrained ...` in the
-log), and only while each of their submissions runs. drm2kgsl's matching vCPU clamp looks for threads named `crosvm_vcpu*`;
-xnuhost's are `xnu-cpuN`, so it does nothing here.
+drm2kgsl runs a compositor queue's submissions at the GPU's highest level (a KGSL power constraint) while it submits at
+`DRM2KGSL_PWR_CONSTRAINT_MIN_RATE` a second (60; upstream). iOS's render server draws sparse frames for a touch or a clock tick,
+and with that rule alone each ran at the governor's idle clock: 22-31 ms from submission to done. Constraining every submission
+(`MIN_RATE=0`, phone, 2026-11-11) gave 8-10 ms, but also held the top clock through a steady 40-50 frames a second that a still
+lock screen kept drawing (section 5.1), with the SoC at 68 C. The patch adds: the first `DRM2KGSL_PWR_CONSTRAINT_BURST` (2)
+submissions after a pause of 100 ms or more are constrained too. So a touch's first frames and a sparse update run at the top
+clock, a sustained animation at 60 a second or more as upstream, and anything slower and steady is the governor's. The rate
+rule's hysteresis (it stays on down to half its rate) follows the rate rule's own answer, not a burst's, or a burst would have
+kept a 45 fps redraw constrained. `MIN_RATE=0` still constrains every submission; `BURST=0` is upstream's rule alone. Only
+queues that ask are constrained (the render server's: `context N: constrained ...` in the log). drm2kgsl's matching vCPU
+clamp looked for threads named `crosvm_vcpu*` (xnuhost's are `xnu-cpuN`: `vCPU uclamp.min 1024: 0 of 0 threads`); since 2026-11-15 its
+patch 0008 hands the value to xnuhost (`drm2kgsl_vcpu_uclamp`), which sets it on the vCPU threads and, at each release, on
+the iOS threads they run (`docs/booter.md` 2.6a).
+
+### 2.2a `drm2kgsl/patches/0005-clock-held-between-frames.patch` (2026-11-12)
+
+**Since 2026-11-15 the rule below is `gpu-level=hold` only; by default xnuhost decides the level per frame (section 2.2b)
+and drives this hold itself. 2.2's burst and rate rules and 0006's follow rule apply only before xnuhost sets a level
+(gpuctl).**
+
+On the phone with every app drawing (diagnostic session of 2026-11-12, clocks uncapped) the render server's frames took
+5-18 ms from submission to done at 231 MHz with the owner swiping, KGSL 15 % busy: the burst rule constrained a
+frame's own submission, KGSL dropped the constraint about 80 ms (its idle timer) after it, and the governor, seeing
+10-20 % busy, kept the lowest level, so every frame started at the bottom and the clock ramped inside it. A sustained
+animation (whose submissions keep the constraint alive) ran the same frames in about 2 ms (2026-11-11). Now:
+
+- every submission of the render server's queue carries the constraint (`DRM2KGSL_PWR_CONSTRAINT_MIN_RATE` default 0;
+  the burst rule stays for a non-zero rate);
+- while that queue submits and for `DRM2KGSL_PWR_HOLD_MS` (150; 0 turns it off) after its last submission, a thread
+  of the renderer submits 4 `CP_NOP`s every 40 ms on a KGSL context of its own (its own `/dev/kgsl-3d0` file, kernel
+  timestamps) that carries the same constraint, so KGSL renews it and the next frame starts at the top level; then
+  KGSL drops it and the governor decides as before;
+- KGSL's thermal limit (`thermal_pwrlevel`) still caps the level the constraint asks for.
+- `0006-hold-follows-every-client.patch`: within `DRM2KGSL_PWR_FOLLOW_MS` (1000; 0 turns it off) of the render
+  server's last submission, any other context's submission extends the hold too. On the phone (14:12 boot,
+  2026-11-12) the hold made the render server's frames 2.9-4.0 ms, but opening Settings its frames took 25 ms with the
+  hold started 3 times in 10 s: the app's own GPU work, which the render server waits for, ran at 231 MHz. A client
+  that keeps submitting with the screen still does not hold the clock past that second.
+
+Log: once `drm2kgsl: clock hold: the top level from the render server's submissions to 150 ms after them` (or
+`clock hold: off (reason)`), and in the 10 s host line `clock held +N times, keep-alives +M` (a hold is a run from
+the first frame after a pause to 150 ms after the last; M about 25 per second of holding). What to expect: KGSL
+`gpuclk` at the top level while the screen moves and for 150 ms after, the governor's level otherwise; the host
+line's `submit->retired` near 2 ms. Heat: the GPU at the top level whenever iOS draws (a still screen draws nothing);
+the thermal agent's caps apply. Host tests pass with it (they do not drive a deadline queue, so the hold itself is
+not exercised off the phone); not yet run on the phone.
+
+### 2.2b The level by deadline, and each context's priority by its owner (fix-gpu-perf, 2026-11-15)
+
+**What the path did until now (from the code).** The render server's (backboardd's) Turnip queue asks drm2kgsl for a
+deadline queue (`DRM2KGSL_SUBMITQUEUE_DEADLINE`); drm2kgsl made its KGSL context with `KGSL_CONTEXT_PWR_CONSTRAINT` and,
+with 0005's `MIN_RATE=0`, set KGSL's highest level (`KGSL_CONSTRAINT_PWR_MAX`) on it at **every** submission; 0005's hold
+kept a keep-alive context renewing that constraint to 150 ms after each render-server submission, and 0006 let any other
+context's submission within a second of one extend the hold (WidgetRenderer, iconservicesagent and the poster extensions
+included). The phone's log says it: `context 4: power constraint at the highest level`, `context 5: constrained while it
+submits at an animation's rate`, `clock hold: the top level from the render server's submissions to 150 ms after them`.
+So the GPU sat at its top clock for every frame the render server drew, needed or not (a still lock screen redrawing at
+40-50 a second: the whole time), and background work kept it there. Every queue had the same KGSL priority (drm2kgsl
+offers one timeline, so `KGSL_CONTEXT_PRIORITY_UNDEF`, the kernel's default), so a background context's work queued
+level with the front app's and the render server's. On a real iPhone the AGX firmware picks the GPU's clock per frame from
+Core Animation's work-interval deadlines; nothing of that reached KGSL here.
+
+**Now** (`drm2kgsl/oneios_gpu_policy.h`, `src/gpu3d_kgsl.c`, `drm2kgsl/patches/0008-deadline-level-and-class-priority.patch`):
+
+- **The level follows the frame's deadline.** xnuhost decides it for every GPU submission (a SUBMIT_3D with a
+  `GEM_SUBMIT`) of the render server, and of any other non-background context within a second of a render-server frame.
+  The budget is the work interval's deadline when the guest sends one (the CPU agent's signal, below), otherwise the frame
+  cadence: 8.3 ms (120 Hz) for a frame after a pause, the render server's average frame interval during a burst, at most
+  16.7 ms. A frame's GPU time is measured on the host from its submission (or the ring's previous retirement, if later) to
+  its KGSL timestamp's retirement, and averaged per level (top, governor's, the first frame after a pause). A frame gets
+  the top level (`PWR_MAX` on the deadline queue, and the keep-alive hold to 150 ms after it) only if it would take more
+  than 80 % of its budget at the governor's clock: after a pause, its time there if known, else its time at the top times
+  KGSL's clock ratio (`/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies`, read once: top over lowest, 4.0 if unreadable);
+  during a burst at the governor's, as soon as one frame (nearly) misses. At the top it comes back to the governor after 8
+  frames in a row that would fit at the lowest clock (32, then up to 64, after a frame missed at the governor's). Easy frames
+  (clock ticks, a still screen's redraws, typing, light animations) leave the clock to KGSL's governor; heavy ones (a
+  120 Hz scroll of 3 ms frames) keep the top for as long as they come. Nothing new is written anywhere: KGSL's own
+  `KGSL_PROP_PWR_CONSTRAINT` as before, on our own KGSL contexts, inside KGSL's thermal limit.
+- **Background contexts at the lowest level at a still screen, and only when nobody waits for it** (`og_lowest_for`,
+  fix-gpu-widgets). Their queues are made with `KGSL_CONTEXT_PWR_CONSTRAINT` and carry `KGSL_CONSTRAINT_PWR_MIN` from
+  their next submission once no counted frame came for 500 ms, `NONE` again otherwise (an ioctl only at a change). KGSL's
+  lowest level is the whole GPU's, so it is not asked while any non-background context has a fence not yet retired (that
+  work would run at the lowest clock too: a widget renderer drawing at a still screen counts no frame), while another
+  process reads the context's surfaces, or once the context's own oldest fence has waited 50 ms (`bg_bound_us`; aging:
+  that work runs at the governor's clock and is done well inside Metal's 100 ms wait slice). A submission of any
+  non-background context within 200 ms of a background lowest level gets the top level once (the render server's first
+  frame did already): KGSL keeps a constraint until it expires and lets only a faster one end it sooner. KGSL takes a
+  constraint only if it is faster than the one in force, so this never slows the render server's top level. Background
+  contexts never start or extend the hold. `gpu-priority=0` turns the lowest level off.
+- **Each context's KGSL priority is its owner's class**, given when its queue is made (DRAWCTXT_CREATE's priority bits;
+  KGSL cannot change it later): the render server and the front app 4 (the second ringbuffer, which preempts the third),
+  everything else 8, background included. From #42 to fix-gpu-widgets background was 12 (the fourth ringbuffer): KGSL runs
+  a lower ringbuffer only while every higher one is empty, so those fences had no bound, and a queue keeps the class its
+  context had when the queue was made (by name, or by the role at the context's creation) for good. Within one
+  ringbuffer KGSL takes its contexts in turn: that is a background context's minimum share now. None takes the first
+  ringbuffer (0-3, Android's compositor's). A priority this KGSL refuses: the queue is made without one, and said once.
+- **The class** (`og_class_of`), in order: the name `xnu:backboardd` (the render server); the name `SpringBoard` (front);
+  **whether the render server reads the context's surfaces**: xnuhost notes the first guest page of every blob a context
+  makes over guest pages (`og_pages`, a cache of 8192 entries); when the render server's context makes a blob over the
+  same first page as another process's (an IOSurface it imports, as the guest's `oneios-gpu-pixels` "pages of another
+  process's surfaces" matches them), that context is `shown` and never background again, whatever its name or role says
+  (`gpu: context N xnu:NAME: the render server reads its surfaces: default now, not background`); then **process names**
+  that never draw what the user sees: `photoanalysisd`, `mediaanalysisd`, `assetsd`, `searchd`, `analyticsd`, `suggestd`
+  (background; each one's reason is in `oneios_gpu_policy.h`), replaceable with `ONEIOS_GPU_BACKGROUND=` /
+  `ONEIOS_GPU_FRONT=` in xnuhost's environment; then **the guest's hint**: the submitting task's effective role
+  (`TASK_POLICY_ROLE`, which RunningBoard sets: foreground, control, graphics server, user-init -> front; background,
+  throttle, non-UI, DarwinBG -> background), the thread's DarwinBG and its QoS (maintenance, background, utility ->
+  background). The hint comes with every fenced submission, so an app sent to the background stops counting for the level
+  at once. An older guest sends none: the name decides. Until fix-gpu-widgets the name list also held `WidgetRenderer*`,
+  `*Widget*`, `*Poster*`, `iconservices*` and `*Thumbnail*`: home-screen, lock-screen, Today and StandBy widgets, the lock
+  screen's poster and the icons, all of which the user sees, ran at priority 12 and at the lowest level.
+- **The hint's channel** (guest: `gpu/OneiOSAdreno.cpp` `oneios_gpu_hint`, called from the staged
+  `DroidVMVirtioGpu3D.cpp` on the client's own thread, `tools/oneios-tool/crates/oneios-kernel/src/staged/gpu.rs`): CTX_CREATE's
+  `context_init` bits 8-23 (beside the capset id) and the SUBMIT_3D header's three padding bytes: [0] `0x80` | `0x40`
+  DarwinBG | role, [1] QoS, [2] time to the frame's deadline in 250 us units. The host reads them in `virtio_gpu.c` and
+  hands them to the renderer (`xh_gpu3d.hint`). **The CPU agent's signal** (fix-host-overhead's hosted CLPC: thread groups,
+  work intervals, RunningBoard roles) is read through two weak functions in `OneiOSAdreno.cpp`, whose defaults say "not
+  known": `int oneios_clpc_thread_role(thread_t)` (the thread group's role as a `task_role_t`, or -1) and `uint64_t
+  oneios_clpc_frame_deadline(thread_t)` (the work interval's deadline in mach absolute time, or 0). A strong definition in
+  that work replaces them; nothing else changes (docs/agents.md).
+- **Switches** (xnuhost.conf or `--set`): `gpu-level=deadline` (default), `=hold` (0005/0006's rule: every render-server
+  frame at the top, to 150 ms after it), `=governor` (never asked); `gpu-priority=0` (the queues' priority as the guest asks,
+  upstream's rule, and no queue made able to carry the lowest level, so neither applies). drm2kgsl's own `DRM2KGSL_PWR_HOLD_MS` (150) still sets the hold's length. Before xnuhost sets a level
+  (gpuctl) drm2kgsl keeps 0002-0006's rules.
+
+Log lines (xnuhost's log):
+
+```
+gpu: level: by deadline (the top only for a frame that would miss 8.3 ms at 120 Hz, or its work interval's deadline, at the governor's clock); KGSL's clocks 231-903 MHz (top/lowest x3.87); priority by the owner's class on (render server and front 4, default and background 8; background at the lowest level at a still screen); background by name (never on screen): photoanalysisd,mediaanalysisd,assetsd,searchd,analyticsd,suggestd
+drm2kgsl: clock hold: the top level only for frames that need it (xnuhost's deadline policy), to 150 ms after them
+drm2kgsl: context 5: a deadline queue: at the top level only for frames that would miss their deadline (xnuhost's policy)
+drm2kgsl: queue 7 of xnu:photoanalysisd: background, KGSL priority 8
+gpu: context 12 xnu:photoanalysisd: background (by name; role 0, QoS 4), KGSL priority 8
+gpu: context 24 xnu:WidgetRenderer_Default: background (by the guest's role; role 6, QoS 5), KGSL priority 8
+gpu: context 24 xnu:WidgetRenderer_Default: the render server reads its surfaces: default now, not background
+gpu: 10 s level: frames 610, at the top 40; up +2 down +2; missed at the governor's +0, over budget +1; GPU time at the top 900 us, the governor's 2100 us, after a pause 2600 us; frame interval 8400 us; background submissions at the lowest +35 (kept off it: others' work queued, surfaces read, or waited 50 ms +12; ended by others' work +3)
+gpu: 10 s fences over 100 ms (each one of the guest's fence timeouts): xnu:photoanalysisd 2 (max 130 ms; background), xnu:Foo 0 (max 0 ms, one waiting now 240 ms; default)
+drm2kgsl: context 9: power constraint at the lowest level
+```
+
+(examples, not from a run.) `gpu: context` comes once per context (two per process) and when its class changes: a
+process whose contexts keep coming back is making Metal devices again and again. The 10 s line says how much of the
+render server's work needed the top; `over budget` is frames that took longer than their budget at any level (jank).
+**`gpu: 10 s fences over 100 ms`** (fix-gpu-widgets, a lasting line, only when there are any) names the processes whose
+fences took 100 ms or more from submission to retirement on the host in those 10 s (count, longest, class), and any
+whose oldest fence has been waiting that long now. Metal's runtime waits for a fence in slices of 100 ms and waits again
+after each (`metal2vulkan` `command_buffer/completion.rs` `WAIT_SLICE`; a wait never fails on time, it only counts); the
+tunnel counts each slice that runs out as one of `oneios-gpu-report`'s `fence timeouts`. So that guest figure is "fences
+over 100 ms", and this line says whose.
+
+**The widgets' GPU starvation (fix-gpu-widgets, 2026-11-15).** On the phone (main 8644ae9 with the v0.1.9 runtime,
+`ram=10G pen=auto`): `gpu: context 24 xnu:WidgetRenderer_Default: background (by name (STOPGAP list); role 1, QoS 6),
+KGSL priority 12` and `drm2kgsl: queue 9 of xnu:WidgetRenderer_Default: background, KGSL priority 12`; `gpu: 10 s host:
+backboardd fences 84, submit->retired mean 6654 us max 49783 us; ... other fences 85, mean 181112 us`; the guest's
+`oneios-gpu-report: ... fence timeouts +5`; no KGSL fault, reset or crash. The guest's role was foreground (1) at QoS
+user-interactive (6), so the name list alone made it background. From the code: priority 12 is the fourth ringbuffer,
+run only while the other three are empty; and the screen was still, so every submission of WidgetRenderer_Default (and of
+the other listed processes) put the whole GPU at KGSL's lowest level for KGSL's expiry after it, while its own six
+surfaces' work queued behind itself. Proven from the counts: the fences of every process but the render server took
+181 ms on average and five of Metal's 100 ms wait slices ran out. Not proven: how much of the 181 ms each rule caused
+(the host's line gave no per-process figure then; the new `fences over 100 ms` line does). The white widgets themselves
+have another cause (chronod cannot save widget snapshots without an HEVC encoder: `fix-widget-snapshots`); this fix is
+the starvation and the fence timeouts. The fix: the name list keeps only daemons that never draw what the user sees, a
+context whose surfaces the render server reads is never background, no class is put under the default's ringbuffer, and
+the lowest level is not asked while anyone else's work is queued, while someone reads the context's surfaces, or after its
+own fence has waited 50 ms (above). The phone lines that will prove it: `gpu: context N xnu:WidgetRenderer_Default:
+default` or `... the render server reads its surfaces: default now, not background`, `drm2kgsl: queue N of
+xnu:WidgetRenderer_Default: default, KGSL priority 8`; `gpu: 10 s host: ... other fences N, mean` in single-digit ms
+(below 10000 us); the guest's `oneios-gpu-report: ... fence timeouts +0`; no `gpu: 10 s fences over 100 ms` line naming
+WidgetRenderer_Default.
+
+**Tested on the PC** (no KGSL): `tests/test_gpu_policy.c` (`make -C runtime/xnuhost test`; 166 checks: classes from
+names, hints and `shown`, priorities, the surface table, the level for each kind of stream, deadlines, background, the
+lowest level's rules, the follow window, the three modes, and the starvation model below) runs here. Its last part runs the same frame streams under `gpu-level=hold` and `=deadline` (frames at the governor's
+lowest clock taken as 4 times their top-level time, the hold 150 ms), the share of time the clock is held at the top:
+
+| Stream (10 s) | hold (before) | deadline (now) | frames over budget, both |
+|---|---|---|---|
+| still lock screen redrawing, 45 frames/s of 0.4 ms | 100 % | 3.1 % | 0 |
+| clock tick, 1 frame/s of 0.3 ms | 15 % | 1.5 % | 0 |
+| typing, a key every 150 ms: 3 frames of 1 ms at 120 Hz | 100 % | 1.7 % | 0 |
+| scrolling, 120 frames/s of 3 ms | 100 % | 100 % | 0 |
+| a light animation, 60 frames/s of 0.8 ms | 100 % | 2.7 % | 0 |
+
+These are the model's numbers, not the phone's. **The starvation model** (fix-gpu-widgets, `starvation()` in the same
+test): a GPU in 50 us ticks with KGSL's rules as the model takes them (ringbuffers by strict priority, a higher one
+preempting; in a ringbuffer a job runs to its end and the contexts take turns, up to 5 jobs each; the top clock while a
+`PWR_MAX` holds, 4 times slower while a `PWR_MIN` holds (80 ms after the submission that set it), 2 times slower at the
+governor's: assumptions, not measurements). A still home screen, 10 s: once a second WidgetRenderer_Default (a non-UI
+process at utility QoS to the guest, the worst its hint can say) redraws 6 surfaces, one fence each, and 2 ms after the
+last the render server composites 3 frames of it; photoanalysisd computes all the time (8 ms jobs). Under #42's rules
+(widget background by name, priority 12, the lowest level whenever the screen is still) and now:
+
+| Case | WidgetRenderer fences: mean / max, #42 -> now | over 50 ms | over 100 ms | photoanalysisd max | time at the lowest |
+|---|---|---|---|---|---|
+| small widgets (1 ms a surface) | 34.6 / 83.5 ms -> 8.7 / 19.4 ms | 10 -> 0 | 0 -> 0 | 51.0 -> 32.0 ms | 45.9 % -> 44.2 % |
+| heavy widgets (5 ms a surface) | 88.1 / 154.2 ms -> 19.5 / 38.9 ms | 50 -> 0 | 22 -> 0 | 105.5 -> 32.0 ms | 43.2 % -> 42.1 % |
+| heavy, SpringBoard draws a frame too | 26.5 / 44.9 ms -> 22.2 / 41.9 ms | 0 -> 0 | 0 -> 0 | 36.1 -> 34.0 ms | 41.9 % -> 41.8 % |
+
+(In the third case SpringBoard's frame, a counted one, ended the lowest level under #42's rules too.) The heavy case
+under #42's rules is the phone's pattern (a mean near 90 ms, fences over Metal's 100 ms slice); the time the GPU spends
+at its lowest level hardly changes, so the power it saves stays. `test_xnuhost`: CTX_CREATE's hint bits and SUBMIT_3D's
+padding reach the renderer. `test_drm2kgsl`'s policy scenarios run on this PC with a stand-in for `/dev/udmabuf` (a
+memfd per UDMABUF_CREATE_LIST: `/dev/udmabuf` is root:kvm here) and on the Mac's container with the real one: queue
+priorities by class (the render server 4 with its constraint flag, iconservicesagent 8 without it, an app 4 in front,
+8 with the flag sent to the background, photoanalysisd 8 with the flag; 13 checks), and a context whose surfaces the
+render server reads (WidgetRenderer_Default non-UI: background, a queue with the flag; after the render server's blob
+over its surface's first page: `default now, not background`, its next queues without the flag, also after a new hint;
+two contexts of one process over the same pages change nothing; 17 checks). The memory scenarios still need the real
+`/dev/udmabuf`. fix-gpu-widgets on this PC: `test_gpu_policy` 166 checks, `test_drm2kgsl` 13 + 17, `test_xnuhost` 14032 (on main 03591b6),
+`test_imageset` 37, `test_display_mode`, `check-arm64` (the Android xnuhost booting the test kernel under qemu-aarch64)
+all pass; `test_gpu_leaks` is skipped (no `/dev/udmabuf`). No PC boot for it: qemu has no KGSL, so no GPU context, class,
+fence or level of this code runs there. **Not run on the phone.** The guest side (from fix-gpu-perf; fix-gpu-widgets
+changes no guest code, so `kernel.kc` stays as it is): `HOSTED_OUT=fixgpu` built
+(`xnu.macho` 55ea1a18..., `_oneios_gpu_hint` and the two weak CLPC functions in it), prelinked (audit 0 failures, 2711
+paired; `stubs-check` 666 good; `kernel.kc` 49f718cb...), and booted on the PC (qemu-aarch64, `--ram 4G`,
+`oneios-gpu-metal=1 oneios-adreno-selftest=1`, `--set gpu-level=deadline --set gpu-priority=1`): the accelerator at stage 5,
+both self-test lines as before, launchd at +282 s, SpringBoard and backboardd at +364 s, 10 minutes with no panic, stopped
+by hand. qemu has no 3D, so no context, hint or level ran there. **Not run on the phone.** The phone test is in
+`docs/newtodo.md` (update of 2026-11-15).
+
+### 2.3 `drm2kgsl/patches/0004-gpu-address-room-by-process.patch`
+
+Every GPU context gets its own part of the VBO's GPU addresses (a KGSL page table is per process, and every guest
+process shares xnuhost's). Upstream cut the VBO into 32 equal slices: 6 GiB each here, so 32 contexts. Every iOS
+process that draws with Metal holds two (phone, 2026-11-12: backboardd, WidgetRenderer_Default and
+iconservicesagent, `contexts +2` each), so that was 16 processes, too few once every process may have a device. The
+patch cuts slices of two sizes from the VBO in 1 GiB units as contexts come, first fit: a context whose name (the
+guest's `xnu:<process>`) is in `DRM2KGSL_VA_RENDER_NAMES` (default `xnu:backboardd`) gets `DRM2KGSL_VA_RENDER_GB`
+(12; the render server maps every client's surfaces into its own addresses, and an iPadOS one used 1.8 GB of a 2 GB
+slice at an idle home screen), any other `DRM2KGSL_VA_CLIENT_GB` (2, upstream's minimum: Turnip takes the size as
+the context's whole budget). On this phone's 192 GiB: the render server's two and 84 others, 42 processes. A
+context with no room is not made: one log line (`context xnu:NAME: no room for 2 GiB of GPU addresses (N contexts
+hold M of 192 GiB): not made`), the device answers `CTX_CREATE` with `ERR_OUT_OF_MEMORY`, the guest's context init
+fails, the plug-in reports no device and the process draws without the GPU (the path an unlisted process takes).
+Each context's own line: `context xnu:NAME: GPU addresses [base, +N GB); N contexts hold M of 192 GiB`
+(drm2kgsl's debug log). Host tests: `test_drm2kgsl` and `test_gpu_leaks` pass with it; not yet run on the phone.
+
+### 2.4 `drm2kgsl/patches/0007-import-coherence-read-back.patch` (widgets, 2026-11-13)
+
+Nothing in the guest cleans or invalidates a cache for GPU memory: the guest's pages are imported into KGSL
+`KGSL_MEMFLAGS_IOCOHERENT` (upstream drm2kgsl's `kgsl_guest_memflags`, with `DRM2KGSL_NONCOHERENT` unset), so the GPU snoops the
+CPUs' caches, and an IOSurface one process's GPU writes is the same memory another process's GPU or CPU reads (the
+plug-in's own `sys_dcache_flush` of a surface is off on iOS 27: `NativeBridgeMetalFrontend.mm` `kSurfaceFlush`). KGSL
+drops that flag without saying so where its MMU has no IO coherence (`kgsl_memdesc_init`); then a CPU write can stay in
+a cache the GPU never reads, and a GPU write can be overwritten later by an older line a CPU writes back (a surface the
+guest's kernel zeroed with the CPU and an app then drew with the GPU would go blank again). Whether this KGSL keeps it
+has never been looked at. The patch reads each import's flags back (`GPUOBJ_INFO`: the first 256 imports, then every
+64th) and counts the outcomes: kept IO coherence, dropped by KGSL, imported without it as asked (drm2kgsl's attach of
+another context's dma-buf asks flags 0), not readable. Log: one drm2kgsl line for the first import of each outcome
+(`guest import: KGSL kept IO coherence: asked flags 0x8c000000, now 0x... (cache mode 3)`, or `... DROPPED IO coherence
+...`), and in the 10 s host report, the first time and again whenever a non-coherent count moves:
+
+```
+gpu: KGSL imports N, read back C: IO-coherent K, coherence dropped by KGSL D, not coherent as asked P, not readable U
+```
+
+`D` above 0 on the phone means guest memory is not coherent with the GPU: the fix would then be cache maintenance where
+the guest hands memory to the GPU (or `DRM2KGSL_NONCOHERENT` turned the other way), not more counters. Host test:
+`test_drm2kgsl`'s third scenario (the stand-in KGSL keeps or, as an MMU without IO coherence would, drops the flag; an
+attach asks none): built on the Linux PC (2026-11-13), not run there (no access to `/dev/udmabuf`, section 3); the Mac's
+container runs it. Not yet run on the phone.
 
 To change it: edit a copy of the pinned file, `diff -u` against the original into `drm2kgsl/patches/`, `make`.
 A new pin of virglrenderer that the patch no longer applies to stops the build (`patch -F0`).
@@ -108,10 +380,35 @@ goes back to the guest only when the ring passes the fence (drm2kgsl's timeline 
 device's own ring is returned at once. A context that is destroyed returns its held commands. A device reset
 destroys the contexts and blobs on the device's thread and drops what was held.
 
+**Two lanes** (2026-11-12). The queue's thread serves the render server's contexts (named `xnu:backboardd` at
+`CTX_CREATE`), context creation and every command of no context (the display's flush, the 2D commands) at once; every
+other context's commands go, in their order, to a second thread, the slow lane. A mutex makes the two take turns at the
+device's tables and the renderer, so the render server's frame waits for at most one of an app's blobs (1-30 ms each on
+the phone, 64-102 per 10 s while Settings opened), not for all of them. A fast-lane command that names a resource the
+slow lane has not made yet (an app's surface the render server attaches, the unref of an app's blob) waits for the slow
+lane's commands that came before it and runs again. A device reset drops the slow lane's chains of the old queue. Test:
+`test_virtio_gpu3d` (all its contexts are the slow lane's now, and one case holds an app's blob while the render
+server's submission is answered). Not yet run on the phone.
+
+**Display.** `SET_SCANOUT_BLOB` makes a guest blob the scanout; `RESOURCE_FLUSH` copies its rows from the guest's
+pages to the display (a CPU copy per frame: crosvm's zero-copy import to the compositor is not done here).
+Since 2026-11-12 the copy goes straight from the guest's pages into the display's buffer, walking the blob's segments
+once per flush; before, each of the 3120 rows went through a row buffer and searched the segment list from its start
+(about 1100 segments of 16 KiB pages for a 1440x3120 frame). On an M4, for that frame: 4.2-10.6 ms before, 2.0-3.3 ms
+after (a stand-alone copy of both loops; not measured on the phone). xnuhost logs the copy every 10 s while frames
+come: `display: 10 s: flushes N, copy mean X us max Y us (Z MiB)`. The fast lane's thread does the copy, so the render server's
+next commands wait behind it. The guest's `oneios-display-report` `done=` of a swap (128-211 ms on the phone,
+2026-11-12) runs from the swap's validation to its transfer: the frame's GPU work, then this flush, each behind
+whatever the device thread is doing (blob creations: 0.8 ms each, up to 45 ms in a storm).
+
 **Display.** `SET_SCANOUT_BLOB` makes a guest blob the scanout. At `RESOURCE_FLUSH` its rows go from the guest's pages
-to the display helper's layer in one CPU copy, made by the helper from guest RAM (direct frames, `docs/booter.md` 2.8),
-with the flush answered when the frame is in the layer; without a direct helper xnuhost copies them into the memfd.
-Not zero copies: see 2.8 for why.
+to the display in one CPU copy: made by the helper from guest RAM (direct frames, `docs/booter.md` 2.8), with the flush
+answered when the frame is in the layer; without a direct helper xnuhost copies them into the memfd, walking the
+blob's segments once per flush (before, each of the 3120 rows went through a row buffer and searched the segment list
+from its start: about 1100 segments of 16 KiB pages for a 1440x3120 frame). On an M4, for that frame: 4.2-10.6 ms
+before, 2.0-3.3 ms after (a stand-alone copy of both loops; not measured on the phone). Not zero copies: see 2.8 for
+why. xnuhost logs the copy every 10 s while frames come (`display: 10 s: flushes N, copy mean X us max Y us (Z MiB)`;
+the direct path's own 10 s line is in 2.8).
 The guest side is `kernel/patches/oneios-hosted/display/` (its README): iOS's framebuffer hands each of
 `backboardd`'s surfaces to this device, as a guest blob with a renderer and as a 2D resource over the surface's
 pages without one (the PC). What the 3D path still needs from the display is listed there.
@@ -119,6 +416,20 @@ pages without one (the PC). What the 3D path still needs from the display is lis
 **Options.** `--gpu auto` (default: 3D when `/dev/kgsl-3d0`, `/dev/udmabuf` and `/dev/dma_heap/system` open and
 KGSL takes the probe), `--gpu 3d` (or do not start), `--gpu 2d`. The reason for 2D is in the log (`gpu: 2D only: ...`).
 drm2kgsl's own switches are environment variables it reads (`DRM2KGSL_PRIORITIES`, `CROSVM_DRM2KGSL_DIAG=1`).
+
+**Open files.** Every guest BO is an fd per udmabuf chunk in xnuhost and one more in each context that imports it,
+and every Metal client is a KGSL fd and a dma-heap fd. The renderer's start raises the soft `RLIMIT_NOFILE` to the
+hard limit (no privilege needed; `gpu: open files: soft limit N -> M` in the log when it changed). Droid-VM's crosvm
+ran out of fds under GFXBench before it did the same.
+
+**The host's share of a frame.** The guest's GPU report times a render-server frame from submission to the fence it
+sees (9-11 ms on the phone on 2026-11-12, with KGSL 7 % busy). `gpu3d_kgsl.c` times the host's part, one line per 10 s
+while fences retire: `gpu: 10 s host: backboardd fences N, submit->retired mean X us max Y us; submit calls mean X us max
+Y us; other fences N, mean X us; blobs made N, mean X us max Y us (udmabufs X us of it); clock held +N times, keep-alives +M`. "blobs made" is the host's part of each guest BO
+(udmabufs of its pages, drm2kgsl's import and bind): every Turnip BO is one (a process drawing icons held 1335 under 1 MiB). "submit->retired" runs from the fence reaching the renderer to drm2kgsl's retire
+callback (the GPU's work and KGSL's wake-up); "submit calls" is the time spent in drm2kgsl's submit. What the guest
+sees beyond that is the virtio round trip and the guest's own wake-ups. The render server's contexts are those named
+`xnu:backboardd`. Not yet run on the phone.
 
 **Session rules** (`docs/booter.md` 2.9): nothing new outside the process. KGSL contexts, the VBO and the dma-bufs
 are descriptors of xnuhost and go with it at SIGKILL; drm2kgsl's fence threads are ordinary threads.
@@ -160,6 +471,8 @@ are descriptors of xnuhost and go with it at SIGKILL; drm2kgsl's fence threads a
   objects for a chunked blob, +1 and 1 single; a guest reaches it with a GEM_NEW at a GPU address outside its range or a
   size unlike the blob's), and a context destroyed with a dma-buf still parked for a `get_blob` kept that fd. 956 checks.
   `CYCLES=N` for more. Not covered off the phone: KGSL itself, submits and fences, the guest's driver and Metal.
+- `tests/test_gpu_policy.c` (`build/host/test_gpu_policy`): the policy of section 2.2b alone, no KGSL and no udmabuf, so it
+  runs on every host; it prints the before/after table of section 2.2b.
 - The loader's `drm-host-pool` property (`runtime/loader` tests).
 - `check-arm64`: the Android binary with the 3D code linked still boots the test kernel under `qemu-aarch64` (2D:
   no KGSL there).
@@ -273,8 +586,8 @@ uses its size there (aligned to 1 MiB from 1 MiB up), so 64 GiB is far more than
 Delivered in the hosted kernel, not as a kext:
 
 - `0005-gpu-3d.patch`: under `#if XNU_HOSTED`, `oneios_board_late_start` calls `oneios_gpu3d_start` (weak default).
-- `gpu/build-oneios-gpu.py`: a board archive of the hosted build only (`kernel/build-hosted.sh` copies it into the
-  build's device repository and adds `liboneiosgpu.a` to the force-loaded archives). It compiles `gpu/OneiOSGpu.cpp`
+- `oneios-tool kernel gen gpu`: a board archive of the hosted build only (`kernel/build-hosted.sh` adds it to the board's
+  archives of the build's device repository and `liboneiosgpu.a` to the force-loaded archives; was `gpu/build-oneios-gpu.py`). It compiles `gpu/OneiOSGpu.cpp`
   and, unchanged from `external/UniXNU-droidvm/package/`, `DroidVMVirtioGpu.cpp` (the transport) and
   `DroidVMVirtioGpu3D.cpp` (contexts, blobs over guest pages, fenced submissions, `droidvm_virtgpu_call`).
 - The transport is compiled with `DROIDVM_VIRTIO_GPU_DYNAMIC=1`: its queues and command buffers (about 9 MB) are one
@@ -296,14 +609,14 @@ compiles it; `build/oneios-gpu/adreno/status.json` says which). No kernel patch 
 | Object | From | What |
 |---|---|---|
 | `NativeAdrenoPublish`, `NativeAdrenoUserClient`, `NativeAdrenoSubmit`, `NativeAdrenoMemory`, `NativeAdrenoCpu`, `AdrenoPM4.kit` | `external/NativeAdreno`, `external/AdrenoPM4`, built by Droid-VM's `build-droidvm-gpu.py` run up to its accelerator step (its edits to Publish and Memory included) | `AGXDeviceUserClient` (the user client), the published `NativeAdrenoGpu` service, execbuf and memory |
-| `DroidVMGpu` | `external/UniXNU-droidvm/package/DroidVMGpu.cpp`, from a staged copy with four changes (`STAGED` in `build-oneios-gpu.py`) | NativeAdreno's hardware classes never attached; the publish; the accelerator's registration |
+| `DroidVMGpu` | `external/UniXNU-droidvm/package/DroidVMGpu.cpp`, from a staged copy with four changes (`staged/gpu.rs` of `oneios-tool kernel gen gpu`) | NativeAdreno's hardware classes never attached; the publish; the accelerator's registration |
 | `NativeAdrenoAccelerator.late` | `external/NativeAdreno/NativeAdrenoAccelerator.cpp` with `external/NativeMetal/OriginalAcceleratorABI.h` | `AGXAccelerator`, a subclass of the collection's `IOAcceleratorES`; its static initializer is out of `__mod_init_func` and runs after IOGPUFamily has loaded |
 | `IOAcceleratorES-bindings`, `IOAcceleratorES-originals` | generated from `gpu/IOAcceleratorES-24A446-v54.json` | the parent's constructor and base destructor as stubs `bti c; b <name>.original`, its metaclass as an absolute symbol |
 | `OneiOSAdreno` | `gpu/OneiOSAdreno.cpp` | the start, the bound-parent check, the superclass slide, the self-test, weak stand-ins for sheng's display hand-off and log export |
 
 **The binding.** Apple's `AGXG18P` is not in the collection, so the names `AGXAccelerator` and `AGXDeviceUserClient`
 are free. The parent is `IOAcceleratorES` of `com.apple.iokit.IOGPUFamily` (a root of `kernel.kc`), read from the
-iPhone18,2 kernelcache by `kernel/prelink/classes.py`: metaclass `0xfffffe000b976c78`, 136 bytes, 168 slots of which
+iPhone18,2 kernelcache by `oneios-tool prelink classes`: metaclass `0xfffffe000b976c78`, 136 bytes, 168 slots of which
 only 0, 1 and 7 are its own (so a plain `IOService`, as `OriginalAcceleratorABI.h` declares and as on the iPad);
 the protected constructor at `0xfffffe000a04bc50` and the base destructor at `0xfffffe000a04bcc0` (0x78 and 8
 before the complete destructor; read from the code: the constructor calls IOService's with the caller's metaclass
@@ -330,8 +643,10 @@ thread; none was seen.) Boot arguments:
 | Argument | |
 |---|---|
 | `oneios-gpu-metal=0` / `=1` | never / always publish. Not given: published when the host's virtio GPU offers 3D (`oneios_gpu3d_state` 3), so not on the PC. Droid-VM's `droidvm-gpu-metal` is read when this one is absent |
-| `droidvm-gpu-clients=a,b,...` or `*` | the processes besides `backboardd` granted the user client (DroidVMGpu.cpp `grantedProcesses`). Not given: `WidgetRenderer_Default,*Poster*,iconservicesagent,SBRendererService`, the list of the image's `NativeAdrenoMetal.clients`; empty: `backboardd` alone |
+| `droidvm-gpu-clients=a,b,...` or `*` | the processes besides `backboardd` that get a Metal device: the grant of the user client (DroidVMGpu.cpp `grantedProcesses`) and, since `0039`, the plug-in's `NativeAdrenoMetal.clients`, which the kernel writes beside the bundle at every boot from the same list (`oneios_gpu_client_list` in `gpu/OneiOSAdreno.cpp`). Forms: a name, `X*`, `*X*`, `@apps`, `*`. Not given: `*`, every process (since 2026-11-12, the owner's decision; before: `WidgetRenderer_Default,*Poster*,iconservicesagent,SBRendererService`, and SpringBoard, the apps, the keyboard and WebKit drew on the CPU). The default is in the kernel, not in xnuhost's boot arguments: the image's `overlay/userland/xnuhost.conf` carries its own `boot-args`, which replace xnuhost's default, so only a kernel default reaches every image without a new image or seed; empty: `backboardd` alone |
+| `oneios-gpu-plugin-clients=...` | a test: the plug-in's list alone (the processes it names ask for a device; the grant decides for the names it holds, the sandbox for the rest). Not given: the list above |
 | `vgpu-3d=1` | what `GETPARAM(DEFAULT_3D)` answers the plug-in (DroidVMVirtioGpu3D.cpp reads it with default 0; `vgpu-3d=0` also turns the driver off) |
+| `oneios-gpu-read-wait=1` | a test switch (widgets, 2026-11-13; off by default): the render server's command buffers wait, as they name the IOSurfaces they sample, for other processes' GPU work begun before them that writes those surfaces (the driver's own `awaitWriters`, at most 100 ms: what a newer plug-in asks for and this pin does not). One line at the render server's first surface ticket: `oneios-gpu-read-wait: on ...` or `off`; its waits are `oneios-gpu-sync`'s "reads that waited for writers" |
 | `oneios-adreno-selftest=1` | after the publish: IOKit's match of `IOAcceleratorES`, an in-kernel open with type `0x4149`, `GETPARAM(ABI_VERSION)` through the tunnel; two `oneios-adreno: selftest:` lines |
 
 **How iOS finds the plug-in (`0031-gpu-addon-mount.patch`).** Metal loads
@@ -360,6 +675,22 @@ oneios-gpu-plugin: backboardd[53] library validation of NativeAdrenoMetal: error
 oneios-gpu-open: backboardd[53] AGXAccelerator type 0x4149 -> 0x0, AGXDeviceUserClient
 ```
 
+Since `0039` (gpu, 2026-11-12; built, not yet run), three more:
+
+```
+oneios-gpu-list: /private/var/oneios/addons/Extensions/NativeAdrenoMetal.clients "WidgetRenderer_Default,...": written (0)
+oneios-gpu-text: iconservicesagent[95] no-device device: Vulkan(VkResultCode(-3))
+oneios-gpu-askers: backboardd 3, SpringBoard 2, iconservicesagent 1, ...
+```
+
+`oneios-gpu-list` is the plug-in's list as the kernel wrote it for this boot (`unchanged (-1)` when the file already
+held it). `oneios-gpu-text` is one text row a process's plug-in streamed (its reason for having no device, the render
+server's phase lines), whole; before 0039 each character was an `oneios-gpu-open` line of type `0x414770cc`.
+`oneios-gpu-askers` (with the GPU report, when it changes) names the processes that read the accelerator's
+`MetalPluginName`, the first twelve, with counts: who asked for a Metal device. A process that asked and has no line in
+`oneios-gpu-clients` got no device (the list did not name it, the open was refused, or the device failed: its
+`oneios-gpu-text` line says which).
+
 Reading them, in order: `oneios-gpu-addon` stage 5 means iOS can see the plug-in; `oneios-gpu-plugin` is dyld loading it (no
 line: nobody tried, or the vnode had no name; an error on the first line is the trust cache, on the second AMFI's library
 validation); `oneios-gpu-open` with `0x41476800` is the plug-in's code running in that process.
@@ -387,11 +718,195 @@ own pages wired for the GPU (`CREATE_BLOB_USER`: an IOSurface or a no-copy buffe
 surface); those pages belong to the surface and are counted again wherever it is imported. The clients line gives own+wired
 MiB per process; the memory line comes whenever the live counts change, the clients line too.
 
+**Who keeps a still screen drawing.** `oneios-cpu: 10 s: backboardd[53] 62%, SpringBoard[30] 35%, ... (all 140%)`, every
+report: the eight busiest processes in the interval, as a percentage of one CPU, from each task's recorded user and system time,
+over the time measured since the last report (its seconds start the line; before 2026-11-13 the nominal 10 s, which a
+late report in a stall inflated: 1,440 % on eight vCPUs). `kernel_task` likely includes its idle threads [inference: `oneios-perf`'s
+`kernel_task: ... most:` counts them as kernel_task's, 198 of 206 s on the PC; this line was not seen on the PC, which
+has no GPU report]: a high share there is not work until `most:` names a thread that is not `idle`.
+Since 2026-11-14 a second line follows it, `oneios-cpu-sys: 10 s: backboardd[52] 180%, ... (kernel time of the same
+processes)`: each one's system time (TASK_POWER_INFO `total_system`) over the same span, so a process's share splits into
+kernel work (system calls, faults, IOKit calls: the framebuffer swap's CPU copy or half-float conversion is
+backboardd's) and its own code (`docs/hardware.md` 7d, "It runs damn hot"). Compiled alone with the kernel's flags,
+not yet in a booted kernel.
+The phone's run of 2026-11-11 drew 40-58 frames a second for ten minutes with nobody touching the lock screen, from the lock
+screen's first frame until the first SpringBoard (pid 30) aborted; after its restart the same screen drew 0 a second and
+frames came only with touches. Before iconservicesagent had a GPU device (an earlier boot) the screen idled. Which process
+drives those frames is what this line shows: a client that commits (SpringBoard busy beside backboardd) or the render server
+alone running an animation of its own.
+
 Reading a leak: "own" or the live count rising across screens that come back to the same state, while "closed" lags "blobs".
 The sizes line (one per client, with the clients line) counts live blobs by size: metal2vulkan's pooled blocks are 64 MiB
 buffers, so growth in "64+" is the runtime's pools (empty blocks it keeps, trimmed after 2 s idle, `NativeBridgeMetalFrontend.mm`
 `watchIdleMemory`) and growth below it is resources (windows, textures). The plug-in's own pool report (`/private/var/ngpu/debug/client-mem`)
 writes `m2v-mem.txt` in the process's temporary folder on the guest's Data volume, which nothing reads out of a phone session yet.
+(The runtime's pooled blocks start at 4 MiB and double with the pool up to 64 MiB, NativeMetal `bridge/patches/0013`, so a
+pool's first blocks are in the 4-32 MiB columns too.)
+
+**Who keeps a blob, and who frees it** (read 2026-11-13, hang). A blob's life, from the top:
+
+| Holder | What it keeps | When it lets go |
+|---|---|---|
+| Core Animation (backboardd's render server) and the app | its `MTLTexture`s, `MTLBuffer`s, render targets, its own texture caches; the `IOSurface`s of every window it composites | its own policy: on memory pressure (iOS's, inside the guest), when the layer goes |
+| NativeMetal (`NativeBridgeMetalFrontend.mm`) | every imported IOSurface while anything in the process still retains it (`gHeldImports`) | the next import, a command buffer's completion, or a memory-pressure rise (`watchImportPressure`) |
+| metal2vulkan (`memory.rs` pools) | the blocks resources are placed in (dedicated allocations for large ones) and up to two empty blocks a pool | an empty block after 2 s (`watchIdleMemory`), every kept block on a pressure rise; never while placements live in it |
+| Turnip (`tu_knl_darwin.cc`) | a freed BO until its fence is done (the retire queue), then in its BO cache: at most 16 MiB of BOs up to 1 MiB and 96 MiB of larger ones (`TU_DARWIN_BO_CACHE_SMALL_MB`, `TU_DARWIN_BO_CACHE_MB`) | past the budgets, oldest first: the close below |
+| the kernel (`DroidVMVirtioGpu3D.cpp`) | a closed blob while the client still has fenced work made before the close ("deferred", "waiting") | at the client's next method or fence wait once that work is done (`reapPending`); every blob at the connection's close |
+| xnuhost (`virtio_gpu.c`, `gpu3d_kgsl.c`, drm2kgsl) | the resource, its udmabufs and KGSL's import of them | at `RESOURCE_UNREF`: detached from every context (drm2kgsl unbinds and frees the GPU object), the chunks closed |
+
+So "blobs +N closed +M" with N far above M (the phone, 2026-11-12 23:45: backboardd +182, closed +17 in 10 s) means the
+client has not closed them: the holder is in the process (Core Animation, NativeMetal, metal2vulkan or Turnip's cache, the
+last bounded at 112 MiB), not the kernel or the host. Two lines per client name which of its memory it is (2026-11-13; the
+gpu archive's staged `DroidVMVirtioGpu3D.cpp`, `tools/oneios-tool/crates/oneios-kernel/src/staged/gpu.rs` `GPU3D`, and
+`OneiOSAdreno.cpp` `blobs::`), printed with the sizes lines for each client that made or let go of a blob in the interval
+or still has closed ones held:
+
+```
+oneios-gpu-kinds: backboardd own task 900 (700 MiB), kernel 2 (1), mappable 650; wired IOSurface 80 (140 MiB), malloc 3 (2), other 1 (1); made +182 gone +17
+oneios-gpu-ages: backboardd <16K 600, <64K 300, <256K 200, <1M 92; age <10 s 120, <1 min 300, <10 min 500, older 72; held closed 3 (1 MiB, oldest 2 s)
+```
+
+- "own task" / "kernel": this driver's pages for the blob (Turnip's BOs), in the client's task or (where that failed) the
+  kernel's map; "mappable": those made with the blob flag `USE_MAPPABLE`, what the CPU writes (command streams, shared and
+  staging buffers, descriptor sets) against GPU-only images.
+- "wired": the caller's own pages (`CREATE_BLOB_USER`) by the VM tag of its mapping at that address: `IOSurface`
+  (`VM_MEMORY_IOSURFACE`, an imported surface), `malloc` (a no-copy buffer over malloc'd memory) and the rest.
+- The small sizes (under 1 MiB, where the phone's growth was), the ages of every live blob (from its creation), and "held
+  closed": blobs closed while the client's work was in flight, with the oldest such wait. Up to 24,576 live blobs are
+  followed (`table full` says when more are not counted).
+- How to read them: small "own task" blobs, mostly mappable and growing in the older columns, are kept BOs (command streams
+  or descriptor pools the runtime keeps, or Turnip's cache past its budget: a bug there); unmappable ones of a few MiB are
+  textures Core Animation keeps; "wired IOSurface" growing is surfaces kept imported; "held closed" with an oldest age of
+  minutes is GPU work that never finishes (a fence lost). A burst that the next quiet 10 s returns ("gone" catching up with
+  "made", the counts falling) is a busy UI, not a leak.
+
+The host's side, in xnuhost's log every 10 s while it changes (`virtio_gpu.c` `blob_note`): `gpu: 10 s: host blobs N (M
+MiB), made +A unref'd +B`. N against the guest's `oneios-gpu-memory` live count says whether the host keeps blobs the guest
+let go (N larger by more than the display's few 2D surfaces: a host leak); equal, the holding is the guest's.
+
+**Where a surface's pixels go** (widgets, 2026-11-13). On the phone (2026-11-12 23:45) every widget was blank or white
+while `WidgetRenderer_Default[174]` had a Metal device (`library validation of NativeAdrenoMetal: error 0`,
+`libvulkan_freedreno.dylib: error 0`, `AGXAccelerator` opened 4 times, `WidgetRenderer_ 28+3 MiB` in the clients line).
+How a widget reaches the screen, read in 24A446 and in the plug-in (not seen running): `WidgetRenderer_Default` is a
+hidden app (`com.apple.chrono.WidgetRenderer-Default`, `WidgetRenderer.framework`) that hosts each widget's archived
+SwiftUI view in a scene SpringBoard shows; SwiftUI draws through RenderBox (`RenderBox hosting configured - async? %d,
+opaque: %d` in its log, or `RenderBox hosting disabled`), which renders with Metal in the widget renderer's own process
+into IOSurfaces (RenderBox's CAMetalLayer path; NativeMetal presents a drawable when its command buffer completes) or
+lets Core Animation draw; the render server (backboardd) then composites those IOSurfaces with its own Metal device. The
+plug-in makes a texture over an IOSurface by importing the surface's mapping in the process
+(`newTextureWithDescriptor:iosurface:plane:` -> a no-copy buffer -> `CREATE_BLOB_USER`, the caller's pages wired), so
+each process imports the same physical pages as a blob of its own (a resource of its own on the host, its own udmabufs
+over the same RAM memfd range, its own KGSL import): nothing is copied anywhere on this path, and nothing on it zeroes
+or clears a surface. The steps where the image can be lost, and the line that shows each (the staged driver's hooks,
+`staged/gpu.rs` `GPU3D`, `OneiOSAdreno.cpp` `trail::`, printed with the GPU report while they change):
+
+| Step | Line | What says the image went missing there |
+|---|---|---|
+| The widget renderer draws with Metal at all | `oneios-gpu-surfaces: WidgetRenderer_ submits +N; writes +W ...` | `submits` 0 (no GPU work); submits but `writes +0` (it renders into no IOSurface: private textures only, or Core Animation draws it) |
+| Its GPU work into a surface finishes | the same line: `done +D (closed +C)` | `done` far below `writes`, or only `closed` (the command buffers never complete) |
+| The pages of the surface get the pixels | `oneios-gpu-pixels: WidgetRenderer_ S surfaces (M MiB): zero Z, white W, flat F, drawn D; changed X` | its surfaces `zero` (the GPU wrote elsewhere, or not into a format the pages show: a texture the runtime keeps apart and never copies back), `white` (what it drew is white) |
+| The render server imports the same pages | `oneios-gpu-pixels: backboardd ...; pages of another process's surfaces N (WidgetRenderer_)` | `N` 0 while the widget renderer has surfaces: the render server never textures them, or gets other pages |
+| The render server reads the surface after the write | `oneios-gpu-surfaces: WidgetRenderer_ ... on S surfaces: R since read by another (backboardd), U by none, T read while written` | `R` 0 (no GPU read of them), `T` high (it samples them while the widget's GPU work is still writing: on KGSL the render server's queue runs first, and this plug-in pin never asks the kernel's `SurfaceAwaitWriters` wait) |
+| CPU access to GPU-drawn surfaces | `oneios-gpu-locks: 10 s: NAME n (GPU-written g, read-only r)` and `oneios-gpu-sync: ... CPU locks +L ... waited +A, gave up +B` | a snapshotter reading them (`gave up`: the lock waited 500 ms for GPU work that did not end) |
+| The host keeps the GPU coherent with the CPUs | `gpu: KGSL imports ... coherence dropped by KGSL D` (xnuhost, section 2.4) | `D` above 0 |
+
+The lines (examples, not from a run):
+
+```
+oneios-gpu-sync: 10 s: tickets +40 ended +40 (closed +0, not kept +0); CPU locks +12 (read-only +10, no wait +0): waited +2, gave up +0, mean 900 us, max ever 4000 us; reads that waited for writers +0, gave up +0, max ever 0 us
+oneios-gpu-surfaces: WidgetRenderer_ submits +40; writes +24 done +24 (closed +0) on 6 surfaces: 5 since read by another (backboardd), 1 by none, 0 read while written; reads +2: others' +0 (while written +0), with no GPU writer +2
+oneios-gpu-pixels: WidgetRenderer_ 6 surfaces (5 MiB): zero 0, white 1, flat 0, drawn 5; changed 3; pages of another process's surfaces 0 (-)
+oneios-gpu-pixels: backboardd 40 surfaces (90 MiB): zero 2, white 4, flat 3, drawn 31; changed 9; pages of another process's surfaces 33 (SpringBoard)
+oneios-gpu-locks: 10 s: SpringBoard 12 (GPU-written 3, read-only 10); other processes 0; surfaces forgotten for room 0
+```
+
+- `oneios-gpu-sync` is the tunnel's own IOSurface counters (`DroidVMVirtioGpu3D.cpp` `surfaceAccess`, `surfaceTrap`,
+  `awaitWriters`), which nothing printed before: tickets (one per command buffer that names surfaces) begun and ended,
+  ended because the connection closed, uses not kept (its table of 4096 full); CPU locks of IOSurfaces
+  (`IOSurfaceLock`) and how many waited for GPU work, gave up after `droidvm_surface_wait_ms` (500), their mean wait;
+  the render server's waits for other processes' writers (only a plug-in that asks for them: this pin does not).
+- `oneios-gpu-surfaces`, one line per client that submitted or named a surface since the last report, by IOSurface ID
+  (from what each command buffer names as it commits: NativeMetal's surfacesync, the surfaces it renders into and those
+  it samples): its submissions; its writes begun and ended; the distinct surfaces whose last write ended in the
+  interval, and of those how many another client read since (and who), none did, or another read while a write was in
+  flight; its own reads of other clients' surfaces (and of surfaces no GPU wrote: a CPU-drawn backing store).
+- `oneios-gpu-pixels`, one line per client whose figures changed, by blob: each IOSurface the client imported for the
+  GPU (`CREATE_BLOB_USER` over a mapping tagged `VM_MEMORY_IOSURFACE`: the "wired IOSurface" of `oneios-gpu-kinds`),
+  read here from its guest pages (`phystokv`, the identity on the RAM window): 8 pages spread over the surface and 16
+  pixels in each, all zero, white (every byte 0xf0 or more), one other value, or drawn; "changed" is the import whose
+  pixels differ from the last report's; "pages of another process's surfaces" is the import whose first page is the
+  first page of an IOSurface another client imported (one physical range seen by both), with the client most of them
+  share with. Up to 1536 imports are followed (`table full: some imports not read` when more are not).
+- `oneios-gpu-locks`: who locked GPU-used surfaces with the CPU in the interval (the first eight processes).
+
+A client slot is reused when its connection closes and another opens: a line names the slot's current process. What was
+checked (Linux PC, 2026-11-13): `kernel gen gpu` in a hosted kernel build compiled `OneiOSAdreno.cpp` with no warning
+and the staged driver with the hooks of the trail, and linked `liboneiosgpu.a`; the staged driver with the
+`oneios-gpu-read-wait` hook too, compiled alone with the build's own command for an iokit source (it was added after
+that build's tool was made); `cargo test -p oneios-kernel --test golden` 10 of 10. **Not done** (the work was paused):
+the whole kernel's link, the prelink (`kernel.kc`, audit, stubs check) and a PC boot with these hooks; qemu has no 3D, so
+a PC boot would only show that the kernel boots with them, none of these lines. Not yet run on the phone.
+
+**The next phone boot (widgets, 2026-11-13).** The kernel and runtime of this change, the image's `xnuhost.conf`
+`boot-args` as the baseline's plus `oneios-iouc=WidgetRenderer_Default,chronod` (0029: every IOSurface user-client call
+those two make whose answer changes, so a refused lookup or create shows). Unlock, look at a home screen page with
+widgets for a minute (add one from the gallery if none), swipe to it and away twice, and return. From xnuhost's log:
+`oneios-gpu-surfaces`, `oneios-gpu-pixels`, `oneios-gpu-locks`, `oneios-gpu-sync` (all of them), `oneios-gpu-clients`,
+`oneios-gpu-kinds` and `oneios-gpu-sizes` for `WidgetRenderer_` and `backboardd`, `oneios-gpu-text` and
+`oneios-gpu-open`/`oneios-gpu-plugin` for `WidgetRenderer_Default`, `oneios-iouc: WidgetRenderer_Default` and
+`chronod`, drm2kgsl's `guest import: KGSL ...` and the host's `gpu: KGSL imports ...`. From iOS's own log
+(`oneios-tool phone pull-data data.img`, then):
+
+```
+oneios-tool ioslog show data.img --boot last --proc WidgetRenderer_Default --type error,fault
+oneios-tool ioslog show data.img --boot last --proc WidgetRenderer_Default --grep 'native-metal|refused|Unsupported|444|_RB4|MTL|Metal|IOSurface|drawable'
+oneios-tool ioslog show data.img --boot last --proc WidgetRenderer_Default --grep 'RenderBox|Rendering view|placeholder|Placeholder|Archive was nil|Content load failed|Snapshot|archive'
+oneios-tool ioslog show data.img --boot last --proc chronod --grep 'placeholder|timeline|archive|snapshot|extension|reload|fail|error'
+oneios-tool ioslog show data.img --boot last --proc backboardd --grep 'native-metal|refused|Unsupported|IOSurface|surface import'
+oneios-tool ioslog show data.img --boot last --proc SpringBoard --grep 'widget|Widget|WidgetRenderer|scene|placeholder'
+oneios-tool ioslog show data.img --boot last --subsystem com.apple.chrono
+oneios-tool ioslog checks data.img --boot last
+```
+
+What each would mean, as guesses to test: `native-metal: ... Unsupported ... 444` or `_RB4` in the widget renderer is
+RenderBox drawing widgets into its own two-plane 4:4:4 IOSurfaces, which NativeMetal does not render into (Droid-VM's
+note in `build-adreno-metal-plugin.py`: the iPad's Weather widget showed rows of stray colour until RenderBox was told
+`MTLGPUFamilyApple2` by the caller's image path), with `oneios-gpu-pixels: WidgetRenderer_ ... zero` beside it; then
+the fix is the plug-in's (built on the Mac, a new trust list and image seed). `placeholder` / `Archive was nil` /
+`Content load failed` is the widget's content never reaching the renderer (chronod and the widget extensions: no GPU
+cause). Drawn widget surfaces (`drawn`) that backboardd shares the pages of and reads after the write, while the screen
+shows white, put the loss in the render server's composition. If `read while written` is well above 0, a second
+session with `oneios-gpu-read-wait=1` added says whether the order of the two processes' GPU work is the cause
+(widgets drawn with it, blank without). For the keyboard hang (`docs/newtodo.md` 11, 12): the image's
+`xnuhost.conf` `boot-args` as the baseline's, with its `oneios-ubt...` part replaced by
+
+```
+oneios-ubt=Spotlight,kbd,backboardd oneios-ubt-at=300 oneios-ubt-every=10 oneios-ubt-count=150 oneios-iouc=kbd,Spotlight oneios-sysfail=kbd,Spotlight
+```
+
+(`oneios-ubt-count` is 0061's, on `fix-wifi-late-2`: without it the samples go on every 10 s to the end). Then unlock,
+open Settings > Wi-Fi, tap a network and type its password for a minute, and return. From xnuhost's log, the lines
+from 2 minutes before the keyboard to the return: `oneios-gpu-memory`, `oneios-gpu-clients`, `oneios-gpu-sizes`,
+`oneios-gpu-kinds`, `oneios-gpu-ages` (backboardd, Spotlight, kbd, Preferences), `gpu: 10 s: host blobs`, `gpu: 10 s
+host:`, `display: ... flushes`, `oneios-cpu:`, `oneios-perf:` (all of its lines, with `kernel_task: ... most:`),
+`oneios-mem:` (four lines), both `memory:` lines, `thermal:`, `input: touch:`, `oneios-ubt:` (each report's lines;
+name a thread's addresses with `oneios-tool sym ADDR...`, then `--slide`), `oneios-iouc: kbd`/`Spotlight`,
+`oneios-sysfail: kbd`/`Spotlight`. From iOS's own log (`oneios-tool phone pull-data data.img`, then, with `--boot last`
+and `--since`/`--until` around the keyboard):
+
+```
+oneios-tool ioslog show data.img --boot last --proc kbd --type error,fault
+oneios-tool ioslog show data.img --boot last --proc kbd --grep 'ANE|Espresso|E5RT|e5rt|[Nn]eural|LanguageModel|[Mm]odel|timeout|retry'
+oneios-tool ioslog show data.img --boot last --proc Spotlight --type error,fault
+oneios-tool ioslog show data.img --boot last --proc Spotlight --grep 'ANE|Espresso|E5RT|MTL|Metal|GPU|embedding|query|index|timeout|retry'
+oneios-tool ioslog show data.img --boot last --proc InputUI --grep '[Kk]eyboard|session|timeout|fail'
+oneios-tool ioslog show data.img --boot last --proc SpringBoard --grep 'UIKeyboard|RemoteKeyboard|[Kk]eyboardArbiter|InputUI|focus'
+oneios-tool ioslog show data.img --boot last --proc Preferences --grep '[Kk]eyboard|password|join|timeout'
+oneios-tool ioslog show data.img --boot last --proc backboardd --grep '[Kk]eyboard|IOSurface|texture|memory|watchdog|hang|stall'
+oneios-tool ioslog show data.img --boot last --subsystem com.apple.TextInput
+oneios-tool ioslog show data.img --boot last --proc kernel --grep 'memorystatus|jetsam|idle_demotion|stuck'
+oneios-tool ioslog checks data.img --boot last
+```
 
 The phone's numbers before this split (backboardd 20 -> 383 -> 431 -> 460 -> 543 -> 925 MiB in 16 min, 2026-11-11) mixed both
 kinds; the steps at 543 and 925 came after SpringBoard restarts (it aborted on `processIdentity`, not a GPU fault). The
@@ -490,7 +1005,8 @@ member `AGXAccelerator::superClass` keeps the parent's unslid link address (noth
 
 ## 7. The Metal plug-in (`userland/metal`)
 
-Built on the Linux PC with the iOS cross toolchain ([building.md](building.md) section 9); no Mac.
+Built with the toolchain of [building.md](building.md) section 9: Xcode's on macOS, the cross toolchain on Linux. The
+same command on both; every link is against this guest's own iOS 27 stubs (`out/ios27-tbd`).
 
 ```sh
 scripts/bg.sh metal userland/metal/build.sh      # stage, turnip, plugin, finish, addon (each also runs alone)
@@ -506,10 +1022,14 @@ scripts/bg.sh metal userland/metal/build.sh      # stage, turnip, plugin, finish
 
 The steps are the kernel base's own scripts (`build-turnip-darwin.py`, `build-adreno-metal-bridge.py`,
 `build-adreno-metal-plugin.py`, `--target ios27`), run from a staged copy of its tree in `out/metal/root` with
-`userland/metal/shim/` first in `PATH`: `xcrun`, `codesign`, `strip` and `nm` are answered by `scripts/ios` and
-cctools. The staged copies differ from upstream in four lines, which `stage` prints: meson's build-machine compiler,
-ninja's job count, a longer limit for the Rust build, and no `TurnipReplay.h` (it is recorded by a Mac-only host
-simulation; the plug-in includes it only when it exists, so the prefix-replay diagnostic is absent). Also not made:
+`userland/metal/shim/` first in `PATH`: `xcrun`'s clang is `scripts/ios/ios-clang` (so the links go through `ios-ld`
+and the stubs), `codesign` is `scripts/ios/ios-sign.py`, `strip` and `nm` are the linker's siblings; on macOS every
+other `xcrun` question, and any about another SDK (rustc's `--sdk macosx` for the crates' build scripts), goes to
+Xcode's `xcrun`, and `SDKROOT` is left unset so those build scripts link for the Mac. The staged copies differ from
+upstream in the lines `stage` prints: meson's build-machine compiler, ninja's job count, a longer limit for the Rust
+build, no `TurnipReplay.h` (it is recorded by a Mac-only host simulation; the plug-in includes it only when it
+exists, so the prefix-replay diagnostic is absent), and, only when the compiler knows the warning (clang 23 on the
+Linux PC, not Xcode 27.2's clang 21), `-Wno-error=unused-but-set-global`. Also not made:
 `build/prime-list.txt` (the image's `.metallib` paths for shader priming; the plug-in primes nothing without it).
 The script's probe daemon `adrenoprobed` is built beside the bundle (`out/metal/root/build/adreno-metal-plugin27/`)
 and not placed.
@@ -518,6 +1038,15 @@ and not placed.
 class `NativeAdrenoMetalDevice`, MinimumOSVersion 27.0), `NativeAdrenoMetal`, `libvulkan_freedreno.dylib` (opened by
 path by the plug-in), `oneios-target`. Both binaries are signed by `scripts/ios/ios-sign.py`;
 `NativeAdrenoMetal.build.json` beside the bundle records the SDK, the stubs' cache, the source pins, sizes and CDHashes.
+
+**Appended for backboardd** (`stage`, after the address check): `drivers/brightness/BacklightMode.inc` (BLControl,
+`docs/hardware.md` 7a) and, since 2026-11-13, `userland/metal/DisplayWide.inc`: when the kernel's boot arguments have
+`oneios-display-wide=1` (xnuhost's `display-format=rgba16f`), a constructor sets `CA_FORCE_FP16_FRAMEBUFFER=1` and
+writes that option's stored byte (`_ca_debug_options` + 128, `0x1e702516c` + the slide), so the render server's
+framebuffer is `RGhA` half floats and the display path keeps them whole
+(`kernel/patches/oneios-hosted/display/README.md`, "Colour, depth and the panel"). iOS's log then has `OneiOS display:
+half-float framebuffer asked (...)`. The headroom, threshold and virtualized overrides below stay as they are. Not
+built or compiled yet (the plug-in builds on the Mac).
 
 **The shared cache addresses.** Upstream's plug-in writes QuartzCore's options at fixed addresses of the iPad17,3
 24A446 cache, relative to `CARenderServerStart`. They were re-found in this guest's cache
@@ -565,6 +1094,21 @@ has it on the iPad; it only reads inside QuartzCore's image.
 both binaries (every library has a stub of 24A446 and every bound import is exported by it; Turnip's 5633 weak
 entrypoints are bound to itself); the image hook places the bundle and `owner-trust.json` lists both CDHashes
 (sizes and hashes: `out/userland/NativeAdrenoMetal.build.json`).
+**Built on the Mac** (2026-11-12, Xcode 27.2: SDK 27.2, Apple clang 21.0.0, ld-27106.1; Rust 1.98.0; stubs of
+cache `77BC8C63`, 4723 stubs): `scripts/bg.sh metal userland/metal/build.sh`, 6 minutes 12 seconds with the Rust crates
+already fetched (Turnip about 4 minutes, the bridge and the plug-in about 2). `macho-check.py` passes for both binaries
+(259 of Turnip's 5892 imports bound to 24A446 stubs, 5633 weak ones bound to itself).
+
+| File | Linux PC (2026-11-11, SDK 26.5, clang 23, ld64-956.6) | Mac (2026-11-12, SDK 27.2, Apple clang 21, Xcode's ld) |
+|---|---|---|
+| `NativeAdrenoMetal` | 19,091,344 bytes, CDHash `18535d2ab99e64fc2afa989e5000fc02c9e46f61` | 18,894,416 bytes, CDHash `efcefba302d65696438ff061c0a2c298aab86bff` |
+| `libvulkan_freedreno.dylib` | 16,738,288 bytes, CDHash `23299678fa1606669218773f458e53c2583f3bc4` | 16,871,920 bytes, CDHash `2899d180e9da5beea0aa7220a12c4f2af39064d9` |
+
+They differ because the compilers, the linkers and the SDK headers differ (the sources and the stubs are the same).
+A set built from either lists its own two CDHashes in `owner-trust.json`; the plug-in of one set does not run
+under the other's trust list. `ios-sign.py` is not a cause: it writes what Apple's codesign writes (Turnip's dylib
+re-signed by both: the same bytes).
+
 **Not verified:** anything at run time. No guest has loaded the bundle: until `0031-gpu-addon-mount.patch` no kernel
 showed it to iOS (section 5.1), and that patch has compiled but not run. Whether dyld and AMFI of this guest accept the binaries, whether the
 writes above have the effect they have on the iPad, and whether MetalCheck passes are all open.

@@ -1,5 +1,6 @@
-"""Tests of the guest helpers' logic, built for the host with cc (they are plain POSIX C; the Darwin parts are
-behind __APPLE__ and are not run here).
+"""Tests of the guest helpers' logic, built for the host with cc and -DONEIOS_HOST_TEST (they are plain POSIX C; the
+guest's Darwin parts, notify, libproc and the bootstrap port, are left out of a host build and are not run here).
+Linux or macOS.
 
     python3 -I userland/tests/test_helpers.py
 """
@@ -7,13 +8,16 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
 HELPERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'helpers')
 CC = shutil.which('cc')
-FLAGS = ['-std=c99', '-D_DEFAULT_SOURCE', '-D_POSIX_C_SOURCE=200809L', '-O1', '-Wall', '-Wextra', '-Werror']
+FLAGS = ['-std=c99', '-D_DEFAULT_SOURCE', '-D_POSIX_C_SOURCE=200809L', '-DONEIOS_HOST_TEST', '-O1', '-Wall', '-Wextra', '-Werror']
+if sys.platform == 'darwin':
+    FLAGS.append('-D_DARWIN_C_SOURCE')       # flock, setgroups, O_NOFOLLOW are BSD's, hidden by _POSIX_C_SOURCE
 
 
 def wait_for(check, seconds=10):
@@ -30,7 +34,7 @@ class Helpers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.build = tempfile.TemporaryDirectory()
-        for name in ('oneios-init', 'oneios-bootstat', 'oneios-seed'):
+        for name in ('oneios-init', 'oneios-bootstat', 'oneios-seed', 'oneios-thermal'):
             subprocess.run([CC, *FLAGS, os.path.join(HELPERS, name + '.c'), '-o', os.path.join(cls.build.name, name)], check=True)
 
     @classmethod
@@ -190,6 +194,49 @@ class Helpers(unittest.TestCase):
         usage = subprocess.run([os.path.join(self.build.name, 'oneios-bootstat'), '--bogus'], capture_output=True)
         self.assertEqual(usage.returncode, 2)
 
+    # ---- oneios-thermal ----------------------------------------------------------------------------------------
+    def test_thermal_copies_the_hosts_level_and_keeps_it(self):
+        fake = os.path.join(self.tmp.name, 'thermal')
+        os.makedirs(fake)
+        run = lambda polls: subprocess.run([os.path.join(self.build.name, 'oneios-thermal'), '-n', str(polls), '-i', '0'],
+                                           env={'ONEIOS_FAKE_THERMAL': fake}, capture_output=True, text=True, check=True).stdout
+        def state():
+            try:
+                with open(os.path.join(fake, 'state')) as f:
+                    return f.read().strip()
+            except FileNotFoundError:
+                return None
+        self.assertIn('no-service', run(2))                     # an older kernel: said once, nothing set
+        self.assertEqual(run(2).count('no-service'), 1)
+        self.assertFalse(os.path.exists(os.path.join(fake, 'state')))
+        with open(os.path.join(fake, 'service'), 'w') as f:
+            f.write('30 1 4420 7100\n')
+        out = run(1)
+        self.assertIn('level=30 name=heavy step=1 case=44.2 soc=71.0', out)
+        self.assertEqual(state(), '30')
+        # someone else (thermalmonitord) sets nominal while the host says heavy: set back, said once
+        os.unlink(os.path.join(fake, 'state'))
+        p = subprocess.Popen([os.path.join(self.build.name, 'oneios-thermal'), '-n', '40', '-i', '0'], env={'ONEIOS_FAKE_THERMAL': fake},
+                             stdout=subprocess.PIPE, text=True)
+        self.assertTrue(wait_for(lambda: state() == '30'))
+        with open(os.path.join(fake, 'state'), 'w') as f:
+            f.write('0\n')
+        out = p.communicate(timeout=20)[0]
+        self.assertEqual(out.count('overwritten state=0'), 1)
+        self.assertEqual(state(), '30')
+        # a new level from the host is set and says the old one
+        with open(os.path.join(fake, 'service'), 'w') as f:
+            f.write('0 0 3500 4000\n')
+        os.unlink(os.path.join(fake, 'state'))
+        p = subprocess.Popen([os.path.join(self.build.name, 'oneios-thermal'), '-n', '200', '-i', '0'], env={'ONEIOS_FAKE_THERMAL': fake},
+                             stdout=subprocess.PIPE, text=True)
+        self.assertTrue(wait_for(lambda: state() == '0'))
+        with open(os.path.join(fake, 'service'), 'w') as f:
+            f.write('40 2 4650 9000\n')
+        out = p.communicate(timeout=20)[0]
+        self.assertIn('level=40 name=trapping step=2 case=46.5 soc=90.0 was=0', out)
+        self.assertEqual(state(), '40')
+
     # ---- oneios-seed -------------------------------------------------------------------------------------------
     def seed(self, entries, fmt=None):
         """A tar as image-build writes the Data seed: pax, numeric owners, xattrs as LIBARCHIVE.xattr records."""
@@ -277,8 +324,12 @@ class Helpers(unittest.TestCase):
         done, target = self.unpack(seed)
         self.assertEqual(done.returncode, 0, done.stderr)
         try:
-            have = os.getxattr(os.path.join(target, 'f'), 'user.oneios.test')
-        except OSError:
+            if hasattr(os, 'getxattr'):
+                have = os.getxattr(os.path.join(target, 'f'), 'user.oneios.test')
+            else:                                # macOS: Python has no getxattr there
+                have = bytes.fromhex(subprocess.run(['xattr', '-px', 'user.oneios.test', os.path.join(target, 'f')],
+                                                    capture_output=True, text=True, check=True).stdout)
+        except (OSError, subprocess.CalledProcessError):
             self.assertIn('1 extended attributes NOT set', done.stdout)  # a file system without user xattrs: said, not hidden
             return
         self.assertEqual(have, value)

@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/eventfd.h>
 
@@ -26,6 +27,24 @@ enum {
   RESP_ERR_INVALID_CONTEXT_ID, RESP_ERR_INVALID_PARAMETER,
 };
 enum { FMT_BGRA = 1, FMT_BGRX = 2, FMT_ARGB = 3, FMT_XRGB = 4, FMT_RGBA = 67, FMT_XBGR = 68, FMT_ABGR = 121, FMT_RGBX = 134 };
+// Half floats (R,G,B,A, linear extended sRGB): xnuhost's own code, include/xnuhost/pixels.h.
+#define FMT_RGBA16F XH_VIRTIO_GPU_FORMAT_RGBA16F
+
+static bool format_known(uint32_t f)
+{
+  return f == FMT_BGRA || f == FMT_BGRX || f == FMT_ARGB || f == FMT_XRGB || f == FMT_RGBA || f == FMT_XBGR || f == FMT_ABGR ||
+         f == FMT_RGBX || f == FMT_RGBA16F;
+}
+
+// Bytes a pixel of a scanout format takes in guest memory.
+static unsigned format_bpp(uint32_t f) { return f == FMT_RGBA16F ? 8u : 4u; }
+
+// The display's pixels (display-format=): what a resource's host copy and a blob's flush are written in.
+static unsigned display_format(void)
+{
+  xh_display *d = xh_display_get();
+  return d && d->format ? d->format : XH_PIXELS_BGRX8;      // 0: a display made before formats (B,G,R,X)
+}
 
 typedef struct { uint32_t type, flags; uint64_t fence; uint32_t ctx; uint8_t ring, pad[3]; } gpu_hdr;
 typedef struct { uint32_t x, y, w, h; } gpu_rect;
@@ -37,7 +56,8 @@ enum { F_VIRGL = 1u << 0, F_RESOURCE_BLOB = 1u << 3, F_CONTEXT_INIT = 1u << 4, F
 #define MAX_BACKING 16384              // as MAX_BLOB_ENTRIES: a 2D surface of scattered 4 KiB pages (1440x3120 has 4388)
 typedef struct {
   uint32_t id, format, width, height;
-  uint8_t *pixels;                 // host copy, always B,G,R,X byte order
+  uint8_t *pixels;                 // host copy, in the display's pixels (dformat: B,G,R,X 8-bit or R,G,B,A half floats)
+  unsigned dformat, dbpp;
   gpu_entry *backing;
   unsigned nbacking;
 } resource;
@@ -74,8 +94,12 @@ typedef struct {
   xh_gpu3d *b;
   xh_virtio *dev;
   uint32_t ctx[MAX_CTX];               // live context ids
+  bool ctx_fast[MAX_CTX];              // that context's commands are the fast lane's (the render server's: "xnu:backboardd")
   blob *blobs;                         // BLOB_SLOTS of them; id 0 = free
   unsigned nblobs;
+  // The blobs the host holds (2026-11-13): bytes of the live ones, made and unref'd since the start, and the last line's
+  // figures (blob_note). Set where the worker changes the table.
+  uint64_t blob_bytes, blobs_made, blobs_unref, blob_note_us, noted_made, noted_unref;
   struct { uint32_t width, height, format, stride, offset; } scan;      // the scanout when it is a blob
   // A flush of the blob scanout handed to the display helper (xh_display_post): set by flush_blob, posted by work()
   // once the command's reply is held on `fences` as the display's (ctx 0, which no context has), and answered when
@@ -88,7 +112,24 @@ typedef struct {
   uint64_t gen, kicks, served;
   bool reset_requested;
   int wake;                            // eventfd: the control queue was kicked (written from the trap handler)
+  // Two lanes. The queue's thread serves the render server's contexts and every command of no context (the display,
+  // the 2D commands) at once, and hands every other context's commands, in their order, to the slow lane's thread.
+  // An app that makes 100 blobs at its launch (1-30 ms each on the phone: udmabufs, KGSL's import and bind) then no
+  // longer holds back the render server's next frame and the display's flush behind them. `cmd` makes the two take
+  // turns at the state above and the renderer (a frame waits for one blob at most, not for all of them).
+  pthread_mutex_t cmd;
+  pthread_cond_t slow_cv;
+  struct slow_job *slow_head, **slow_tail;
+  uint64_t slow_queued, slow_done;
 } gpu_state;
+
+typedef struct slow_job {
+  struct slow_job *next;
+  uint16_t head;
+  unsigned n;
+  uint64_t gen;
+  xh_viov iov[];
+} slow_job;
 
 static resource *find(gpu_state *g, uint32_t id)
 {
@@ -119,6 +160,27 @@ static void convert(uint8_t *to, const uint8_t *from, uint32_t format, size_t pi
   }
 }
 
+// A row of a scanout format's pixels into the display's (display_format()). Half floats into half floats are copied;
+// into 8 bits they are encoded to sRGB and clamped (what is outside sRGB and above white is lost, as in the guest's
+// own CPU conversion); 8-bit pixels into half floats are decoded to linear light.
+static void convert_to(uint8_t *to, unsigned dformat, const uint8_t *from, uint32_t format, size_t pixels)
+{
+  if (format == FMT_RGBA16F) {
+    if (dformat == XH_PIXELS_RGBA16F) memcpy(to, from, pixels * 8);
+    else xh_pixels_rgba16f_to_8(to, from, pixels, 0);
+    return;
+  }
+  if (dformat != XH_PIXELS_RGBA16F) { convert(to, from, format, pixels); return; }
+  if (format == FMT_BGRA || format == FMT_BGRX) { xh_pixels_bgrx8_to_rgba16f(to, from, pixels); return; }
+  uint8_t row[4 * 256];                                // another byte order: through B,G,R,X, 256 pixels at a time
+  for (size_t done = 0; done < pixels;) {
+    size_t n = pixels - done < 256 ? pixels - done : 256;
+    convert(row, from + done * 4, format, n);
+    xh_pixels_bgrx8_to_rgba16f(to + done * 8, row, n);
+    done += n;
+  }
+}
+
 // Copies `length` bytes at linear `offset` of a resource's backing into `out`.
 static bool backing_read(const resource *r, uint64_t offset, uint8_t *out, uint64_t length)
 {
@@ -136,13 +198,17 @@ static bool backing_read(const resource *r, uint64_t offset, uint8_t *out, uint6
 
 // The guest's display driver also scans out the boot framebuffer itself (DroidVMVirtioGpuDisplay.cpp's `boot`
 // resource: the kernel console until the compositor's first frame, and later whenever a blank or CPU-copied frame was
-// drawn there). That picture is shown like any other, but it is the console's: the guest is ready (session/ready)
-// at the first frame of a surface of its own.
+// drawn there). That picture is shown like any other, but it is the console's. A frame of a surface of the guest's
+// own goes to main.c's ready rule (ready.c) with whether the display's frame now shows anything: backboardd's first
+// frames are black, and the guest is ready (session/ready) at the first that is not (2026-11-15). Called before the
+// frame is posted to the display helper, so that session/ready is there when the helper sees the frame.
+// `ready` (g->first_frame) stops the calls once the rule has said yes.
 static void frame_shown(gpu_state *g, const gpu_entry *entries, unsigned n)
 {
   if (g->first_frame || (n && g_info.video[0] && entries[0].addr == g_info.video[0])) return;
-  g->first_frame = true;
-  xh_guest_ready();
+  xh_display *d = xh_display_get();
+  bool lit = d && xh_pixels_lit(d->pixels, d->stride, d->width, d->height, d->format);
+  if (xh_guest_frame(lit)) g->first_frame = true;
 }
 
 static bool rect_ok(const gpu_rect *r, uint32_t w, uint32_t h)
@@ -175,6 +241,7 @@ static void blob_del(gpu_state *g, blob *b)
   unsigned i = (unsigned)(b - g->blobs), j = i;
   free(b->entries);
   g->nblobs--;
+  g->blob_bytes -= b->size;
   for (;;) {                                         // backward shift: the probe chains stay whole
     g->blobs[i].id = 0;
     for (;;) {
@@ -193,6 +260,30 @@ static uint32_t *ctx_find(gpu_state *g, uint32_t id)
 {
   for (unsigned i = 0; id && i < MAX_CTX; i++) if (g->ctx[i] == id) return &g->ctx[i];
   return NULL;
+}
+
+
+// The copy of each scanout flush, one log line per 10 s while frames come: `display: 10 s: flushes N, copy mean X us
+// max Y us (Z MiB)`. The device's one thread does it, so the guest's next commands (a frame's submissions, its blobs)
+// wait behind it.
+static uint64_t flush_now_us(void)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u;
+}
+
+static void flush_note(uint64_t took, uint64_t bytes)
+{
+  static uint64_t since, n, sum, max, total;
+  uint64_t now = flush_now_us();
+  if (!since) since = now;
+  n++; sum += took; total += bytes; if (took > max) max = took;
+  if (now - since >= 10000000u) {
+    LOGI("display: %llu s: flushes %llu, copy mean %llu us max %llu us (%llu MiB)", (unsigned long long)((now - since) / 1000000u),
+         (unsigned long long)n, (unsigned long long)(sum / n), (unsigned long long)max, (unsigned long long)(total >> 20));
+    since = now; n = sum = max = total = 0;
+  }
 }
 
 // Copies `length` bytes at linear `offset` of a guest blob into `out`.
@@ -246,8 +337,45 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
     frame_shown(g, b->entries, b->nentries);
     return RESP_OK_NODATA;
   }
-  uint32_t status = flush_copy(g, b, &clipped);
-  if (status == RESP_OK_NODATA) frame_shown(g, b->entries, b->nentries);
+  // Rows straight from the guest's pages into the display's buffer, the blob's segments walked once for the whole
+  // rectangle: rows lie at rising offsets. (Each row used to be read into a buffer of its own, the segment list searched
+  // from its start for every row: 3120 rows of a 1440x3120 frame over about 1100 segments of 16 KiB pages.)
+  // A half-float scanout is 8 bytes a pixel in the guest; the display's pixels are d->format's (display-format=).
+  uint32_t status = RESP_OK_NODATA;
+  uint64_t t0 = flush_now_us();
+  unsigned seg = 0, gbpp = format_bpp(g->scan.format), dformat = display_format(), dbpp = xh_pixels_bpp(dformat);
+  uint64_t seg_start = 0;                            // the blob offset at which entries[seg] begins
+  for (uint32_t y = 0; y < hgt && w && status == RESP_OK_NODATA; y++) {
+    uint64_t at = g->scan.offset + (uint64_t)(rect->y + y) * g->scan.stride + (uint64_t)rect->x * gbpp, left = (uint64_t)w * gbpp;
+    uint8_t *to = d->pixels + (size_t)(rect->y + y) * d->stride + (size_t)rect->x * dbpp;
+    uint8_t carry[8];                                // a pixel split between two segments
+    unsigned have = 0;
+    if (at < seg_start) { seg = 0; seg_start = 0; }  // not expected: rows only rise
+    while (left) {
+      while (seg < b->nentries && at >= seg_start + b->entries[seg].length) seg_start += b->entries[seg++].length;
+      if (seg >= b->nentries) { status = RESP_ERR_INVALID_PARAMETER; break; }
+      uint64_t in = at - seg_start, n = b->entries[seg].length - in < left ? b->entries[seg].length - in : left;
+      const uint8_t *from = xh_virtio_translate(b->entries[seg].addr + in, n);
+      if (!from || (n & 3)) { status = RESP_ERR_INVALID_PARAMETER; break; }
+      uint64_t off = 0;
+      if (have) {
+        off = gbpp - have < n ? gbpp - have : n;
+        memcpy(carry + have, from, off);
+        have += (unsigned)off;
+        if (have == gbpp) { convert_to(to, dformat, carry, g->scan.format, 1); to += dbpp; have = 0; }
+      }
+      uint64_t whole = (n - off) / gbpp, rest = n - off - whole * gbpp;
+      convert_to(to, dformat, from + off, g->scan.format, (size_t)whole);
+      to += whole * dbpp;
+      if (rest) { memcpy(carry, from + off + whole * gbpp, rest); have = (unsigned)rest; }
+      at += n; left -= n;
+    }
+  }
+  flush_note(flush_now_us() - t0, (uint64_t)w * hgt * gbpp);
+  if (status == RESP_OK_NODATA && w && hgt) {
+    frame_shown(g, b->entries, b->nentries);     // first: session/ready before the helper is told of the frame
+    xh_display_flush(rect->x, rect->y, w, hgt);
+  }
   return status;
 }
 
@@ -316,6 +444,9 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     int r = b->ctx_create(b, h->ctx, a[1] & 0xff, (const char *)body + 8, name);
     if (r) return r == -ENOMEM ? RESP_ERR_OUT_OF_MEMORY : RESP_ERR_UNSPEC;
     *slot = h->ctx;
+    g->ctx_fast[slot - g->ctx] = name >= 14 && !memcmp(body + 8, "xnu:backboardd", 14);
+    // context_init's bits 8-23: the creating task's role and its thread's QoS (OneiOSAdreno.cpp oneios_gpu_hint).
+    if (b->hint) b->hint(b, h->ctx, (const uint8_t[3]){ (uint8_t)(a[1] >> 8), (uint8_t)(a[1] >> 16), 0 });
     return RESP_OK_NODATA;
   }
   case CMD_CTX_DESTROY: {
@@ -331,6 +462,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     memcpy(a, body, 4);
     if (!ctx_find(g, h->ctx)) return RESP_ERR_INVALID_CONTEXT_ID;
     if (!a[0] || a[0] > left - 8) return RESP_ERR_INVALID_PARAMETER;
+    if (b->hint) b->hint(b, h->ctx, h->pad);         // the submitting task's role, QoS and frame deadline
     return b->submit(b, h->ctx, body + 8, a[0]) ? RESP_ERR_UNSPEC : RESP_OK_NODATA;
   }
   case CMD_RESOURCE_CREATE_BLOB: {
@@ -360,6 +492,8 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     int r = b && (host || (a[2] & XH_GPU_BLOB_FLAG_GUEST_HANDLE)) ? b->create_blob(b, host ? h->ctx : 0, a[0], a[1], a[2], wide[0], wide[1], entries, a[3]) : 0;
     if (r && host) { nb->entries = entries; blob_del(g, nb); return r == -ENOMEM ? RESP_ERR_OUT_OF_MEMORY : RESP_ERR_UNSPEC; }
     nb->ctx = host ? h->ctx : 0; nb->mem = a[1]; nb->size = wide[1]; nb->entries = entries; nb->nentries = a[3];
+    g->blob_bytes += wide[1];
+    g->blobs_made++;
     return RESP_OK_NODATA;
   }
   case CMD_RESOURCE_MAP_BLOB: {
@@ -396,6 +530,7 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     if (g->scanout_resource == a[0]) { g->scanout_resource = 0; g->scan.width = 0; }
     if (b) b->unref(b, a[0]);
     blob_del(g, bl);
+    g->blobs_unref++;
     return RESP_OK_NODATA;
   }
   case CMD_SET_SCANOUT_BLOB: {
@@ -408,16 +543,37 @@ static uint32_t command3d(gpu_state *g, const gpu_hdr *h, const uint8_t *body, s
     if (v[1] == 0) { g->scanout_resource = 0; g->scan.width = 0; return RESP_OK_NODATA; }
     blob *bl = blob_find(g, v[1]);
     if (!bl || !bl->entries) return RESP_ERR_INVALID_RESOURCE_ID;
-    if (v[4] != FMT_BGRA && v[4] != FMT_BGRX && v[4] != FMT_ARGB && v[4] != FMT_XRGB && v[4] != FMT_RGBA && v[4] != FMT_XBGR &&
-        v[4] != FMT_ABGR && v[4] != FMT_RGBX) return RESP_ERR_INVALID_PARAMETER;
-    if (!v[2] || !v[3] || v[2] > 16384 || v[3] > 16384 || v[6] < v[2] * 4 || !rect_ok(&rect, v[2], v[3]) ||
-        v[10] + (uint64_t)(v[3] - 1) * v[6] + (uint64_t)v[2] * 4 > bl->size) return RESP_ERR_INVALID_PARAMETER;
+    if (!format_known(v[4])) return RESP_ERR_INVALID_PARAMETER;
+    uint64_t row = (uint64_t)v[2] * format_bpp(v[4]);
+    if (!v[2] || !v[3] || v[2] > 16384 || v[3] > 16384 || v[6] < row || (v[6] % format_bpp(v[4])) || !rect_ok(&rect, v[2], v[3]) ||
+        v[10] + (uint64_t)(v[3] - 1) * v[6] + row > bl->size) return RESP_ERR_INVALID_PARAMETER;
+    static unsigned half_said;
+    if (v[4] == FMT_RGBA16F && g->scan.format != FMT_RGBA16F && half_said++ < 4)
+      LOGI("display: the guest scans out half floats (R,G,B,A 16F, %ux%u, stride %u) onto a %s frame", v[2], v[3], v[6],
+           xh_pixels_name(display_format()));
     g->scanout_resource = v[1];
     g->scan.width = v[2]; g->scan.height = v[3]; g->scan.format = v[4]; g->scan.stride = v[6]; g->scan.offset = v[10];
     return RESP_OK_NODATA;
   }
   }
   return 0;
+}
+
+// The blobs the host holds, one line per 10 s while they change: `gpu: 10 s: host blobs N (M MiB), made +A unref'd +B`.
+// Against the guest's `oneios-gpu-memory` live count (and the sum of its own and wired MiB): the host holding more than
+// the guest has live is blobs the guest released and the host kept; the same is the guest's own holding.
+static void blob_note(gpu_state *g)
+{
+  uint64_t now = flush_now_us();
+  if (!g->blob_note_us) g->blob_note_us = now;
+  if (now - g->blob_note_us < 10000000u) return;
+  if (g->blobs_made != g->noted_made || g->blobs_unref != g->noted_unref)
+    LOGI("gpu: %llu s: host blobs %u (%llu MiB), made +%llu unref'd +%llu", (unsigned long long)((now - g->blob_note_us) / 1000000u),
+         g->nblobs, (unsigned long long)(g->blob_bytes >> 20), (unsigned long long)(g->blobs_made - g->noted_made),
+         (unsigned long long)(g->blobs_unref - g->noted_unref));
+  g->blob_note_us = now;
+  g->noted_made = g->blobs_made;
+  g->noted_unref = g->blobs_unref;
 }
 
 static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *resp, size_t resp_max, size_t *resp_size)
@@ -427,6 +583,7 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
   size_t left = size - sizeof *h;
   *resp_size = sizeof *h;
   if (g->blobs) {
+    blob_note(g);
     uint32_t status = command3d(g, h, body, left, resp, resp_max, resp_size);
     if (status) return status;
   }
@@ -445,12 +602,13 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     memcpy(a, body, 16);
     if (!a[0] || find(g, a[0]) || (g->blobs && blob_find(g, a[0]))) return RESP_ERR_INVALID_RESOURCE_ID;
     if (!a[2] || !a[3] || a[2] > 16384 || a[3] > 16384) return RESP_ERR_INVALID_PARAMETER;
-    if (a[1] != FMT_BGRA && a[1] != FMT_BGRX && a[1] != FMT_ARGB && a[1] != FMT_XRGB && a[1] != FMT_RGBA &&
-        a[1] != FMT_XBGR && a[1] != FMT_ABGR && a[1] != FMT_RGBX) return RESP_ERR_INVALID_PARAMETER;
+    if (!format_known(a[1])) return RESP_ERR_INVALID_PARAMETER;
     resource *r = NULL;
     for (unsigned i = 0; i < MAX_RES && !r; i++) if (!g->res[i].id) r = &g->res[i];
     if (!r) return RESP_ERR_OUT_OF_MEMORY;
-    r->pixels = calloc((size_t)a[2] * a[3], 4);
+    r->dformat = display_format();
+    r->dbpp = xh_pixels_bpp(r->dformat);
+    r->pixels = calloc((size_t)a[2] * a[3], r->dbpp);
     if (!r->pixels) return RESP_ERR_OUT_OF_MEMORY;
     r->id = a[0]; r->format = a[1]; r->width = a[2]; r->height = a[3];
     return RESP_OK_NODATA;
@@ -517,13 +675,14 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     resource *r = find(g, id);
     if (!r) return RESP_ERR_INVALID_RESOURCE_ID;
     if (!rect_ok(&rect, r->width, r->height) || !r->backing) return RESP_ERR_INVALID_PARAMETER;
-    uint8_t *row = malloc((size_t)rect.w * 4);
+    unsigned gbpp = format_bpp(r->format);
+    uint8_t *row = malloc((size_t)rect.w * gbpp);
     if (!row) return RESP_ERR_OUT_OF_MEMORY;
     uint32_t status = RESP_OK_NODATA;
     for (uint32_t y = 0; y < rect.h; y++) {
       // `offset` is where the rectangle's first pixel is in the backing; rows follow at the resource's stride.
-      if (!backing_read(r, offset + (uint64_t)y * r->width * 4, row, (uint64_t)rect.w * 4)) { status = RESP_ERR_INVALID_PARAMETER; break; }
-      convert(r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * 4, row, r->format, rect.w);
+      if (!backing_read(r, offset + (uint64_t)y * r->width * gbpp, row, (uint64_t)rect.w * gbpp)) { status = RESP_ERR_INVALID_PARAMETER; break; }
+      convert_to(r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * r->dbpp, r->dformat, row, r->format, rect.w);
     }
     free(row);
     return status;
@@ -539,14 +698,14 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
     if (!r) return RESP_ERR_INVALID_RESOURCE_ID;
     if (!rect_ok(&rect, r->width, r->height)) return RESP_ERR_INVALID_PARAMETER;
     xh_display *d = xh_display_get();
-    if (id == g->scanout_resource && d && d->pixels) {
+    if (id == g->scanout_resource && d && d->pixels && r->dbpp == xh_pixels_bpp(display_format())) {
       uint32_t w = rect.x < d->width ? (rect.w < d->width - rect.x ? rect.w : d->width - rect.x) : 0;
       uint32_t hgt = rect.y < d->height ? (rect.h < d->height - rect.y ? rect.h : d->height - rect.y) : 0;
       for (uint32_t y = 0; y < hgt && w; y++)
-        memcpy(d->pixels + (size_t)(rect.y + y) * d->stride + (size_t)rect.x * 4,
-               r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * 4, (size_t)w * 4);
+        memcpy(d->pixels + (size_t)(rect.y + y) * d->stride + (size_t)rect.x * r->dbpp,
+               r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * r->dbpp, (size_t)w * r->dbpp);
+      frame_shown(g, r->backing, r->nbacking);   // first: session/ready before the helper is told of the frame
       if (w && hgt) xh_display_flush(rect.x, rect.y, w, hgt);
-      frame_shown(g, r->backing, r->nbacking);
     }
     return RESP_OK_NODATA;
   }
@@ -614,6 +773,7 @@ static void teardown(gpu_state *g)
   }
   memset(g->blobs, 0, BLOB_SLOTS * sizeof *g->blobs);
   g->nblobs = 0;
+  g->blob_bytes = 0;
   for (unsigned i = 0; i < MAX_CTX; i++) if (g->ctx[i]) { g->b->ctx_destroy(g->b, g->ctx[i]); g->ctx[i] = 0; }
   pthread_mutex_lock(&g->pl);
   pending *list = g->fences;
@@ -645,16 +805,36 @@ static void gpu_reset_3d(xh_virtio *dev)
   wake(g, true);
 }
 
-static void work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t gen)
+// A command of the fast lane that names a resource the slow lane has not made yet (an app's IOSurface the render
+// server attaches, the unref of an app's blob) waits for the slow lane's commands that came before it, and runs again.
+static bool missing_resource(uint32_t status)
+{
+  return status == RESP_ERR_INVALID_RESOURCE_ID;
+}
+
+enum { RESP_PENDING_RETRY = 1 };                     // work(): not answered; run it again once the slow lane caught up
+
+static bool slow_pending(gpu_state *g)
+{
+  pthread_mutex_lock(&g->pl);
+  bool pending = g->slow_done != g->slow_queued;
+  pthread_mutex_unlock(&g->pl);
+  return pending;
+}
+
+// Serves a chain and answers it (now, or when its fence retires). With `may_wait`, a command that names a resource
+// the slow lane may still be making is not answered: RESP_PENDING_RETRY, and the caller runs it again later.
+static uint32_t work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t gen, bool may_wait)
 {
   gpu_hdr in;
   uint32_t status = 0;
   int64_t written = serve(g, 0, iov, n, &in, &status);
+  if (may_wait && missing_resource(status) && slow_pending(g)) return RESP_PENDING_RETRY;
   // A command fenced on a context's ring is returned when the ring passes the fence; any other at once (a fence on
   // the device's own ring has nothing to wait for: the 2D commands are done when they return).
   bool hold = written > 0 && status < RESP_ERR_UNSPEC && (in.flags & FLAG_FENCE) && (in.flags & FLAG_RING_IDX) && ctx_find(g, in.ctx);
   pending *p = calloc(1, sizeof *p);
-  if (!p) { g->post.on = false; return; }                                    // the chain is lost; so is the guest's command
+  if (!p) { g->post.on = false; return status; }                       // the chain is lost; so is the guest's command
   *p = (pending){ .head = head, .written = (uint32_t)written, .ctx = in.ctx, .ring = in.ring, .fence = in.fence, .gen = gen };
   if (g->post.on) {
     // A frame for the helper: its flush is answered when the helper has it in the layer. Held before it is posted,
@@ -672,15 +852,65 @@ static void work(gpu_state *g, uint16_t head, xh_viov *iov, unsigned n, uint64_t
       flush_copy(g, b, r);
       retire(g, 0, 0, g->post.seq);
     }
-    return;
+    return status;
   }
-  if (!hold) { push_pending(g, p); return; }
+  if (!hold) { push_pending(g, p); return status; }
   pthread_mutex_lock(&g->pl);
   p->next = g->fences;
   g->fences = p;
   pthread_mutex_unlock(&g->pl);
   // May retire it before it returns. A refused fence is retired here.
   if (g->b->submit_fence(g->b, in.ctx, in.ring, in.fence)) retire(g, in.ctx, (int)in.ring, in.fence);
+  return status;
+}
+
+// The header of a chain, read without taking it (false: shorter than a header).
+static bool peek_hdr(const xh_viov *iov, unsigned n, gpu_hdr *h)
+{
+  size_t at = 0;
+  for (unsigned i = 0; i < n && at < sizeof *h; i++) {
+    if (iov[i].writable) continue;
+    size_t k = iov[i].length < sizeof *h - at ? iov[i].length : sizeof *h - at;
+    memcpy((uint8_t *)h + at, iov[i].data, k);
+    at += k;
+  }
+  return at == sizeof *h;
+}
+
+// Whether a command is the slow lane's: a context's, and not the render server's. Context creation stays here (it
+// decides the lane of what follows).
+static bool slow_lane(gpu_state *g, const gpu_hdr *h)
+{
+  if (!h->ctx || h->type == CMD_CTX_CREATE) return false;
+  for (unsigned i = 0; i < MAX_CTX; i++) if (g->ctx[i] == h->ctx) return !g->ctx_fast[i];
+  return false;
+}
+
+static void *slow_worker(void *arg)
+{
+  gpu_state *g = arg;
+  pthread_mutex_lock(&g->pl);
+  for (;;) {
+    while (!g->slow_head) pthread_cond_wait(&g->slow_cv, &g->pl);
+    slow_job *j = g->slow_head;
+    g->slow_head = j->next;
+    if (!g->slow_head) g->slow_tail = &g->slow_head;
+    pthread_mutex_unlock(&g->pl);
+    xh_virtio_lock(g->dev);
+    bool current = j->gen == g->gen;                 // a chain from before a reset is the old queue's: dropped
+    xh_virtio_unlock(g->dev);
+    if (current) {
+      pthread_mutex_lock(&g->cmd);
+      work(g, j->head, j->iov, j->n, j->gen, false);
+      pthread_mutex_unlock(&g->cmd);
+    }
+    free(j);
+    pthread_mutex_lock(&g->pl);
+    g->slow_done++;
+    pthread_cond_broadcast(&g->slow_cv);
+    pthread_cond_broadcast(&g->idle);
+  }
+  return NULL;
 }
 
 static void *worker(void *arg)
@@ -695,7 +925,7 @@ static void *worker(void *arg)
     bool reset = g->reset_requested;
     g->reset_requested = false;
     pthread_mutex_unlock(&g->pl);
-    if (reset) teardown(g);
+    if (reset) { pthread_mutex_lock(&g->cmd); teardown(g); pthread_mutex_unlock(&g->cmd); }
     for (;;) {
       uint16_t head;
       xh_virtio_lock(g->dev);
@@ -703,7 +933,37 @@ static void *worker(void *arg)
       unsigned n = xh_virtio_pop(g->dev, 0, &head, iov, WORKER_IOV);
       xh_virtio_unlock(g->dev);
       if (!n) break;
-      work(g, head, iov, n, gen);
+      gpu_hdr h;
+      pthread_mutex_lock(&g->cmd);
+      bool slow = peek_hdr(iov, n, &h) && slow_lane(g, &h);
+      pthread_mutex_unlock(&g->cmd);
+      if (slow) {
+        slow_job *j = malloc(sizeof *j + n * sizeof *iov);
+        if (!j) continue;                            // the chain is lost; so is the guest's command
+        *j = (slow_job){ .head = head, .n = n, .gen = gen };
+        memcpy(j->iov, iov, n * sizeof *iov);
+        pthread_mutex_lock(&g->pl);
+        *g->slow_tail = j;
+        g->slow_tail = &j->next;
+        g->slow_queued++;
+        pthread_cond_broadcast(&g->slow_cv);
+        pthread_mutex_unlock(&g->pl);
+        continue;
+      }
+      pthread_mutex_lock(&g->pl);
+      uint64_t before = g->slow_queued;              // the slow lane's commands that came before this one
+      pthread_mutex_unlock(&g->pl);
+      pthread_mutex_lock(&g->cmd);
+      uint32_t status = work(g, head, iov, n, gen, true);
+      pthread_mutex_unlock(&g->cmd);
+      if (status == RESP_PENDING_RETRY) {
+        pthread_mutex_lock(&g->pl);
+        while (g->slow_done < before) pthread_cond_wait(&g->slow_cv, &g->pl);
+        pthread_mutex_unlock(&g->pl);
+        pthread_mutex_lock(&g->cmd);
+        work(g, head, iov, n, gen, false);
+        pthread_mutex_unlock(&g->cmd);
+      }
     }
     pthread_mutex_lock(&g->pl);
     g->served = upto;
@@ -718,7 +978,7 @@ void xh_virtio_gpu_idle(xh_virtio *dev)
   gpu_state *g = xh_virtio_opaque(dev);
   if (!g->blobs) return;
   pthread_mutex_lock(&g->pl);
-  while (g->served != g->kicks) pthread_cond_wait(&g->idle, &g->pl);
+  while (g->served != g->kicks || g->slow_done != g->slow_queued) pthread_cond_wait(&g->idle, &g->pl);
   pthread_mutex_unlock(&g->pl);
 }
 
@@ -749,10 +1009,15 @@ xh_virtio *xh_virtio_gpu_create_3d(uint64_t base, unsigned spi, unsigned width, 
   g->wake = eventfd(0, EFD_CLOEXEC);
   pthread_mutex_init(&g->pl, NULL);
   pthread_cond_init(&g->idle, NULL);
+  pthread_mutex_init(&g->cmd, NULL);
+  pthread_cond_init(&g->slow_cv, NULL);
+  g->slow_tail = &g->slow_head;
   if (!g->blobs || g->wake < 0 || !(g->dev = xh_virtio_create(base, spi, &gpu_3d_ops, g, "virtio-gpu"))) return NULL;
   b->retire = gpu_retire;
   b->dev = g->dev;
   if (pthread_create(&thread, NULL, worker, g)) return NULL;
+  pthread_detach(thread);
+  if (pthread_create(&thread, NULL, slow_worker, g)) return NULL;
   pthread_detach(thread);
   return g->dev;
 }

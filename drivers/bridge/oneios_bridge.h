@@ -34,8 +34,22 @@ int  oneios_haptic_start(void);
 int  oneios_haptic_vib(uint32_t ms, uint32_t intensity, uint32_t frequency_hz);
 void oneios_haptic_make_node(void);
 int  oneios_haptic_publish_closed_loop(void);
+// The Actuator IOAudio2Device of the audio archive (DroidVMAudio.cpp as staged): ready = may publish it;
+// published = its decision, once; running = its StartIO/StopIO; play = one engine period, returns the frames taken.
+bool oneios_haptic_actuator_ready(void);
+void oneios_haptic_actuator_published(bool yes);
+void oneios_haptic_actuator_running(bool on);
+uint32_t oneios_haptic_actuator_play(const int16_t *frames, uint32_t count, uint32_t channels);
+// What a user client of the Actuator device did, for its log lines and the counter line: OH_EV_OPEN, OH_EV_CLOSE,
+// OH_EV_SELECTOR (a = the selector), OH_EV_REFUSED (a = the selector), OH_EV_FORMAT (a = the channels asked |
+// the device's << 16, b = the rate asked in Hz), OH_EV_MAP (a = the memory type). The values are DroidVMAudio.cpp's
+// as staged (tools/oneios-tool/crates/oneios-kernel/src/staged/audio.rs), which has no header of ours.
+enum { OH_EV_OPEN = 0, OH_EV_CLOSE = 1, OH_EV_SELECTOR = 2, OH_EV_REFUSED = 3, OH_EV_FORMAT = 4, OH_EV_MAP = 5 };
+void oneios_haptic_actuator_event(uint32_t kind, uint32_t a, uint32_t b);
 void oneios_vibrator_start(void);
 void oneios_vibrator_key(int key, int down);      // 0 power, 1 volume up, 2 volume down
+// The stand-in for the always-on processor's button haptics service (OneiOSButtonHaptics.cpp; oneios-button-haptics=1).
+void oneios_button_haptics_start(void);
 
 // drivers/bluetooth
 void oneios_bt_start(void);
@@ -45,6 +59,9 @@ void oneios_backlight_start(void);
 
 // drivers/battery
 void oneios_battery_start(void);
+
+// drivers/thermal
+void oneios_thermal_start(void);
 
 // drivers/camera (its own virtio device, "oneios,camera"; camera/oneios_camera.h)
 void oneios_camera_start(void);

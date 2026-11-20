@@ -39,6 +39,8 @@ labels = [
   "com.apple.dt.remotepairingdeviced", "com.apple.diskimagesiod", "com.apple.diskimagesiod.ram",
   "com.apple.mobileassetd", "com.apple.storekitd", "com.apple.pasteboard.pasted",
   "com.apple.ReportCrash", "com.apple.osanalytics.osanalyticshelper",
+  # the CoreAnalytics server: its clients retry a synchronous send when it is missing
+  "com.apple.analyticsd",
   # media and location paths other daemons call synchronously
   "com.apple.locationd", "com.apple.bluetoothd",
   "com.apple.audiomxd", "com.apple.mediaplaybackd", "com.apple.mediaremoted", "com.apple.cameracaptured",
@@ -54,6 +56,7 @@ labels = [
 "com.apple.passd" = "Wallet's first screen waits on it, and it on financed (vphone, list version 3)"
 "com.apple.generativeexperiencesd" = "in vphone-cli's list, but vphone-android keeps it: without it an idle iOS 27 guest spins launchd (android/vphone-native/src/services.rs KEEP)"
 "com.apple.bluetoothd" = "locationd calls it synchronously (vphone). iOSPlus10 dropped it on iOS 16 for a relaunch loop; on iOS 27 it stays and idles"
+"com.apple.analyticsd" = "without it backboardd spun at 217% CPU after a brightness change: CoreAnalytics::Client::retryXpcMessageHelper_sync makes a new connection for each retry of a synchronous send (__kernelrpc_mach_port_construct_trap in a loop) and the brightness never reached the panel (phone, 2026-11-12, oneios-ubt). vphone's base27 disables it; here the lookups found no service and the clients spun"
 "com.apple.security.cryptexd" = "needs /chosen/manifest-properties in the device tree, or it restarts every 10 s (iOSPlus10 notes 5167-5175)"
 
 # ---- idle -------------------------------------------------------------------------------------------------
@@ -64,7 +67,7 @@ labels = [
 "com.apple.CommCenterRootHelper" = "follows CommCenter"
 "com.apple.bluetoothd" = "no controller. Kept: with it disabled audiomxd's BTAudioHALPlugin looked its service up 1900 times a second and launchd used 90 % of a CPU (UniXNU-droidvm DroidVMBootArgs27.c); locationd calls it too. The device tree gives it /bluetooth transport-encoding 10 (the virtual transport)"
 "com.apple.cameracaptured" = "no camera sensors published: Camera opens to a black preview. Kept: other media daemons wait on it"
-"com.apple.locationd" = "no GPS; 27.0's locationd also hangs or crashes with EXC_ARM_PAC_FAIL on vphone's guest (service_trimming.md). Location Services stay off"
+"com.apple.locationd" = "no GPS; 27.0's locationd also hangs or crashes with EXC_ARM_PAC_FAIL on vphone's guest (service_trimming.md). Location Services stay off. Its crash loop here (pc 0 from _dispatch_lane_serial_drain, 17 times a session) is CoreLocation's automatic cohort queues: CLAutoCohort is off on the Data volume (roottweak feature-flags, hosted 0048)"
 "com.apple.mobile.keybagd" = "no SEP: answered by the kernel's key-store stand-in (UniXNU AppleKeyStoreState); a keybag load failure is a reboot loop (iOSPlus10 notes 2747-2777)"
 "com.apple.biometrickitd" = "no Face ID sensor: its IOKit match never comes, it waits. Not disabled: Settings and SpringBoard ask it whether biometrics exist"
 "com.apple.thermalmonitord" = "no Apple thermal sensors: reports nominal. Kept (iOSPlus10 KEEP_FOR_PARITY)"
@@ -92,7 +95,7 @@ labels = [
   "com.apple.SensorKitALSHelper", "com.apple.SiriTTSTrainingAgent", "com.apple.StatusKitAgent",
   "com.apple.ThreadCommissionerService", "com.apple.WirelessRadioManager", "com.apple.absd",
   "com.apple.accessibility.heard", "com.apple.accessoryupdaterd", "com.apple.adid", "com.apple.amsengagementd",
-  "com.apple.analyticsagent", "com.apple.analyticsd", "com.apple.ap.adprivacyd", "com.apple.ap.promotedcontentd",
+  "com.apple.analyticsagent", "com.apple.ap.adprivacyd", "com.apple.ap.promotedcontentd",
   "com.apple.appstorecomponentsd", "com.apple.askpermissiond", "com.apple.assistant_cdmd",
   "com.apple.assistant_service", "com.apple.assistantd", "com.apple.audioanalyticsd",
   "com.apple.batteryintelligenced", "com.apple.biomesyncd", "com.apple.bookassetd", "com.apple.callintelligenced",
@@ -144,6 +147,11 @@ labels = ["com.apple.aned", "com.apple.fairplayd.H2"]
 # services stay registered, and lockdownd, accountsd and the apps behind them hang; on iOS 16 iOSPlus10 saw locationd
 # deadlock the same way. Costs: App Store apps do not start. The other three of UniXNU's iPad list are covered:
 # watchdogd (replace), identityservicesd and accessoryupdaterd (base). Its fourth, CommCenter, is kept here: see [idle].
+
+[group.loops]
+default = true
+source = "crash loops measured on this phone (2026-11-12, sheng-exc). axassetsd lists the speech synthesis audio units (TextToSpeech fetchExtensions for com.apple.AudioUnit-Speech) at load and again on com.apple.coreaudio.components.changed and LaunchServices.ApplicationsChanged: runningboardd launched SiriAUSP, MacinTalkAUSP, MauiAUSP and KonaSynthesizer for it (84 of 84 launches in iOS's log) and launchd killed each still in dyld ('Extension is hanging on launch', XPC_EXIT_REASON_EXTENSION_CHECK_IN_TIMEOUT; EXC_CRASH SIGKILL, code 0x9000000), in bursts every 8-10 s for about 50 s; the 4 corpses at a time used the kernel's corpse limit, so a later crash had no report. Costs: Accessibility's downloadable assets (extra voices, Sound Recognition, Magnifier, Back Tap and image-caption models); the built-in voices stay. A Data store from an older seed gets it from the kernel (hosted 0053)"
+labels = ["com.apple.accessibility.axassetsd"]
 
 [group.store]
 default = false

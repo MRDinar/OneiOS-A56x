@@ -18,8 +18,11 @@ unsigned g_ncpu;
 struct xh_upcalls g_upcalls;
 bool g_upcalls_set;
 void (*xh_cpu_place)(int tid, unsigned vcpu);
+unsigned (*xh_cpu_uclamp)(unsigned vcpu);
+unsigned xh_gpu_vcpu_boost;
 
-#if defined(__aarch64__) && defined(__linux__)
+// XH_HOST_TEST: the host unit tests (tests/test_xnuhost.c) take the stand-ins at the end, also on an arm64 Linux host.
+#if defined(__aarch64__) && defined(__linux__) && !defined(XH_HOST_TEST)
 #include <linux/futex.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -71,8 +74,20 @@ void xh_cpu_line(unsigned index, bool line)
     }
     return;
   }
-  __atomic_store_n(&v->cpu.irq_pending, 1, __ATOMIC_RELEASE);
+  // A line that is up already was signalled when it rose (host-overhead, 2026-11-15). The GIC tells every CPU its line at
+  // each change (an ack, an EOI, an SGI on any vCPU), so a vCPU with an interrupt pending while it runs masked got a
+  // signal per change elsewhere: each a tgkill here and a signal delivery there that only returned (the kernel takes a
+  // pending line when it unmasks, hosted_irq_unmask; a host call when it returns; thread_run and cpu_idle look at the
+  // word before they wait). The line goes down only by the CPU itself, which then recomputes it under the GIC's lock,
+  // after this raise's change (the caller holds that lock), so a raise skipped here is never lost.
+  xh_vcpu *me = self_vcpu;
+  if (self_vcpu != v && __atomic_load_n(&v->cpu.irq_pending, __ATOMIC_ACQUIRE)) {
+    if (me) me->perf.kicks_skipped++;
+    return;
+  }
+  __atomic_store_n(&v->cpu.irq_pending, 1, __ATOMIC_SEQ_CST);
   if (self_vcpu == v || !v->started) return;
+  if (me) me->perf.kicks++;
   if (__atomic_load_n(&v->idle, __ATOMIC_ACQUIRE)) futex(&v->cpu.irq_pending, FUTEX_WAKE_PRIVATE, 1, NULL);
   else syscall(SYS_tgkill, getpid(), v->tid, SIG_KICK);
 }
@@ -80,6 +95,15 @@ void xh_cpu_line(unsigned index, bool line)
 void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
 {
   struct itimerspec spec = { 0 };
+  v->perf.timer_sets++;
+  // The same future deadline again (XNU sets it at each dispatch and idle exit, often unchanged): the host timer is armed
+  // for it already, so no timer_settime (host-overhead, 2026-11-15: the PC's boot made 2,000 a second, each a host call).
+  if (deadline != UINT64_MAX && __atomic_load_n(&v->timer_armed, __ATOMIC_ACQUIRE) &&
+      __atomic_load_n(&v->timer_deadline, __ATOMIC_ACQUIRE) == deadline && deadline > xh_counter()) {
+    xh_cpu_line(v->cpu.index, false);
+    return;
+  }
+  v->perf.timer_calls++;
   if (deadline == UINT64_MAX) {
     __atomic_store_n(&v->timer_armed, false, __ATOMIC_RELEASE);
     timer_settime(*(timer_t *)v->timer, 0, &spec, NULL);
@@ -104,8 +128,25 @@ void xh_cpu_timer_set(xh_vcpu *v, uint64_t deadline)
   xh_cpu_line(v->cpu.index, false);
 }
 
+// drm2kgsl (its patch 0008) while a constrained queue animates: the clamp goes on the vCPU threads (their kernel work) and,
+// through xh_cpu_uclamp, on each iOS thread at its next release (thread_run). Returns the vCPU threads set.
+int drm2kgsl_vcpu_uclamp(uint32_t value);
+int drm2kgsl_vcpu_uclamp(uint32_t value)
+{
+  __atomic_store_n(&xh_gpu_vcpu_boost, value > 1024 ? 1024 : value, __ATOMIC_RELAXED);
+  int set = 0;
+  for (unsigned i = 0; i < g_ncpu; i++) {
+    if (!g_vcpu[i].started || g_vcpu[i].tid <= 0) continue;
+    struct { uint32_t size, policy; uint64_t flags; int32_t nice; uint32_t priority; uint64_t runtime, deadline, period;
+             uint32_t util_min, util_max; } attr = { .size = sizeof attr, .flags = 0x18 | 0x20, .util_min = value > 1024 ? 1024 : value };
+    if (syscall(SYS_sched_setattr, g_vcpu[i].tid, &attr, 0) == 0) set++;
+  }
+  return set;
+}
+
 void xh_cpu_idle(xh_vcpu *v)
 {
+  uint64_t began = xh_counter();
   __atomic_store_n(&v->idle, 1, __ATOMIC_RELEASE);
   while (!__atomic_load_n(&v->cpu.irq_pending, __ATOMIC_ACQUIRE)) {
     if (xh_stopping()) { pause(); continue; }
@@ -125,6 +166,7 @@ void xh_cpu_idle(xh_vcpu *v)
     futex(&v->cpu.irq_pending, FUTEX_WAIT_PRIVATE, 0, &step);
   }
   __atomic_store_n(&v->idle, 0, __ATOMIC_RELEASE);
+  v->perf.ticks_idle += xh_counter() - began;
 }
 
 // ---- signals ------------------------------------------------------------------------------------
@@ -278,7 +320,13 @@ void xh_cpu_signal(int signo, siginfo_t *info, void *context, struct xh_cpu *cpu
     return;
   }
   if (g_upcalls.exception) {
-    divert(v, uc, XH_FRAME_EXCEPTION, g_upcalls.exception, far, esr_of(uc), info);
+    // A SIGTRAP's esr_context is never its own: Linux sends every SIGTRAP (brk, single step, watchpoint) through
+    // send_user_sigtrap(), which leaves thread.fault_code alone, and fault_code is written only when a fault
+    // signal is delivered. On a vCPU thread it is the last software-TLB fill's data abort, and the kernel took a
+    // UBSan soft trap (brk #UBSAN_SOFT_TRAP_SIGNED_OF in tcp_input's compute_iaj_meat) for a data abort at pc:
+    // "Unexpected fault in kernel physical aperture" (phone, 2026-11-12 23:15). Without a syndrome the kernel
+    // reads the brk at pc (hosted_kernel_esr).
+    divert(v, uc, XH_FRAME_EXCEPTION, g_upcalls.exception, far, signo == SIGTRAP ? 0 : esr_of(uc), info);
     errno = saved_errno;
     return;
   }

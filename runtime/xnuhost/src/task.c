@@ -73,7 +73,8 @@ unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t tex
   return n;
 }
 
-#if defined(__aarch64__) && defined(__linux__)
+// XH_HOST_TEST: the host unit tests (tests/test_xnuhost.c) take the filter alone, also on an arm64 Linux host.
+#if defined(__aarch64__) && defined(__linux__) && !defined(XH_HOST_TEST)
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -93,6 +94,7 @@ extern const uint8_t xh_stub_blob[], xh_stub_blob_end[];
 #define MAX_TASKS 1024
 #define MAX_SLOTS 8192                       // trap memfd slots: threads and service pages
 #define KICK_SIGNAL (SIGRTMIN + 3)
+#define XS_PENDING_MAX 256                   // deferred maps and unmaps a task holds before they are ordered
 
 typedef struct {
   bool used, dead;
@@ -100,14 +102,46 @@ typedef struct {
   int pid;
   uint32_t exit_status;
   uint32_t service_slot;
-  pthread_mutex_t lock;                      // one order batch at a time
+  pthread_mutex_t lock;                      // one order batch or one release's maps at a time
   uint8_t areas[XS_MAX_THREADS / 8 + 1];     // thread areas in use
+  // map-defer: task_map orders not sent yet. They go with the next release of one of the task's threads (carried out
+  // by that thread in the stub's handler before it runs) or at the head of the task's next order, whichever is first,
+  // so they keep their place before any later unmap or protect. Under `qlock`, which is held only to add to or take
+  // the queue: a task_map does not wait for a release whose thread is carrying out earlier maps (`lock`, about 100 us
+  // on the phone, while the kernel's caller holds the task's TLB lock with interrupts masked). A taker holds both.
+  pthread_mutex_t qlock;
+  unsigned npending;
+  // Threads of the task released and not yet back (in user code, or on their way to or from it). While it is 0 nothing
+  // of the task can touch its memory, so an unmap waits in the queue for the next release (which carries it out before
+  // the thread runs) or the next order: the kernel's flush of a page of a task that is not running costs a queue add,
+  // not a round trip. No lock on the release's side (it would cost every trip two lock pairs): a release adds 1, then
+  // reads npending and unmaps_out; an unmap adds itself to the queue (under qlock), then reads running, and takes
+  // itself back and is ordered if a thread is counted. All four are sequentially consistent, so at least one side sees
+  // the other: either the release finds the unmap and carries it, or the unmap finds the thread and is ordered.
+  unsigned running;
+  // Unmaps in the queue (nunmaps, under qlock), and whether a taker (a release that carries the queue, or an order) has
+  // taken some and not yet seen them done (unmaps_out, atomic). unmaps_out is set (under qlock, before npending goes to
+  // 0) and cleared only by a taker that holds `lock` the whole time. While it is set no other thread of the task may be released (it waits for `lock`), and
+  // task_read/task_write wait too: the kernel's flush has returned, so nothing may use the old mapping meanwhile.
+  // A taker whose batch has only maps sets nothing: a map that comes late costs a fault, not a stale page.
+  unsigned nunmaps;
+  bool unmaps_out;
+  struct xs_op pending[XS_PENDING_MAX];
+  uint8_t service_placed, service_epoch;     // the vCPU + 1 its service thread was last put with (xh_cpu_place)
 } task;
 
-typedef struct { bool used; uint16_t task; uint16_t area; uint8_t placed; /* vCPU + 1 it was last put with */ } thread;
+typedef struct {
+  bool used; uint16_t task; uint16_t area; uint8_t placed; /* vCPU + 1 it was last put with */ uint8_t epoch;
+  uint32_t uclamp;                           // the uclamp it carries, (min | max << 11) + 1 (0: never set; xh_cpu_uclamp)
+  uint64_t released_at;                      // counter: its last release (perf.c, "down")
+} thread;
+// Changed by main.c's thermal step when the vCPUs' host CPUs change: each thread is placed again at its next run.
+unsigned xh_cpu_place_epoch;
 
 static struct {
   bool available, seccomp;
+  bool map_defer;                            // map-defer (default on)
+  uint64_t spin_host, spin_task;             // counter ticks: spin-host, spin-task
   uint64_t base;                             // of the stub region = the first address tasks may not use
   int trap_fd, sock;
   uint8_t *trap;                             // the whole trap memfd, mapped
@@ -134,6 +168,17 @@ static long futex(uint32_t *word, int op, uint32_t value, const struct timespec 
 }
 
 static void *slot_page(uint32_t slot) { return T.trap + (uint64_t)slot * XS_SLOT_SIZE; }
+
+// uclamp.min and uclamp.max of a Linux thread (sched_setattr(2), Linux 5.3): the policy and nice kept, SCHED_OTHER stays
+// SCHED_OTHER (never a realtime policy: CLAUDE.md, the way back to One UI).
+static int set_uclamp(int tid, unsigned lo, unsigned hi)
+{
+  struct { uint32_t size, policy; uint64_t flags; int32_t nice; uint32_t priority; uint64_t runtime, deadline, period;
+           uint32_t util_min, util_max; } attr = { .size = sizeof attr,
+                                                   .flags = 0x18 /* KEEP_POLICY | KEEP_PARAMS */ | 0x20 /* UTIL_CLAMP_MIN */ | 0x40 /* MAX */,
+                                                   .util_min = lo > 1024 ? 1024 : lo, .util_max = hi > 1024 ? 1024 : hi };
+  return (int)syscall(SYS_sched_setattr, tid, &attr, 0);
+}
 
 static int slot_alloc(void)
 {
@@ -261,6 +306,12 @@ int xh_tasks_init(const xh_config *c)
   config->trap_fd = T.trap_fd;
   config->kick_signal = (uint32_t)KICK_SIGNAL;
   config->uid = c->task_uid;
+  // The hand-off (stub_abi.h): how long each side spins before it sleeps. Measured with `make bench-arm64`
+  // (docs/booter.md 2.6a): the defaults are what that measurement chose.
+  uint64_t hz = xh_counter_hz();
+  T.spin_host = (uint64_t)(c->spin_host < 0 ? XH_SPIN_HOST_US : c->spin_host) * hz / 1000000;
+  T.spin_task = (uint64_t)(c->spin_task < 0 ? XH_SPIN_TASK_US : c->spin_task) * hz / 1000000;
+  T.map_defer = c->map_defer != 0;
   // Is the filter usable here? (qemu-user and some kernels have no seccomp.) Asked in a child so
   // that xnuhost itself never carries a filter.
   bool seccomp = false;
@@ -296,8 +347,10 @@ int xh_tasks_init(const xh_config *c)
   if (pthread_create(&T.reader, NULL, reader_main, NULL)) return -1;
   T.available = true;
   T.seccomp = seccomp;
-  LOGI("tasks: factory pid %d, stub region 0x%llx, stub %zu bytes, filter %u instructions", T.factory,
-       (unsigned long long)T.base, text, config->filter_length);
+  LOGI("tasks: factory pid %d, stub region 0x%llx, stub %zu bytes, filter %u instructions; hand-off spins %u us (vCPU) and %u us "
+       "(iOS thread), maps %s", T.factory, (unsigned long long)T.base, text, config->filter_length,
+       (unsigned)(T.spin_host * 1000000 / hz), (unsigned)(T.spin_task * 1000000 / hz),
+       T.map_defer ? "carried by the next release (map-defer=1)" : "ordered one by one (map-defer=0)");
   return 0;
 }
 
@@ -339,15 +392,46 @@ static int wait_word(task *t, uint32_t *word, int seconds)
 
 static void log_task_threads(int pid);
 
+static void log_map_failure(task *t, const struct xs_op *op, const char *how)
+{
+  static unsigned told;
+  if (op->result < 0 && __atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 16)
+    LOGE("tasks: pid %d: a deferred %s (va 0x%llx, size 0x%llx, prot %u) failed %s: %lld", t->pid, op->op == XS_OP_UNMAP ? "unmap" : "map",
+         (unsigned long long)op->va, (unsigned long long)op->size, op->prot, how, (long long)op->result);
+}
+
+// A taker's queued unmaps are done (or its task is gone): other releases of the task may go again. `lock` held.
+static void unmaps_done(task *t)
+{
+  if (__atomic_load_n(&t->unmaps_out, __ATOMIC_RELAXED)) __atomic_store_n(&t->unmaps_out, false, __ATOMIC_SEQ_CST);
+}
+
 static int64_t order(task *t, const struct xs_op *ops, unsigned count)
 {
   struct xs_service_page *sp = slot_page(t->service_slot);
   int64_t result = 0;
-  if (count > XS_OPS_MAX) return -EINVAL;
+  if (count > XS_OPS_MAX - XS_PENDING_MAX) return -EINVAL;
   pthread_mutex_lock(&t->lock);
-  if (t->dead) { pthread_mutex_unlock(&t->lock); return -ESRCH; }
-  memcpy(sp->ops, ops, count * sizeof *ops);
-  sp->count = count;
+  pthread_mutex_lock(&t->qlock);
+  if (t->dead) { t->npending = t->nunmaps = 0; pthread_mutex_unlock(&t->qlock); pthread_mutex_unlock(&t->lock); return -ESRCH; }
+  // The deferred maps and unmaps first, in their order: an unmap or protect after them must find them done.
+  unsigned first = t->npending;
+  memcpy(sp->ops, t->pending, first * sizeof *ops);
+  if (t->nunmaps) { __atomic_store_n(&t->unmaps_out, true, __ATOMIC_SEQ_CST); t->nunmaps = 0; }   // before npending: as in thread_run
+  __atomic_store_n(&t->npending, 0, __ATOMIC_SEQ_CST);
+  pthread_mutex_unlock(&t->qlock);
+  // The service thread on the ordering vCPU's host CPU, as an iOS thread is (cpu-pin): the order is then a switch
+  // on that core and back, not the wake-up of another core.
+  xh_vcpu *v = xh_cpu_self();
+  const uint8_t epoch = (uint8_t)__atomic_load_n(&xh_cpu_place_epoch, __ATOMIC_ACQUIRE);
+  if (xh_cpu_place && v && (t->service_placed != v->cpu.index + 1 || t->service_epoch != epoch)) {
+    xh_cpu_place(t->pid, v->cpu.index);
+    t->service_placed = (uint8_t)(v->cpu.index + 1);
+    t->service_epoch = epoch;
+  }
+  if (count) memcpy(sp->ops + first, ops, count * sizeof *ops);
+  sp->count = first + count;
+  uint64_t t0 = xh_counter();
   __atomic_store_n(&sp->done, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&sp->request, 1, __ATOMIC_RELEASE);
   futex(&sp->request, FUTEX_WAKE, 1, NULL);
@@ -361,8 +445,18 @@ static int64_t order(task *t, const struct xs_op *ops, unsigned count)
     LOGE("tasks: pid %d: order %u (va 0x%llx, size 0x%llx, prot %u) %s after %ld ms", t->pid, ops[0].op, (unsigned long long)ops[0].va,
          (unsigned long long)ops[0].size, ops[0].prot, rc ? "was not answered" : "took long: answered", took_ms);
   if (rc == -ETIMEDOUT) log_task_threads(t->pid);
+  if (count) {
+    static const uint8_t which[] = { [XS_OP_MAP] = XP_ORDER_MAP, [XS_OP_UNMAP] = XP_ORDER_UNMAP, [XS_OP_PROTECT] = XP_ORDER_PROTECT,
+                                     [XS_OP_CLONE] = XP_ORDER_CLONE, [XS_OP_EXIT] = XP_ORDER_UNMAP };
+    xh_perf *p = xh_perf_self();
+    if (ops[0].op <= XS_OP_EXIT && ops[0].op) xh_hist_add(&p->h[which[ops[0].op]], xh_ticks_ns(xh_counter() - t0));
+  }
   if (rc) result = rc;
-  else for (unsigned i = 0; i < count; i++) if (sp->ops[i].result < 0) { result = sp->ops[i].result; break; }
+  else {
+    for (unsigned i = 0; i < first; i++) log_map_failure(t, &sp->ops[i], "at the next order");
+    for (unsigned i = 0; i < count; i++) if (sp->ops[first + i].result < 0) { result = sp->ops[first + i].result; break; }
+  }
+  unmaps_done(t);
   pthread_mutex_unlock(&t->lock);
   return result;
 }
@@ -392,6 +486,7 @@ static int64_t task_create_one(uint64_t *handle)
   if (slot < 0) { pthread_mutex_unlock(&T.lock); return -EAGAIN; }
   memset(t, 0, sizeof *t);
   pthread_mutex_init(&t->lock, NULL);
+  pthread_mutex_init(&t->qlock, NULL);
   t->service_slot = (uint32_t)slot;
   struct message m = { .kind = M_SPAWN, .slot = (uint32_t)slot };
   T.reply_ready = false;
@@ -473,6 +568,12 @@ int64_t xh_task_destroy(uint64_t handle)
     struct timespec began, step = { 0, 2 * 1000 * 1000 };
     clock_gettime(CLOCK_MONOTONIC, &began);
     while (!t->dead && !seconds_passed(&began, 20)) nanosleep(&step, NULL);
+    // A lasting line for a slow death (fix-widget-kill-loop): the vCPU waits here, and iOS's own exit watchdogs
+    // (WidgetKit's "Extension process termination watchdogged pid (N) after Ns" gives an extension 5 s) count it.
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    int64_t waited_ms = (int64_t)(end.tv_sec - began.tv_sec) * 1000 + (end.tv_nsec - began.tv_nsec) / 1000000;
+    if (waited_ms >= 250) LOGI("tasks: pid %d took %lld ms to die (the kill to the factory's report; its vCPU waited)", t->pid, (long long)waited_ms);
   }
   pthread_mutex_lock(&T.lock);
   if (t->dead) task_release(t);
@@ -488,12 +589,28 @@ int64_t xh_task_destroy(uint64_t handle)
 static int64_t ram_offset(uint64_t phys, uint64_t size)
 {
   if (phys < g_mem.phys || phys - g_mem.phys > g_mem.size || size > g_mem.size - (phys - g_mem.phys)) return -1;
-  return (int64_t)(phys - g_mem.phys);
+  return (int64_t)(phys - g_mem.fd_phys);        // the memfd's offset (mem.c: the file starts at fd_phys)
 }
 
 static bool user_range(uint64_t va, uint64_t size)
 {
   return size && !((va | size) & (g_info.host_page_size - 1)) && va < T.base && size <= T.base - va;
+}
+
+// The deferred queue joins an op to the one before it where one host call does both (host-overhead, 2026-11-15): on the
+// phone the kernel's maps and unmaps were 331,008 and 414,758 per 30 s, each an mmap or munmap of one page in the task
+// (30-50 us there with the task's mmap_lock taken for writing), and many come in runs: the pmap flushes a range one page
+// at a time (madvise, the pageout's reference clearing), and a fault that changes an entry is an unmap of the page and,
+// at the return, the map of the same page again. xs_queue_join (stub_abi.h) is the rule, unit-tested on the build host.
+// qlock held. Returns true when `op` went into the last entry (*saved: that entry as it was, for a take-back).
+static bool queue_join(task *t, const struct xs_op *op, struct xs_op *saved)
+{
+  if (!t->npending) return false;
+  struct xs_op *last = &t->pending[t->npending - 1];
+  struct xs_op before = *last;
+  if (!xs_queue_join(last, op)) return false;
+  if (saved) *saved = before;
+  return true;
 }
 
 int64_t xh_task_map(uint64_t handle, uint64_t va, uint64_t size, uint32_t prot, uint64_t phys)
@@ -503,6 +620,20 @@ int64_t xh_task_map(uint64_t handle, uint64_t va, uint64_t size, uint32_t prot, 
   if (!t) return -ESRCH;
   if (offset < 0 || !user_range(va, size)) return -EINVAL;
   struct xs_op op = { .op = XS_OP_MAP, .prot = prot, .va = va, .size = size, .offset = (uint64_t)offset };
+  xh_perf *p = xh_perf_self();
+  if (T.map_defer) {
+    // A TLB fill: it must be in place before any thread of the task touches the page again through this entry,
+    // and before any later unmap or protect of the task; the queue gives both (task.npending). A fill that comes
+    // late only costs the toucher one more fault, which the kernel fills again.
+    pthread_mutex_lock(&t->qlock);
+    bool joined = !t->dead && queue_join(t, &op, NULL);
+    bool queued = joined || (!t->dead && t->npending < XS_PENDING_MAX);
+    if (queued && !joined) { t->pending[t->npending] = op; __atomic_store_n(&t->npending, t->npending + 1, __ATOMIC_SEQ_CST); }   // read by releases without qlock
+    pthread_mutex_unlock(&t->qlock);
+    if (queued) { p->maps_deferred++; p->ops_joined += joined; return 0; }
+    if (t->dead) return -ESRCH;
+  }
+  p->maps_ordered++;
   return order(t, &op, 1);
 }
 
@@ -512,6 +643,39 @@ int64_t xh_task_unmap(uint64_t handle, uint64_t va, uint64_t size)
   if (!t) return -ESRCH;
   if (!user_range(va, size)) return -EINVAL;
   struct xs_op op = { .op = XS_OP_UNMAP, .va = va, .size = size };
+  xh_perf *p = xh_perf_self();
+  if (T.map_defer) {
+    // A TLB flush: once it returns, no thread of the task may use the old mapping. A task none of whose threads is
+    // released (task.running == 0) uses nothing until its next release, which carries out the queue first; an order
+    // given meanwhile takes the queue first too. So it waits in the queue, after the maps queued before it. Whoever
+    // takes it holds back the task's other releases until it is done (task.unmaps_out). A full queue: ordered, and the
+    // order takes the queue first.
+    pthread_mutex_lock(&t->qlock);
+    bool queued = false;
+    bool joined = false;
+    struct xs_op saved;
+    unsigned n = t->npending;
+    // Joined to the last entry, npending stays (it is not 0, so a release that counts itself after the load below sees
+    // the queue and takes it, under qlock, with this unmap in it).
+    if (!t->dead) joined = queue_join(t, &op, &saved);
+    if (!t->dead && (joined || n < XS_PENDING_MAX)) {
+      if (!joined) t->pending[n] = op;
+      t->nunmaps++;
+      __atomic_store_n(&t->npending, joined ? n : n + 1, __ATOMIC_SEQ_CST);
+      queued = __atomic_load_n(&t->running, __ATOMIC_SEQ_CST) == 0;
+      // A thread is counted: take the unmap back (a release that saw it waits for qlock to take the queue).
+      if (!queued) {
+        t->nunmaps--;
+        if (joined) t->pending[n - 1] = saved;
+        __atomic_store_n(&t->npending, n, __ATOMIC_SEQ_CST);
+        joined = false;
+      }
+    }
+    pthread_mutex_unlock(&t->qlock);
+    if (queued) { p->unmaps_deferred++; p->ops_joined += joined; return 0; }
+    if (t->dead) return -ESRCH;
+  }
+  p->unmaps_ordered++;
   return order(t, &op, 1);
 }
 
@@ -524,10 +688,20 @@ int64_t xh_task_protect(uint64_t handle, uint64_t va, uint64_t size, uint32_t pr
   return order(t, &op, 1);
 }
 
+// The deferred maps and unmaps of a task, ordered now (before a read or write of its memory from outside), and the
+// unmaps a taker is carrying out waited for: a read through a mapping the kernel has flushed would see a page that
+// may be another's by now, where it must fault (EFAULT, and the kernel fills the page).
+static void flush_pending(task *t)
+{
+  if (__atomic_load_n(&t->npending, __ATOMIC_RELAXED)) order(t, NULL, 0);
+  else if (__atomic_load_n(&t->unmaps_out, __ATOMIC_ACQUIRE)) { pthread_mutex_lock(&t->lock); pthread_mutex_unlock(&t->lock); }
+}
+
 int64_t xh_task_read(uint64_t handle, uint64_t va, void *buffer, uint64_t size)
 {
   task *t = task_of(handle);
   if (!t || t->dead) return -ESRCH;
+  flush_pending(t);
   struct iovec local = { buffer, size }, remote = { (void *)(uintptr_t)va, size };
   ssize_t n = process_vm_readv(t->pid, &local, 1, &remote, 1, 0);
   return n < 0 ? -errno : n;
@@ -537,6 +711,7 @@ int64_t xh_task_write(uint64_t handle, uint64_t va, const void *buffer, uint64_t
 {
   task *t = task_of(handle);
   if (!t || t->dead) return -ESRCH;
+  flush_pending(t);
   struct iovec local = { (void *)(uintptr_t)buffer, size }, remote = { (void *)(uintptr_t)va, size };
   ssize_t n = process_vm_writev(t->pid, &local, 1, &remote, 1, 0);
   return n < 0 ? -errno : n;
@@ -662,47 +837,164 @@ void xh_tasks_dump(void)
   }
 }
 
+// The released thread is back (its trap seen with acquire, so its accesses came before), or its task is gone: it no
+// longer counts as running.
+static void run_ended(task *t)
+{
+  __atomic_sub_fetch(&t->running, 1, __ATOMIC_SEQ_CST);
+}
+
+// thread_run's end, for perf.c: the trap's kind and when it was handed to the kernel.
+static void run_done(xh_vcpu *v, uint32_t kind)
+{
+  xh_perf *p = &v->perf;
+  p->traps[kind & 15]++;
+  p->ret_at = xh_counter();
+  p->ret_idle = p->ticks_idle;
+  p->ret_kind = kind;
+}
+
 int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, struct xh_trap *trap)
 {
   thread *th = thread_of(handle);
   if (!th) return -ESRCH;
   task *t = &T.tasks[th->task];
   struct xs_trap_page *tp = slot_page((uint32_t)handle);
+  xh_perf *p = &v->perf;
+  uint64_t entered = xh_counter();
+  // The kernel's work since the last trap this vCPU handed it (its idle time taken out).
+  if (p->ret_at) {
+    uint64_t gap = entered - p->ret_at, idle = p->ticks_idle - p->ret_idle;
+    unsigned k = p->ret_kind == XH_TRAP_SYSCALL ? XP_K_SYSCALL : p->ret_kind == XH_TRAP_FAULT ? XP_K_FAULT :
+                 p->ret_kind == XH_TRAP_INTERRUPT ? XP_K_IRQ : XP_K_OTHER;
+    xh_hist_add(&p->h[k], xh_ticks_ns(gap > idle ? gap - idle : 0));
+    p->ret_at = 0;
+  }
   memset(trap, 0, sizeof *trap);
-  if (t->dead) { trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status; return 0; }
+  if (t->dead) { trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status; run_done(v, trap->kind); return 0; }
   // An interrupt already waiting is taken before any user instruction runs.
-  if (v->cpu.irq_pending) { trap->kind = XH_TRAP_INTERRUPT; return 0; }
+  if (v->cpu.irq_pending) { trap->kind = XH_TRAP_INTERRUPT; run_done(v, trap->kind); return 0; }
   // iOS code runs on the task's Linux thread, not on the vCPU's: it follows the vCPU's host CPUs.
-  if (xh_cpu_place && th->placed != v->cpu.index + 1) {
+  const uint8_t epoch = (uint8_t)__atomic_load_n(&xh_cpu_place_epoch, __ATOMIC_ACQUIRE);
+  if (xh_cpu_place && (th->placed != v->cpu.index + 1 || th->epoch != epoch)) {
     uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
-    if (tid) { xh_cpu_place((int)tid, v->cpu.index); th->placed = (uint8_t)(v->cpu.index + 1); }
+    if (tid) { xh_cpu_place((int)tid, v->cpu.index); th->placed = (uint8_t)(v->cpu.index + 1); th->epoch = epoch; }
+  }
+  // Its vCPU's clamp (xnuhost.h xh_cpu_uclamp): the host's governor picks a core's clock from what runs there, and what
+  // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.
+  // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and no
+  // ceiling of ours, whatever its vCPU asked for last (a ceiling stood here, XH_HINT_BG_MAX 512, until 2026-11-16; the
+  // owner's rule is no caps of ours on the cores, and it also slowed chronod's widget extensions, #57); a UI or
+  // realtime thread at least the floor it names. The ceiling of 1024 clears a stale one either way.
+  if (xh_cpu_uclamp) {
+    const uint32_t hint = __atomic_load_n(&v->cpu.perf_hint, __ATOMIC_RELAXED);
+    unsigned lo = xh_cpu_uclamp(v->cpu.index), hi = 1024;
+    if (hint & XH_HINT_VALID) {
+      if (hint & XH_HINT_BACKGROUND) { lo = 0; }
+      else if (XH_HINT_FLOOR(hint) > lo) lo = XH_HINT_FLOOR(hint) > 1024 ? 1024 : XH_HINT_FLOOR(hint);
+    }
+    const uint32_t want = (lo | hi << 11) + 1;
+    uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
+    if (th->uclamp != want && tid) {
+      if (set_uclamp((int)tid, lo, hi) == 0 || errno != EINTR) th->uclamp = want;
+      p->uclamp_sets++;
+    }
+  }
+  // The task's deferred maps and unmaps go with this release: the thread carries them out before it runs. The task's
+  // lock is held until it says they are done, so no unmap or protect of the task can pass them; with unmaps among
+  // them (task.unmaps_out) no other thread of the task is released before they are done either.
+  // The thread counts as running from here (task.running, under qlock in the same hold that takes the queue).
+  bool draining = false;
+  unsigned nops = 0;
+  __atomic_add_fetch(&t->running, 1, __ATOMIC_SEQ_CST);        // counted first, then the queue is read (task.running)
+  if (__atomic_load_n(&t->npending, __ATOMIC_SEQ_CST) || __atomic_load_n(&t->unmaps_out, __ATOMIC_SEQ_CST)) {
+    // `lock`: also the wait for a taker that is carrying out unmaps (it holds `lock` until they are done).
+    pthread_mutex_lock(&t->lock);
+    pthread_mutex_lock(&t->qlock);
+    nops = t->npending;
+    if (nops && !t->dead) {
+      memcpy((uint8_t *)tp + XS_OPS_OFF, t->pending, nops * sizeof(struct xs_op));
+      // unmaps_out before npending goes to 0: a release that reads npending 0 from here reads unmaps_out set.
+      if (t->nunmaps) { __atomic_store_n(&t->unmaps_out, true, __ATOMIC_SEQ_CST); t->nunmaps = 0; }
+      __atomic_store_n(&t->npending, 0, __ATOMIC_SEQ_CST);
+      tp->ops_done = 0;
+      tp->nops = nops;
+      draining = true;
+    }
+    pthread_mutex_unlock(&t->qlock);
+    if (!draining) pthread_mutex_unlock(&t->lock);
   }
   tp->state = *state;
   tp->command = XS_RUN;
+  tp->spin_ticks = T.spin_task;
   __atomic_store_n(&tp->to_host, 0, __ATOMIC_RELEASE);
+  uint64_t released = xh_counter();
+  th->released_at = released;
+  // stub_abi.h: store, then wake only a sleeper.
   __atomic_store_n(&tp->to_task, 1, __ATOMIC_RELEASE);
-  futex(&tp->to_task, FUTEX_WAKE, 1, NULL);
-  bool kicked = false;
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  if (__atomic_load_n(&tp->task_sleeping, __ATOMIC_RELAXED)) { futex(&tp->to_task, FUTEX_WAKE, 1, NULL); p->task_wakes++; }
+  bool kicked = false, sleeping = false;
+  uint64_t kicked_at = 0;
   struct timespec step = { 0, 200 * 1000 * 1000 };
-  while (!__atomic_load_n(&tp->to_host, __ATOMIC_ACQUIRE)) {
-    if (t->dead) { trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status; return 0; }
+  for (;;) {
+    if (draining && __atomic_load_n(&tp->ops_done, __ATOMIC_ACQUIRE)) {
+      struct xs_op *ops = (struct xs_op *)((uint8_t *)tp + XS_OPS_OFF);
+      for (unsigned i = 0; i < nops; i++) log_map_failure(t, &ops[i], "in the released thread");
+      unmaps_done(t);
+      pthread_mutex_unlock(&t->lock);
+      draining = false;
+      xh_hist_add(&p->h[XP_DRAIN], xh_ticks_ns(xh_counter() - released));
+    }
+    if (!draining && __atomic_load_n(&tp->to_host, __ATOMIC_ACQUIRE)) break;
+    if (t->dead) {
+      if (draining) { unmaps_done(t); pthread_mutex_unlock(&t->lock); }
+      if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
+      trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status;
+      run_ended(t);
+      p->ticks_user += xh_counter() - released;
+      run_done(v, trap->kind);
+      return 0;
+    }
     // The vCPU's interrupt line rose (its timer or another CPU signalled this thread, which ended
     // the wait below): force the iOS thread to stop, once.
     if ((v->cpu.irq_pending || xh_stopping()) && !kicked) {
       uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
+      kicked_at = xh_counter();
       if (tid) syscall(SYS_tgkill, t->pid, tid, KICK_SIGNAL);
       kicked = true;
     }
+    if (!sleeping) {
+      // Spin a while: a thread that comes back at once (a system call after a few instructions, a fault) is seen
+      // without a futex sleep and wake on either side.
+      if (T.spin_host && xh_counter() - released < T.spin_host) { __asm__ volatile("yield"); continue; }
+      __atomic_store_n(&tp->host_sleeping, 1, __ATOMIC_RELAXED);
+      __atomic_thread_fence(__ATOMIC_SEQ_CST);
+      sleeping = true;
+      continue;                                  // look at the words once more before the first sleep
+    }
+    p->host_sleeps++;
     futex(&tp->to_host, FUTEX_WAIT, 0, &step);
   }
+  if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
+  uint64_t seen = xh_counter();
+  run_ended(t);
+  p->ticks_user += seen - released;
   *state = tp->state;
   *trap = tp->trap;
+  // The two hand-offs of this stay (counter ticks of the same clock in both processes).
+  uint64_t woken = tp->t_woken, entered_stub = tp->t_enter;
+  if (woken >= released && woken <= seen) xh_hist_add(&p->h[XP_DOWN], xh_ticks_ns(woken - released));
+  if (entered_stub >= woken && entered_stub <= seen) xh_hist_add(&p->h[XP_UP], xh_ticks_ns(seen - entered_stub));
+  if (tp->slept) p->task_sleeps++;
+  if (kicked && trap->kind == XH_TRAP_INTERRUPT) xh_hist_add(&p->h[XP_KICK], xh_ticks_ns(seen - kicked_at));
   if (xh_text_fixup_svc && trap->kind == XH_TRAP_ILLEGAL && trap->insn == XH_SVC_MARK) {
     // The system call text_fixup marked: as a trapped svc reports it, with pc after the instruction.
     trap->kind = XH_TRAP_SYSCALL;
     trap->svc = 0x80;
     state->pc += 4;
   }
+  run_done(v, trap->kind);
   v->stat_traps++;
   // A trap no fault handler of the kernel can resolve by mapping a page: a data or instruction address outside
   // what an iOS task may use (a pointer that kept its authentication code, a wild jump), an undefined instruction,
