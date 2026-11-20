@@ -1,0 +1,119 @@
+diff --git a/bsd/kern/kern_memorystatus.c b/bsd/kern/kern_memorystatus.c
+--- a/bsd/kern/kern_memorystatus.c
++++ b/bsd/kern/kern_memorystatus.c
+@@ -1115,6 +1115,50 @@
+ uint32_t _Atomic memorystatus_kill_counts[JETSAM_PRIORITY_MAX + 1][JETSAM_REASON_MEMORYSTATUS_MAX - 1];
+ uint32_t _Atomic memorystatus_idle_exit_kill_count = 0;
+ 
++#if XNU_HOSTED
++/*
++ * 0076 (fix-ios-compressor): what jetsam answers to, for the oneios-mem lines (vm_resident.c, hosted_fr_log, every 30 s).
++ * One line: the page shortage thresholds memorystatus compares memorystatus_available_pages with (free + file-backed
++ * pages: VM_CHECK_MEMORYSTATUS; the compressor's pages are not in it), the per-task limits of /defaults
++ * (kern.max_task_pmem, kern.entitled_max_task_pmem: xnuhost's ram-view), hw.memsize and hw.memsize_physical, and the
++ * kills since boot by cause (memorystatus_kill_counts, summed over the bands; idle-exit is counted apart). A cheap
++ * report of counters XNU keeps anyway; nothing is changed.
++ */
++extern int max_task_footprint_mb;
++void hosted_memstat_report(void);
++void
++hosted_memstat_report(void)
++{
++	uint64_t by[JETSAM_REASON_MEMORYSTATUS_MAX - 1] = { 0 }, kills = 0;
++	for (int p = 0; p <= JETSAM_PRIORITY_MAX; p++) {
++		for (int c = 0; c < JETSAM_REASON_MEMORYSTATUS_MAX - 1; c++) {
++			by[c] += os_atomic_load(&memorystatus_kill_counts[p][c], relaxed);
++		}
++	}
++	uint64_t idle_exits = os_atomic_load(&memorystatus_idle_exit_kill_count, relaxed);
++	char causes[160] = "";
++	size_t used = 0;
++	for (int c = 0; c < JETSAM_REASON_MEMORYSTATUS_MAX - 1; c++) {
++		kills += by[c];
++		/* the array has every cause but kMemorystatusInvalid and kMemorystatusKilledIdleExit (memorystatus_kill_count) */
++		int cause = c + 1 < kMemorystatusKilledIdleExit ? c + 1 : c + 2;
++		if (by[c] && used < sizeof(causes) - 1 && cause < (int)(sizeof(memstat_kill_cause_name) / sizeof(memstat_kill_cause_name[0]))) {
++			int n = snprintf(causes + used, sizeof(causes) - used, ", %s %llu", memstat_kill_cause_name[cause], by[c]);
++			used = n > 0 ? MIN(used + (size_t)n, sizeof(causes) - 1) : used;
++		}
++	}
++#define HOSTED_MS_MIB(pages) ((unsigned long long)(ptoa_64(pages) >> 20))
++	/* two lines: the console cuts a line past about 256 characters */
++	printf("oneios-mem: jetsam: available %llu MiB; at critical %llu, idle %llu, soft %llu, reaper %llu MiB; task limit %d MB, "
++	    "entitled %d MB; hw.memsize %llu MiB, memsize_physical %llu MiB\n",
++	    HOSTED_MS_MIB(memorystatus_available_pages), HOSTED_MS_MIB(memstat_critical_threshold), HOSTED_MS_MIB(memstat_idle_threshold),
++	    HOSTED_MS_MIB(memstat_soft_threshold), HOSTED_MS_MIB(memstat_reaper_threshold), max_task_footprint_mb,
++	    memorystatus_entitled_max_task_footprint_mb, (unsigned long long)(max_mem >> 20), (unsigned long long)(max_mem_actual >> 20));
++	printf("oneios-mem: jetsam: kills since boot %llu (idle-exit %llu%s)\n", kills + idle_exits, idle_exits, causes);
++#undef HOSTED_MS_MIB
++}
++#endif /* XNU_HOSTED */
++
+ TUNABLE_DT(int32_t, memorystatus_reaper_minimum_age_seconds, "/defaults",
+     "kern.memstat_reaper_minage_secs", "memorystatus_reaper_minimum_age_seconds", MEMORYSTATUS_REAPER_SENTINAL_VALUE_MEANING_USE_DEFAULT, TUNABLE_DT_NONE);
+ TUNABLE_DT(int32_t, memorystatus_reaper_minimum_age_apps_seconds, "/defaults",
+diff --git a/osfmk/vm/vm_resident.c b/osfmk/vm/vm_resident.c
+--- a/osfmk/vm/vm_resident.c
++++ b/osfmk/vm/vm_resident.c
+@@ -2130,10 +2130,41 @@
+ 	VM_CHECK_MEMORYSTATUS;
+ }
+ 
++/*
++ * 0076, oneios-compress-sweep=SECONDS (0 = off, the default; a debugging tool): once, at the first report after that
++ * many seconds of uptime, hand every anonymous page to the compressor (vm_pageout_anonymous_pages, what
++ * memorystatus_control's compressor sweep and the freezer's use do). The pages fault back in as they are used. It shows
++ * that the compressor path works here end to end (the pmap's disconnect, the compressor threads, the fault back) and gives
++ * its ratio on the guest's own memory in the next reports, where a PC boot never runs short of file pages.
++ */
++static TUNABLE(uint32_t, hosted_compress_sweep_s, "oneios-compress-sweep", 0);
++extern kern_return_t vm_pageout_anonymous_pages(void);
++
++static void
++hosted_compress_sweep(void)
++{
++	static bool done;
++	uint64_t ns = 0;
++	if (done || hosted_compress_sweep_s == 0) {
++		return;
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	if (ns / NSEC_PER_SEC < hosted_compress_sweep_s) {
++		return;
++	}
++	done = true;
++	printf("oneios-mem: compressor sweep (oneios-compress-sweep=%u): %llu MiB anonymous, %llu MiB active, %llu MiB inactive "
++	    "to the compressor\n", hosted_compress_sweep_s, HOSTED_FR_MIB(vm_page_pageable_internal_count),
++	    HOSTED_FR_MIB(vm_page_active_count), HOSTED_FR_MIB(vm_page_inactive_count));
++	kern_return_t kr = vm_pageout_anonymous_pages();
++	printf("oneios-mem: compressor sweep: %d; the compressor holds %llu MiB of pages in %llu MiB so far\n", kr,
++	    HOSTED_FR_MIB(c_segment_pages_compressed), HOSTED_FR_MIB(VM_PAGE_COMPRESSOR_COUNT));
++}
++
+ static void
+ hosted_fr_log(void)
+ {
+-	/* four lines: the console cuts a line past about 256 characters and puts the next message in it */
++	/* seven lines: the console cuts a line past about 256 characters and puts the next message in it */
+ 	uint64_t ns = 0;
+ 	absolutetime_to_nanoseconds(hosted_fr_stats.ticks, &ns);
+ 	uint32_t reported = os_atomic_load(&hosted_fr_reported, relaxed), free = vm_page_free_count;
+@@ -2154,6 +2185,18 @@
+ 	    HOSTED_FR_MIB(memorystatus_available_pages),
+ #endif
+ 	    HOSTED_FR_MIB(vm_page_pages));
++	/* 0076 (fix-ios-compressor): the compressor's own counters, the pages it holds against the RAM that holds them, and
++	 * what jetsam answers to (kern_memorystatus.c, hosted_memstat_report) */
++	uint64_t held = c_segment_pages_compressed, pool = VM_PAGE_COMPRESSOR_COUNT, data = os_atomic_load(&compressor_bytes_used, relaxed);
++	printf("oneios-mem: compressor: holds %llu MiB of pages in %llu MiB of RAM (%llu MiB of compressed data): ratio %llu.%02llu; "
++	    "room for %llu MiB of pages, low on space %s\n", HOSTED_FR_MIB(held), HOSTED_FR_MIB(pool), (unsigned long long)(data >> 20),
++	    pool ? held / pool : 0ull, pool ? (held * 100 / pool) % 100 : 0ull, HOSTED_FR_MIB(c_segment_pages_compressed_limit),
++	    vm_compressor_low_on_space() ? "yes" : "no");
++#if CONFIG_JETSAM
++	extern void hosted_memstat_report(void);
++	hosted_memstat_report();
++#endif
++	hosted_compress_sweep();
+ 	printf("oneios-mem: given back %llu MiB since boot in %llu batches, %llu runs, %llu rounds (%llu failed, %llu out of order), "
+ 	    "%llu ms\n", HOSTED_FR_MIB(hosted_fr_stats.pages), hosted_fr_stats.batches, hosted_fr_stats.runs, hosted_fr_stats.rounds,
+ 	    hosted_fr_stats.failed, hosted_fr_stats.out_of_order, ns / NSEC_PER_MSEC);

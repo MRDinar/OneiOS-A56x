@@ -9,12 +9,17 @@
 //   bridgectl net                    opens the tap, answers the first DHCP request it sees, counts frames for 10 s
 //   bridgectl audio HELPER [S [record]]  a quiet 440 Hz tone for S s (2) through the helper (path of oneios-audio),
 //                                    then 0.5 s later a 660 Hz one for 0.5 s;
-//                                    with record, then 2 s of the microphone (frames, peak, RMS)
+//                                    with record, then 2 s of the microphone (frames, peak, RMS); first the helper's
+//                                    probe (the speaker's latency xnuhost would publish to iOS)
+//   bridgectl audio-loop HELPER [N]  N clicks (10), 0.5 s apart, each 20 ms of 1 kHz at -30 dBFS, while the microphone
+//                                    records: the round trip of each (handed to the helper to heard by the microphone:
+//                                    the speaker's latency, the air and the microphone's), and their median
 // Each prints what it found and ends with "ok" or the reason it failed.
 #define _GNU_SOURCE
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,7 +129,11 @@ static int audio(int argc, char **argv)
   if (seconds < 1 || seconds > 30) seconds = 2;
   void *ctx;
   const br_audio_backend *b = br_audio_helper(path, &ctx);
-  if (!b || b->start(ctx, true, 48000, 2)) return 1;
+  if (!b) return 1;
+  int probed = br_audio_probe_latency(b, ctx, 2000);
+  if (probed > 0) printf("audio: probe: speaker latency %d frames (%.1f ms): oneios-audio-latency=%d in a session\n", probed, probed / 48.0, probed);
+  else printf("audio: probe: not measured (%s)\n", strerror(-probed));
+  if (b->start(ctx, true, 48000, 2)) return 1;
   int16_t period[480];
   double phase = 0;
   struct timespec at;
@@ -182,6 +191,106 @@ static int audio(int argc, char **argv)
   return rc;
 }
 
+// audio-loop: the microphone's frames, each with the time it came in here (a reader thread), against the clicks,
+// each with the time its first period was handed to the helper. A frame's time is its period's arrival less the
+// frames after it in that period: it includes the microphone's own path (capture, AAudio, the helper, the socket),
+// so a round trip is the speaker's latency plus the air plus the microphone's latency. The helper's speaker report
+// (stderr) says the speaker's part from AAudio's timestamps; the difference is the microphone's and the air's.
+typedef struct { const br_audio_backend *b; void *ctx; int16_t *pcm; double *at; unsigned frames, cap; bool run; } loop_mic;
+static double mono_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (double)t.tv_sec + t.tv_nsec / 1e9; }
+static void *loop_reader(void *arg)
+{
+  loop_mic *m = arg;
+  int16_t pcm[240];
+  while (__atomic_load_n(&m->run, __ATOMIC_ACQUIRE) && m->frames + 240 <= m->cap) {
+    int n = m->b->read(m->ctx, pcm, 240);
+    if (n < 0) break;
+    if (n == 0) continue;
+    double now = mono_s();
+    memcpy(m->pcm + m->frames, pcm, (size_t)n * 2);
+    for (int i = 0; i < n; i++) m->at[m->frames + (unsigned)i] = now - (double)(n - 1 - i) / 48000;
+    m->frames += (unsigned)n;
+  }
+  return NULL;
+}
+static int cmp_double(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
+
+static int audio_loop(int argc, char **argv)
+{
+  const char *path = argv[2];
+  unsigned clicks = argc > 3 ? (unsigned)atoi(argv[3]) : 10;
+  if (clicks < 1 || clicks > 20) clicks = 10;
+  void *ctx;
+  const br_audio_backend *b = br_audio_helper(path, &ctx);
+  if (!b) return 1;
+  loop_mic m = { .b = b, .ctx = ctx, .cap = 48000 * 14, .run = true };
+  m.pcm = calloc(m.cap, sizeof *m.pcm);
+  m.at = calloc(m.cap, sizeof *m.at);
+  double sent[20] = { 0 }, heard[20];
+  pthread_t reader;
+  if (!m.pcm || !m.at || b->start(ctx, false, 48000, 1) || b->start(ctx, true, 48000, 2) || pthread_create(&reader, NULL, loop_reader, &m)) {
+    printf("audio-loop: the speaker or the microphone did not start\n");
+    b->close(ctx);
+    return 1;
+  }
+  // 1 s of silence (the microphone's start click, the noise floor), then a click every 0.5 s: 4 periods of 1 kHz.
+  int16_t period[480];
+  struct timespec at;
+  clock_gettime(CLOCK_MONOTONIC, &at);
+  const unsigned periods = 200 + clicks * 100 + 60;
+  for (unsigned p = 0, k = 0; p < periods; p++) {
+    bool tone = p >= 200 && (p - 200) % 100 < 4 && (p - 200) / 100 < clicks;
+    for (unsigned i = 0; i < 240; i++) period[2 * i] = period[2 * i + 1] = tone ? (int16_t)(1000 * sin(2 * M_PI * 1000 * i / 48000.0)) : 0;
+    if (tone && (p - 200) % 100 == 0) sent[k++] = mono_s();
+    (void)b->write(ctx, period, 240);
+    at.tv_nsec += 5000000;
+    if (at.tv_nsec >= 1000000000) { at.tv_nsec -= 1000000000; at.tv_sec++; }
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &at, NULL);
+  }
+  b->stop(ctx, true);
+  usleep(200000);
+  __atomic_store_n(&m.run, false, __ATOMIC_RELEASE);
+  pthread_join(reader, NULL);
+  b->stop(ctx, false);
+  // The noise: RMS of 1 ms windows from 0.4 s in to the first click; the threshold 8 times their median (18 dB), at
+  // least -56 dBFS.
+  double windows[1000];
+  unsigned nw = 0;
+  for (unsigned f = 0; f + 48 <= m.frames && nw < 1000; f += 48) {
+    if (m.at[f] < sent[0] - 0.6 || m.at[f + 47] >= sent[0]) continue;
+    double s = 0;
+    for (unsigned i = 0; i < 48; i++) s += (double)m.pcm[f + i] * m.pcm[f + i];
+    windows[nw++] = sqrt(s / 48);
+  }
+  qsort(windows, nw, sizeof *windows, cmp_double);
+  double noise = nw ? windows[nw / 2] : 0, threshold = noise * 8 > 50 ? noise * 8 : 50;
+  unsigned found = 0;
+  for (unsigned k = 0; k < clicks; k++) {
+    heard[k] = -1;
+    for (unsigned f = 0; f + 48 <= m.frames; f += 8) {
+      if (m.at[f] < sent[k]) continue;
+      if (m.at[f] > sent[k] + 0.4) break;
+      double s = 0;
+      for (unsigned i = 0; i < 48; i++) s += (double)m.pcm[f + i] * m.pcm[f + i];
+      if (sqrt(s / 48) > threshold) { heard[k] = (m.at[f] - sent[k]) * 1e3; break; }
+    }
+    if (heard[k] >= 0) printf("audio-loop: click %u: heard %.1f ms after it was handed to the helper\n", k + 1, heard[k]);
+    else printf("audio-loop: click %u: not heard within 400 ms\n", k + 1);
+    if (heard[k] >= 0) heard[found++] = heard[k];
+  }
+  qsort(heard, found, sizeof *heard, cmp_double);
+  printf("audio-loop: %u frames from the microphone, noise %.1f dBFS, threshold %.1f dBFS\n", m.frames,
+         noise > 0 ? 20 * log10(noise / 32768.0) : -999.0, 20 * log10(threshold / 32768.0));
+  if (found) printf("audio-loop: round trip (the speaker + the air + the microphone) median %.1f ms, %.1f..%.1f, %u of %u clicks\n",
+                    heard[found / 2], heard[0], heard[found - 1], found, clicks);
+  usleep(300000);                                               // the helper's last report
+  b->close(ctx);
+  usleep(100000);
+  free(m.pcm);
+  free(m.at);
+  return found * 2 >= clicks ? 0 : 1;
+}
+
 // The bridges' own lines (why a HAL was not found, the HAL's state), as xnuhost logs them.
 static void say(int level, const char *line) { printf("  %s%s\n", level == 0 ? "error: " : "", line); }
 
@@ -195,13 +304,14 @@ int main(int argc, char **argv)
   br_hw_settings_init(&hw);
   if (br_hw_settings_env(&hw, &bad)) { fprintf(stderr, "bridgectl: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
   br_hw_configure(&hw);
-  if (argc < 2) { fprintf(stderr, "usage: bridgectl cpu|haptic|haptic-pattern|bt|net|audio ... (see tools/bridgectl.c)\n"); return 2; }
+  if (argc < 2) { fprintf(stderr, "usage: bridgectl cpu|haptic|haptic-pattern|bt|net|audio|audio-loop ... (see tools/bridgectl.c)\n"); return 2; }
   if (!strcmp(argv[1], "cpu")) rc = cpu(argc, argv);
   else if (!strcmp(argv[1], "haptic")) rc = haptic(argc, argv, false);
   else if (!strcmp(argv[1], "haptic-pattern")) rc = haptic(argc, argv, true);
   else if (!strcmp(argv[1], "bt")) rc = bt();
   else if (!strcmp(argv[1], "net")) rc = net();
   else if (!strcmp(argv[1], "audio") && argc > 2) rc = audio(argc, argv);
+  else if (!strcmp(argv[1], "audio-loop") && argc > 2) rc = audio_loop(argc, argv);
   printf("%s\n", rc == 0 ? "ok" : rc == 2 ? "unknown command" : "failed");
   return rc;
 }

@@ -214,6 +214,12 @@ typedef struct {
 // The AAudio helper process (audio/aaudio_helper.c, bin/oneios-audio): started with `path`, fed over
 // a socket pair. NULL when it cannot be started. *ctx receives the back end's context.
 const br_audio_backend *br_audio_helper(const char *path, void **ctx);
+// The helper's speaker latency, measured before the guest boots (audio_proto.h AU_PROBE: the stream is opened in
+// silence and lingers): frames at 48 kHz from a guest period's arrival to the speaker, or -errno (-ENOTSUP: not
+// the helper; -ETIMEDOUT: no answer in `timeout_ms`). Blocks the caller up to `timeout_ms`.
+int br_audio_probe_latency(const br_audio_backend *backend, void *ctx, unsigned timeout_ms);
+// Tells the helper the output latency the guest publishes (frames), for its end-to-end line. No-op otherwise.
+void br_audio_told(const br_audio_backend *backend, void *ctx, unsigned frames);
 // A back end that drops output and gives silence (no helper, tests).
 const br_audio_backend *br_audio_null(void **ctx);
 

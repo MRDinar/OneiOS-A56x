@@ -37,12 +37,14 @@ void xh_config_defaults(xh_config *c)
   c->bridges = -1;
   c->scale_fixup = -1;
   c->setway_skip = -1;
+  c->blk_late_flush = -1;
   c->perf_log = c->spin_host = c->spin_task = c->map_defer = c->cpu_pin = -1;
   c->gpu_priority = -1;
   strcpy(c->bluetooth, "auto");
   strcpy(c->haptics, "auto");
   strcpy(c->pen, "off");
   strcpy(c->pen_rotate, "auto");
+  strcpy(c->encoder, "off");
   strcpy(c->wifi, "auto");
   br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
@@ -115,6 +117,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     ok = ok && (c->ram_bytes || !strcmp(value, "auto"));
     c->ram_given = ok;
   }
+  else if (!strcmp(key, "ram-view")) { c->ram_view = !strcmp(value, "off") ? 0 : !strcmp(value, "auto") ? XH_RAM_VIEW_AUTO : xh_parse_size(value, &ok); ok = ok && c->ram_view < (1ull << 40); c->ram_view_given = ok; }
   else if (!strcmp(key, "ram-percent")) { ok = number(value, 10, 100, &c->ram_percent); }
   else if (!strcmp(key, "ram-host-floor")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_host_floor = (int64_t)v; }
   else if (!strcmp(key, "ram-meminfo")) return copy(c->ram_meminfo, sizeof c->ram_meminfo, value);
@@ -153,6 +156,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->pen, value); }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) strcpy(c->pen_rotate, value); }
   else if (!strcmp(key, "pen-mirror")) return flag(value, &c->pen_mirror);
+  else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->encoder, value); }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
@@ -160,6 +164,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "haptics")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) strcpy(c->haptics, value); }
   else if (!strcmp(key, "legacy-boot-args")) return flag(value, &c->legacy_boot_args);
   else if (!strcmp(key, "setway-skip")) { bool on; if (flag(value, &on)) return -1; c->setway_skip = on; }
+  else if (!strcmp(key, "blk-late-flush")) { bool on; if (flag(value, &on)) return -1; c->blk_late_flush = on; }
   else if (!strcmp(key, "perf-log")) { ok = number(value, 0, 86400, &c->perf_log); }
   else if (!strcmp(key, "spin-host")) { ok = number(value, 0, 1000, &c->spin_host); }
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
@@ -287,6 +292,7 @@ int xh_config_finish(xh_config *c)
   if (!*c->boot_args) strcpy(c->boot_args, from_image.boot_args);
   if (!c->width) c->width = from_image.width;
   if (c->setway_skip < 0) c->setway_skip = from_image.setway_skip < 0 ? 1 : from_image.setway_skip;
+  if (c->blk_late_flush < 0) c->blk_late_flush = from_image.blk_late_flush < 0 ? 1 : from_image.blk_late_flush;
   if (c->perf_log < 0) c->perf_log = from_image.perf_log;
   if (c->spin_host < 0) c->spin_host = from_image.spin_host;
   if (!*c->gpu_level) strcpy(c->gpu_level, *from_image.gpu_level ? from_image.gpu_level : "deadline");
@@ -347,6 +353,7 @@ int xh_config_finish(xh_config *c)
   }
   // The guest's RAM: the command line's ram=, else the image set's, else auto.
   if (!c->ram_given && from_image.ram_given) c->ram_bytes = from_image.ram_bytes;
+  if (!c->ram_view_given) c->ram_view = from_image.ram_view;     // ram-view= (main.c, docs/booter.md 2.2 "The memory view")
   if (c->ram_percent < 0) c->ram_percent = from_image.ram_percent < 0 ? XH_RAM_AUTO_PERCENT : from_image.ram_percent;
   if (c->ram_host_floor < 0) c->ram_host_floor = from_image.ram_host_floor < 0 ? (int64_t)XH_RAM_AUTO_FLOOR : from_image.ram_host_floor;
   if (c->host_mem_log < 0) c->host_mem_log = from_image.host_mem_log < 0 ? 30 : from_image.host_mem_log;
@@ -628,6 +635,23 @@ int xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, u
     strcat(args, add);
   }
   return 0;
+}
+
+// ram-view= (docs/booter.md 2.2, "The memory view"): the compressor's room for a view of `view` bytes over `window`
+// bytes of RAM, unless the command line sets it. XNU caps what the compressor holds at its pool's pages times
+// kern.compressor_pool_multiplier, and at least max_mem's pages (vm_compressor_set_size; 1 on an iOS of more than 2 GiB):
+// so at most the RAM's own size of original pages. The multiplier is the view over the RAM, rounded up (2 for 12 GiB
+// over 7 GiB). Returns the multiplier (0: no view, nothing added), or -1 with no room in the arguments.
+int xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window)
+{
+  if (!view || !window || view <= window) return 0;
+  unsigned multiplier = (unsigned)((view + window - 1) / window);
+  if (has_switch(args, "kern.compressor_pool_multiplier")) return (int)multiplier;
+  char add[64];
+  snprintf(add, sizeof add, "%skern.compressor_pool_multiplier=%u", *args ? " " : "", multiplier);
+  if (strlen(args) + strlen(add) >= size) return -1;
+  strcat(args, add);
+  return (int)multiplier;
 }
 
 // -[CADisplayMode preferredScale] of QuartzCore, read in 24A446's cache (docs/userland.md, "The UI scale"): a

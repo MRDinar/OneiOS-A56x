@@ -2092,3 +2092,14 @@ persistent: a reboot costs a manual re-root.
   creation and at each fenced submission (`oneios_gpu_hint`), so they must not block or take a lock a submitting thread
   may hold. If your names differ, the adapter is those two functions. The host side and its rules: `docs/gpu.md` 2.2b.
   I did not touch `runtime/bridges/cpu`, the vCPU topology, uclamp or cpusets.
+
+- 2026-11-20, main triage and merge (assistant): local `main` was 401 behind `origin/main` with a stale duplicate tip
+  and stale working-tree copies of already-merged userland work (backed up to `~/oneios-stale-backup-2026-11-20/`, two
+  144 MiB qemu core dumps deleted); `main` reset to `origin/main`. Merged to `main` (host tests green: loader 164/0,
+  full `make -C runtime/xnuhost test` exit 0): `fix-hapticd` (clean), `fix-ios-compressor` (series/building/README
+  conflicts resolved, 0076 before 0078), `fix-widget-kill-loop` (series conflict resolved). Retired
+  `display-geometry-fix` (duplicate of upstream `069ce63` plus one stale line). NOT merged: `display-zero-copy` (real,
+  unique, hot display path; its worktree `OneiOS-wt-zc` has uncommitted edits, left alone), `bt-hidl`/`battery-bridge`
+  (fully merged already; `out/bt-wt` has uncommitted in-progress LE-scan work, left alone), `fix-mach-rpc` (needs a
+  renumber: its patch is also numbered 0076, taken now by the compressor patch; plus it needs a PC boot), `rustport`
+  (needs golden-compare verification), `fix-wifi-late-enable`/`hevc-guest`/`wip/perf-deferred-unmaps` (paused WIP).

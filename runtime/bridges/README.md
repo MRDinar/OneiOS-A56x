@@ -87,6 +87,7 @@ adb shell su -c '/data/local/tmp/bridgectl haptic-pattern'
 adb shell su -c '/data/local/tmp/bridgectl bt'            # with Bluetooth off in One UI's settings (see below)
 adb shell su -c '/data/local/tmp/bridgectl audio /data/local/tmp/oneios-audio'          # 2 s, then 0.5 s
 adb shell su -c '/data/local/tmp/bridgectl audio /data/local/tmp/oneios-audio 12 record' # 12 s, then the microphone
+adb shell su -c '/data/local/tmp/bridgectl audio-loop /data/local/tmp/oneios-audio 10'   # 10 clicks: the round trip
 ```
 
 `bt` takes the controller from One UI's Bluetooth app if that app has it open: turn Bluetooth off first. It prints
@@ -128,3 +129,18 @@ dBFS` (room noise), `ok`. The helper of 2026-11-13 (not run on the phone yet) sa
 expected, `latency about 95-105 ms`; `ONEIOS_AUDIO_PERF=low bridgectl audio ...` runs it with performance mode
 LOW_LATENCY for a comparison (`docs/hardware.md` section 6, "Latency per stage"). `0 frames` or `all zero` is a silenced microphone; an `open speaker: ...` line is AAudio's refusal
 (then `dmesg | grep avc`). The other tools have not been run yet.
+
+Since 2026-11-15 (fix-audio-latency; not run on the phone yet) `audio` first prints the helper's probe, `audio:
+probe: speaker latency N frames (N ms): oneios-audio-latency=N in a session`, and the helper opens the speaker
+LOW_LATENCY with MMAP exclusive first: its open line says what the phone's HAL gives (`low latency given, sharing
+exclusive, mmap 1, burst B, ...; MMAP exclusive: the DSP reads the buffer`, or the reason it fell back: `MMAP not
+given`, `MMAP shared ...`). Beside One UI system_server runs, so an MMAP shared answer is kept there (in a session
+it is not): `ONEIOS_AUDIO_SYSTEM_SERVER=0 bridgectl audio ...` behaves as a session does. Its reports end
+`latency about N ms; end-to-end N ms (...)`; on MMAP exclusive about 10-20 ms is expected [I], was 128-137.
+`audio-loop` plays N clicks (20 ms of 1 kHz at -30 dBFS, 0.5 s apart) while the microphone records, and prints
+when each was heard after it was handed to the helper (`audio-loop: click K: heard N ms after ...`), the noise and
+the threshold (`noise -52 dBFS`: 18 dB above it, at least -56 dBFS), and `audio-loop: round trip (the speaker + the
+air + the microphone) median N ms, MIN..MAX, K of N clicks`. The round trip includes the microphone's own path, so it
+is an upper bound of the speaker's; the helper's `end-to-end` (stderr) is the speaker's part from AAudio's
+timestamps, and the difference is the microphone's and the air's (about 0.5 ms for the phone's speaker to its
+microphone). `not heard` for every click: the media volume at 0, or the microphone silenced.

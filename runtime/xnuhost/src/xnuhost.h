@@ -49,6 +49,11 @@ typedef struct {
   // ram_bytes is then the guest's size and ram_auto_total/available what was read (both 0: not auto).
   uint64_t ram_bytes;       // 0 = auto
   bool  ram_given;          // ram= was set here (the command line wins over the image set's xnuhost.conf)
+  // ram-view=SIZE|auto|off (off; auto = 12 GiB): the DRAM iOS is told it has (hw.memsize_physical, the per-process limits of /defaults) and
+  // the compressor's room for it, over the same locked RAM (main.c; docs/booter.md 2.2, "The memory view"). 0 = off.
+  uint64_t ram_view;
+#define XH_RAM_VIEW_AUTO (12ull << 30)   // ram-view=auto: an iPhone18,2's DRAM
+  bool  ram_view_given;
   int   ram_percent;        // ram-percent=: the guest's share of MemTotal for ram=auto, 10-100; -1 = unset (90)
   int64_t ram_host_floor;   // ram-host-floor=: what ram=auto always leaves the host, bytes; -1 = unset (1.5 GiB)
   char  ram_meminfo[256];   // ram-meminfo=FILE: where ram=auto reads MemTotal (tests); default /proc/meminfo
@@ -103,11 +108,14 @@ typedef struct {
                             // xh_pen_lookup) or the script's pen as the guest's pen device /arm-io/input-1, and oneios-pen=1
   char  pen_rotate[8];      // pen-rotate=auto|0|90|180|270: the digitizer's frame turned clockwise onto the panel's
   bool  pen_mirror;         // pen-mirror=1: then mirrored left to right
+  char  encoder[8];         // encoder=off (default, until the guest codec archive + pmap patch land) | auto: the video
+                            // encoder bridge (runtime/bridges/encoder), /arm-io/virtio-media-0 with a media-host-pool
   bool  tasks;              // start the task factory
   int   task_uid;           // uid of iOS task processes, -1 = xnuhost's own
   int   log_level;
   bool  legacy_boot_args;
   int   setway_skip;        // a trapped dc set/way ends the guest's set/way loop of its level at once (sysreg.c): 1 (default), 0, -1 = unset
+  int   blk_late_flush;     // virtio_blk.c: the Data store's flushes on a thread of their own, completed later (the guest driver asks): 1 (default), 0, -1 = unset
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
@@ -219,6 +227,9 @@ xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel);
 // offline-legacy-unit-scale=SCALE (/chosen display-scale) and sheng-vsync=HZ (the vsync tick and, above 60 Hz,
 // the refresh properties). -1: no room.
 int  xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, unsigned format);
+// ram-view=: kern.compressor_pool_multiplier for a view of `view` bytes over `window` bytes of RAM, added unless set (config.c).
+// Returns the multiplier, 0 for no view (view not over window), -1 with no room.
+int  xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window);
 // True when the boot arguments' owner-hide-vmm=NAME[,NAME...] (the kernel's per-process vmm-present switch) names
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);
@@ -614,12 +625,17 @@ void       xh_virtio_push(xh_virtio *dev, unsigned queue, uint16_t head, uint32_
 void       xh_virtio_config_changed(xh_virtio *dev);
 // Whether the guest's driver has set DRIVER_OK: the device's queues are in use.
 bool       xh_virtio_ready(xh_virtio *dev);
+// The features the guest's driver accepted (bits 0-63).
+uint64_t   xh_virtio_driver_features(xh_virtio *dev);
 // Test hook: guest memory translation (default xh_ram).
 extern void *(*xh_virtio_translate)(uint64_t pa, uint64_t len);
 uint64_t   xh_virtio_mmio_read(xh_virtio *dev, uint64_t offset, unsigned size);
 void       xh_virtio_mmio_write(xh_virtio *dev, uint64_t offset, unsigned size, uint64_t value);
 
+// xh_blk_late_flush (set before the disks are made): offer VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) on a writable disk; a flush the driver sends after
+// accepting it is run on the disk's flush thread and completed from there (config blk-late-flush; docs/booter.md "Disks").
 xh_virtio *xh_virtio_blk_create(uint64_t base, unsigned spi, xh_blk *disk);
+extern bool xh_blk_late_flush;
 xh_virtio *xh_virtio_input_create(uint64_t base, unsigned spi);
 xh_virtio *xh_virtio_gpu_create(uint64_t base, unsigned spi, unsigned width, unsigned height);
 

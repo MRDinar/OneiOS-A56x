@@ -610,6 +610,14 @@ hosted kernel had no audio device. Log lines, boot arguments and what was measur
 On the phone since `kernel.kc` `66faa3e8` (main 924a0d9, agent prelink's sessions of 2026-11-12): `ONEIOS AUDIO: on`,
 both devices published, audiomxd opens them and plays (`docs/hardware.md` section 6, "In a session").
 
+Since 2026-11-15 (fix-audio-latency) the staged source also gives the speaker a smaller ring (`oneios-audio-ring`,
+default 1920 frames: iOS's I/O buffer is at most 0.375 of it, 720 frames, instead of 3072 of the 8192 ring), hands
+its periods on as they start (output safety offset 240), publishes `oneios-audio-latency` (xnuhost passes the
+helper's measured latency; default 720 frames, was 6480), fixes the ring's wrap for every device (8192 is not a
+whole number of 240-frame periods: a period read, zeroed or written up to 208 frames past the ring's buffer; the
+zero time stamp only every 245760 frames) and reports the speaker engine's timing (`ONEIOS AUDIO: speaker engine:`).
+`drivers/audio/README.md`, `docs/hardware.md` section 6 "Latency end to end".
+
 ### The Actuator device (media, 2026-11-12)
 
 The archive also stages a third IOAudio2Device into `DroidVMAudio.cpp`: UID `Actuator` (VirtualAudio's
@@ -1107,6 +1115,8 @@ the time they idled: hosted 0075's `hosted_processors_idle_mach`), and each proc
 besides the old nominal divisor: recount adds a thread's time to its task only when the thread changes state, so time
 from earlier windows lands whole in the window where a long-running thread finally switched, and "all" was the sum of
 those deltas with no bound. A process's lump can still land in one window, but never past what the CPUs did in it.
+Since 2026-11-15 (fix-hapticd) the report thread also runs when no Metal accelerator is published (a host with no 3D:
+the PC under qemu-aarch64), so a PC boot has `oneios-cpu:` lines too; its GPU lines stay quiet there (nothing submits).
 
 ## 0075-host-overhead-per-cpu-stats-perf-hint.patch (fix-host-overhead, 2026-11-15)
 
@@ -1134,7 +1144,8 @@ From the phone session of main 3233fed (30 s): `1021984 user stays; 684514 sysca
 - **The hosted CLPC's hint** (`hostcall.h` `perf_hint`, ABI unchanged: a reserved word of `struct xh_cpu`): before each
   user stay the kernel writes the class of the thread (`thread_get_perfcontrol_class`, darwin background from the task's
   policy): realtime, UI and above-UI floor 1024, user-initiated 768, utility and background (and darwin-background) no
-  floor and a ceiling. xnuhost's `thread_run` turns it into the uclamp of the Linux thread that runs the user code
+  floor and, since 2026-11-16, no ceiling of ours (fix-host-overhead's 512 ceiling slowed chronod's widget extensions;
+  the owner's no-caps rule ended it). xnuhost's `thread_run` turns it into the uclamp of the Linux thread that runs the user code
   (`docs/booter.md` 2.6a, 2.6b). RunningBoard's background and suspended roles reach it through the task's QoS clamp. The
   same word is the role of the submitting thread for host code on the vCPU (the GPU path, fix-gpu-perf). `perf hints N`
   counts the changes.
@@ -1192,6 +1203,97 @@ Tested: built with the series (`HOSTED_OUT=rpc`), prelinked (audit and stubs-che
 `xnuhost.log`, `oneios-fast-irq=1` in the `0081:` line, `by ArmCpu's trapped registers` near zero, the `rpc:` mean and
 maximum while typing, and xnuhost's `emulated: insn 0xd538cc..` (ICC_IAR1_EL1) and `0xd518cc..` (ICC_EOIR1_EL1) counts at
 the stop or on SIGQUIT (millions before, devices' only after).
+## 0080-shared-region-protect.patch (fix-dyld-objc, 2026-11-15)
+
+The keyboard lagged everywhere (phone session 8644ae9-b: `oneios-cpu: Preferences[177] 102-104%, backboardd 34-44%,
+kbd[159] 12-16%`; `oneios-perf` per 30 s: 295,255 faults, 216,049 of them to vm_fault, 295,247 user maps and 281,109
+unmaps: map churn), and every process logged `triggered unnest of range ... of DYLD shared region` once, from launchd
+on. What was found, from the source and the PC's logs:
+
+- **The unnest.** The range is always the 32 MiB block that holds the start of `dyld_shared_cache_arm64e.25.dylddata`'s
+  `__DATA_CONST` (with the boot's slide: `0x1fd200000->0x1ff200000` at slide `0x1d130000`; that block holds the
+  `__DATA_CONST` of libobjc, dyld itself and the other first images). XNU logs an unnest only below the lowest writable
+  mapping, so the read-only `__DATA_CONST` is the one that shows; `__TPRO_CONST` and the `__AUTH_CONST` above it unnest
+  without a line. It comes from `vm_map_protect`: its exclusive range lock (`vm_range_lock_pmap_unnest_and_clip`,
+  `vm/vm_map_lock.c`) unnests the block and copies the constant submap's entries into the task's map before anything
+  looks at whether the protection changes. dyld 24A446 runs from the cache (`dyld MachO: 0x180482000`) and has two
+  shared-cache protect paths: `ProcessConfig::DyldCache::makeDataConstWritable` (`marking shared cache range ...`) and
+  `lsl::MemoryManager`'s protected memory (`__TPRO_CONST,__allocator`), which on a device whose kernel does not pass
+  `dyld_hw_tpro=1` (TPRO: per-thread write permission in hardware, which this host does not have) is made writable and
+  read-only again with `mach_vm_protect` around dyld's work. `mach_vm_protect` (-14) is the PC's top Mach trap while
+  processes start (7,375 per 30 s at 151 us each, about 90 per process launch).
+- **The map churn of those protects (ours).** `pmap_protect` flushed its whole range whatever changed, and here a flush
+  is an unmap of the task's host mappings (`hosted_pmap.h`): every page of the range is faulted in again at its next
+  use. `vm_map_protect` asks the pmap for the new protection minus write when it adds write, which changes no entry; so
+  each time dyld made its memory writable the whole range was unmapped for nothing, then each write went to vm_fault and
+  each read was filled again.
+- **The other slow paths of the phone's samples are iOS's own.** `objc::ObjectHashTable::forEachObject` under
+  `_dyld_for_each_objc_protocol` is the lookup in the cache's preoptimized protocol table (libobjc calls it only when
+  its shared-cache optimizations are on, so they are on); `DyldSharedCache::forEachImageTextSegment` under
+  `findImageMappedAt` is dyld's search of the cache's text segments for an address in a `r-x` mapping (the cache
+  header is valid and the cache is where dyld expects it); `lsl::Vector<dyld_image_info>::insert` is an image added to
+  the image list by a dlopen. Nothing of ours makes them slower than on an iPhone, except that each dyld API call that
+  makes its memory writable costs protects (above).
+
+What the patch changes:
+
+- **pmap_protect flushes only what changed** (`arm/pmap/pmap.c` `pmap_protect_options_internal`,
+  `hosted_protect_changes` in `hosted_pmap.h`): the span of the entries whose host mapping changed (the page or
+  `hosted_pte_prot`); entries that are the same keep their host mappings. `oneios-protect-flush-all=1` flushes the
+  whole range as before.
+- **A protect of the nested shared region that changes nothing leaves it nested** (`vm/vm_map.c`
+  `vm_map_protect_hosted_noop`): not the maximum, no `VM_PROT_COPY`, and every entry of the range (in the constant
+  submap, read under a shared range lock) already has the asked protection (no JIT or TPRO entry): `KERN_SUCCESS`, no
+  exclusive lock, no unnest. `oneios-sr-protect-noop=0` is the old way.
+- **`oneios-top=N`** (default 6, 0 off; printed with oneios-perf, each period): `oneios-top: shared region: V vm_protect
+  calls, N that changed nothing (left nested), U unnests; pmap_protect entries flushed F, kept mapped K (unchanged)`,
+  then the N processes the kernel's trap time went to most: `oneios-top: NAME[PID] cpu C%, T traps U us: vm_fault F (U
+  us), fills L, own unmaps M; calls NUMBER COUNT xMEAN_US ... (-N: Mach traps); vm_protect P (shared region S, unnests
+  X, last prot 0x.. from pc 0x.. lr 0x..)`. `cpu` is the process's user and system time since the report before
+  (TASK_POWER_INFO; -1 the first time it is listed), which the PC otherwise lacks (`oneios-cpu` comes from the GPU
+  archive, with 3D only). **`oneios-srprot:`** lines: the first 24 vm_protects of the shared region in a boot, with the
+  saved pc and lr and four return addresses (`oneios-tool sym` names them).
+
+The first build (`HOSTED_OUT=dyldobjc`, 744 s; prelink audit 0 failures, `stubs-check` 666 good, 0 bad;
+`kernel/tests/host.sh` 5 of 5) stopped 1 s into its first PC boot (`oneios-protect-flush-all=1
+oneios-sr-protect-noop=0`, qemu-aarch64, 8 vCPUs, 2560 MiB), right after `VM bootstrap: 30 maps, 128 entries and 16
+nodes available`, xnuhost exit 4.
+
+**Continuation, 2026-11-16: the early halt is fixed and the phone boots through the former `newfs_apfs` panic.**
+`vm_shared_region_create` now sets `hosted_shared_region_ready` only after it has made a region; both the vm_map shortcut
+and `hosted_top_note_protect` return before that. This covers the reporting call too, which still ran in the original
+halt's `oneios-sr-protect-noop=0` boot. Mac build `HOSTED_OUT=phonefix`; `kernel.kc` `f171b71e...`, prelink audit 2,712
+pairs and 0 failures. On the S24 Ultra (`ram=auto`, 6,912 MiB, `shmem_enabled=advise`): VM bootstrap continued,
+`newfs_apfs` finished instead of SIGSEGV, the seed verified (6,030 files, 14,816 folders), and xnuhost reported the
+first frame with content and `session/ready`. Log: `out/session-logs/2026-11-16/phonefix-xnuhost.log`. No PC A/B run yet.
+The report showed **0 shared-region no-ops** and continuing unnests, so the no-op half is not proven effective; the
+pmap report did show entries kept mapped (48,376 unchanged in one 30 s period). The typing comparison is still open.
+## 0076-compressor-jetsam-report.patch (fix-ios-compressor, 2026-11-15)
+
+Three more lines in 0058's `oneios-mem:` report (every 30 s), from counters XNU keeps anyway, and one debugging tool, off by
+default:
+
+- `oneios-mem: compressor: holds P MiB of pages in C MiB of RAM (D MiB of compressed data): ratio R; room for L MiB of
+  pages, low on space no|yes`: `c_segment_pages_compressed` against `VM_PAGE_COMPRESSOR_COUNT` (the compression ratio
+  as the RAM sees it, segment overhead in), `compressor_bytes_used`, `c_segment_pages_compressed_limit` (the pool times
+  `kern.compressor_pool_multiplier`, `vm_compressor_set_size`) and `vm_compressor_low_on_space()`.
+- `oneios-mem: jetsam: available A MiB; at critical, idle, soft, reaper ... MiB; task limit N MB, entitled E MB;
+  hw.memsize M MiB, memsize_physical P MiB` and `oneios-mem: jetsam: kills since boot K (idle-exit I, CAUSE N, ...)`:
+  `memorystatus_available_pages` against `memstat_critical/idle/soft/reaper_threshold`, `max_task_footprint_mb` and
+  `memorystatus_entitled_max_task_footprint_mb` (the `/defaults` limits the loader gives: xnuhost's `ram-view`),
+  `max_mem` and `max_mem_actual`, and `memorystatus_kill_counts` summed over the bands, named as memorystatus names them
+  (`hosted_memstat_report` in `kern_memorystatus.c`, called from `hosted_fr_log`).
+- `oneios-compress-sweep=SECONDS` (boot argument; 0, off, by default): once, at the first report after that many seconds
+  of uptime, every anonymous page goes to the compressor (`vm_pageout_anonymous_pages`, what memorystatus_control's
+  compressor sweep and the freezer use); the pages fault back in as they are used. Lines `oneios-mem: compressor sweep
+  (oneios-compress-sweep=N): A MiB anonymous, ... to the compressor` and `oneios-mem: compressor sweep: 0; ...`, then the
+  ratio in the next reports. For a boot that never runs short of file pages (every PC boot so far), to see the
+  compressor's path work here end to end (the pmap's disconnect, the compressor threads, the fault back) and its ratio on
+  the guest's own memory.
+
+Why: the phone's session of main 3233fed showed `compressor 0 MiB holding 0 MiB` and 486 jetsam lines, and nothing said
+which kills they were, what the thresholds were or what the compressor would hold. What the code says about the
+compressor and jetsam, and the mode the owner asked for: `docs/booter.md` 2.2, "iOS's own compressor and the memory view".
 
 ## 0049-wifi-association-event.patch (radio2, 2026-11-12)
 
@@ -1252,3 +1354,30 @@ kernel's recorded compile command with `-fsyntax-only`; built on the Linux PC (2
 7632e390). Not booted; the
 PC cannot press a phone's power key into a lit display. Whether backboardd calls it at the lock in this guest is [U] until a phone boot's
 log shows the line.
+
+## 0078-audio-tunings-haptics.patch (fix-hapticd, 2026-11-15)
+
+Core Haptics' server for the guest. audiomxd publishes `com.apple.audio.hapticd` (Core Haptics' server: every UI and
+keyboard haptic, the Actuator device's only client) and, at its start, loads its synth preset from
+`/Library/Audio/Tunings/<hardware model>/Haptics/hapticengineconfig.plist`. The guest's hardware model is the tree's
+first `compatible`, `oneios,xnuhost` (`runtime/loader/src/machine.c`, no identity tree), so the file was not found and
+the server gave up (iOS's log of the PC boot of 2026-11-14 with `haptics=sim`, `--proc audiomxd`):
+`-[AVHapticServer loadSynthPreset]: ERROR: Unable to load the configuration plist ... NSFilePath=/Library/Audio/Tunings/oneios,xnuhost/Haptics/hapticengineconfig.plist ... No such file or directory`,
+`-[AVHapticServer init]: ERROR: Failed to set up SSS client -- server bailing out`, `HapticServerManager.mm:43 ...
+ERROR: Haptic Engine & Server Failure`. launchd still holds the service's port, so each client's first call waits for
+a reply that never comes (`AVHapticClient.mm:1138 ... Initial XPC call to server timed out. Invalidating connection
+to prevent hang`, with haptics on or off: the phone's sessions of 2026-11-15, Preferences 180 and SpringBoard 42 while
+typing; Settings at 102-110 % of a CPU), and nothing ever played on the Actuator device (`0 StartIO` in every
+`ONEIOS HAPTIC: counters:` line). The OS volume has the iPhone's own folder, `/Library/Audio/Tunings/V54` (only its
+`Haptics`: the preset, whose waveforms it names by their absolute `/Library/Audio/Tunings/V54/Haptics/...` paths).
+
+In `bsd/kern/kern_exec.c`, after 0070's step in `native_gpu_addon_prepare` (before launchd): the Data folder
+`/private/var/oneios/addons/AudioTunings` (and its parents) is made when missing, gets one link `oneios,xnuhost ->
+V54` when it has no entry of that name, and is shown read-only over `/Library/Audio/Tunings` with 0031's union
+(`native_gpu_addon_mount`, bindfs, `MNT_RDONLY | MNT_UNION`; scratch 0xa00, as 0056's mount). The sealed folders stay
+visible below, and the link resolves to the sealed V54 folder: nothing of Apple's is copied or changed, and an
+existing Data store gets it at its next boot. `oneios-audio-tunings=0`: nothing made or mounted (the A/B switch);
+`oneios-audio-tunings=NAME`: the link points at `NAME`. One line:
+`oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost -> V54 (link
+made 0), stage 5, status 0 (stage 5 status 0: ...)`; stage 1 status N: the folder could not be looked up, stage 2: the
+mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found.

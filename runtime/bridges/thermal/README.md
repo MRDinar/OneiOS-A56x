@@ -113,10 +113,16 @@ when iOS asks for a clock (it never sets a maximum), and nothing writes a cpufre
 cap of ours either: drm2kgsl's power constraint and its clock hold (`docs/gpu.md` 2.2) only asked KGSL for the top level
 while iOS draws; the 8 MiB GPU pool is the renderer's response buffers, not a limit; KGSL's own thermal limit stays.
 Merged into main after that reading (fix-host-overhead #40, fix-gpu-perf #42; left as they are here, the owner's to
-decide against the rule "all CPU cores, no caps of ours on the GPU"): iOS threads the kernel hints as background or
-utility QoS get `uclamp.max` 512 (`XH_HINT_BG_MAX`, hosted 0075; `docs/booter.md` 2.6a), and background GPU contexts run
+decide against the rule "all CPU cores, no caps of ours on the GPU"): decided 2026-11-16, the uclamp cap is gone and
+iOS threads the kernel hints as background or utility QoS get no floor and no ceiling of ours (the `uclamp.max` 512 of
+fix-host-overhead slowed chronod's widget extensions, #57; `docs/booter.md` 2.6a), and background GPU contexts run
 at KGSL's lowest level at a still screen, the render server's at the top only for a frame that would miss its deadline
 (`gpu-level=hold` and `gpu-priority=0` turn those off; `docs/gpu.md` 2.2b). Neither touches UI or realtime threads.
+Narrowed by fix-gpu-widgets (2026-11-15): the GPU's lowest level is asked only while no other context has GPU work
+queued, no other process reads the background context's surfaces and none of its fences has waited 50 ms; background
+is only by role or for six daemons that never draw what the user sees (widgets, posters and icons were on the list
+until then), never for a context whose surfaces the render server reads; and no GPU context is below the default's
+KGSL priority any more (background was 12, now 8).
 
 **Fixed 2026-11-13 (hang):** until then the P vCPUs at step 2 ran on cpu5-6 only (`thermal: step 2 (trapping): P vCPUs
 on host CPUs 0x60` on the phone, 2026-11-13 10:4x): `br_cpu_plan_cap` intersected the step's CPUs with the vCPU's own

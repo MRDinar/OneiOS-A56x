@@ -568,6 +568,12 @@ int64_t xh_task_destroy(uint64_t handle)
     struct timespec began, step = { 0, 2 * 1000 * 1000 };
     clock_gettime(CLOCK_MONOTONIC, &began);
     while (!t->dead && !seconds_passed(&began, 20)) nanosleep(&step, NULL);
+    // A lasting line for a slow death (fix-widget-kill-loop): the vCPU waits here, and iOS's own exit watchdogs
+    // (WidgetKit's "Extension process termination watchdogged pid (N) after Ns" gives an extension 5 s) count it.
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    int64_t waited_ms = (int64_t)(end.tv_sec - began.tv_sec) * 1000 + (end.tv_nsec - began.tv_nsec) / 1000000;
+    if (waited_ms >= 250) LOGI("tasks: pid %d took %lld ms to die (the kill to the factory's report; its vCPU waited)", t->pid, (long long)waited_ms);
   }
   pthread_mutex_lock(&T.lock);
   if (t->dead) task_release(t);
@@ -876,14 +882,15 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   }
   // Its vCPU's clamp (xnuhost.h xh_cpu_uclamp): the host's governor picks a core's clock from what runs there, and what
   // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.
-  // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and a ceiling,
-  // whatever its vCPU asked for last (a suspended or background process must not hold a fast core at its top clock); a UI or
-  // realtime thread at least the floor it names.
+  // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and no
+  // ceiling of ours, whatever its vCPU asked for last (a ceiling stood here, XH_HINT_BG_MAX 512, until 2026-11-16; the
+  // owner's rule is no caps of ours on the cores, and it also slowed chronod's widget extensions, #57); a UI or
+  // realtime thread at least the floor it names. The ceiling of 1024 clears a stale one either way.
   if (xh_cpu_uclamp) {
     const uint32_t hint = __atomic_load_n(&v->cpu.perf_hint, __ATOMIC_RELAXED);
     unsigned lo = xh_cpu_uclamp(v->cpu.index), hi = 1024;
     if (hint & XH_HINT_VALID) {
-      if (hint & XH_HINT_BACKGROUND) { lo = 0; hi = XH_HINT_BG_MAX; }
+      if (hint & XH_HINT_BACKGROUND) { lo = 0; }
       else if (XH_HINT_FLOOR(hint) > lo) lo = XH_HINT_FLOOR(hint) > 1024 ? 1024 : XH_HINT_FLOOR(hint);
     }
     const uint32_t want = (lo | hi << 11) + 1;

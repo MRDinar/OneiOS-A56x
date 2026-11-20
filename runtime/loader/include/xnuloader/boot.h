@@ -81,6 +81,10 @@ typedef struct {
   const char      *command_line;
   uint64_t         video[6];
   uint64_t         boot_flags;
+  // boot_args memSizeActual: the device's whole DRAM, which XNU keeps as mem_actual and max_mem_actual (hw.memsize_physical on
+  // iOS; hw.memsize is max_mem, the managed RAM: arm_vm_init.c, kern_mib.c). 0 or less than the window: the window.
+  // xnuhost's ram-view= (docs/booter.md 2.2, "The memory view").
+  uint64_t         mem_size_actual;
   bool             legacy_boot_args;      // 608-byte command line
   // Optional sidecars. A present sidecar needs its /chosen/memory-map property in the tree
   // (RAMDisk or PackedRAMDisk, TrustCache, GpuAddon, RootPolicies), 16 zero bytes; a tree that

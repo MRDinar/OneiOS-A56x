@@ -1061,6 +1061,10 @@ void oneios_adreno_start(void)
     if (!oneios_adreno_wanted()) {
         oneios_adreno_stage = 1;
         IOLog("oneios-adreno: no Metal accelerator (gpu state %u; oneios-gpu-metal=1 publishes it anyway)\n", oneios_gpu3d_state);
+        // The report thread all the same: its oneios-cpu lines are the only per-process CPU figures of a boot, and a
+        // host with no 3D (the PC under qemu) needs them as much (its GPU lines stay quiet: nothing submits).
+        thread_t reporter = nullptr;
+        if (kernel_thread_start(report, nullptr, &reporter) == KERN_SUCCESS) thread_deallocate(reporter);
         return;
     }
     oneios_adreno_stage = 2;

@@ -453,6 +453,32 @@ static void test_virtio_blk(const char *dir)
   *req = (__typeof__(*req)){ 4, 0, 0 };                                        // flush
   CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true) == 1 && *status == 0);
   CHECK(xh_blk_read(store, 9 * 512, sector, 512) == 0 && sector[5] == 0x77);
+  // A driver that takes F_LATE_FLUSH (bit 23): a flush is completed by the disk's flush thread after the notify
+  // returned; reads and writes are still done inside the notify.
+  W(&w, 0x14, 0);
+  CHECK(R(&w, 0x10) & (1u << 23));                                             // offered on a writable disk
+  CHECK(driver_init(&w, 1u << 23 | 1u << 9, 1, GUEST_PA + 0x10000));
+  *req = (__typeof__(*req)){ 1, 0, 10 };
+  memset(data, 0x55, 512);
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == 1 && *status == 0);
+  *req = (__typeof__(*req)){ 4, 0, 0 };
+  *status = 0xff;
+  (void)driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true);
+  volatile uint16_t *wused = xh_ram(w.queue_pa[0] + 0x2000, 0x1000);
+  for (int i = 0; i < 5000 && wused[1] == w.used_seen[0]; i++) usleep(1000);
+  CHECK(wused[1] == (uint16_t)(w.used_seen[0] + 1) && *status == 0);          // completed later, from the thread
+  w.used_seen[0] = wused[1];
+  CHECK(R(&w, 0x60) & 1);                                                     // and the interrupt raised, as for any completion
+  W(&w, 0x64, 1);
+  *req = (__typeof__(*req)){ 0, 0, 10 };                                       // the next request is served in the notify
+  memset(data, 0, 512);
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 1 }, { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == 513 && data[7] == 0x55);
+  // With blk-late-flush=0 the bit is not offered.
+  xh_blk_late_flush = false;
+  driver w2 = { .dev = xh_virtio_blk_create(0, 43, store) };
+  W(&w2, 0x14, 0);
+  CHECK(!(R(&w2, 0x10) & (1u << 23)));
+  xh_blk_late_flush = true;
   xh_blk_close(store);
   snprintf(path, sizeof path, "%s/seed.tar", dir);
   f = fopen(path, "wb");
@@ -1947,6 +1973,24 @@ static void test_config(const char *dir)
   CHECK(!xh_panel_report(&report, sizeof report, &native));
   report.a = 1440; report.magic[3] = 'Q';
   CHECK(!xh_panel_report(&report, sizeof report, &native));
+  // ram-view=: the compressor's room for the view (the view over the RAM, rounded up), added once; a given value stays
+  {
+    char view_args[96] = "-v";
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 0, 7ull << 30) == 0 && !strcmp(view_args, "-v"));              // off
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 6ull << 30, 7ull << 30) == 0 && !strcmp(view_args, "-v"));     // not over the RAM
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    strcpy(view_args, "kern.compressor_pool_multiplier=4");
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 4ull << 30) == 3 && !strcmp(view_args, "kern.compressor_pool_multiplier=4"));
+    view_args[0] = 0;
+    CHECK(xh_view_boot_args(view_args, 20, 12ull << 30, 4ull << 30) == -1);                                             // no room
+    xh_config vc;
+    xh_config_defaults(&vc);
+    CHECK(vc.ram_view == 0 && xh_config_set(&vc, "ram-view", "12G") == 0 && vc.ram_view == 12ull << 30 && vc.ram_view_given);
+    CHECK(xh_config_set(&vc, "ram-view", "off") == 0 && vc.ram_view == 0);
+    CHECK(xh_config_set(&vc, "ram-view", "auto") == 0 && vc.ram_view == 12ull << 30);
+    CHECK(xh_config_set(&vc, "ram-view", "lots") != 0);
+  }
   // the display driver's switches on the kernel's command line: added once, a given value stays
   char args[128] = "-v debug=0x8";
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_BGRX8) == 0 && !strcmp(args, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120"));
