@@ -706,6 +706,15 @@ kernel config, KGSL, panel, touch, haptics, battery, Bluetooth HAL kind, SELinux
 tools/probe/s25-probe.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/s25-probe.sh'`; it prints the
 path of `oneios-s25-probe-<time>.tar.gz`. What each file decides: [s25.md](s25.md).
 
+**Galaxy S25 Ultra:** `scripts/port/verify-host.sh` is the read-only gate before any of the above on an
+SM8750 phone (root, One UI running): it accepts only `SM-S928`/`e3q`/`SM8650` (S24 Ultra) or
+`SM-S938`/`pa3q`/`SM8750` (S25 Ultra), prints the KGSL chip id and udmabuf limits, and exits 2 otherwise.
+`adb push scripts/port/verify-host.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/verify-host.sh'`.
+The Ultra's host record is `profiles/host-galaxy-s25-ultra-sm8750.toml`; its bring-up deltas (Adreno 830 fence
+default, `virgl_fence_table_init`) are in [s25.md](s25.md), "Galaxy S25 Ultra". While a session runs, the guest's
+debug shell (dropbear on port 2222, `userland/helpers/build-dropbear.sh`) is reachable through
+`scripts/phone/ssh-forward.sh start` (phone-side busybox `nc` relay + `adb forward tcp:2222 tcp:7222`).
+
 **Getting the image set onto the phone:** it is about 11 GB and never published. Serve it from the PC privately
 over several Cloudflare quick tunnels at once, so a download manager fetches it in parallel parts from all of them
 (the server, `oneios-tool rangeserve` (`scripts/serve/rangeserve.py` until 2026-11-13), binds 127.0.0.1 and answers byte ranges; Python's `http.server` does not):
