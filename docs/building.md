@@ -125,6 +125,21 @@ scripts/bg.sh kernel-hosted env HOSTED_OUT=me kernel/build-hosted.sh
 
 The kernel links Apple's `corecrypto` under its Internal Use License: it is built locally and never released.
 
+`ONEIOS_CRYPTO=original` builds a kernel without it (default `source`):
+
+```sh
+scripts/bg.sh kernel-nocc env HOSTED_OUT=nocc ONEIOS_CRYPTO=original kernel/build-hosted.sh
+scripts/bg.sh prelink-nocc env KERNEL=out/kernel/current-hosted-nocc/xnu.macho OUT=out/kernel/24A446-nocc kernel/prelink/build.sh
+```
+
+The kernel then uses the kernel collection's own `com.apple.kec.corecrypto` (which the source-mode bootstrap already
+starts early) and has no source fallback (`kernel/patches/oneios-hosted/optional/original-corecrypto-only.patch`,
+added to this build's series only). Nothing is sealed (`kernel/patches/unixnu/0003-skip-source-seal.patch`), and the
+build fails if a global symbol of the source corecrypto archive is in the kernel. Ported from the A56 fork (docs/a56.md):
+there it booted iOS 16.5 to the lock screen on the Galaxy A56; on the S24 Ultra it is untested. Licences of the rest
+of such a kernel: `kernel/README.md` "Releases and licences". Whether such a kernel may be released is **not
+decided**: the licence question belongs to the owner (docs/a56.md, "licence call").
+
 ## 3. The kernel collection (`kernel.kc`)
 
 ```sh

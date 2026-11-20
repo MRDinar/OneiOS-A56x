@@ -254,6 +254,24 @@ static void test_machine(void)
   // memory-map placeholders and the host node
   const xl_adt_node *map = xl_adt_find(t, "chosen/memory-map");
   CHECK(xl_adt_get(map, "TrustCache") && !xl_adt_get(map, "RAMDisk"));
+  // RAMDisk1 (port-a56, iOS 16): absent by default, even with a ramdisk
+  machine_default(&m);
+  m.ramdisk = true;
+  xl_adt_node *r1 = xl_machine_tree(&m, &err);
+  CHECK(r1 && xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk") &&
+        !xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk1"));
+  xl_adt_free(r1);
+  m.ramdisk1 = true;
+  r1 = xl_machine_tree(&m, &err);
+  CHECK(r1 && xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk") &&
+        xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk1"));
+  xl_adt_free(r1);
+  m.ramdisk = false;
+  r1 = xl_machine_tree(&m, &err);
+  CHECK(r1 && !xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk") &&
+        !xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk1"));   // no ramdisk: no node either
+  xl_adt_free(r1);
+  machine_default(&m);
   p = xl_adt_get(xl_adt_find(t, "chosen/xnuhost"), "vector");
   uint64_t v64;
   memcpy(&v64, p->value, 8);
@@ -460,6 +478,29 @@ static void test_place(void)
       xl_adt_free(tree);
     }
   }
+
+  // RAMDisk1 (port-a56, iOS 16): filled with the same address and size as RAMDisk when the tree names it
+  m.ramdisk1 = true;
+  xl_adt_node *tree1 = xl_machine_tree(&m, &err);
+  xl_boot_request r1q = { .image = { im.data, im.size }, .kernel = &K, .ram = ram, .window = window,
+                          .phys_base = 0x800004000ull, .virt_base = FX_BASE, .tree = tree1,
+                          .command_line = "debug=0x8 -v",
+                          .ramdisk = { disk, sizeof disk }, .trustcache = { tc.data, tc.size } };
+  xl_boot_layout l1;
+  CHECK(tree1 && xl_boot_place(&r1q, &l1, &err) == 0);
+  if (tree1 && !err) {
+    xl_adt_node *placed1 = xl_adt_parse(ram + (l1.tree_pa - r1q.phys_base), l1.tree_size, &err);
+    CHECK(placed1 != NULL);
+    if (placed1) {
+      uint64_t rd[2], rd1[2];
+      memcpy(rd, xl_adt_get(xl_adt_find(placed1, "chosen/memory-map"), "RAMDisk")->value, 16);
+      memcpy(rd1, xl_adt_get(xl_adt_find(placed1, "chosen/memory-map"), "RAMDisk1")->value, 16);
+      CHECK(rd1[0] == rd[0] && rd1[1] == rd[1] && rd1[0] == l1.ramdisk_pa);
+      xl_adt_free(placed1);
+    }
+  }
+  xl_adt_free(tree1);
+  m.ramdisk1 = false;
 
   // refusals
   xl_adt_node *tree = xl_machine_tree(&m, &err);

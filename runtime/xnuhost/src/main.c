@@ -872,6 +872,10 @@ static int boot(void)
   const xh_imageset_file *os = have_image_set ? xh_imageset_role(&image_set, "os") : NULL;
   if (os && *os->volume_uuid) machine.root_volume_uuid = os->volume_uuid;
   machine.ramdisk = ramdisk.data != NULL;
+  // iOS 16 userlands (20F66) look for the ramdisk under RAMDisk1 as well as RAMDisk (port-a56, docs/a56.md).
+  // The image set's build names the userland, as for xh_scale_fixups above; without a set (a bench run) there
+  // is no node, and a 27 kernel's tree is byte-identical to before.
+  machine.ramdisk1 = have_image_set && !strcmp(image_set.build, "20F66");
   machine.trust_cache = trust.data != NULL;
   machine.gpu_addon = addon.data != NULL;
   machine.root_policies = policies.data != NULL;

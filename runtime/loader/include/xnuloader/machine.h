@@ -66,6 +66,9 @@ typedef struct {
   const char *root_volume_uuid;           // /chosen root-matching by APFS volume UUID, or NULL
   // memory-map placeholders the loader fills (xl_boot_place)
   bool        ramdisk, packed_ramdisk, trust_cache, gpu_addon, root_policies;
+  // Also publish the ramdisk as RAMDisk1: iOS 16 userlands look for it under that name as well as RAMDisk
+  // (port-a56, docs/a56.md). Off by default: a 27 kernel never sees the node, so its tree is unchanged.
+  bool        ramdisk1;
   // Identity. `identity` is the device's own decoded device tree (the IPSW's DeviceTree payload), from
   // which model, target-type, the board name and /product are taken; NULL gives a generic machine
   // with model/product names from the strings below (which may be NULL).

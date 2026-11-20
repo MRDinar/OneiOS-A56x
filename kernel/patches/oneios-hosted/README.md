@@ -153,6 +153,29 @@ Changed (all `#if XNU_HOSTED`):
 - `pe_serial.c`: the host console; `debug.c`: `panic` -> xnuhost's log and `halt(XH_HALT_PANIC)`.
 - `kalloc.c`: a kernel with no fixed or variable type views (stock clang, no kext) no longer asserts.
 
+## iOS 16.5 userland on the Galaxy A56 (port-a56, 2026-11-21; docs/a56.md)
+
+Not built or run here — host-tested only (the series resolves, the staged and golden tests pass). The fork
+(`Musicalista/OneiOS-A56`) booted 20F66 to the lock screen on the A56 with these, on this XNU pin; 27 on the
+S24 Ultra takes none of the new paths by default.
+
+- `0068-hosted-ios16-registered-ports.patch` (`task.defs`, `ipc_tt.c`): the 16.5 Mach user ABI carries the
+  registered ports in one OOL descriptor; compat shims translate to the 3-port kernel RPCs. Additive; 27
+  never takes this path.
+- `0077-hosted-ios16-bootstrap-replies.patch` (`ipc_policy.c`): `oneios-legacy-bootstrap-replies=1` accepts
+  ordinary MIG reply ports at the bootstrap port; default 0 keeps the 27 defense.
+- `0072-iomfb-ios16-swap-record.patch` (`IOUserClient.cpp`): rewrites 20F66's 0x46c swap record, 1-scalar
+  frame info, 0xa68 surface infos and 0x18 limits into 24A446's shapes and back. Default on but
+  size-triggered, so inert for 27 clients. `oneios-iomfb-swap16=0` turns it off.
+- `0073-mac-exec-label-report.patch` (`mac_vfs.c`): logs which MAC policy refuses `mac_cred_label_update_execve`
+  (at most 200 lines); `oneios-mac-exec-skip=NAME,...` ignores a Sandbox refusal for named executables.
+- `0074-hosted-shared-cache-volume.patch` (`vm_unix.c`): the shared-cache volume check passes when the SystemOS
+  union sits above the verified OS mount.
+- `0004` gains `oneios_hosted_amdgpu_probe` (`oneios-amdgpu-probe=1` only); `0029` logs scalar/struct sizes.
+  `ONEIOS_CRYPTO=original` (`kernel/build-hosted.sh`, `optional/original-corecrypto-only.patch`,
+  `kernel/patches/unixnu/0003`) links no source corecrypto; default `source`. The owner's licence call stands
+  (kernel/README.md "Releases and licences").
+
 ## 0034-syscall-failures.patch and 0035-staged-apps-on.patch (lead, 2026-11-11)
 
 Found on the phone: SpringBoard reached the Home Screen with an empty Dock and no icon, the App Library was empty,

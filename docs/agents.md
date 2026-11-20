@@ -2123,3 +2123,15 @@ persistent: a reboot costs a manual re-root.
   SoCs; S24 behavior unchanged), SM8750 fixture, `tools/probe/s25-probe.sh`, S25 record + hardware/building docs.
   Bridges tests green incl. new fixture; phone run.sh 216 ok. (gpu-patch-check CI skipped: metal patch dir absent;
   hw-backend stand-in tests already in tree via the hw-backend merge.)
+
+- 2026-11-21, A56 full port on branch `port-a56-full` (assistant, worktree `OneiOS-wt-a56`, NOT main — needs review
+  before merge): all 17 `Musicalista/OneiOS-A56` commits triaged. In: kernel 0068/0072-0074/0077 (0067->0074,
+  0069->0077; 0068/0072/0073 numbers were free), 0004 amdgpu-probe + 0029 trace deltas (both byte-exact vs the fork
+  after adapt), `ONEIOS_CRYPTO=original` (opt-in, default source), version-gated `RAMDisk1` (20F66 only), roottweak
+  20F66 boot-args + fixups, amdgpu staged-GPU3D + goldens, `emit.rs` no-seal, A56 profiles (reference), `test_a56_gpu.c`,
+  `docs/a56.md` + `docs/a56-oneos-fork.md`, forks.md row. Skipped: virtio_gpu black-frame (superseded by ready.c),
+  clang-wrapper flags, transfer_apfs.py, switch script + Manager app (OneOS-fork proposal, `app/` untouched).
+  Green: loader 170, oneios-kernel 12, oneios-prelink 3, roottweak 38, kernel host.sh 3, xnuhost 14086+37+166,
+  main.c syntax check. NOT done: kernel build (`git apply --check` impossible here — patches target the XNU tree),
+  `original`-crypto + prelink end-to-end, any phone boot. Other agents: do not take these paths for other work
+  without coordinating; the `series` numbers 0068/0072-0074/0077 are now claimed.
