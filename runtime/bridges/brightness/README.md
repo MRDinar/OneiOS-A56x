@@ -8,6 +8,12 @@ panel. The phone's light sensor goes the other way.
 
 **Never run on the phone.** Host tests pass; the first run is `brightctl` below.
 
+`brightctl inspect` is a *passive*, read-only sysfs probe and may run while One UI is up (it opens nodes
+`O_RDONLY`, never calls the bridge, and touches neither the touch IC nor ALS). The historical `brightctl info`
+**is not passive**: it calls `br_bright_open()`, which can write an initial brightness when sysfs reads zero.
+A zero reading on a lit panel is unverified and unsafe for active testing. The fake-sysfs regression test
+`test_inspect.sh` checks node selection, the zero-brightness warning, and that no file changes.
+
 ```sh
 make test          # 81 checks: the curve, the fade, the sensor's events, a session and the touch IC on a fake sysfs
 make               # build/android/brightctl

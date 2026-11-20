@@ -157,6 +157,13 @@ With One UI running, as root. `displayctl` makes a session folder of its own und
 1440x3120 frame the way xnuhost does, starts the helper on it and draws for 5 s: eight colour bars, darker at the
 top, inside a white frame two pixels wide, with a white square that bounces. Then it closes the socket; the
 helper removes its layer and One UI is back. Nothing of the display's state is changed (no `--takeover`).
+The test path launches the helper with `--socket` (never `--session`: a standalone test has no guest, so the
+session's `ready` hold would wait for a marker XNU never makes). Extra helper options are allowlisted to
+`--hz`, `--format`, `--dataspace` and `--no-projection`; `--takeover`, `--session`, `--socket`, `--lib`,
+`--wait` and `--logical` are refused before any helper starts. Each animation step sends one union damage
+flush (erased + drawn square together), not two per-rectangle flushes. `src/frame_perf.c` is a bounded,
+allocation-free frame-timing statistics module with host unit tests (`test_frame_perf`); helper-side log
+wiring is still open.
 
 ```sh
 make -C runtime/display

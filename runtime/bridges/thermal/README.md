@@ -27,7 +27,7 @@ are 50-60 C above it. This bridge does, inside xnuhost only.
 
 | Reading | Node | Note |
 |---|---|---|
-| cpu | the hottest `cpu-*` / `cpuss-*` zone of `/sys/class/thermal` | millidegrees; a zone that reads -273 C is skipped |
+| cpu | the hottest genuine `cpu-*` / `cpuss-*` temperature zone of `/sys/class/thermal` | millidegrees; an off sensor (-273 C) is skipped; `cpu-hw-trip-*` hardware trip pseudo-zones are excluded |
 | gpu | the hottest `gpuss-*` zone | |
 | ddr, xo | `ddr`, `xo-therm` | |
 | soc | the hottest of cpu, gpu, ddr, with the zone's name | |
