@@ -131,6 +131,23 @@ static void make_sm8650(const char *root)
   }
 }
 
+// A /sys/devices/system/cpu shaped like the Galaxy S25's SM8750 (Snapdragon 8 Elite for Galaxy): cpu0-5 six
+// performance Oryon cores, cpu6-7 two prime ones. Capacities, frequencies and the MIDR part are made up (the real
+// ones come from tools/probe/s25-probe.sh on the phone); what is real is the shape: implementer 0x51 (Qualcomm),
+// two kinds of core, none of them little.
+static void make_sm8750(const char *root)
+{
+  for (unsigned i = 0; i < 8; i++) {
+    bool prime = i >= 6;
+    char rel[128], text[128];
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpu_capacity", i); put_file(root, rel, prime ? "1024\n" : "790\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", i); put_file(root, rel, prime ? "4473600\n" : "3532800\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/cpuinfo_min_freq", i); put_file(root, rel, "384000\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/related_cpus", i); snprintf(text, sizeof text, "%u %u\n", prime ? 6 : 0, i); put_file(root, rel, text);
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/regs/identification/midr_el1", i); put_file(root, rel, "0x00000000510f0010\n");
+  }
+}
+
 static void test_cpu(const char *tmp)
 {
   char root[400];
@@ -179,6 +196,25 @@ static void test_cpu(const char *tmp)
   CHECK(br_cpufreq_requested(d, 7) == 0);
   CHECK(br_cpufreq_read(d, 9 * BR_CPUFREQ_WINDOW + 0x08, 4) == 0);
   br_cpufreq_destroy(d);
+
+  // The S25's shape: Oryon cores, two speeds, no little ones. All P on the host; the plan lends the slowest as E.
+  // Each vCPU is described as its own core (cpu-pin): the E vCPUs are cpu4-5, the P ones cpu0-3 and cpu6-7.
+  char oryon[400];
+  snprintf(oryon, sizeof oryon, "%s/sm8750", tmp);
+  make_sm8750(oryon);
+  CHECK(br_cpu_read(oryon, &t) == 0 && t.ncpu == 8 && t.n_e == 0 && t.n_p == 8);
+  CHECK(t.cpu[0].implementer == 0x51 && t.cpu[0].part == 0x001 && t.cpu[0].type == 'P' && t.cpu[7].type == 'P');
+  CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0 && plan.n_e == 2 && plan.n_p == 6);
+  CHECK(plan.v[0].type == 'E' && plan.v[1].type == 'E' && plan.v[2].type == 'P' && plan.v[7].type == 'P');
+  CHECK(plan.v[0].affinity == 0x30 && plan.v[2].affinity == 0xcf);        // E: cpu4-5 (the slowest), P: the rest
+  CHECK(plan.v[0].host_cpu == 4 && plan.v[1].host_cpu == 5 && plan.v[2].host_cpu == 0 && plan.v[6].host_cpu == 6 && plan.v[7].host_cpu == 7);
+  CHECK(plan.v[0].max_khz == 3532800 && plan.v[2].max_khz == 3532800 && plan.v[6].max_khz == 4473600);
+  CHECK(br_cpu_plan_make(&t, 8, true, &plan) == 0 && plan.v[0].affinity == 0x10 && plan.v[1].affinity == 0x20 &&
+        plan.v[2].affinity == 0x40 && plan.v[3].affinity == 0x80 && plan.v[4].affinity == 0x01);
+  CHECK(br_cpu_plan_make(&t, 4, false, &plan) == 0 && plan.n_e == 1 && plan.n_p == 3 && plan.v[0].type == 'E' && plan.v[1].type == 'P');
+  CHECK(plan.v[0].host_cpu == 5 && plan.v[0].max_khz == 3532800 && plan.v[1].host_cpu == 0);
+  CHECK(br_cpu_plan_make(&t, 2, false, &plan) == 0 && plan.n_e == 1 && plan.n_p == 1);
+  CHECK(br_cpu_plan_make(&t, 1, false, &plan) == 0 && plan.n_e == 0 && plan.v[0].type == 'P');
 
   // A host with one kind of core: all P.
   char flat[400];

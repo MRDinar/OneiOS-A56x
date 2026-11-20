@@ -2921,3 +2921,10 @@ kernel without it is unchanged.
 
 Only single files were fetched from the kernel and device repositories (raw downloads at the pinned commit) and one
 shallow clone of the 748 KiB devicetrees repository; nothing of them is in this repository.
+
+## Galaxy S25 (SM-S931B, SM8750)
+
+The second target; the facts, what changed for it and what is unknown are in [s25.md](s25.md). Ported here so far:
+the CPU topology rule (`runtime/bridges/cpu/topology.c`: a Qualcomm core, MIDR implementer 0x51, is never E, and a
+host whose cores are all P but of different speeds lends its slowest cores to the guest as E vCPUs) and the
+read-only phone probe (`tools/probe/s25-probe.sh`). The S24 Ultra sections above stay as they were.

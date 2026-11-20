@@ -701,6 +701,11 @@ Or by hand, from `STAGE/bin` pushed to `/data/local/tmp`, as root: `gpuctl` (or 
 (read only; `watch` logs temperatures, clocks, battery current and the session's CPU, `top` xnuhost's busiest threads), `camctl --backend ndk list|capture`.
 Each tool's README has its exact commands and what a pass looks like. **None of this has run on the phone yet.**
 
+**Galaxy S25 probe:** `tools/probe/s25-probe.sh` is a read-only script for the phone (root, One UI running): CPU,
+kernel config, KGSL, panel, touch, haptics, battery, Bluetooth HAL kind, SELinux. `adb push
+tools/probe/s25-probe.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/s25-probe.sh'`; it prints the
+path of `oneios-s25-probe-<time>.tar.gz`. What each file decides: [s25.md](s25.md).
+
 **Getting the image set onto the phone:** it is about 11 GB and never published. Serve it from the PC privately
 over several Cloudflare quick tunnels at once, so a download manager fetches it in parallel parts from all of them
 (the server, `oneios-tool rangeserve` (`scripts/serve/rangeserve.py` until 2026-11-13), binds 127.0.0.1 and answers byte ranges; Python's `http.server` does not):
