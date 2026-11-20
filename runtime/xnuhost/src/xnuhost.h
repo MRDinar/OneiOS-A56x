@@ -590,6 +590,9 @@ int      xh_blk_read(xh_blk *b, uint64_t offset, void *buffer, uint64_t length);
 int      xh_blk_write(xh_blk *b, uint64_t offset, const void *buffer, uint64_t length);
 int      xh_blk_flush(xh_blk *b);
 void     xh_blk_close(xh_blk *b);
+void     xh_blk_tick(void);                         // main loop: a "disk NAME: 30 s: ..." line per busy disk every 30 s
+void     xh_blk_report_all(void);                   // the stop: the same since the start
+uint64_t xh_blk_flushes(xh_blk *b);                 // flushes served (the tests)
 
 // virtio-mmio transport, version 2, split queues (virtio.c)
 #define XH_VIRTIO_QUEUES 4

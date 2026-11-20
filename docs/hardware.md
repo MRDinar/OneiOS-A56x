@@ -617,6 +617,68 @@ path calls). Then:
 Not checked without the phone: everything in this list; whether the phone's configd waits on the same thing the PC's
 does.
 
+### Wi-Fi "off" for three minutes: en0 up only when configd's plugins have started (fix-wifi-late-enable, 2026-11-15)
+
+**The phone** (main 8644ae9, 2026-11-15; Mac: `out/session-logs/2026-11-15/main-8644ae9`): Settings shows Wi-Fi off
+and its switch does nothing for about three minutes, then Wi-Fi comes on by itself. `addPlugin: InterfaceNamer` at
+10:35:31.07, `first naming (en0 attached ...): by configd[34], +125.535 s after the driver's start`, `*QUIET&NAMED*`
+at 10:35:32.62, then `first enable (IFF_UP): by configd[34], +174.342 s`: **49 s after the naming**. Before that wifid
+already had en0 and scanned (`60 s: events 10x24; scans asked 24 (started 5, reused 19, ...)`, POWER read 10 times as
+on, no `sets 19` even at the owner's taps). One of those 49 s: `SCPreferences(InterfaceNamer:writeInterfaceList:
+NetworkInterfaces.plist) lock held for 6.427 seconds`. wifid's first power set: `first power on: by wifid[40],
++376.703 s`, at the owner's toggle.
+
+**Who sets IFF_UP, read in the open source** (apple-oss-distributions `bootp-534.120.2`, `configd-1405.120.5`; nothing
+of Apple's binaries disassembled for this):
+- Only IPConfiguration, as configd's plugin: `IFState_service_add()` -> `inet_attach_interface(if_name(if_p), TRUE)`
+  -> `interface_set_flags(s, ifname, IFF_UP, 0)` (`IPConfiguration.bproj/ipconfigd.c` and `ifutil.c`), when it adds the
+  interface's network service from the `Setup:` keys; `DisableUntilNeededProcess` is the only other caller
+  (`interface_up_down`). IPConfiguration's `start()` (its first line, `IPConfiguration: IPv6 linklocal modifier
+  expires`, from `CGAInit`) and `prime()` (`start_initialization`) run on configd's plugin thread, after the `load()`
+  of every plugin, then every `start()` in order (`configd.tproj/plugin_support.c`); so en0 is up only once all of
+  configd's plugins have loaded and IPConfiguration's turn has come.
+- PreferencesMonitor creates a default configuration only when InterfaceNamer posts `*QUIET*` (or a timeout), and only
+  when there is no current set (`prefsmon.c` `storeCallback`, `establishNewPreferences`); InterfaceNamer posts
+  `*COMPLETE*` (iOS only) once the previous boot's interfaces are named and `*QUIET*` when IOKit's busy state goes to 0
+  (`ifnamer.c` `quietCallback`, `updateInterfaces`); `SCNetworkInterfaceCopyAll()` blocks until one of the three
+  (`SCNetworkInterface.c` `__wait_for_IOKit_to_quiesce`).
+- On the PC (`wifi=sim`, this branch's first two boots, configd's own `addTimestamp:` CFAbsoluteTimes): a fresh Data
+  store: `*COMPLETE*` 816414947.4, en0 named 968.5, `*QUIET*` 982.5, `*QUIET&NAMED*` 988.2 and IPConfiguration's first
+  line right after; `first naming` +919.4 s and `first enable` +1007.8 s after the driver's start (88 s). A kept store
+  (en0 in `NetworkInterfaces.plist`): en0 named 790.98, `*COMPLETE*` 863.1, `*QUIET*` 863.8, IPConfiguration right
+  after; `first naming` +316.0 s, `first enable` +440.1 s (124 s). In both, `IOKit busy 0` at the naming
+  (`KextLog: driverkitd is active` before it), and the IFF_UP came 3 s after configd's `Apple80211BindToInterfaceWithService`
+  and `_getIfListCopy`, once IPConfiguration had the service (`IPMonitor prime 6 keys (... /Network/Service/<id>/IPv4 ...)`).
+- So nothing of our interface is what configd waits for: it names en0 at once (the reserved unit, or the database),
+  and en0 is up when configd's plugin start-up reaches IPConfiguration's service. On the phone that took 49 s; why
+  configd's plugins themselves start only +125 s after our driver (launchd's order, the boot's CPU and disk load) is
+  [U]: the Mac's session folder has the lines, this box (load 18-36 from other agents' builds on 2026-11-15) could not
+  run a PC boot to the naming in the time it had.
+
+**Fixed: the driver brings en0 up itself when it is attached** (`OneiOSWifi.cpp`: `IO80211Interface::
+attachToDataLinkLayer` after the family's, then 50 ms later on a thread call `ifnet_set_flags(IFF_UP)` and
+`ifnet_ioctl(SIOCSIFFLAGS)`, which makes the family's `syncSIOCSIFFLAGS` enable the controller as the socket ioctl
+does). IFF_UP is only the administrative flag: IPConfiguration still attaches IPv4 and IPv6 and runs DHCP when its turn
+comes (and sets IFF_UP again, a no-op). [I] That wifid shows Wi-Fi on and takes the switch once en0 is up (its
+auto-join lists `Interface not up` among its reasons to hold, and Wi-Fi came on by itself at the IFF_UP on the phone).
+`oneios-wifi-up=0` leaves it to configd. Line: `ONEIOS WIFI: en0 brought up by the driver when attached, +S s after the
+driver's start -> 0 (...)`; `first enable (IFF_UP)` then names `kernel_task` at about the naming's time.
+
+**A lasting disk line** (xnuhost `blk.c`): every 30 s per disk with requests, `disk data: 30 s: reads N (M MiB), writes N
+(M MiB), flushes N in T ms (max X ms)`, at the stop the same `since the start`, and the first 16 flushes of 500 ms or
+more as they happen (`disk data: a flush took N ms (fdatasync; the guest's other requests to this disk waited)`). A
+guest flush is an `fdatasync` of the whole `data.img`; on a kernel that takes `VIRTIO_BLK_F_LATE_FLUSH`
+(main's "Disks" in `docs/booter.md`) the flush thread serves it off the vCPU, otherwise inside the guest's notify
+while the guest's disk driver holds its one gate, so every other request of the guest to that disk waits behind it;
+whether the phone's 6.4 s plist
+lock was a flush is what this line says next session. [F, PC, a write-and-flush test on this box's btrfs SSD] a flush
+of 20 to 200 MiB written since the last took 40 to 350 ms, and starting the host's writeback early
+(`sync_file_range`) did not shorten it, so that was not added.
+
+**Phone proof**: `ONEIOS WIFI: en0 brought up by the driver when attached` within a second of `first naming`,
+`first enable (IFF_UP): by kernel_task[0] +N s` with N the naming's; Settings' switch answering at once (a `sets 19` at
+the owner's tap); the `disk data:` lines and any `a flush took` around configd's `lock held for` lines.
+
 ### Wi-Fi does not join: every scan result filtered out (fix-wifi-join, 2026-11-13; partly done)
 
 **The phone** (c1223f8 session, iOS's own log): wifid knows 2 networks (`Fetched 2 known networks from the cache`),

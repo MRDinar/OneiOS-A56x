@@ -468,6 +468,7 @@ static void test_virtio_blk(const char *dir)
   *req = (__typeof__(*req)){ 4, 0, 0 };                                        // flush
   CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true) == 1 && *status == 0);
   CHECK(xh_blk_read(store, 9 * 512, sector, 512) == 0 && sector[5] == 0x77);
+  CHECK(xh_blk_flushes(store) == 1);                                           // the guest's flush, counted and timed
   // A driver that takes F_LATE_FLUSH (bit 23): a flush is completed by the disk's flush thread after the notify
   // returned; reads and writes are still done inside the notify.
   W(&w, 0x14, 0);

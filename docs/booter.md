@@ -1072,7 +1072,7 @@ and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order
 | Device | File | Backed by | Guest driver it is written for |
 | --- | --- | --- | --- |
 | Block, read-only (`F_RO`) | `virtio_blk.c`, `blk.c` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
-| Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync` (on the disk's flush thread: "Disks" below) | the Data store window (node `data-store`) |
+| Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync`, on the disk's flush thread ("Disks" below), timed (`disk NAME: 30 s: reads .., writes .., flushes N in T ms (max X ms)` every 30 s per busy disk, `since the start` at the stop, `disk NAME: a flush took N ms` for the first 16 of 500 ms or more: a flush holds every other request of the guest to that disk) | the Data store window (node `data-store`) |
 | Input | `virtio_input.c`, `input.c` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
 | GPU, 2D scanout | `virtio_gpu.c`, `display.c` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
 | Console | `uart.c` | the log | XNU's PL011 console (`uart0`) |
@@ -1165,7 +1165,10 @@ A lasting line per disk, once a minute while it is used: `disk N: 60 s: reads R 
 (M MiB, T ms, slowest S ms), flushes F (on its thread|on the vCPU: T ms, mean A ms, slowest S ms)` (N as in the start
 line `disk N: PATH, ...`). Reads and writes are the time the vCPUs spent in the host for them (a read-only image's
 includes its chunk checks), the flushes the `fdatasync`'s own time. On the phone the Data store's line says how often
-iOS flushes and how long the phone's storage takes for it.
+iOS flushes and how long the phone's storage takes for it. A second, coarser line comes from `blk.c` itself: every 30 s
+per disk with requests, `disk NAME: 30 s: reads R (M MiB), writes W (M MiB), flushes F in T ms (max S ms)`, at the stop
+the same `since the start`, and the first 16 flushes of 500 ms or more as they happen (`disk NAME: a flush took N ms`).
+The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU or flush thread) ran it.
 
 ### 2.8 Display and input: the choice
 

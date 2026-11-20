@@ -15,9 +15,42 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
-struct xh_blk { int fd; uint64_t bytes; bool writable; xh_verify *verify; };
+// The counters of a disk: what the guest asked of it, and its flushes with their time. A writable disk's flush
+// (VIRTIO_BLK_T_FLUSH: APFS's barriers and every fsync, SCPreferences' plist commits among them) is an fdatasync of
+// the whole image, which runs inside the guest's notify while the guest's disk driver holds its one gate
+// (kernel/patches/oneios-hosted/storage): every other request of the guest to that disk waits behind it. On the
+// phone (8644ae9, 2026-11-15) configd held NetworkInterfaces.plist's lock for 6.4 s around one commit; these say
+// how much of that, and of the boot, is flush time.
+struct xh_blk {
+  int fd; uint64_t bytes; bool writable; xh_verify *verify;
+  char label[24];
+  uint64_t reads, writes, read_bytes, write_bytes, flushes, flush_ns, flush_max_ns, slow;   // atomics
+  uint64_t shown[6];                  // the counters at the last report
+};
+
+#define XH_MAX_BLK 8
+static xh_blk *all_disks[XH_MAX_BLK];
+static unsigned n_disks;
+
+static uint64_t now_ns(void)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+static void register_disk(xh_blk *b, const xh_disk_config *config)
+{
+  const char *base = strrchr(config->path, '/');
+  const char *name = config->data_store ? "data" : base ? base + 1 : config->path;
+  size_t length = strlen(name) < sizeof b->label - 1 ? strlen(name) : sizeof b->label - 1;
+  memcpy(b->label, name, length);
+  b->label[length] = 0;
+  if (n_disks < XH_MAX_BLK) all_disks[n_disks++] = b;
+}
 
 #define DATA_DEFAULT_BYTES (32ull << 30)      // sparse: costs what the guest writes
 
@@ -82,6 +115,7 @@ xh_blk *xh_blk_open(const xh_disk_config *config, const char **error)
   }
   b->bytes = (uint64_t)st.st_size & ~511ull;
   if (b->bytes == 0) { *error = "the image is empty"; goto bad; }
+  register_disk(b, config);
   return b;
 bad:
   if (b->fd >= 0) close(b->fd);
@@ -106,6 +140,8 @@ int xh_blk_read(xh_blk *b, uint64_t offset, void *buffer, uint64_t length)
     if (n <= 0) return -1;
     done += (uint64_t)n;
   }
+  __atomic_fetch_add(&b->reads, 1, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&b->read_bytes, length, __ATOMIC_RELAXED);
   return 0;
 }
 
@@ -118,15 +154,69 @@ int xh_blk_write(xh_blk *b, uint64_t offset, const void *buffer, uint64_t length
     if (n <= 0) return -1;
     done += (uint64_t)n;
   }
+  __atomic_fetch_add(&b->writes, 1, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&b->write_bytes, length, __ATOMIC_RELAXED);
   return 0;
 }
 
-int xh_blk_flush(xh_blk *b) { return b->writable ? fdatasync(b->fd) : 0; }
+int xh_blk_flush(xh_blk *b)
+{
+  if (!b->writable) return 0;
+  uint64_t t0 = now_ns();
+  int rc = fdatasync(b->fd);
+  uint64_t ns = now_ns() - t0;
+  __atomic_fetch_add(&b->flushes, 1, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&b->flush_ns, ns, __ATOMIC_RELAXED);
+  uint64_t max = __atomic_load_n(&b->flush_max_ns, __ATOMIC_RELAXED);
+  while (ns > max && !__atomic_compare_exchange_n(&b->flush_max_ns, &max, ns, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+  // The first slow ones as they happen, with the time: every other request of the guest to this disk waited.
+  if (ns >= 500000000ull && __atomic_fetch_add(&b->slow, 1, __ATOMIC_RELAXED) < 16)
+    LOGI("disk %s: a flush took %llu ms (fdatasync; the guest's other requests to this disk waited)", b->label, (unsigned long long)(ns / 1000000));
+  return rc;
+}
+
+// One line per disk that had requests since the last report (and at the stop, since the start):
+//   disk data: 30 s: reads 1200 (45 MiB), writes 300 (20 MiB), flushes 40 in 1234 ms (max 456 ms)
+static void report(bool since_start, double seconds)
+{
+  for (unsigned i = 0; i < n_disks; i++) {
+    xh_blk *b = all_disks[i];
+    uint64_t v[6] = { __atomic_load_n(&b->reads, __ATOMIC_RELAXED), __atomic_load_n(&b->read_bytes, __ATOMIC_RELAXED),
+                      __atomic_load_n(&b->writes, __ATOMIC_RELAXED), __atomic_load_n(&b->write_bytes, __ATOMIC_RELAXED),
+                      __atomic_load_n(&b->flushes, __ATOMIC_RELAXED), __atomic_load_n(&b->flush_ns, __ATOMIC_RELAXED) };
+    uint64_t d[6];
+    for (int k = 0; k < 6; k++) d[k] = since_start ? v[k] : v[k] - b->shown[k];
+    if (!since_start) memcpy(b->shown, v, sizeof v);
+    if (!d[0] && !d[2] && !d[4]) continue;
+    uint64_t max = since_start ? 0 : __atomic_exchange_n(&b->flush_max_ns, 0, __ATOMIC_RELAXED);
+    char when[24], longest[32] = "";
+    if (since_start) snprintf(when, sizeof when, "since the start");
+    else { snprintf(when, sizeof when, "%.0f s", seconds); snprintf(longest, sizeof longest, " (max %llu ms)", (unsigned long long)(max / 1000000)); }
+    LOGI("disk %s: %s: reads %llu (%llu MiB), writes %llu (%llu MiB), flushes %llu in %llu ms%s", b->label, when,
+         (unsigned long long)d[0], (unsigned long long)(d[1] >> 20), (unsigned long long)d[2], (unsigned long long)(d[3] >> 20),
+         (unsigned long long)d[4], (unsigned long long)(d[5] / 1000000), longest);
+  }
+}
+
+void xh_blk_tick(void)
+{
+  static uint64_t last;
+  uint64_t now = now_ns();
+  if (!last) { last = now; return; }
+  if (now - last < 30000000000ull) return;
+  report(false, (double)(now - last) / 1e9);
+  last = now;
+}
+
+void xh_blk_report_all(void) { report(true, 0); }
+uint64_t xh_blk_flushes(xh_blk *b) { return __atomic_load_n(&b->flushes, __ATOMIC_RELAXED); }
 
 void xh_blk_close(xh_blk *b)
 {
   if (!b) return;
   if (b->writable) fsync(b->fd);
+  for (unsigned i = 0; i < n_disks; i++)
+    if (all_disks[i] == b) { all_disks[i] = all_disks[--n_disks]; break; }
   close(b->fd);
   free(b);
 }
