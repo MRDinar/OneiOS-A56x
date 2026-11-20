@@ -232,6 +232,13 @@
 # and a user CM fault reaches XNU with CM and WnR kept and an access flag fault (XNU's own CM rule makes it a read).
 # The runtime's stub says XH_PROT_READ for it too (runtime/xnuhost/stub/stub_abi.h, xs_fault_access).
 0071-cache-maintenance-fault-read.patch
+# sandbox-triage, a debugging aid (ported from Musicalista-OneiOS-A56's 0073; applies cleanly to xnu-12377.121.6,
+# kernel not rebuilt here): mac_cred_label_update_execve's refusal says only the hook's error on the console (an
+# xpcproxy exec ending in a security-policy exit, with a daemon then waited on forever). 0073 logs which MAC policy
+# refused whose credential update ("oneios-mac-exec: NAME: policy P refused the credential update (error E)", at most
+# 200 lines) and, with oneios-mac-exec-skip=NAME[,NAME...], ignores a Sandbox refusal for those executables (they run
+# unsandboxed). Off without it; other policies are never skipped. README.md, "0073".
+0073-mac-exec-label-report.patch
 # fix-host-overhead (2026-11-15): the trap path's counters per vCPU (every vCPU wrote the same lines on every user stay:
 # the stats, the audit tick's atomic, the perf report's per-call atomics); the fill's time without the time its thread
 # was switched out (the phone's "filled from the tables 11417628 us" was mostly preemption inside the fill); a kernel

@@ -1097,6 +1097,16 @@ cache maintenance, so only arm64 hardware runs the fault itself).
   (`type=0xa`), which an earlier PC boot on main had too. No WebContent process ran (Safari is not opened on the PC),
   and qemu does not fault on cache maintenance, so the fix itself is proven on the phone only.
 
+## 0073-mac-exec-label-report.patch (2026-11-20; ported from Musicalista-OneiOS-A56)
+
+A debugging aid, off by default. When an exec's credential update is refused, the console has only the hook's error
+(a launcher's `xpcproxy` exiting with a security-policy code, nothing naming the policy, and a daemon then waited on
+forever). 0073 wraps `mac_cred_label_update_execve`'s two `mac_error_select` calls: one line per (executable, policy,
+error), at most 200 per boot (`oneios-mac-exec: NAME: policy P refused the credential update (error E)`), and with
+`oneios-mac-exec-skip=NAME[,NAME...]` a Sandbox refusal for those executables is ignored (they run unsandboxed).
+Other policies are never skipped. Applies cleanly to xnu-12377.121.6 (checked with `patch -p1 --dry-run`); the kernel
+is not rebuilt here, so the first boot with it proves it.
+
 ## gpu/: the blobs' kinds and ages, `oneios-cpu`'s span (hang, 2026-11-13; the archive, not a numbered patch)
 
 No XNU source changes, so no patch in the series: `oneios-tool kernel gen gpu` compiles a staged
