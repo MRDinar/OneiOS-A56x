@@ -16,8 +16,10 @@
 //!
 //! Boot arguments: droidvm-snd=0 (no transport: the devices play into silence), droidvm-audio=0 (no devices),
 //! oneios-audio-out-uid=UID and oneios-audio-in-uid=UID (the devices' UIDs, default Speaker and Mic; "none" leaves the
-//! microphone out), oneios-audio-latency=FRAMES (the speaker's "output latency", default 6480: 135 ms, what the host
-//! path measured on the phone, so iOS keeps pictures in step with the sound), oneios-audio-report=0,
+//! microphone out), oneios-audio-latency=FRAMES (the speaker's "output latency", so iOS keeps pictures in step with
+//! the sound: xnuhost passes the helper's measured latency; default 720, 15 ms, the MMAP path's prediction; 6480
+//! before 2026-11-15), oneios-audio-ring=FRAMES (the speaker's ring, default 1920: iOS's I/O buffer is at most 0.375
+//! of it; the speaker hands each period on as it starts), oneios-audio-report=0,
 //! oneios-audio-selftest=SECONDS (a quiet 1 kHz tone from the kernel, OneiOSAudio.c), oneios-actuator=0 (no Actuator
 //! device), oneios-actuator-channels=1|2 (default 1).
 //!

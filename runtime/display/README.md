@@ -79,9 +79,21 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   `memcpy`: an 8-bit frame (hello format 1) goes into `BGRA_8888` buffers (format 5; the layer is marked opaque), a
   half-float frame (format 2, xnuhost's `display-format=rgba16f`) into `RGBA_FP16` buffers (format 22). If the phone
   gives no `BGRA_8888` buffer the helper falls back to `R,G,B,X` and swaps while it copies; with no `RGBA_FP16` one
-  it falls back to `BGRA_8888` and encodes the half floats to sRGB, clamped (what is outside sRGB is lost). Pacing is
-  the buffer queue's: the next buffer is handed out when surfaceflinger has taken the last, so the loop runs at the
-  panel's vsync and every flush that came meanwhile is one post.
+  it falls back to `BGRA_8888` and encodes the half floats to sRGB, clamped (what is outside sRGB is lost). With
+  direct frames (the default; `--no-direct` asks xnuhost for the old way) the helper says so in its `panel` report,
+  xnuhost hands it guest RAM and a table of frame descriptions (`XHDM`), and a `frame` message (`XHDS`) makes the
+  helper copy that frame's rows straight from the guest's pages (the compositor's surface, scattered over RAM; the
+  table has its segments) into the buffer, then post it and answer `done` (`XHDA`), which is when xnuhost answers the
+  guest's flush. xnuhost copies nothing then, so a frame costs one copy on the host instead of two. The memfd stays
+  for what xnuhost still draws itself (the boot console, 2D resources) and for the first four buffers. A frame that
+  cannot be copied (a slot reused, a segment outside RAM, a half-float buffer) is answered with the failure flag and
+  xnuhost copies the frames itself from then on. Only the changed tiles are copied and posted (the guest flushes its
+  whole surface every frame, so the helper hashes tiles of the frame against what the layer shows; an unchanged frame
+  is answered at once and nothing is posted). Protocol: `docs/booter.md` 2.8. Every 10 s the log has `10 s: N frames
+  (M from guest RAM), F/s; buffer wait mean ... ms; copy mean ... ms, max ... ms; this process P% of a core`, and
+  once `frames come straight from guest RAM now`. Pacing is the buffer queue's: the next buffer is handed out when
+  surfaceflinger has taken the last, so the loop runs at the panel's vsync and every flush that came meanwhile is
+  one post.
 - **The first post waits for `session/ready` (since 2026-11-15).** With `--session DIR` the helper posts nothing
   until `DIR/ready` exists (`xhd_hold_first`): xnuhost makes it at the guest's first frame of its own that is not
   all black, or `ready-content-wait` seconds (120) after its first black one (`docs/booter.md` 2.8, "the ready
@@ -116,7 +128,7 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
 
 ```
 oneios-display (--session DIR | --socket PATH) [--takeover] [--wait SECONDS] [--logical WxH]
-               [--hz N] [--format bgra|rgbx] [--dataspace auto|unknown|srgb|p3|scrgb|scrgb-linear] [--no-projection]
+               [--hz N] [--format bgra|rgbx] [--dataspace auto|unknown|srgb|p3|scrgb|scrgb-linear] [--no-projection] [--no-direct]
 ```
 
 `--format` chooses among the 8-bit layouts only; a half-float frame always gets `RGBA_FP16` buffers first.
@@ -209,8 +221,10 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   show `SRGB` and `SCRGB_LINEAR` layers, is the wide-colour test above. No HDR headroom is asked for.
 - Not every framework call has been seen working on Android 17 (the native-mode request and the projection, `--takeover`, have no log of a run here): the hidden methods used are all
   in `java/OneiOSDisplay.java`, and each has a fallback or a logged failure.
-- The copy is not zero-copy. For that xnuhost would have to keep the guest's frame in a gralloc buffer
-  (`AHardwareBuffer`) instead of a memfd and pass that; `virtio_gpu.c` and the socket's hello would change.
+- The copy is not zero-copy: one CPU copy a frame remains (`docs/booter.md` 2.8 says why). The helper maps all of
+  guest RAM read-only for it; the pages it touches count in its resident size as well as xnuhost's.
+- Direct frames have not run on the phone: the buffer-wait and copy times, and whether answering the flush after
+  the post slows the guest's swaps, are unmeasured there.
 - The native-mode request (`setDesiredDisplayModeSpecs` by reflection) is unproven like the rest; a refusal is
   logged and the frame is scaled. At 1440x3120 a full-frame copy is 18 MB, 2.2 GB/s at 120 Hz when every frame
   is all damage.

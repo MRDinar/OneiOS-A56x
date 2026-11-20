@@ -15,7 +15,7 @@ ARM64_NATIVE := $(if $(filter Linux,$(HOST_OS)),$(filter aarch64 arm64,$(HOST_AR
 ARM64_RUN := $(if $(ARM64_NATIVE),,$(QEMU))
 
 WARN := -Wall -Wextra -Werror
-INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../../drivers/bridge -I../../drivers/camera
+INC := -Iinclude -Isrc -Istub -I../loader/include -I../bridges/include -I../bridges/encoder -I../../drivers/bridge -I../../drivers/camera
 CFLAGS ?= -O2 -g
 SRC := main return ready log perf config insn mem discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input virtio_gpu gpu3d display input input_script pen cpu hostcalls task
 PORTABLE := return ready log perf config insn discard ramfix usb mmio gic sysreg uart blk imageset virtio virtio_blk virtio_input input input_script pen virtio_gpu gpu3d cpu task
@@ -123,18 +123,25 @@ $(BRIDGES): FORCE
 CAMERA := ../bridges/camera/build/android/libonecamera.a
 $(CAMERA): FORCE
 	$(MAKE) -s -C ../bridges/camera NDK=$(NDK) build/android/libonecamera.a
+# The video encoder's end in xnuhost (runtime/bridges/encoder): the "droidvm,virtio-media" device and the backend that
+# talks to the oneios-encoder helper. No MediaCodec (it is in the helper), so xnuhost stays static.
+ENCODER := ../bridges/encoder/build/android/liboneencoder.a
+$(ENCODER): FORCE
+	$(MAKE) -s -C ../bridges/encoder NDK=$(NDK) build/android/liboneencoder.a
 FORCE:
-$(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src/%.c,$(A)/loader_%.o,$(LOADER_SRC)) $(CAMERA) $(BRIDGES) $(GPU3D)
+$(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src/%.c,$(A)/loader_%.o,$(LOADER_SRC)) $(CAMERA) $(ENCODER) $(BRIDGES) $(GPU3D)
 	$(ANDROID_CC) -static -o $@ $^ -lm
 
 # ---- host unit tests ----
 $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
-# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket. (config.c asks ramfix.c whether a lock can work: xh_ram_can_lock)
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c $(HDR)
+# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket, with the display
+# helper's own protocol code (runtime/display/src/xhd.c) on the other end for the direct frames. (config.c asks ramfix.c
+# whether a lock can work: xh_ram_can_lock)
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../display/src/xhd.c ../display/src/xhd.h ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -I../display/src -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../display/src/xhd.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)

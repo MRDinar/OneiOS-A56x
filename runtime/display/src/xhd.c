@@ -2,9 +2,10 @@
 #define _GNU_SOURCE
 #include "xhd.h"
 #include <errno.h>
-#include <stdio.h>
-#include <string.h>
 #include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -57,9 +58,9 @@ int xhd_connect(const char *path, int wait_ms, const volatile int *stop)
   }
 }
 
-int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz)
+int xhd_send_panel(int fd, uint32_t width, uint32_t height, uint32_t hz, uint32_t flags)
 {
-  struct xhd_message m = { { 'X', 'H', 'D', 'P' }, width, height, hz, 0 };
+  struct xhd_message m = { { 'X', 'H', 'D', 'P' }, width, height, hz, flags };
   return send(fd, &m, sizeof m, MSG_NOSIGNAL) < 0 ? -errno : 0;
 }
 
@@ -129,30 +130,223 @@ void xhd_rect_union(struct xhd_rect *into, const struct xhd_rect *r)
   into->x = x0; into->y = y0; into->w = (uint32_t)(x1 - x0); into->h = (uint32_t)(y1 - y0);
 }
 
+int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage) { return xhd_drain_direct(fd, frame, damage, NULL); }
+
+void xhd_direct_init(struct xhd_direct *d)
+{
+  memset(d, 0, sizeof *d);
+  d->ram_fd = d->table_fd = -1;
+}
+
+void xhd_direct_close(struct xhd_direct *d)
+{
+  if (d->ram) munmap((void *)d->ram, d->ram_size);
+  if (d->table) munmap((void *)d->table, d->table_bytes);
+  if (d->ram_fd >= 0) close(d->ram_fd);
+  if (d->table_fd >= 0) close(d->table_fd);
+  xhd_direct_init(d);
+}
+
+// xnuhost's "memory": guest RAM and the table, both mapped read-only. Only the first is taken.
+static void direct_memory(struct xhd_direct *d, const struct xhd_message *m, const int *fds, unsigned nfds)
+{
+  uint64_t ram = (uint64_t)m->a | (uint64_t)m->b << 32;
+  struct stat a, b;
+  if (!d || d->ram || nfds != 2 || !m->c || m->c > 64 || m->d < sizeof(struct xhd_slot) || m->d > (64u << 20) || m->d % 8 ||
+      fstat(fds[0], &a) || fstat(fds[1], &b) || !ram || (uint64_t)a.st_size < ram || (uint64_t)b.st_size < (uint64_t)m->c * m->d) return;
+  void *rm = mmap(NULL, ram, PROT_READ, MAP_SHARED, fds[0], 0);
+  if (rm == MAP_FAILED) return;
+  void *tm = mmap(NULL, (size_t)m->c * m->d, PROT_READ, MAP_SHARED, fds[1], 0);
+  if (tm == MAP_FAILED) { munmap(rm, ram); return; }
+  d->ram = rm; d->ram_size = ram; d->table = tm; d->table_bytes = (size_t)m->c * m->d; d->slots = m->c; d->slot_bytes = m->d;
+  d->ram_fd = dup(fds[0]); d->table_fd = dup(fds[1]);
+}
+
 int xhd_hold_first(const char *ready)
 {
   struct stat st;
   return ready && *ready && stat(ready, &st) && errno == ENOENT;
 }
 
-int xhd_drain(int fd, const struct xhd_frame *frame, struct xhd_rect *damage)
+int xhd_drain_direct(int fd, const struct xhd_frame *frame, struct xhd_rect *damage, struct xhd_direct *direct)
 {
   // A bound on one round: a guest that floods flushes must not keep the frame from being posted.
   for (int i = 0; i < 4096; i++) {
     struct xhd_message m;
-    ssize_t n = recv(fd, &m, sizeof m, MSG_DONTWAIT);
+    char control[CMSG_SPACE(sizeof(int) * 4)];
+    struct iovec iov = { &m, sizeof m };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+    ssize_t n = recvmsg(fd, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
     if (n < 0) {
       if (errno == EINTR) continue;
       if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
       fprintf(stderr, "oneios-display: reading xnuhost's socket failed: %s\n", strerror(errno));
       return -1;
     }
+    int fds[4];
+    unsigned nfds = 0;
+    for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+      if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+      size_t count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+      for (size_t k = 0; k < count; k++) {
+        int got;
+        memcpy(&got, CMSG_DATA(cm) + k * sizeof(int), sizeof(int));
+        if (nfds < 4) fds[nfds++] = got; else close(got);
+      }
+    }
+    if (n == sizeof m && !memcmp(m.magic, "XHDM", 4)) direct_memory(direct, &m, fds, nfds);
+    for (unsigned k = 0; k < nfds; k++) close(fds[k]);                // kept ones were duplicated
     if (n == 0) { fprintf(stderr, "oneios-display: xnuhost closed the socket\n"); return -1; }
-    if (n != sizeof m || memcmp(m.magic, "XHDF", 4)) continue;      // not a flush: ignored
+    if (n != sizeof m) continue;
+    if (!memcmp(m.magic, "XHDS", 4)) {
+      // The newest frame wins; the answer for it covers the ones before it.
+      uint64_t seq = (uint64_t)m.b | (uint64_t)m.c << 32;
+      if (direct && direct->ram && m.a < direct->slots && (!direct->pending || seq > direct->seq)) { direct->pending = 1; direct->slot = m.a; direct->seq = seq; }
+      continue;
+    }
+    if (memcmp(m.magic, "XHDF", 4)) continue;                         // not a flush: ignored
     struct xhd_rect r = { m.a, m.b, m.c, m.d };
     if (xhd_rect_clip(&r, frame->width, frame->height)) xhd_rect_union(damage, &r);
   }
   return 0;
+}
+
+// The rows of the slot's frame: a cursor over its segments, for rows that only go forward. Calls `piece` for each run of
+// guest bytes in [x, x + w) of a row, in order. -EINVAL when the rows reach past the segments or a segment past RAM.
+struct walk { const struct xhd_direct *d; struct xhd_slot s; const struct xhd_seg *segs; unsigned at; uint64_t start; };
+
+static int walk_open(struct walk *k, const struct xhd_direct *d)
+{
+  if (!d->ram || !d->pending || d->slot >= d->slots) return -EINVAL;
+  const uint8_t *base = d->table + (size_t)d->slot * d->slot_bytes;
+  memcpy(&k->s, base, sizeof k->s);
+  if (__atomic_load_n((const uint64_t *)base, __ATOMIC_ACQUIRE) != d->seq || k->s.seq != d->seq) return -ESTALE;   // reused already
+  if (k->s.format != 1 || !k->s.width || !k->s.height || k->s.stride < (uint64_t)k->s.width * 4 ||
+      k->s.nsegs > (d->slot_bytes - sizeof k->s) / sizeof(struct xhd_seg)) return -EINVAL;
+  k->d = d; k->segs = (const struct xhd_seg *)(base + sizeof k->s); k->at = 0; k->start = 0;
+  return 0;
+}
+
+typedef void (*piece_fn)(void *ctx, const uint8_t *from, uint64_t bytes);
+static int walk_row(struct walk *k, uint32_t row, uint32_t x, uint32_t w, piece_fn piece, void *ctx)
+{
+  uint64_t want = k->s.offset + (uint64_t)row * k->s.stride + (uint64_t)x * 4, left = (uint64_t)w * 4;
+  while (k->at < k->s.nsegs && want >= k->start + k->segs[k->at].length) { k->start += k->segs[k->at].length; k->at++; }
+  unsigned i = k->at;
+  uint64_t i_start = k->start, pos = want;
+  while (left) {
+    if (i >= k->s.nsegs) return -EINVAL;
+    const struct xhd_seg *g = &k->segs[i];
+    if (g->offset > k->d->ram_size || g->length > k->d->ram_size - g->offset || pos < i_start) return -EINVAL;
+    uint64_t in = pos - i_start, n = g->length - in < left ? g->length - in : left;
+    piece(ctx, k->d->ram + g->offset + in, n);
+    left -= n; pos += n;
+    if (left) { i_start += g->length; i++; }
+  }
+  return 0;
+}
+
+struct copy_ctx { uint8_t *to; int swap; };
+static void copy_piece(void *ctx, const uint8_t *from, uint64_t n)
+{
+  struct copy_ctx *c = ctx;
+  if (!c->swap) memcpy(c->to, from, (size_t)n);
+  else for (uint64_t i = 0; i + 4 <= n; i += 4) { c->to[i] = from[i + 2]; c->to[i + 1] = from[i + 1]; c->to[i + 2] = from[i]; c->to[i + 3] = 0xff; }
+  c->to += n;
+}
+
+int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride, uint32_t dst_width, uint32_t dst_height, int swap,
+                    const struct xhd_rect *only, struct xhd_rect *done)
+{
+  memset(done, 0, sizeof *done);
+  struct walk k;
+  int e = walk_open(&k, d);
+  if (e) return e;
+  struct xhd_rect r = only ? *only : (struct xhd_rect){ k.s.x, k.s.y, k.s.w, k.s.h };
+  if (!xhd_rect_clip(&r, k.s.width, k.s.height) || !xhd_rect_clip(&r, dst_width, dst_height)) return 0;
+  for (uint32_t row = r.y; row < r.y + r.h; row++) {
+    struct copy_ctx c = { dst + (size_t)row * dst_stride + (size_t)r.x * 4, swap };
+    if ((e = walk_row(&k, row, r.x, r.w, copy_piece, &c))) return e;
+  }
+  *done = r;
+  return 0;
+}
+
+// ---- damage -----------------------------------------------------------------------------------
+// Four lanes by pixel index (`at`, the pixel's place in the stream), each a multiply-add over the pixel's B,G,R: a
+// function of the bytes and their order alone, however the stream is cut into pieces.
+uint64_t xhd_hash_pixels(uint64_t state[4], const uint8_t *p, size_t bytes, size_t at)
+{
+  const uint64_t K = 0x9e3779b97f4a7c15ull;
+  for (size_t i = 0; i + 4 <= bytes; i += 4, at++) {
+    uint32_t v;
+    memcpy(&v, p + i, 4);
+    state[at & 3] = (state[at & 3] + (v & 0x00ffffffu) + 1) * K;
+  }
+  return at;
+}
+
+int xhd_damage_init(struct xhd_damage *d, uint32_t width, uint32_t height)
+{
+  memset(d, 0, sizeof *d);
+  size_t n = (size_t)height * XHD_TILES;
+  d->shown = calloc(n, sizeof *d->shown);
+  d->next = calloc(n, sizeof *d->next);
+  if (!d->shown || !d->next) { xhd_damage_free(d); return -ENOMEM; }
+  d->width = width; d->height = height; d->tile = (width + XHD_TILES - 1) / XHD_TILES;
+  return 0;
+}
+
+void xhd_damage_free(struct xhd_damage *d)
+{
+  free(d->shown); free(d->next);
+  memset(d, 0, sizeof *d);
+}
+
+struct hash_ctx { uint64_t lane[4]; size_t at; };
+static void hash_piece(void *ctx, const uint8_t *from, uint64_t n)
+{
+  struct hash_ctx *h = ctx;
+  h->at = xhd_hash_pixels(h->lane, from, (size_t)n, h->at);
+}
+
+int xhd_direct_damage(const struct xhd_direct *dir, struct xhd_damage *d, struct xhd_rect *dirty)
+{
+  memset(dirty, 0, sizeof *dirty);
+  struct walk k;
+  int e = walk_open(&k, dir);
+  if (e) return e;
+  uint32_t width = k.s.width < d->width ? k.s.width : d->width, height = k.s.height < d->height ? k.s.height : d->height;
+  uint32_t x0 = UINT32_MAX, x1 = 0, y0 = UINT32_MAX, y1 = 0;
+  for (uint32_t row = 0; row < height; row++)
+    for (uint32_t t = 0; t < XHD_TILES; t++) {
+      uint32_t x = t * d->tile, w = x >= width ? 0 : (width - x < d->tile ? width - x : d->tile);
+      if (!w) continue;
+      struct hash_ctx h = { { 1, 2, 3, 4 }, 0 };
+      if ((e = walk_row(&k, row, x, w, hash_piece, &h))) return e;
+      uint64_t v = h.lane[0] ^ (h.lane[1] * 3) ^ (h.lane[2] * 5) ^ (h.lane[3] * 7) ^ ((uint64_t)w << 48), *slot = &d->next[(size_t)row * XHD_TILES + t];
+      *slot = v;
+      if (d->valid && d->shown[(size_t)row * XHD_TILES + t] == v) continue;
+      if (x < x0) x0 = x;
+      if (x + w > x1) x1 = x + w;
+      if (row < y0) y0 = row;
+      y1 = row + 1;
+    }
+  if (y0 != UINT32_MAX) *dirty = (struct xhd_rect){ x0, y0, x1 - x0, y1 - y0 };
+  return 0;
+}
+
+void xhd_damage_commit(struct xhd_damage *d)
+{
+  uint64_t *t = d->shown;
+  d->shown = d->next; d->next = t;
+  d->valid = 1;
+}
+
+int xhd_send_done(int fd, uint64_t seq, uint32_t flags)
+{
+  struct xhd_message m = { { 'X', 'H', 'D', 'A' }, (uint32_t)seq, (uint32_t)(seq >> 32), flags, 0 };
+  return send(fd, &m, sizeof m, MSG_NOSIGNAL | MSG_DONTWAIT) < 0 ? -errno : 0;
 }
 
 void xhd_fit(uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh, struct xhd_fit *fit)

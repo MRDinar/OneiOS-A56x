@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include "bridges/devices.h"
 #include "bridges/camera.h"
+#include "encoder.h"
 #include "imageset.h"
 #include "xnuloader/boot.h"
 #include "xnuloader/machine.h"
@@ -250,6 +251,7 @@ static void gic_line(unsigned cpu, bool line) { xh_cpu_line(cpu, line); }
 // The guest's RAM held fixed for the session (ramfix.c, docs/booter.md 2.2 "Fixed RAM"): the kernel is told before it
 // starts (XH_FEATURE_RAM_FIXED: no free pages given back), and the whole memfd is prefaulted, locked where Linux allows
 // and it fits, on a nice-19 thread while the boot goes on. ram-giveback=1: 0058's way, nothing of this.
+static xh_huge_choice huge_choice;     // 2 MiB host pages for the RAM: what xh_huge_choose found (fix-ram-hugepages)
 static xh_ramfix_counters was;         // the `memory: fixed RAM` line's counters at its last line (first: the start)
 static bool have_was;
 
@@ -275,6 +277,9 @@ static void ram_fix_start(void)
     LOGI("memory: the guest's RAM is held for the session: %llu MiB, not locked and not prefaulted (more than fits beside the "
          "session's needs: %llu MiB); free pages are not given back (ram-giveback=0); %s", (unsigned long long)(g_mem.size >> 20),
          (unsigned long long)(config.ram_fit >> 20), facts);
+    // No prefault runs: done, so that the `memory: fixed RAM` line says "held, not locked" (it said "prefault running"
+    // for the whole session before 2026-11-15) and the 2 MiB pages line comes at once.
+    __atomic_store_n(&g_ramfix.done, true, __ATOMIC_RELEASE);
     return;
   }
   char valve[160] = "";
@@ -290,6 +295,10 @@ static void ram_fix_start(void)
 // The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
 // drm2kgsl keeps its first 2 MiB unused, the rest holds 16 KiB of response buffer per 3D context.
 #define GPU_POOL_BYTES (8ull << 20)
+// The video encoder's media pool (runtime/bridges/encoder): the V4L2 OUTPUT (NV12) and CAPTURE (bitstream) buffers
+// the guest maps. 48 MiB fits 1080p-class widget/screenshot snapshots across the device's session slots; with the 8
+// MiB GPU pool it stays under the hosted kernel's 64 MiB mappable-pool bound (main.c, the RAM layout).
+#define MEDIA_POOL_BYTES (48ull << 20)
 static void gpu_log(int level, const char *line) { xh_log(level == 0 ? XH_LOG_ERROR : level == 1 ? XH_LOG_INFO : XH_LOG_DEBUG, "%s", line); }
 
 // ---- the host bridges (runtime/bridges): CPU placement, cpufreq, haptics, Bluetooth, network, sound ---
@@ -472,6 +481,34 @@ static int image_set_disk(unsigned i, xh_blk *disk)
   return 0;
 }
 
+// The speaker's output latency for the guest (DroidVMAudio.cpp as staged publishes the boot argument
+// oneios-audio-latency=FRAMES as the device's "output latency"): what the helper measures on its stream before the
+// guest boots (br_audio_probe_latency; the guest's speaker hands each period on as it starts, so nothing is added
+// for the guest), unless the boot arguments already say it. ONEIOS_AUDIO_PROBE=0: no probe, the kernel's default.
+static void audio_latency_arg(const br_audio_backend *audio, void *ctx)
+{
+  const char *given = strstr(config.boot_args, "oneios-audio-latency=");
+  if (given) {
+    unsigned frames = (unsigned)strtoul(given + strlen("oneios-audio-latency="), NULL, 10);
+    br_audio_told(audio, ctx, frames);
+    LOGI("audio: output latency %u frames (%u ms): the boot arguments' oneios-audio-latency, not measured", frames, frames / 48);
+    return;
+  }
+  const char *probe = getenv("ONEIOS_AUDIO_PROBE");
+  if (probe && !strcmp(probe, "0")) { LOGI("audio: ONEIOS_AUDIO_PROBE=0: the kernel's default output latency"); return; }
+  int frames = br_audio_probe_latency(audio, ctx, 2000);
+  if (frames <= 0) { LOGI("audio: speaker latency not measured (%s): the kernel's default output latency", strerror(frames ? -frames : EIO)); return; }
+  size_t used = strlen(config.boot_args);
+  if (snprintf(config.boot_args + used, sizeof config.boot_args - used, "%soneios-audio-latency=%d", used ? " " : "", frames) >=
+      (int)(sizeof config.boot_args - used)) {
+    config.boot_args[used] = 0;
+    LOGE("audio: no room in the boot arguments for oneios-audio-latency=%d: the kernel's default output latency", frames);
+    return;
+  }
+  br_audio_told(audio, ctx, (unsigned)frames);
+  LOGI("audio: speaker latency %d frames (%d ms) measured by the helper: oneios-audio-latency=%d", frames, frames / 48, frames);
+}
+
 static int boot(void)
 {
   const char *error = NULL;
@@ -485,17 +522,55 @@ static int boot(void)
   if (kernel.cpusubtype == 2 && !(g_info.features & XH_FEATURE_PAC)) { LOGE("an arm64e kernel needs pointer authentication with keys shared across fork; this host has none"); return -1; }
 
   // RAM: the kernel's window, then the GPU's pool (the memory of the renderer's that the guest maps: each 3D
-  // context's response buffer), then the boot framebuffer the kernel's console draws into.
+  // context's response buffer), then the video encoder's media pool (its V4L2 OUTPUT/CAPTURE buffers), then the boot
+  // framebuffer the kernel's console draws into. The GPU pool and the media pool both lie between the window's end and
+  // the framebuffer, which the hosted kernel lets a task map (0024-gpu-pool.patch, hosted_pa_in_gpu_pool, up to 64
+  // MiB): GPU_POOL_BYTES + MEDIA_POOL_BYTES must stay under that, so no new pmap patch is needed for the media pool.
   uint64_t fb_bytes = ((uint64_t)fb_width * fb_height * 4 + 0x1fffff) & ~0x1fffffull;
   uint64_t pool_bytes = strcmp(config.gpu, "2d") ? GPU_POOL_BYTES : 0;
-  uint64_t window = config.ram_bytes - fb_bytes - pool_bytes;
-  if (xh_mem_map(kernel.base) || xh_mem_io(XL_BOARD_IO_BASE, XL_BOARD_IO_SIZE)) return -1;
+  uint64_t media_bytes = strcmp(config.encoder, "off") ? MEDIA_POOL_BYTES : 0;
+  uint64_t window = config.ram_bytes - fb_bytes - pool_bytes - media_bytes;
+  // 2 MiB host pages for the RAM where this kernel allows them (fix-ram-hugepages; ramfix.c xh_huge_choose): shmem THP
+  // by madvise, only with the RAM held fixed (a give-back's pieces would split them).
+  xh_huge_choose("", config.ram_huge && !config.ram_giveback, &huge_choice);
+  if (xh_mem_map(kernel.base, huge_choice.mode == XH_HUGE_SHMEM) || xh_mem_io(XL_BOARD_IO_BASE, XL_BOARD_IO_SIZE)) return -1;
+  if (huge_choice.mode == XH_HUGE_SHMEM && !g_mem.huge)      // the line above it says why (qemu-user refuses the advice)
+    snprintf(huge_choice.why, sizeof huge_choice.why, "no (madvise(MADV_HUGEPAGE) refused)");
+  LOGI("memory: 2 MiB host pages: %s; shmem_enabled %s, hpage_pmd_size %llu, hugetlb pool %llu free of %llu KiB pages; the memfd's "
+       "offset 0 is at 0x%llx, %llu KiB below the window", g_mem.huge ? "yes, the window is mapped with MADV_HUGEPAGE (shmem THP)" : huge_choice.why,
+       *huge_choice.shmem_enabled ? huge_choice.shmem_enabled : "?", (unsigned long long)huge_choice.pmd_size,
+       (unsigned long long)huge_choice.hugetlb_free, (unsigned long long)(huge_choice.hugetlb_size >> 10),
+       (unsigned long long)g_mem.fd_phys, (unsigned long long)(g_mem.head >> 10));
   uint64_t phys = g_mem.phys;                       // physical = where it is mapped (mem.c)
-  boot_fb_pa = phys + window + pool_bytes;
+  uint64_t media_pool_pa = phys + window + pool_bytes;              // after the GPU pool, before the framebuffer
+  xh_display_set_ram(g_mem.fd, phys, g_mem.size);   // a direct display helper copies frames from it
+  boot_fb_pa = phys + window + pool_bytes + media_bytes;
   if (xh_mem_kva() == 0) { g_info.kva_base = g_mem.kva; g_info.kva_size = g_mem.kva_size; }
   LOGI("memory: %llu MiB at 0x%llx, physical = virtual (slide 0x%llx); I/O aperture 0x%llx",
        (unsigned long long)(window >> 20), (unsigned long long)phys,
        (unsigned long long)((uintptr_t)g_mem.host - kernel.base), (unsigned long long)(uintptr_t)g_mem.io_host);
+  // ram-view=SIZE (docs/booter.md 2.2, "The memory view"): iOS is told SIZE of DRAM over this same RAM. XNU cannot
+  // manage more pages than the RAM has (hw.memsize is max_mem, every page of boot_args memSize goes on the free lists:
+  // arm_vm_init.c, vm_resident.c), and a page above the locked RAM would be the host's to swap. So the RAM stays what
+  // it is; the view is boot_args memSizeActual (max_mem_actual: hw.memsize_physical), the per-process limits of an
+  // iPhone18,2 of that size in /defaults (machine.c), and the compressor's room to hold that much in this RAM.
+  uint64_t view = config.ram_view > window ? config.ram_view : 0;
+  if (config.ram_view && !view)
+    LOGE("memory: ram-view=%llu MiB is not more than the guest's RAM (%llu MiB): off", (unsigned long long)(config.ram_view >> 20),
+         (unsigned long long)(window >> 20));
+  int view_multiplier = xh_view_boot_args(config.boot_args, sizeof config.boot_args, view, window);
+  if (view_multiplier < 0) { LOGE("no room in the boot arguments for ram-view's compressor setting"); return -1; }
+  // The view is meant over locked RAM (the owner's rule: iOS's RAM is never swapped): with ram=auto and the lock that is
+  // the most that fits locked (config.ram_lock_fit, config.c). A bigger or unlocked RAM under a view is said, not refused.
+  if (view && (!config.ram_lock || !config.ram_lock_fit || config.ram_bytes > config.ram_lock_fit))
+    LOGE("memory: ram-view over a RAM that is not all locked (%llu MiB asked, %llu MiB fits locked%s): the host may swap "
+         "iOS's RAM; ram=auto with the lock (the default) is the mode", (unsigned long long)(config.ram_bytes >> 20),
+         (unsigned long long)(config.ram_lock_fit >> 20), config.ram_lock ? "" : ", ram-lock off");
+  if (view)
+    LOGI("memory: ram-view: iOS is told %llu MiB of DRAM (hw.memsize_physical, and an iPhone18,2's per-process limits for "
+         "it) over %llu MiB of RAM (hw.memsize); its compressor may hold up to %d x the RAM's pages "
+         "(kern.compressor_pool_multiplier) in that RAM",
+         (unsigned long long)(view >> 20), (unsigned long long)(window >> 20), view_multiplier);
   ram_fix_start();
 
   // The board: GIC, console, disks, input, display.
@@ -506,6 +581,10 @@ static int boot(void)
   xh_gic_map();
   xh_uart_init(XL_BOARD_UART);
   if (image_set_open()) return -1;
+  // A writable disk's flush on a thread of its own when the guest's driver takes it (virtio_blk.c, blk-late-flush).
+  xh_blk_late_flush = config.blk_late_flush != 0;
+  LOGI("disk: a flush of a writable disk runs %s (blk-late-flush=%d)",
+       xh_blk_late_flush ? "on the disk's flush thread when the guest's driver asks for that" : "on the vCPU that sent it", xh_blk_late_flush ? 1 : 0);
   for (unsigned i = 0; i < config.ndisk; i++) {
     xh_blk *disk = xh_blk_open(&config.disk[i], &error);
     if (!disk) { LOGE("disk %s: %s (%s)", config.disk[i].path, error, strerror(errno)); return -1; }
@@ -558,7 +637,7 @@ static int boot(void)
     // The GPU's level and priorities (gpu3d_kgsl.c, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
     setenv("ONEIOS_GPU_LEVEL", *config.gpu_level ? config.gpu_level : "deadline", 1);
     if (!config.gpu_priority) setenv("ONEIOS_GPU_PRIORITY", "off", 1);
-    gpu3d = xh_gpu3d_kgsl_open(g_mem.fd, phys, g_mem.size, xh_ram(phys + window, pool_bytes), phys + window, pool_bytes, gpu_log, &why);
+    gpu3d = xh_gpu3d_kgsl_open(g_mem.fd, g_mem.fd_phys, g_mem.head + g_mem.size, xh_ram(phys + window, pool_bytes), phys + window, pool_bytes, gpu_log, &why);   // the memfd from its offset 0 (mem.c)
     if (!gpu3d && !strcmp(config.gpu, "3d")) { LOGE("gpu: no 3D: %s", why); return -1; }
     if (!gpu3d) LOGI("gpu: 2D only: %s", why);
   }
@@ -691,7 +770,10 @@ static int boot(void)
     const br_audio_backend *audio = NULL;
     if (*config.runtime && snprintf(helper, sizeof helper, "%s/bin/oneios-audio", config.runtime) < (int)sizeof helper) audio = br_audio_helper(helper, &audio_ctx);
     if (!audio) audio = br_audio_null(&audio_ctx);
-    if (audio && br_virtio_snd_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, audio, audio_ctx)) kinds[ndev++] = XL_DEV_SND;
+    if (audio && br_virtio_snd_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, audio, audio_ctx)) {
+      kinds[ndev++] = XL_DEV_SND;
+      audio_latency_arg(audio, audio_ctx);
+    }
 
     // The camera: a helper process (Android's camera libraries are shared libraries) that opens a camera only
     // when the guest asks. ONEIOS_CAMERA=0 leaves it out; ONEIOS_CAMERA_BACKEND picks its back end (auto).
@@ -700,6 +782,28 @@ static int boot(void)
         snprintf(helper, sizeof helper, "%s/bin/oneios-camera", config.runtime) < (int)sizeof helper && access(helper, X_OK) == 0) {
       camera = br_camera_helper(helper, getenv("ONEIOS_CAMERA_BACKEND"));
       if (camera && br_camera_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev, camera)) kinds[ndev++] = XL_DEV_CAMERA;
+    }
+
+    // The video encoder (encoder=auto): the "droidvm,virtio-media" device over Android's MediaCodec, for iOS's
+    // paravirtualized VideoToolbox encoder (HEIC still images, then video). Off by default until the guest codec
+    // archive lands; both samsung and treble use MediaCodec, so one backend serves both. Its V4L2 buffers live in the
+    // media pool carved above.
+    if (ndev < XL_MAX_DEVICES && media_bytes && *config.runtime &&
+        snprintf(helper, sizeof helper, "%s/bin/oneios-encoder", config.runtime) < (int)sizeof helper && access(helper, X_OK) == 0) {
+      br_hw_select(BR_HW_ENCODER, BR_HW_UNSET);
+      if (br_encoder_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev,
+                            br_encoder_backend_helper(helper), xh_ram(media_pool_pa, media_bytes), media_pool_pa, media_bytes)) {
+        machine.media_pool_base = media_pool_pa;
+        machine.media_pool_size = media_bytes;
+        kinds[ndev++] = XL_DEV_MEDIA;
+        // The guest codec archive publishes iOS's paravirtualized VideoToolbox driver with this boot argument
+        // (DroidVMVTParavirt.cpp); droidvm-media (default on) brings up the transport (DroidVMVirtioMedia.c).
+        if (!strstr(config.boot_args, "droidvm-vt-paravirt=")) {
+          size_t used = strlen(config.boot_args);
+          if (used + 24 < sizeof config.boot_args)
+            snprintf(config.boot_args + used, sizeof config.boot_args - used, "%sdroidvm-vt-paravirt=1", used ? " " : "");
+        }
+      }
     }
   }
 
@@ -734,7 +838,9 @@ static int boot(void)
   machine.timebase_hz = (uint32_t)g_info.timebase_hz;
   machine.dram_base = phys;
   machine.dram_size = window;
+  machine.view_size = view;
   machine.model = "iPhone18,2";
+  machine.target_type = "V54";           // its board: iOS finds com.apple.jetsamproperties.V54.plist by it (loader machine.c)
   machine.display_width = fb_width;
   machine.display_height = fb_height;
   machine.display_scale = config.scale;
@@ -828,7 +934,7 @@ static int boot(void)
   }
 
   xl_boot_request request = {
-    .image = { image, image_size }, .kernel = &kernel, .ram = g_mem.host, .window = window, .phys_base = phys,
+    .image = { image, image_size }, .kernel = &kernel, .ram = g_mem.host, .window = window, .phys_base = phys, .mem_size_actual = view,
     .virt_base = (uint64_t)(uintptr_t)g_mem.host, .tree = tree, .command_line = config.boot_args,
     .video = { boot_fb_pa, 1, (uint64_t)fb_width * 4, fb_width, fb_height, 32 },
     .legacy_boot_args = config.legacy_boot_args, .ramdisk = ramdisk, .trustcache = trust, .gpu_addon = addon, .root_policies = policies,
@@ -993,9 +1099,10 @@ static void host_memory_tick(bool now)
   last = t;
   // One read of /proc/meminfo for every figure here (before, five: MemTotal and MemAvailable, SwapTotal, SwapFree,
   // PageTables, and Mlocked in the counters).
-  static const char *const keys[6] = { "MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "PageTables", "Mlocked" };
-  uint64_t mi[6] = { 0, 0, 0, 0, 0, 0 };
-  (void)xh_proc_values(config.ram_meminfo, keys, 6, mi);
+  static const char *const keys[8] = { "MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "PageTables", "Mlocked", "ShmemHugePages",
+                                       "ShmemPmdMapped" };
+  uint64_t mi[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+  (void)xh_proc_values(config.ram_meminfo, keys, 8, mi);
   uint64_t total = mi[0], available = mi[1], swap_total = mi[2], swap_free = mi[3], tables = mi[4];
   struct stat st;
   uint64_t held = g_mem.fd >= 0 && fstat(g_mem.fd, &st) == 0 ? (uint64_t)st.st_blocks * 512 : 0;
@@ -1016,10 +1123,13 @@ static void host_memory_tick(bool now)
   xh_ramfix_sample(&c);
   c.mlocked = mi[5];
   uint64_t in_ram = g_mem.host ? ram_resident_from(xh_ramfix_unlocked_from(&g_ramfix, c.vm_locked)) : 0;
+  // Since fix-ram-hugepages: xnuhost's own share of the page tables (VmPTE: its window, the kernel's heap mappings; the
+  // rest are the iOS tasks' processes) and the host's 2 MiB shmem folios (all processes; on the phone xnuhost's memfd).
   LOGI("memory: the guest's RAM: %llu MiB in the host's RAM, %llu MiB swapped out by the host; host swap %llu of %llu MiB used, "
-       "page tables %llu MiB", (unsigned long long)(in_ram >> 20), (unsigned long long)((held > in_ram ? held - in_ram : 0) >> 20),
+       "page tables %llu MiB (xnuhost's own %llu MiB); 2 MiB pages: host ShmemHugePages %llu MiB, ShmemPmdMapped %llu MiB",
+       (unsigned long long)(in_ram >> 20), (unsigned long long)((held > in_ram ? held - in_ram : 0) >> 20),
        (unsigned long long)((swap_total > swap_free ? swap_total - swap_free : 0) >> 20), (unsigned long long)(swap_total >> 20),
-       (unsigned long long)(tables >> 20));
+       (unsigned long long)(tables >> 20), (unsigned long long)(c.vm_pte >> 20), (unsigned long long)(mi[6] >> 20), (unsigned long long)(mi[7] >> 20));
   // The fixed RAM (2026-11-13, ramfix.c): what is held and locked, what was refused, and since the last line the host's
   // swap traffic (all processes) and this process's faults that needed the host's I/O (a swapped-out page read back).
   // With the RAM held and locked, `held` stays at the RAM's size, `swapped out` at 0, and the KGSL figures (the host's
@@ -1033,14 +1143,38 @@ static void host_memory_tick(bool now)
                       g_ramfix.unlocked ? "held, unlocked by the valve" : ram_all_locked() ? "held and locked" :
                       g_ramfix.locked ? "held, locked in part" : "held, not locked";
   LOGI("memory: fixed RAM: %s; prefaulted %llu of %llu MiB, locked %llu MiB (VmLck; host Mlocked %llu MiB); give-back refused %llu calls; "
-       "since the last line: host swap-ins +%llu, swap-outs +%llu pages, xnuhost major faults +%llu%s", state,
+       "since the last line: host swap-ins +%llu, swap-outs +%llu pages, xnuhost major faults +%llu, minor +%llu%s", state,
        (unsigned long long)(__atomic_load_n(&g_ramfix.prefaulted, __ATOMIC_RELAXED) >> 20), (unsigned long long)(g_mem.size >> 20),
        (unsigned long long)(c.vm_locked >> 20), (unsigned long long)(c.mlocked >> 20),
        (unsigned long long)__atomic_load_n(&g_discard_fixed_refused, __ATOMIC_RELAXED),
        (unsigned long long)(have_was ? c.swap_ins - was.swap_ins : 0), (unsigned long long)(have_was ? c.swap_outs - was.swap_outs : 0),
-       (unsigned long long)(have_was ? c.major_faults - was.major_faults : 0), kgsl);
+       (unsigned long long)(have_was ? c.major_faults - was.major_faults : 0), (unsigned long long)(have_was ? c.minor_faults - was.minor_faults : 0),
+       kgsl);
   was = c;
   have_was = true;
+}
+
+// The window's 2 MiB pages (fix-ram-hugepages): once when the prefault is done (or at once without one) and at the stop.
+// smaps_rollup walks every mapping of this process, so not every host-mem-log. ShmemPmdMapped is what xnuhost maps with
+// 2 MiB entries: with shmem THP and the RAM prefaulted, the whole window; the tasks map the same folios 4 KiB at a time.
+static void huge_report(const char *when)
+{
+  uint64_t shmem = 0, file = 0, anon = 0;
+  if (!g_mem.host || !xh_pmd_mapped_self(&shmem, &file, &anon)) return;
+  xh_ramfix_counters c;
+  xh_ramfix_sample(&c);
+  // With 4 KiB entries xnuhost's window alone takes 8 bytes per 4 KiB page: the size / 512 that 2 MiB entries save.
+  LOGI("memory: 2 MiB pages%s: xnuhost maps %llu of %llu MiB of the guest's RAM with 2 MiB entries (ShmemPmdMapped; FilePmdMapped %llu, "
+       "AnonHugePages %llu MiB); its page tables %llu MiB (VmPTE; 4 KiB entries for the whole window would be %llu MiB)", when,
+       (unsigned long long)(shmem >> 20), (unsigned long long)(g_mem.size >> 20), (unsigned long long)(file >> 20), (unsigned long long)(anon >> 20),
+       (unsigned long long)(c.vm_pte >> 20), (unsigned long long)((g_mem.size / 512) >> 20));
+}
+static void huge_tick(void)
+{
+  static bool said;
+  if (said || !g_mem.huge || (config.ram_prefault && !__atomic_load_n(&g_ramfix.done, __ATOMIC_ACQUIRE))) return;
+  said = true;
+  huge_report(config.ram_prefault ? " (the prefault done)" : "");
 }
 
 // Once a second while the guest's RAM is locked: the valve (ramfix.c). On the main thread (nice 0, SCHED_OTHER), so busy
@@ -1187,6 +1321,7 @@ int main(int argc, char **argv)
     host_memory_tick(false);                // "memory: host MemAvailable" every host-mem-log seconds
     swap_watch();                           // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
     ram_valve_tick();                       // the lock's valve, once a second while locked
+    huge_tick();                            // "memory: 2 MiB pages (the prefault done): ..." once
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
     ready_tick();                           // session/ready for an iOS that only draws black (ready-content-wait)
     // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
@@ -1225,6 +1360,7 @@ int main(int argc, char **argv)
 
   LOGI("stopping: %s (reason %u, code %u)", stop_state.why, stop_state.reason, stop_state.code);
   host_memory_tick(true);
+  if (g_mem.huge) huge_report(" at the stop");
   usb_tick(true, " (at the stop)");
   for (unsigned i = 0; i < g_ncpu; i++)
     LOGI("cpu%u: %s, %llu interrupts (%llu timer, %llu IPI acknowledged, %llu re-raised), %llu device accesses, %llu emulated instructions, %llu task traps", i,

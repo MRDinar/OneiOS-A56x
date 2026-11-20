@@ -2,12 +2,14 @@
 //! replaces it). Every anchor must be in the source exactly once (gen::replace_once), so a moved pin that changes
 //! one of these lines stops the build instead of leaving an edit out.
 
-/// The output latency the speaker device publishes (frames at 48 kHz): the host path's, measured on the phone
-/// (oneios-audio's report "latency about 130-137 ms": deep-buffer track 128-136 ms + the guest's period and the
-/// virtio hop, docs/hardware.md section 6).
+/// The output latency the speaker device publishes when the boot arguments do not say it (frames at 48 kHz). xnuhost
+/// passes the helper's measured latency as oneios-audio-latency= (its probe, runtime/bridges/audio); this default is
+/// the MMAP exclusive path's predicted host latency (fix-audio-latency, 2026-11-15: 15 ms [I], not measured on the
+/// phone; the speaker hands each period on as it starts, so the guest adds none). Before: 6480 (135 ms, the
+/// deep-buffer mixer track's path and the guest's period, docs/hardware.md section 6).
 macro_rules! output_latency {
     () => {
-        6480
+        720
     };
 }
 /// NativeHidInput's edge band, as a share of each axis: 3 mm of the iPhone18,2's panel (54 of 1320 x 2868 pixels at

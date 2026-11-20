@@ -45,6 +45,21 @@ static xh_display fake_display;
 static unsigned flush_rect[4];
 xh_display *xh_display_get(void) { return fake_display.pixels ? &fake_display : NULL; }
 void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; flushes++; }
+// A display helper that copies frames itself (display.c's direct path): what it was handed, and its answer.
+static bool fake_direct, fake_refuse;
+static struct { xh_gpu_entry entries[4]; unsigned n, posts; uint64_t offset, seq; uint32_t stride, width, height, x, y, w, h; xh_display_done done; void *opaque; } fake_post;
+void xh_display_set_ram(int fd, uint64_t phys, uint64_t size) { (void)fd; (void)phys; (void)size; }
+bool xh_display_direct(void) { return fake_direct; }
+int xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, uint32_t stride, uint32_t width, uint32_t height,
+                    uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t seq, xh_display_done done, void *opaque)
+{
+  if (fake_refuse) return -1;
+  fake_post.n = n; memcpy(fake_post.entries, entries, (n < 4 ? n : 4) * sizeof *entries);
+  fake_post.offset = offset; fake_post.stride = stride; fake_post.width = width; fake_post.height = height;
+  fake_post.x = x; fake_post.y = y; fake_post.w = w; fake_post.h = h; fake_post.seq = seq; fake_post.done = done; fake_post.opaque = opaque;
+  fake_post.posts++;
+  return 0;
+}
 unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t text_hi, int ram_fd, int trap_fd);
 
 // ---- instructions -------------------------------------------------------------------------------
@@ -438,6 +453,32 @@ static void test_virtio_blk(const char *dir)
   CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true) == 1 && *status == 0);
   CHECK(xh_blk_read(store, 9 * 512, sector, 512) == 0 && sector[5] == 0x77);
   CHECK(xh_blk_flushes(store) == 1);                                           // the guest's flush, counted and timed
+  // A driver that takes F_LATE_FLUSH (bit 23): a flush is completed by the disk's flush thread after the notify
+  // returned; reads and writes are still done inside the notify.
+  W(&w, 0x14, 0);
+  CHECK(R(&w, 0x10) & (1u << 23));                                             // offered on a writable disk
+  CHECK(driver_init(&w, 1u << 23 | 1u << 9, 1, GUEST_PA + 0x10000));
+  *req = (__typeof__(*req)){ 1, 0, 10 };
+  memset(data, 0x55, 512);
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == 1 && *status == 0);
+  *req = (__typeof__(*req)){ 4, 0, 0 };
+  *status = 0xff;
+  (void)driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x22000, 1, 1 } }, 2, true);
+  volatile uint16_t *wused = xh_ram(w.queue_pa[0] + 0x2000, 0x1000);
+  for (int i = 0; i < 5000 && wused[1] == w.used_seen[0]; i++) usleep(1000);
+  CHECK(wused[1] == (uint16_t)(w.used_seen[0] + 1) && *status == 0);          // completed later, from the thread
+  w.used_seen[0] = wused[1];
+  CHECK(R(&w, 0x60) & 1);                                                     // and the interrupt raised, as for any completion
+  W(&w, 0x64, 1);
+  *req = (__typeof__(*req)){ 0, 0, 10 };                                       // the next request is served in the notify
+  memset(data, 0, 512);
+  CHECK(driver_send(&w, 0, (const uint64_t[][3]){ { GUEST_PA + 0x20000, 16, 0 }, { GUEST_PA + 0x21000, 512, 1 }, { GUEST_PA + 0x22000, 1, 1 } }, 3, true) == 513 && data[7] == 0x55);
+  // With blk-late-flush=0 the bit is not offered.
+  xh_blk_late_flush = false;
+  driver w2 = { .dev = xh_virtio_blk_create(0, 43, store) };
+  W(&w2, 0x14, 0);
+  CHECK(!(R(&w2, 0x10) & (1u << 23)));
+  xh_blk_late_flush = true;
   xh_blk_close(store);
   snprintf(path, sizeof path, "%s/seed.tar", dir);
   f = fopen(path, "wb");
@@ -834,6 +875,28 @@ static void test_virtio_gpu3d(void)
   CHECK(flush_rect[0] == 1 && flush_rect[1] == 2 && flush_rect[2] == 3 && flush_rect[3] == 2);
   const uint8_t *px = fake_display.pixels + 2 * 32 + 1 * 4;
   CHECK(px[0] == 21 && px[1] == 0x20 && px[2] == 0x10 && fake_display.pixels[3 * 32 + 3 * 4] == 33 && fake_display.pixels[0] == 0 && fake_display.pixels[2 * 32 + 4 * 4] == 0);
+  // a helper that copies the frame itself: the flush is handed over, not copied here, and answered when it says so
+  fake_direct = true;
+  memset(fake_display.pixels, 0, 4 * 32);
+  flush_rect[2] = 0;
+  CLEAR(); cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 1; cmd[8] = 8; cmd[9] = 3; cmd[10] = 20;                 // (0,1) 8x3
+  CHECK(G(12, 24) == 0 && fake_post.posts == 1 && flush_rect[2] == 0 && fake_display.pixels[1 * 32] == 0);
+  CHECK(fake_post.n == 1 && fake_post.entries[0].addr == GUEST_PA + 0x40000 && fake_post.stride == 40 && fake_post.offset == 0);
+  CHECK(fake_post.width == 8 && fake_post.height == 4 && fake_post.x == 0 && fake_post.y == 1 && fake_post.w == 8 && fake_post.h == 3);
+  uint64_t first_seq = fake_post.seq;
+  CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
+  CHECK(G(12, 24) == 0 && fake_post.posts == 2 && fake_post.seq == first_seq + 1);                       // a second one, held too
+  fake_post.done(fake_post.opaque, first_seq);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 1);                                                       // the first answered
+  fake_post.done(fake_post.opaque, fake_post.seq);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 2 && resp[0] == 0x1100);
+  d.used_seen[0] = used[1];
+  fake_post.done(fake_post.opaque, fake_post.seq);                                                         // twice: nothing
+  CHECK(used[1] == d.used_seen[0]);
+  fake_refuse = true;                                                                                      // the helper went: copied here
+  CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
+  CHECK(G(12, 24) == 1 && resp[0] == 0x1100 && flush_rect[2] == 8 && fake_display.pixels[3 * 32 + 3 * 4] == 33);
+  fake_direct = fake_refuse = false;
   {
     // Half floats (display-format=rgba16f, oneios-display-wide=1): a 'RGhA' scanout's rows go to a half-float display as
     // they are, and a B,G,R,X one is decoded to linear light; onto the 8-bit display half floats are encoded and clamped.
@@ -1730,13 +1793,15 @@ static void test_config(const char *dir)
         c.ram_auto_available == 7ull * G && c.ram_percent == 90 && c.ram_host_floor == (int64_t)XH_RAM_AUTO_FLOOR && c.host_mem_log == 30 &&
         c.usb_log == 3 && c.ready_content_wait == XH_READY_CONTENT_WAIT &&
         c.ram_auto_bound == XH_RAM_BOUND_AVAILABLE && c.ram_fit_on == 1 && c.ram_fit / M == 5451 && c.ram_fit_available == 7 * G && c.ram_giveback == 0 && c.ram_prefault == 1 && c.ram_lock == 1 &&
-        !c.ram_lock_expected &&
+        !c.ram_lock_expected && c.ram_lock_fit == 0 &&
         c.ram_session_reserve == (int64_t)XH_RAM_SESSION_RESERVE && c.ram_unlock_below == (int64_t)XH_RAM_UNLOCK_BELOW && c.ram_gpu_reserve == (int64_t)XH_RAM_GPU_RESERVE && c.ram_pagetable_percent == 8);
   // Where the lock can work (the phone: root with CAP_IPC_LOCK): the headroom is 768 MiB, (7168 - 1024) / 1.08 = 5688 -> 5632 MiB.
   fake_can = true;
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, ram1) == 0 && xh_config_finish(&c) == 0 && c.ram_bytes == 5632 * M && c.ram_lock_expected &&
         c.ram_session_reserve == (int64_t)XH_RAM_SESSION_RESERVE_LOCKED && c.ram_fit / M == 5688 && c.ram_giveback == 0 && c.ram_lock == 1);
+  CHECK(c.ram_lock_fit == 5632 * M && c.ram_huge == 1);                         // the locked size that fits; 2 MiB pages asked
+  CHECK(xh_config_set(&c, "ram-huge", "0") == 0 && c.ram_huge == 0 && xh_config_set(&c, "ram-huge", "x") != 0);
   // The owner's boot of 2026-11-15 says the default explicitly: the same.
   char *ram1e[] = { "xnuhost", "--image", image, "--set", set_meminfo, "--set", "ram-giveback=0", "--set", "ram-prefault=1", "--set", "ram-lock=1" };
   xh_config_defaults(&c);
@@ -1930,6 +1995,24 @@ static void test_config(const char *dir)
   CHECK(!xh_panel_report(&report, sizeof report, &native));
   report.a = 1440; report.magic[3] = 'Q';
   CHECK(!xh_panel_report(&report, sizeof report, &native));
+  // ram-view=: the compressor's room for the view (the view over the RAM, rounded up), added once; a given value stays
+  {
+    char view_args[96] = "-v";
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 0, 7ull << 30) == 0 && !strcmp(view_args, "-v"));              // off
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 6ull << 30, 7ull << 30) == 0 && !strcmp(view_args, "-v"));     // not over the RAM
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    strcpy(view_args, "kern.compressor_pool_multiplier=4");
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 4ull << 30) == 3 && !strcmp(view_args, "kern.compressor_pool_multiplier=4"));
+    view_args[0] = 0;
+    CHECK(xh_view_boot_args(view_args, 20, 12ull << 30, 4ull << 30) == -1);                                             // no room
+    xh_config vc;
+    xh_config_defaults(&vc);
+    CHECK(vc.ram_view == 0 && xh_config_set(&vc, "ram-view", "12G") == 0 && vc.ram_view == 12ull << 30 && vc.ram_view_given);
+    CHECK(xh_config_set(&vc, "ram-view", "off") == 0 && vc.ram_view == 0);
+    CHECK(xh_config_set(&vc, "ram-view", "auto") == 0 && vc.ram_view == 12ull << 30);
+    CHECK(xh_config_set(&vc, "ram-view", "lots") != 0);
+  }
   // the display driver's switches on the kernel's command line: added once, a given value stays
   char args[128] = "-v debug=0x8";
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_BGRX8) == 0 && !strcmp(args, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120"));
@@ -2247,6 +2330,47 @@ static void test_ramfix(const char *dir)
   xh_ramfix_counters c;
   xh_ramfix_sample(&c);
   CHECK(c.major_faults < (1ull << 40));
+  CHECK(c.vm_pte > 0 && c.minor_faults > 0);                                    // VmPTE and minflt read (fix-ram-hugepages)
+  uint64_t pmd_shmem = 1, pmd_file = 1, pmd_anon = 1;
+  CHECK(xh_pmd_mapped_self(&pmd_shmem, &pmd_file, &pmd_anon) == (access("/proc/self/smaps_rollup", R_OK) == 0));
+
+  // 2 MiB host pages (fix-ram-hugepages): shmem_enabled's bracketed value decides, from named files under a root.
+  {
+    char root[300], p[400];
+    snprintf(root, sizeof root, "%s/hp", dir);
+    const char *parts[] = { "", "/sys", "/sys/kernel", "/sys/kernel/mm", "/sys/kernel/mm/transparent_hugepage", "/proc" };
+    for (unsigned i = 0; i < 6; i++) { snprintf(p, sizeof p, "%s%s", root, parts[i]); mkdir(p, 0755); }
+    char se[400], pmd[400], mi[400];
+    snprintf(se, sizeof se, "%s/sys/kernel/mm/transparent_hugepage/shmem_enabled", root);
+    snprintf(pmd, sizeof pmd, "%s/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", root);
+    snprintf(mi, sizeof mi, "%s/proc/meminfo", root);
+    FILE *w = fopen(pmd, "w"); fputs("2097152\n", w); fclose(w);
+    w = fopen(mi, "w"); fputs("MemTotal:       11350016 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugepagesize:       2048 kB\n", w); fclose(w);
+    xh_huge_choice h;
+    w = fopen(se, "w"); fputs("always within_size [advise] never deny force\n", w); fclose(w);   // this PC's
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_SHMEM && !strcmp(h.shmem_enabled, "advise") && h.pmd_size == 2u << 20 && h.hugetlb_free == 0 && h.hugetlb_size == 2u << 20);
+    xh_huge_choose(root, false, &h);                                              // ram-huge=0 or ram-giveback=1
+    CHECK(h.mode == XH_HUGE_NONE && strstr(h.why, "not asked"));
+    w = fopen(se, "w"); fputs("always within_size advise [never] deny force\n", w); fclose(w);   // Linux's default
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_NONE && !strcmp(h.shmem_enabled, "never") && strstr(h.why, "the fork's switch would set advise"));
+    w = fopen(se, "w"); fputs("always within_size advise never [deny] force\n", w); fclose(w);
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_NONE && !strcmp(h.shmem_enabled, "deny"));
+    w = fopen(se, "w"); fputs("[always] within_size advise never deny force\n", w); fclose(w);
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_SHMEM && !strcmp(h.shmem_enabled, "always"));
+    w = fopen(pmd, "w"); fputs("524288\n", w); fclose(w);                         // 512 KiB: a 16 KiB-page kernel
+    xh_huge_choose(root, true, &h);
+    CHECK(h.mode == XH_HUGE_NONE && h.pmd_size == 512u << 10 && strstr(h.why, "hpage_pmd_size"));
+    unlink(se); unlink(pmd);
+    xh_huge_choose(root, true, &h);                                               // no THP at all
+    CHECK(h.mode == XH_HUGE_NONE && h.pmd_size == 0 && !*h.shmem_enabled);
+    xh_huge_choose("/nonexistent", true, &h);
+    CHECK(h.mode == XH_HUGE_NONE);
+  }
+
   char kgsl[64] = "x";
   CHECK(xh_kgsl_memory(getpid(), kgsl, sizeof kgsl) == strlen(kgsl));   // no KGSL here: 0 and ""
 
