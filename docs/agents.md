@@ -2118,3 +2118,8 @@ persistent: a reboot costs a manual re-root.
   two PC boots (plain: SpringBoard reached, no regression; wifi=sim: sim radio works, en0 named+enabled by configd at
   +332 s — the driver's force-up never fires on sim because the driver's attach path does not run there, so the
   PC cannot prove this fix; phone session still needed for the `brought up by the driver` line).
+
+- 2026-11-20, s25 core port merged (assistant): Oryon CPU rule + E-lending (fixes E misclassification on big-only
+  SoCs; S24 behavior unchanged), SM8750 fixture, `tools/probe/s25-probe.sh`, S25 record + hardware/building docs.
+  Bridges tests green incl. new fixture; phone run.sh 216 ok. (gpu-patch-check CI skipped: metal patch dir absent;
+  hw-backend stand-in tests already in tree via the hw-backend merge.)
