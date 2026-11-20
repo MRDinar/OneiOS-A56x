@@ -455,6 +455,10 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   `Initial XPC call to server timed out` in iOS's log, the `haptics: effect N played` lines and Preferences', Spotlight's
   or SpringBoard's `oneios-cpu:` ([hardware.md](hardware.md) 5, "Core Haptics' server gave up"). Since 2026-11-15 a PC
   boot has `oneios-cpu:` lines (the GPU report thread runs without a Metal accelerator too).
+  An app load for memory checks: `--input-script runtime/xnuhost/tools/input-apps.script` (after 18 min, a tap on each
+  place of the Home Screen's first page and the dock, 40 s for the app, then Home; again and again), the same load for a
+  before and an after run ([booter.md](booter.md) 2.2, "iOS's own compressor and the memory view"). On a loaded PC give
+  the first wait more (a copy with `wait 2400000`).
 - What user space did, after the run has stopped: the Data volume is in `--data`'s `data.img` and launchd keeps
   its own log on it (every job spawned or refused, every exit with its reason).
   `apfs-fuse -o ro,vol=2 out/run/data/data.img MNT`, then `MNT/root/log/com.apple.xpc.launchd/launchd.log`, and

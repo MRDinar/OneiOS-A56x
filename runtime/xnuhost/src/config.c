@@ -116,6 +116,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     ok = ok && (c->ram_bytes || !strcmp(value, "auto"));
     c->ram_given = ok;
   }
+  else if (!strcmp(key, "ram-view")) { c->ram_view = !strcmp(value, "off") ? 0 : !strcmp(value, "auto") ? XH_RAM_VIEW_AUTO : xh_parse_size(value, &ok); ok = ok && c->ram_view < (1ull << 40); c->ram_view_given = ok; }
   else if (!strcmp(key, "ram-percent")) { ok = number(value, 10, 100, &c->ram_percent); }
   else if (!strcmp(key, "ram-host-floor")) { uint64_t v = xh_parse_size(value, &ok); ok = ok && v < (1ull << 40); if (ok) c->ram_host_floor = (int64_t)v; }
   else if (!strcmp(key, "ram-meminfo")) return copy(c->ram_meminfo, sizeof c->ram_meminfo, value);
@@ -349,6 +350,7 @@ int xh_config_finish(xh_config *c)
   }
   // The guest's RAM: the command line's ram=, else the image set's, else auto.
   if (!c->ram_given && from_image.ram_given) c->ram_bytes = from_image.ram_bytes;
+  if (!c->ram_view_given) c->ram_view = from_image.ram_view;     // ram-view= (main.c, docs/booter.md 2.2 "The memory view")
   if (c->ram_percent < 0) c->ram_percent = from_image.ram_percent < 0 ? XH_RAM_AUTO_PERCENT : from_image.ram_percent;
   if (c->ram_host_floor < 0) c->ram_host_floor = from_image.ram_host_floor < 0 ? (int64_t)XH_RAM_AUTO_FLOOR : from_image.ram_host_floor;
   if (c->host_mem_log < 0) c->host_mem_log = from_image.host_mem_log < 0 ? 30 : from_image.host_mem_log;
@@ -630,6 +632,23 @@ int xh_display_boot_args(char *args, size_t size, unsigned scale, unsigned hz, u
     strcat(args, add);
   }
   return 0;
+}
+
+// ram-view= (docs/booter.md 2.2, "The memory view"): the compressor's room for a view of `view` bytes over `window`
+// bytes of RAM, unless the command line sets it. XNU caps what the compressor holds at its pool's pages times
+// kern.compressor_pool_multiplier, and at least max_mem's pages (vm_compressor_set_size; 1 on an iOS of more than 2 GiB):
+// so at most the RAM's own size of original pages. The multiplier is the view over the RAM, rounded up (2 for 12 GiB
+// over 7 GiB). Returns the multiplier (0: no view, nothing added), or -1 with no room in the arguments.
+int xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window)
+{
+  if (!view || !window || view <= window) return 0;
+  unsigned multiplier = (unsigned)((view + window - 1) / window);
+  if (has_switch(args, "kern.compressor_pool_multiplier")) return (int)multiplier;
+  char add[64];
+  snprintf(add, sizeof add, "%skern.compressor_pool_multiplier=%u", *args ? " " : "", multiplier);
+  if (strlen(args) + strlen(add) >= size) return -1;
+  strcat(args, add);
+  return (int)multiplier;
 }
 
 // -[CADisplayMode preferredScale] of QuartzCore, read in 24A446's cache (docs/userland.md, "The UI scale"): a

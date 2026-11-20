@@ -41,7 +41,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--image DIR` | required | the image set (`docs/image-format.md`) |
 | `--kernel FILE` | `DIR/kernel.kc`, else `DIR/kernel.macho` | the kernel collection: `MH_FILESET`, or an `MH_EXECUTE` kernel |
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
-| `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
+| `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
 | `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`; the command line wins |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
@@ -71,6 +71,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set ram-giveback=0\|1` | **0** (since fix-ram-locked, 2026-11-15) | 0: the RAM is **held fixed and locked for the session** (section 2.2, "Fixed RAM": prefaulted, `mlock`ed, no free pages given back; the owner's rule: iOS's RAM is never swapped). 1: 0058's way again (faulted in as used, free pages given back, the host may swap it); one setting flips it back |
 | `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes; at the first `mlock` that fails the prefault stops and what is locked stays locked (where it fails at the first step, EPERM or an RLIMIT_MEMLOCK under 16 MiB, nothing is prefaulted); nothing is prefaulted unlocked unless `ram-lock=0`; neither if the RAM is more than fits |
 | `--set ram-session-reserve=SIZE` | 768M where the lock can work (CAP_IPC_LOCK, or no RLIMIT_MEMLOCK), else 1G | the headroom what fits leaves the host (section 2.2, "What fits"); with the lock never less than `ram-unlock-below` + 256 MiB; the lock is tried only if the RAM is within what fits |
+| `--set ram-view=SIZE\|auto\|off` (also in `xnuhost.conf`) | **off** (until a phone boot proves it) | the memory view (section 2.2, "The memory view"): iOS is told SIZE of DRAM (`auto` = 12 GiB, an iPhone18,2's) over the same locked RAM: `hw.memsize_physical`, an iPhone18,2's per-process limits scaled to SIZE, and room in iOS's compressor for SIZE (`kern.compressor_pool_multiplier`). The RAM itself stays `ram=` (with `ram=auto`, the most that fits locked) |
 | `--set ram-unlock-below=SIZE` | 256M | with the RAM locked, the valve: the host's `MemAvailable` under this (read once a second by the main loop, and before each prefault step) unlocks it once for the rest of the session; with the lock at least 128M (0 or less is raised to 128M, with a line) |
 
 **The guest's RAM (`ram=auto`, the owner's decision of 2026-11-12: iOS gets at least 90% of the phone's RAM).**
@@ -455,6 +456,91 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     phone.
   - With the RAM more than fits (`ram=` by hand) the `memory: fixed RAM` line said `held, prefault running` for the
     whole session (no prefault was started); now `held, not locked`.
+- **iOS's own compressor and the memory view (`ram-view=`, fix-ios-compressor, 2026-11-15; off by default).** The phone's
+  session of main 3233fed logged `oneios-mem: free 277 MiB ..., compressor 0 MiB holding 0 MiB` with many jetsam lines.
+  What the code says (xnu-12377 as built here, every file under `osfmk/` or `bsd/`):
+  - **The compressor is on, in RAM, as on an iPhone18,2 (proven).** `vm_compressor_mode` is a `TUNABLE_DT` of
+    `/defaults kern.vm_compressor` with the default `VM_PAGER_FREEZER_WITH_SWAP` (32) for `CONFIG_FREEZE`
+    (`vm_pageout.c`); `vm_config_init` makes 32 compressor active, general swap off, freezer swap on. The PC's log says
+    `vm: "vm_compressor_mode" is 32`; 24A446's own DeviceTree has `kern.vm_compressor` = 32 too. No boot argument of
+    xnuhost's (`config.c`) or of the PC's sets `vm_compressor`, and no hosted patch touches the compressor or the pageout
+    daemon (only 0057, the swap folder, and 0058/0066/0067, which move free pages and change no count the daemon reads).
+    Swap is only the freezer's, a file on iOS's own Data volume (`/private/var/vm`, 0057), as on the phone: never the host's.
+  - **What feeds it (proven, `vm_pageout.c`).** Only the pageout daemon (when `vm_page_free_count` falls under
+    `vm_page_free_target`, about 31 MiB with the hosted 4 KiB pages) and the freezer. The daemon takes file-backed pages
+    while there are more than 2.5 x jetsam's critical threshold of them (`vps_choose_victim_page`,
+    `vm_pageout_memorystatus_fb_factor_nr/dr` 5/2), and anonymous pages (which it compresses) below that, or when the
+    inactive file pages are under half the file pages. So a guest with a large file cache compresses nothing: on the PC
+    (2 GiB and 4 GiB, idle) free sits at the target, the file cache at 1.6-3.2 GiB (the shared cache's files) and
+    anonymous memory at 50-400 MiB, `compressor 0 MiB`. Not a hosted fault, the stock policy.
+  - **Jetsam (proven, `kern_memorystatus.c`).** It compares `memorystatus_available_pages` (free + file-backed:
+    `VM_CHECK_MEMORYSTATUS`; compressed memory is not in it) with thresholds that are shares of `max_mem`: critical 4 %
+    above 6 GiB, idle 2x, soft 3x, reaper 19/4x (24A446's DeviceTree gives the reaper 2343 MB of its 12 GiB, the same
+    share). The free 277 MiB of the phone's line means the daemon had nothing to do at that moment.
+  - **The "jetsam lines" were most likely not kills (proven on the PC, a guess for the phone).** `ioslog checks` counts
+    every line with `jetsam` in it (`checks.rs`: `memorystatus: killing|JetsamEvent|jetsam`). On the PC boot A below it
+    counted 383 while the kernel's own counters said `kills since boot 0`: 370 were 0076's new lines, the other 13 all
+    runningboardd's (`... is not RunningBoard jetsam managed`, `Ignoring jetsam update ...`, and one error, next item).
+    The phone's 486 (before 0076) were [guess] the same kind; its next log's `oneios-mem: jetsam: kills since boot` says.
+  - **iOS had no jetsam properties (proven on the PC; the phone's image is built the same way).** runningboardd logged
+    `Can't find jetsamproperties ('/System/Library/LaunchDaemons/com.apple.jetsamproperties' | '' | 'plist')`: it names the
+    file by the device tree root's `target-type`, which the generated tree had only from an identity tree (no image set
+    has one, section 1). 24A446's DeviceTree has `target-type` V54 and the OS volume has
+    `com.apple.jetsamproperties.V54.plist` (129,739 bytes): its bands and memory limits for apps and daemons were not
+    applied. **Fixed:** the loader gives the root `target-type` V54 without an identity tree (`machine.c`, `main.c`).
+  - **What the guest lacked (proven).** The guest's `/defaults` had none of the iPhone18,2's per-process limits
+    (`kern.max_task_pmem` 3376, `kern.entitled_max_task_pmem` 6144, `kern.entitled_dev_max_task_pmem` 6656 MB in 24A446's
+    DeviceTree): a task without a limit of its own (launchd's or RunningBoard's) had none (`task_init`). Since this change
+    the loader always gives `kern.max_task_pmem` 3376 (`runtime/loader/src/machine.c`); a footprint counts the task's
+    compressed pages too (`phys_footprint`), so the limit is on what the compressor holds of it as well.
+
+  **Can `hw.memsize` be more than the RAM? No (proven).** On iOS `hw.memsize` is `max_mem` (`kern_mib.c`; macOS reports
+  `max_mem_actual` there), and `max_mem` is `mem_size` from `boot_args.memSize` (`arm_vm_init.c`: `gPhysSize = mem_size`,
+  `max_mem = mem_size`), every page of which `vm_page_bootstrap` (`vm_resident.c`) puts on the free lists: a bigger
+  `memSize` hands XNU pages above the locked RAM, which the host would have to back and could swap (refused, the owner's
+  rule). What the code does support: `boot_args.memSizeActual` larger than `memSize` (a real iPhone's DRAM less its
+  carve-outs): `mem_actual` and `max_mem_actual` (`hw.memsize_physical`; `scale_setup`'s task and thread limits in
+  `startup.c`; `ml_get_booter_memory_size`'s boot-stolen count) follow it, and nothing allocates from it. The jetsam
+  thresholds stay shares of `max_mem`, the real RAM, which is right: they measure free and file pages of that RAM. The
+  per-process limits are absolute megabytes from `/defaults` (and the jetsam properties' bands from launchd), so they can
+  be a 12 GiB device's. The room for the excess is the compressor's: `vm_compressor_set_size` caps the pages it holds at
+  its pool (`max_mem`) times `kern.compressor_pool_multiplier` (1 on an iOS above 2 GiB), so at most the RAM's own size
+  of original pages; past 98 % of that `vm_compressor_low_on_space` makes jetsam kill (`vm-compressor-space-shortage`).
+
+  **`ram-view=SIZE` (`auto` = 12 GiB), the owner's mode:** the RAM is `ram=` as before (with `ram=auto` and the lock, the
+  default, the most that fits locked: `config.ram_lock_fit`, 6.9 GiB on the phone); xnuhost then sets
+  `boot_args.memSizeActual` = SIZE (`hw.memsize_physical`), `/defaults` the three per-process limits of an iPhone18,2
+  scaled by SIZE / 12 GiB (12 GiB: its own), and `kern.compressor_pool_multiplier` = SIZE / RAM rounded up (2 for 12 GiB
+  over 6.9 GiB), so the compressor may hold that much. Lines: `memory: ram-view: iOS is told N MiB of DRAM ... over M MiB
+  of RAM ...; its compressor may hold up to K x the RAM's pages`, and an error line when the RAM under the view is not all
+  locked (the host could swap it). How much app memory the 6.9 GiB then holds rests wholly on the compression ratio
+  (`oneios-mem: compressor: ... ratio R`): about 6.9 - wired - the file floor - the compressor's own pages, plus R times
+  those pages. Measured on the PC: below.
+  **PC boots (2026-11-15, this Linux PC under qemu-aarch64; load average 33-40 from other agents' builds the whole time,
+  so a boot took 50 min to SpringBoard and the app script's taps opened [as far as the logs show] no app).** Same image
+  set (`out/image-pc/24A446`), fresh Data store, `--ram 1536M`, `runtime/xnuhost/tools/input-apps.script` with its first
+  wait 40 min, 6000 s each:
+  - **A (no view; the kernel with 0076, xnuhost with `kern.max_task_pmem` and not yet `target-type`):** `Limiting task physical memory footprint to
+    3376 MB`; SpringBoard at 51 min; for the last 50 min `oneios-mem: free 10-14 MiB ... speculative 1068-1131 ...
+    compressor 0 MiB holding 0 MiB`, file-backed 1,040-1,218 MiB, anonymous 36-166 MiB, `oneios-mem: compressor: holds 0
+    MiB of pages in 0 MiB of RAM ...; room for 2973 MiB of pages, low on space no`, `oneios-mem: jetsam: available
+    1050-1356 MiB; at critical 75, idle 151, soft 226, reaper 302 MiB; task limit 3376 MB, entitled 0 MB; hw.memsize 1510
+    MiB, memsize_physical 1510 MiB`, `kills since boot 0 (idle-exit 0)`. `ioslog checks`: `jetsam 383` (above). The free
+    pages sat at the daemon's target with over 1 GiB of file pages to take first, so nothing was compressed: no ratio.
+  - **B (`--set ram-view=2688M`, 1.75 x the RAM as 12 GiB is of 6.9 GiB; stopped at 24 min by hand to rerun it with a
+    longer timeout, then not rerun: the queue for the PC):** `memory: ram-view: iOS is told 2688 MiB of DRAM
+    (hw.memsize_physical, and an iPhone18,2's per-process limits for it) over 1510 MiB of RAM (hw.memsize); its
+    compressor may hold up to 2 x the RAM's pages`, the error line `ram-view over a RAM that is not all locked (1536 MiB
+    asked, 0 MiB fits locked)` (no lock on this PC: RLIMIT_MEMLOCK 8 MiB), and in iOS `oneios-mem: jetsam: ... task limit
+    738 MB, entitled 1344 MB; hw.memsize 1510 MiB, memsize_physical 2688 MiB` (3376 and 6144 x 2688 / 12288). At this size
+    XNU's own multiplier is 2 already (an iOS of 2 GiB or less), so `room for 2973 MiB` is the same as A's: on the phone
+    (6.9 GiB, multiplier 1) the view doubles it.
+  - Not measured here: a compression ratio (no compressed page in any PC boot), and jetsam kills or apps kept under an app
+    load (no kill in any PC boot). The phone's next session gives both from the new lines.
+  - A first try of A panicked 30 s in, in the display's late probe (`NativeLegacyDisplay::~NativeLegacyDisplay` from
+    `oneios_native_legacy_display_late_probe`, `LegacyDisplayProbe.cpp:644`, a data abort in `OSMetaClass::~OSMetaClass`
+    after `virtio-gpu: scanout refresh 0 Hz (EDID 0 Hz)`): not this change's code; the rerun passed it.
+
 - **The kernel's own address space** outside the window (zones, kalloc, stacks, IOKit buffers) is a
   no-access reservation from the end of the RAM, rounded up to 1 GiB, to `0x3c00000000`
   (`xh_info.kva_base/kva_size`). `kernel_map(va, size, prot, phys)` maps RAM pages into it and

@@ -1227,6 +1227,32 @@ pairs and 0 failures. On the S24 Ultra (`ram=auto`, 6,912 MiB, `shmem_enabled=ad
 first frame with content and `session/ready`. Log: `out/session-logs/2026-11-16/phonefix-xnuhost.log`. No PC A/B run yet.
 The report showed **0 shared-region no-ops** and continuing unnests, so the no-op half is not proven effective; the
 pmap report did show entries kept mapped (48,376 unchanged in one 30 s period). The typing comparison is still open.
+## 0076-compressor-jetsam-report.patch (fix-ios-compressor, 2026-11-15)
+
+Three more lines in 0058's `oneios-mem:` report (every 30 s), from counters XNU keeps anyway, and one debugging tool, off by
+default:
+
+- `oneios-mem: compressor: holds P MiB of pages in C MiB of RAM (D MiB of compressed data): ratio R; room for L MiB of
+  pages, low on space no|yes`: `c_segment_pages_compressed` against `VM_PAGE_COMPRESSOR_COUNT` (the compression ratio
+  as the RAM sees it, segment overhead in), `compressor_bytes_used`, `c_segment_pages_compressed_limit` (the pool times
+  `kern.compressor_pool_multiplier`, `vm_compressor_set_size`) and `vm_compressor_low_on_space()`.
+- `oneios-mem: jetsam: available A MiB; at critical, idle, soft, reaper ... MiB; task limit N MB, entitled E MB;
+  hw.memsize M MiB, memsize_physical P MiB` and `oneios-mem: jetsam: kills since boot K (idle-exit I, CAUSE N, ...)`:
+  `memorystatus_available_pages` against `memstat_critical/idle/soft/reaper_threshold`, `max_task_footprint_mb` and
+  `memorystatus_entitled_max_task_footprint_mb` (the `/defaults` limits the loader gives: xnuhost's `ram-view`),
+  `max_mem` and `max_mem_actual`, and `memorystatus_kill_counts` summed over the bands, named as memorystatus names them
+  (`hosted_memstat_report` in `kern_memorystatus.c`, called from `hosted_fr_log`).
+- `oneios-compress-sweep=SECONDS` (boot argument; 0, off, by default): once, at the first report after that many seconds
+  of uptime, every anonymous page goes to the compressor (`vm_pageout_anonymous_pages`, what memorystatus_control's
+  compressor sweep and the freezer use); the pages fault back in as they are used. Lines `oneios-mem: compressor sweep
+  (oneios-compress-sweep=N): A MiB anonymous, ... to the compressor` and `oneios-mem: compressor sweep: 0; ...`, then the
+  ratio in the next reports. For a boot that never runs short of file pages (every PC boot so far), to see the
+  compressor's path work here end to end (the pmap's disconnect, the compressor threads, the fault back) and its ratio on
+  the guest's own memory.
+
+Why: the phone's session of main 3233fed showed `compressor 0 MiB holding 0 MiB` and 486 jetsam lines, and nothing said
+which kills they were, what the thresholds were or what the compressor would hold. What the code says about the
+compressor and jetsam, and the mode the owner asked for: `docs/booter.md` 2.2, "iOS's own compressor and the memory view".
 
 ## 0049-wifi-association-event.patch (radio2, 2026-11-12)
 

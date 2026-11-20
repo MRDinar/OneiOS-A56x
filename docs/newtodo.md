@@ -449,6 +449,15 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
     report's fault was JSC's i-cache flush (`dc cvau`) on the read-execute JIT alias, taken as a write because the
     stub and the kernel dropped ESR ISS.CM. Fixed in the stub and in hosted 0071. On the phone (new runtime and
     `kernel.kc`): no `.ips` with `sys_icache_invalidate`, WebContent stays up, Safari loads a page.
+15. **iOS's own compressor and the memory view** (fix-ios-compressor, `docs/booter.md` 2.2 "iOS's own compressor and
+    the memory view", hosted 0076). Every session now logs `oneios-mem: compressor: holds P MiB of pages in C MiB of RAM
+    ...: ratio R` and `oneios-mem: jetsam: ... kills since boot K (idle-exit I, CAUSE N, ...)`: read which causes the
+    kills were (the 3233fed session's 486 lines had no cause) and whether the compressor holds anything. The guest's
+    `/defaults` now has the iPhone18,2's default task limit (`task limit 3376 MB` in that line). The owner's mode, off by
+    default: `ram=auto ram-view=auto` in the image's `xnuhost.conf` (RAM locked at what fits, about 6.9 GiB; iOS told 12 GiB):
+    `memory: ram-view: iOS is told 12288 MiB of DRAM ... its compressor may hold up to 2 x the RAM's pages`, no
+    `ram-view over a RAM that is not all locked`, and in the jetsam line `memsize_physical 12288 MiB`, `task limit 3376 MB,
+    entitled 6144 MB`; then the compressor's ratio and the kills with several apps open, against a session without it.
 
 ## Decisions waiting for the owner
 

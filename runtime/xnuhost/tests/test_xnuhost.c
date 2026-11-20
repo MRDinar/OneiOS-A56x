@@ -1931,6 +1931,24 @@ static void test_config(const char *dir)
   CHECK(!xh_panel_report(&report, sizeof report, &native));
   report.a = 1440; report.magic[3] = 'Q';
   CHECK(!xh_panel_report(&report, sizeof report, &native));
+  // ram-view=: the compressor's room for the view (the view over the RAM, rounded up), added once; a given value stays
+  {
+    char view_args[96] = "-v";
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 0, 7ull << 30) == 0 && !strcmp(view_args, "-v"));              // off
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 6ull << 30, 7ull << 30) == 0 && !strcmp(view_args, "-v"));     // not over the RAM
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 7ull << 30) == 2 && !strcmp(view_args, "-v kern.compressor_pool_multiplier=2"));
+    strcpy(view_args, "kern.compressor_pool_multiplier=4");
+    CHECK(xh_view_boot_args(view_args, sizeof view_args, 12ull << 30, 4ull << 30) == 3 && !strcmp(view_args, "kern.compressor_pool_multiplier=4"));
+    view_args[0] = 0;
+    CHECK(xh_view_boot_args(view_args, 20, 12ull << 30, 4ull << 30) == -1);                                             // no room
+    xh_config vc;
+    xh_config_defaults(&vc);
+    CHECK(vc.ram_view == 0 && xh_config_set(&vc, "ram-view", "12G") == 0 && vc.ram_view == 12ull << 30 && vc.ram_view_given);
+    CHECK(xh_config_set(&vc, "ram-view", "off") == 0 && vc.ram_view == 0);
+    CHECK(xh_config_set(&vc, "ram-view", "auto") == 0 && vc.ram_view == 12ull << 30);
+    CHECK(xh_config_set(&vc, "ram-view", "lots") != 0);
+  }
   // the display driver's switches on the kernel's command line: added once, a given value stays
   char args[128] = "-v debug=0x8";
   CHECK(xh_display_boot_args(args, sizeof args, 3, 120, XH_PIXELS_BGRX8) == 0 && !strcmp(args, "-v debug=0x8 offline-legacy-unit-scale=3 sheng-vsync=120"));
