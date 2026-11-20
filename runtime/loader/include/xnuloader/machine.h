@@ -25,6 +25,7 @@ typedef enum {
   XL_DEV_SND,         // "droidvm,virtio-snd"
   XL_DEV_BRIDGE,      // "oneios,bridge": the message channel of runtime/bridges (haptics, Bluetooth HCI)
   XL_DEV_CAMERA,      // "oneios,camera": camera frames from runtime/bridges/camera (drivers/camera)
+  XL_DEV_MEDIA,       // "droidvm,virtio-media": the video encoder (runtime/bridges/encoder), with a media-host-pool
 } xl_device_kind;
 
 typedef struct { xl_device_kind kind; uint64_t base, size; } xl_device;
@@ -35,6 +36,10 @@ typedef struct {
   char        cpu_cluster[XL_MAX_CPUS];   // 'P' or 'E'
   uint32_t    timebase_hz;                // CNTFRQ_EL0 of the host
   uint64_t    dram_base, dram_size;       // the kernel's memory window (physical)
+  // xnuhost's ram-view= (0 = off): the DRAM size the device is said to have. /defaults then carries the per-process
+  // memory limits of an iPhone18,2 (its own device tree's kern.*_task_pmem, scaled by view_size / 12 GiB); without it only
+  // kern.max_task_pmem, the iPhone's 3376 MB.
+  uint64_t    view_size;
   uint64_t    armio_base, armio_size;     // must not start at 0 (pexpert takes it as the SoC base)
   uint64_t    gic_dist, gic_dist_size, gic_redist, gic_redist_size, gic_redist_stride;
   uint64_t    uart_base, uart_size;       // PL011, node "uart0"; size 0 for none
@@ -45,8 +50,12 @@ typedef struct {
   // /arm-io/virtio-gpu drm-host-pool: physical base and size of the memory, outside the kernel's window, in which
   // the host's 3D renderer keeps what the guest maps (UniXNU-droidvm DroidVMVirtioGpu3D.cpp); size 0 for no 3D.
   uint64_t    gpu_pool_base, gpu_pool_size;
+  // /arm-io/virtio-media media-host-pool: physical base and size of the memory, outside the kernel's window, in
+  // which the video encoder's MMAP'd V4L2 buffers live (runtime/bridges/encoder); the guest maps it as the codec's
+  // OUTPUT/CAPTURE buffers (UniXNU-droidvm DroidVMVirtioMedia.c). Size 0 for no encoder.
+  uint64_t    media_pool_base, media_pool_size;
   // /bluetooth: transport-encoding 10 (the virtual transport, no controller) when bt_transport is 0;
-  // else that encoding (3 = the phone's controller behind the bridge) with bt_speed and bt_mac.
+  // else that encoding (xnuhost: 1, H4, the phone's controller behind the bridge) with bt_speed and bt_mac.
   uint32_t    bt_transport, bt_speed;
   uint8_t     bt_mac[6];
   uint64_t    panic_base, panic_size;     // /pram; size 0 for none
@@ -62,6 +71,7 @@ typedef struct {
   // with model/product names from the strings below (which may be NULL).
   const xl_adt_node *identity;
   const char *model;                      // "iPhone18,2"
+  const char *target_type;                // the root's target-type without an identity tree ("V54"; NULL: none)
   const char *display_gamut;              // /product artwork-display-gamut, default "P3"
   // The guest's display (0 = say nothing): the mode in pixels, the UI scale (pixels per point, 2 or 3: /chosen
   // display-scale, which MobileGestalt answers main-screen-scale from, and /product artwork-scale-factor) and the

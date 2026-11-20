@@ -33,6 +33,8 @@ extern void thread_deallocate(thread_t);
 #define WAIT_READY_S    60
 #define PUMP_GUARD_MS   20u
 
+#define OBT_SAY_PACKETS 40u
+
 static LCK_GRP_DECLARE(ios_grp, "oneios_bt");
 static LCK_MTX_DECLARE(ios_lock, &ios_grp);     /* state, queue, owner */
 static LCK_MTX_DECLARE(tx_lock, &ios_grp);      /* TX framing and packet order */
@@ -48,9 +50,18 @@ static struct {
 	uint8_t tx[OBT_H4_MAX];                 /* tx_lock */
 	uint32_t txn;
 	uint32_t n_tx, n_rx, n_local, n_drop;
+	uint32_t said_tx, said_rx;              /* commands and events logged for this client (the first OBT_SAY_PACKETS) */
 	uint8_t address[6];
 	int pump_event;
+	volatile bool pump_kicked;              /* set before each wakeup of the pump thread: none is lost */
 } t;
+
+static void
+pump_wake(void)
+{
+	t.pump_kicked = true;
+	thread_wakeup((event_t)&t.pump_event);
+}
 
 bool
 obt_ios_ready(void)
@@ -107,9 +118,12 @@ deliver(const uint8_t *p, uint32_t n)
 	lck_mtx_unlock(&ios_lock);
 	if (owner == 1) {
 		obt_ctl_wakeup();
-		thread_wakeup((event_t)&t.pump_event);
+		pump_wake();
 	} else if (owner == 2) {
 		obt_dev_wakeup();
+	} else if (owner == 3) {
+		obt_sk_wakeup();
+		pump_wake();
 	}
 }
 
@@ -145,21 +159,46 @@ from_host(void *context __unused, uint16_t type, const uint8_t *payload, uint32_
 	}
 	if (type == OB_HCI_EVENT) {
 		(void)obt_fix_event(&t.shim, t.rx, length + 1u);
+		/* the controller's first events: a Command Complete (0x0e) with its command and status */
+		if (t.said_rx < OBT_SAY_PACKETS) {
+			t.said_rx++;
+			if (t.rx[1] == 0x0e && length >= 6) {
+				OBT_SAY("controller: Command Complete for 0x%04x, status 0x%02x\n", (unsigned)(t.rx[4] | t.rx[5] << 8), t.rx[6]);
+			} else {
+				OBT_SAY("controller: event 0x%02x, %u bytes\n", t.rx[1], length);
+			}
+		}
 	}
 	t.n_rx++;
 	deliver(t.rx, length + 1u);
 }
 
-/* The control client's data is enqueued by one thread only (ctl_enqueuedata order; ctl_rcvd asks for more). */
+/* The control client's data is enqueued by one thread only (ctl_enqueuedata order; ctl_rcvd asks for more).
+ * The thread sleeps until it is kicked (a packet for the client, bluetoothd's bytes in the Skywalk FIFO, room again in
+ * the control's socket). Only while bytes wait for the client does it also look every PUMP_GUARD_MS. Until
+ * 2026-11-15 it woke every 20 ms from the root mount to the shutdown, with no client and nothing queued: 50 wakeups a
+ * second of a vCPU for the whole session, and 24A446's bluetoothd never connects in a virtual machine
+ * (docs/hardware.md 4, "The virtual transport is bluetoothd's own"). */
 static void
 pump_thread(void *arg __unused, wait_result_t w __unused)
 {
 	for (;;) {
-		uint64_t deadline;
-
+		t.pump_kicked = false;
 		obt_ctl_pump();
-		clock_interval_to_deadline(PUMP_GUARD_MS, NSEC_PER_MSEC, &deadline);
-		assert_wait_deadline((event_t)&t.pump_event, THREAD_UNINT, deadline);
+		obt_sk_pump();
+		if (t.qn) {
+			uint64_t deadline;
+
+			clock_interval_to_deadline(PUMP_GUARD_MS, NSEC_PER_MSEC, &deadline);
+			assert_wait_deadline((event_t)&t.pump_event, THREAD_UNINT, deadline);
+		} else {
+			assert_wait((event_t)&t.pump_event, THREAD_UNINT);
+		}
+		if (t.pump_kicked) {
+			/* kicked while it pumped: the wakeup came before the wait, so look again now */
+			clear_wait(current_thread(), THREAD_AWAKENED);
+			continue;
+		}
 		(void)thread_block(THREAD_CONTINUE_NULL);
 	}
 }
@@ -182,7 +221,18 @@ tx_frame(uint8_t *p, uint32_t n)
 
 	if (p[0] == 1) {
 		(void)obt_fix_command(p, n);
-		if ((len = obt_local_answer(&t.shim, p, n, ev)) != 0) {
+		len = obt_local_answer(&t.shim, p, n, ev);
+		/* bluetoothd's first commands, and which of them this driver answers itself (Broadcom's vendor commands) */
+		if (t.said_tx < OBT_SAY_PACKETS && n >= 4) {
+			t.said_tx++;
+			if (len) {
+				OBT_SAY("bluetoothd: command 0x%04x, %u parameter bytes: answered here, status 0x%02x\n",
+				    (unsigned)(p[1] | p[2] << 8), p[3], ev[6]);
+			} else {
+				OBT_SAY("bluetoothd: command 0x%04x, %u parameter bytes\n", (unsigned)(p[1] | p[2] << 8), p[3]);
+			}
+		}
+		if (len != 0) {
 			t.n_local++;
 			deliver(ev, len);
 			return 0;
@@ -228,6 +278,7 @@ obt_ios_claim(uint32_t owner, uint32_t unit)
 		t.owner = owner;
 		t.unit = unit;
 		t.qh = t.qt = t.qn = 0;
+		t.said_tx = t.said_rx = 0;
 		bzero(&t.shim, sizeof(t.shim));
 	}
 	lck_mtx_unlock(&ios_lock);
@@ -237,7 +288,7 @@ obt_ios_claim(uint32_t owner, uint32_t unit)
 		lck_mtx_unlock(&tx_lock);
 		t.host_state = OB_HCI_STATE_OFF;
 		(void)oneios_bridge_send(OB_CH_HCI, OB_HCI_OPEN, NULL, 0);      /* power follows the client */
-		OBT_SAY("ios: client %s connected; %s\n", owner == 1 ? "control" : "device", oneios_bt_result());
+		OBT_SAY("ios: client %s connected; %s\n", owner == 1 ? "control" : owner == 2 ? "device" : "Skywalk pipe", oneios_bt_result());
 	}
 	return e;
 }
@@ -258,6 +309,13 @@ obt_ios_release(uint32_t owner)
 		(void)oneios_bridge_send(OB_CH_HCI, OB_HCI_CLOSE, NULL, 0);
 	}
 	OBT_SAY("ios: client gone (tx %u rx %u local %u dropped %u)\n", t.n_tx, t.n_rx, t.n_local, t.n_drop);
+}
+
+/* The pump thread looks now (the Skywalk pipe has bytes from bluetoothd). */
+void
+obt_ios_kick(void)
+{
+	pump_wake();
 }
 
 void

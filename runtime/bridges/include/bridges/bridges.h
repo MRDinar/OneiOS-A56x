@@ -25,6 +25,8 @@ typedef struct {
   uint32_t min_khz, max_khz;              // cpuinfo_min_freq, cpuinfo_max_freq
   uint32_t freq_khz[BR_MAX_FREQS];        // scaling_available_frequencies, ascending
   unsigned nfreq;
+  uint32_t boost_khz;                     // the highest of scaling_boost_frequencies (also in freq_khz), 0 = none listed
+  uint32_t scaling_max_khz;               // scaling_max_freq when read (a cap someone set: logged, never written)
   unsigned part;                          // MIDR part number (0xd80 A520, 0xd81 A720, 0xd82 X4), 0 = unknown
   uint32_t l1d_bytes, l1i_bytes, l2_bytes, l3_bytes;
   char     type;                          // 'P' or 'E', set by br_cpu_read
@@ -44,7 +46,8 @@ typedef struct {
   char     type;                          // 'P' or 'E': the ADT cluster-type of this vCPU
   unsigned cluster_id;                    // 0 = E cluster, 1 = P cluster (E first, as on Apple SoCs)
   uint64_t affinity;                      // host CPUs its thread (and the iOS thread it runs) may use
-  unsigned capacity;                      // of the fastest host CPU in the mask
+  unsigned host_cpu;                      // the core it is described as: its own with pin, else the one cpu-pin gives it
+  unsigned capacity;                      // of host_cpu
   uint32_t min_khz, max_khz;
   uint32_t freq_khz[BR_MAX_FREQS];
   unsigned nfreq;
@@ -67,6 +70,19 @@ int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index);
 int br_cpu_request(int tid, const br_cpu_plan *plan, unsigned index, uint32_t khz);
 // The uclamp.min value br_cpu_request uses (0..1024).
 unsigned br_cpu_util_for(const br_cpu_plan *plan, unsigned index, uint32_t khz);
+
+// Thermal steps (runtime/bridges/thermal): the host CPUs a vCPU of `type` may use at step `cap`. 0: all of its kind;
+// 1: P without the frequency domain of the highest top clock (the X4 here); 2: P limited to the domain of the lowest
+// top clock, and the E cores; 3: the E cores only. A step that would leave no CPU keeps the one before it.
+uint64_t br_cpu_thermal_mask(const br_cpu_topology *t, char type, unsigned cap);
+// plan's affinities from base's (br_cpu_plan_make), each limited to its step's CPUs (base's mask when they do not meet),
+// with the step's CPUs of the other kind added (step 2: a P vCPU also on the E cores). Each word is stored atomically:
+// placement may read plan meanwhile.
+void br_cpu_plan_cap(br_cpu_plan *plan, const br_cpu_plan *base, const br_cpu_topology *t, unsigned cap);
+// cpu-pin: vCPU `vcpu`'s one host CPU, the rank-th CPU of plan's mask among base's vCPUs of its kind, while every vCPU
+// of that kind can have a CPU of the mask to itself; otherwise (more vCPUs than CPUs, as at a thermal step) the whole
+// mask, so that Linux spreads them. 0 for a vCPU the plan does not have.
+uint64_t br_cpu_pin_mask(const br_cpu_plan *plan, const br_cpu_plan *base, unsigned vcpu);
 
 // The virtual cpufreq device DroidVMCpufreq.c drives (Linux's virtual-cpufreq register layout): one
 // 4 KiB window per vCPU. xnuhost registers [base, base + nvcpu * 0x1000) and forwards accesses here.
@@ -95,6 +111,10 @@ typedef struct br_haptic br_haptic;
 // Finds the force-feedback device under `dev_dir` ("/dev/input"; NULL = that) and starts the worker.
 // NULL when there is none or it cannot be opened (the reason is logged).
 br_haptic *br_haptic_open(const char *dev_dir);
+// The same with the backend chosen (BR_HW_SAMSUNG: the evdev device; BR_HW_TREBLE: the vibrator HAL on `binder`, NULL:
+// ONEIOS_BINDER or /dev/binder; BR_HW_UNSET: hw-backend-haptics, bridges/hw_backend.h). br_haptic_open is this with
+// BR_HW_UNSET.
+br_haptic *br_haptic_open_as(const char *dev_dir, int backend, const char *binder);
 // The same on a caller's back end (tests, another actuator).
 br_haptic *br_haptic_open_backend(const br_haptic_backend *backend, void *ctx);
 // Vibrate from now for on_ms (0 = stop) at intensity 0..1000 and frequency_hz (0 = resonance).
@@ -103,7 +123,16 @@ void br_haptic_vib(br_haptic *h, uint32_t on_ms, unsigned intensity, unsigned fr
 void br_haptic_stop(br_haptic *h);
 // Waits until the worker has carried out everything asked so far (tests, shutdown).
 void br_haptic_flush(br_haptic *h);
+// Logs the counter line and stops the motor.
 void br_haptic_close(br_haptic *h);
+// The stand-in actuator (haptics=sim, a PC boot): every request is taken and counted, nothing vibrates.
+br_haptic *br_haptic_open_sim(void);
+// What reached this side: requests from the guest (vibrate, stop, and those a newer one replaced before the worker
+// started them) and what the device then did. br_haptic_report logs them as one "haptics: counters:" line; the
+// worker also logs the first 8 effects and every power of two after that.
+typedef struct { uint64_t vib, stop, replaced, played, stopped, failed; } br_haptic_stats;
+void br_haptic_stats_get(br_haptic *h, br_haptic_stats *out);
+void br_haptic_report(br_haptic *h);
 // The mapping, exposed for tests: iOS intensity/frequency to the effect's parameters.
 void br_haptic_map(unsigned intensity, unsigned frequency_hz, unsigned *period_ms, unsigned *magnitude);
 // The evdev back end's device search: writes the node path of the first device whose EV_FF bits
@@ -161,6 +190,11 @@ bool    br_hci_packet_ok(uint8_t type, const uint8_t *packet, size_t length);
 // Two threads: one answers the HAL's callbacks, one makes the calls (br_hci_send only queues, up to
 // 512 packets). ONEIOS_HWBINDER names another binder device than /dev/hwbinder (the PC test).
 br_hci *br_hci_open_hidl(br_hci_rx_fn rx, br_hci_state_fn state, void *ctx);
+// A stand-in controller (bt/hci_sim.c, bluetooth=sim): answers every command as a 5.4 controller does, vendor
+// commands with Unknown HCI Command, and an LE scan with one made-up device; data goes nowhere. For a boot with no
+// phone (the PC). br_hci_sim_set_address sets the address it reports (display order) before the first open.
+br_hci *br_hci_open_sim(br_hci_rx_fn rx, br_hci_state_fn state, void *ctx);
+void    br_hci_sim_set_address(const uint8_t address[6]);
 // Asks hwservicemanager for the HAL once and lets it go: 11 (1.1) or 10 (1.0) when it is registered and
 // this domain may find it, else -errno (-ENODEV: no binder device). Logs why when it is not found.
 int     br_hci_hidl_probe(void);
@@ -180,6 +214,12 @@ typedef struct {
 // The AAudio helper process (audio/aaudio_helper.c, bin/oneios-audio): started with `path`, fed over
 // a socket pair. NULL when it cannot be started. *ctx receives the back end's context.
 const br_audio_backend *br_audio_helper(const char *path, void **ctx);
+// The helper's speaker latency, measured before the guest boots (audio_proto.h AU_PROBE: the stream is opened in
+// silence and lingers): frames at 48 kHz from a guest period's arrival to the speaker, or -errno (-ENOTSUP: not
+// the helper; -ETIMEDOUT: no answer in `timeout_ms`). Blocks the caller up to `timeout_ms`.
+int br_audio_probe_latency(const br_audio_backend *backend, void *ctx, unsigned timeout_ms);
+// Tells the helper the output latency the guest publishes (frames), for its end-to-end line. No-op otherwise.
+void br_audio_told(const br_audio_backend *backend, void *ctx, unsigned frames);
 // A back end that drops output and gives silence (no helper, tests).
 const br_audio_backend *br_audio_null(void **ctx);
 

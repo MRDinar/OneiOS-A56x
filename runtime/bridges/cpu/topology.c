@@ -112,6 +112,20 @@ int br_cpu_read(const char *root, br_cpu_topology *t)
       if (c->min_khz && c->min_khz < c->max_khz) c->freq_khz[c->nfreq++] = c->min_khz;
       c->freq_khz[c->nfreq++] = c->max_khz;
     }
+    // The boost frequencies are not in scaling_available_frequencies (Linux lists CPUFREQ_BOOST_FREQ entries apart; Qualcomm's
+    // cpufreq-hw marks a LUT entry as one when fewer cores than the domain's may run at it: the X4's top). The phone's guest saw
+    // the X4's vCPU top at 3052.8 MHz where the core reaches 3.39 GHz (host-overhead, 2026-11-15): they belong in its table.
+    if (read_text(root, "%s/devices/system/cpu/cpu%u/cpufreq/scaling_boost_frequencies", i, text, sizeof text)) {
+      for (char *p = strtok(text, " \t\n"); p && c->nfreq < BR_MAX_FREQS; p = strtok(NULL, " \t\n")) {
+        uint32_t khz = (uint32_t)strtoul(p, NULL, 10);
+        bool known = false;
+        for (unsigned k = 0; k < c->nfreq; k++) known |= c->freq_khz[k] == khz;
+        if (khz && !known) { c->freq_khz[c->nfreq++] = khz; c->boost_khz = khz > c->boost_khz ? khz : c->boost_khz; }
+      }
+      qsort(c->freq_khz, c->nfreq, sizeof c->freq_khz[0], compare_u32);
+    }
+    if (read_number(root, "%s/devices/system/cpu/cpu%u/cpufreq/scaling_max_freq", i, &v)) c->scaling_max_khz = (uint32_t)v;
+    if (c->nfreq && c->freq_khz[c->nfreq - 1] > c->max_khz) c->max_khz = c->freq_khz[c->nfreq - 1];
     if (read_number(root, "%s/devices/system/cpu/cpu%u/regs/identification/midr_el1", i, &v)) c->part = (unsigned)(v >> 4) & 0xfff;
     read_caches(root, i, c);
     // Without cpu_capacity (a kernel without the arch topology driver) the top frequency orders the cores.
@@ -179,8 +193,94 @@ int br_cpu_plan_make(const br_cpu_topology *t, unsigned nvcpu, bool pin, br_cpu_
   bool one_to_one = pin && n_e <= ne && n_p <= np;
   for (unsigned i = 0; i < n_e; i++) vcpu_from(t, one_to_one ? 1ull << e_list[i] : e_mask, 'E', &plan->v[i]);
   for (unsigned i = 0; i < n_p; i++) vcpu_from(t, one_to_one ? 1ull << p_list[i] : p_mask, 'P', &plan->v[n_e + i]);
+  // With a mask per kind, cpu-pin (br_cpu_pin_mask) puts the rank-th vCPU of a kind on the rank-th CPU of the mask, in CPU
+  // order: on the SM8650 vCPU i on CPU i. Each vCPU is described as that core (its clock table, capacity, caches), not as the
+  // fastest core of its kind: before (host-overhead, 2026-11-15) the guest saw six X4s, and a frequency request of a vCPU on
+  // an A720 was sized against the X4's table. host_cpu says which core it is.
+  if (!one_to_one) {
+    unsigned re = 0, rp = 0;
+    for (unsigned c = 0; c < t->ncpu; c++) {
+      if (!t->cpu[c].present) continue;
+      unsigned at = t->cpu[c].type == 'E' ? (re < n_e ? re++ : nvcpu) : (rp < n_p ? n_e + rp++ : nvcpu);
+      if (at >= nvcpu) continue;
+      br_vcpu described;
+      vcpu_from(t, 1ull << c, plan->v[at].type, &described);
+      described.affinity = plan->v[at].affinity;
+      plan->v[at] = described;
+      plan->v[at].host_cpu = c;
+    }
+  } else {
+    for (unsigned i = 0; i < n_e; i++) plan->v[i].host_cpu = e_list[i];
+    for (unsigned i = 0; i < n_p; i++) plan->v[n_e + i].host_cpu = p_list[i];
+  }
   plan->nvcpu = nvcpu; plan->n_e = n_e; plan->n_p = n_p;
   return 0;
+}
+
+// The CPUs of the frequency domain with the highest (top = true) or lowest top clock among `mask`.
+static uint64_t domain_by_clock(const br_cpu_topology *t, uint64_t mask, bool top)
+{
+  uint32_t best = 0;
+  unsigned policy = ~0u;
+  for (unsigned i = 0; i < t->ncpu; i++) {
+    if (!(mask >> i & 1)) continue;
+    uint32_t khz = t->cpu[i].max_khz;
+    if (policy == ~0u || (top ? khz > best : khz < best)) { best = khz; policy = t->cpu[i].policy; }
+  }
+  uint64_t out = 0;
+  for (unsigned i = 0; i < t->ncpu; i++) if (mask >> i & 1 && t->cpu[i].policy == policy) out |= 1ull << i;
+  return out;
+}
+
+uint64_t br_cpu_thermal_mask(const br_cpu_topology *t, char type, unsigned cap)
+{
+  uint64_t e = 0, p = 0;
+  for (unsigned i = 0; i < t->ncpu; i++) {
+    if (!t->cpu[i].present) continue;
+    if (t->cpu[i].type == 'E') e |= 1ull << i; else p |= 1ull << i;
+  }
+  if (type == 'E' && e) return e;                       // the E cores are the floor of every step
+  uint64_t m = p;
+  if (cap >= 1 && (p & ~domain_by_clock(t, p, true))) m = p & ~domain_by_clock(t, p, true);
+  if (cap >= 2) m = domain_by_clock(t, m, false) | e;
+  if (cap >= 3 && e) m = e;
+  return m;
+}
+
+void br_cpu_plan_cap(br_cpu_plan *plan, const br_cpu_plan *base, const br_cpu_topology *t, unsigned cap)
+{
+  uint64_t e = 0;
+  for (unsigned i = 0; i < t->ncpu; i++) if (t->cpu[i].present && t->cpu[i].type == 'E') e |= 1ull << i;
+  for (unsigned i = 0; i < base->nvcpu && i < BR_MAX_VCPUS; i++) {
+    uint64_t want = base->v[i].affinity, allowed = br_cpu_thermal_mask(t, base->v[i].type, cap);
+    uint64_t mask = want & allowed ? want & allowed : allowed ? allowed : want;
+    // The cores a step adds of the other kind (step 2's E cores for a P vCPU) are the vCPU's too: intersected with its
+    // own kind's mask they were lost, and the phone's six P vCPUs ran on two cores at "trapping" (0x60, 2026-11-13)
+    // where the step means four (0x63).
+    const uint64_t kind = base->v[i].type == 'E' ? e : ~e;
+    if (want & allowed) mask |= allowed & ~kind;
+    __atomic_store_n(&plan->v[i].affinity, mask, __ATOMIC_RELEASE);
+  }
+}
+
+uint64_t br_cpu_pin_mask(const br_cpu_plan *plan, const br_cpu_plan *base, unsigned vcpu)
+{
+  if (vcpu >= plan->nvcpu || vcpu >= BR_MAX_VCPUS) return 0;
+  const uint64_t mask = __atomic_load_n(&plan->v[vcpu].affinity, __ATOMIC_ACQUIRE);   // the thermal step may change it
+  if (!mask) return mask;
+  unsigned rank = 0, same = 0;
+  for (unsigned j = 0; j < base->nvcpu && j < BR_MAX_VCPUS; j++) {
+    if (base->v[j].type != base->v[vcpu].type) continue;
+    if (j < vcpu) rank++;
+    same++;
+  }
+  // One core each only while there are enough: with more vCPUs of a kind than cores in the mask (a thermal step), a
+  // pinned vCPU waits behind the others on its core while another core of the mask idles, and a vCPU preempted while
+  // it holds a kernel lock holds up every vCPU spinning on that lock (phone, 2026-11-13: three P vCPUs on each of two
+  // cores at "trapping"; interrupts up to 953 ms, system calls up to 639 ms). Then the whole mask: Linux spreads them.
+  if (same > (unsigned)__builtin_popcountll(mask)) return mask;
+  for (unsigned i = 0; i < 64; i++) if (mask >> i & 1 && rank-- == 0) return 1ull << i;
+  return mask;
 }
 
 int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index)
@@ -188,7 +288,8 @@ int br_cpu_place(int tid, const br_cpu_plan *plan, unsigned index)
   if (index >= plan->nvcpu) return -EINVAL;
   cpu_set_t set;
   CPU_ZERO(&set);
-  for (unsigned i = 0; i < 64 && i < CPU_SETSIZE; i++) if (plan->v[index].affinity >> i & 1) CPU_SET(i, &set);
+  const uint64_t mask = __atomic_load_n(&plan->v[index].affinity, __ATOMIC_ACQUIRE);   // br_cpu_plan_cap may change it
+  for (unsigned i = 0; i < 64 && i < CPU_SETSIZE; i++) if (mask >> i & 1) CPU_SET(i, &set);
   return sched_setaffinity(tid, sizeof set, &set) ? -errno : 0;
 }
 

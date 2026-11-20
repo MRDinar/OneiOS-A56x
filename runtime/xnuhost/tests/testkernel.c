@@ -100,11 +100,27 @@ static void irq_upcall(struct xh_cpu *cpu, struct xh_frame *frame)
   }
 }
 
+// vCPU 1's part of test_unmap_race: while armed it spins, and each time `go` moves it runs worker.thread once (from
+// worker_st) and reports the trap; otherwise it idles (SGI 6 wakes it to look again).
+static volatile struct { uint64_t thread; uint32_t armed, go, done, kind; uint64_t far; } worker;
+static struct xh_user_state worker_st;
+
 static void secondary_entry(struct xh_cpu *cpu, uint64_t arg)
 {
   secondary_seen = arg + cpu->index;
+  H->irq_enable(cpu, 6, 1);
   H->ipi(cpu, 0, 5);
-  for (;;) H->cpu_idle(cpu);
+  for (;;) {
+    if (!worker.armed) { H->cpu_idle(cpu); if (cpu->irq_pending) irq_upcall(cpu, NULL); continue; }
+    uint32_t go = __atomic_load_n(&worker.go, __ATOMIC_ACQUIRE);
+    if (go == worker.done) { __asm__ volatile("yield"); continue; }
+    struct xh_trap trap;
+    int64_t rc;
+    while ((rc = H->thread_run(cpu, worker.thread, &worker_st, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) irq_upcall(cpu, NULL);
+    worker.kind = rc ? 0xffffffffu : trap.kind;
+    worker.far = trap.far;
+    __atomic_store_n(&worker.done, go, __ATOMIC_RELEASE);
+  }
 }
 
 __attribute__((noreturn)) void psci_entry(uint64_t context, const struct xh_vector *vector, struct xh_cpu *cpu);
@@ -183,6 +199,226 @@ static void test_devices(void)
   r[0x64 / 4] = 1;
 }
 
+// The deferred unmaps (task.c, task.unmaps_out) with a loading thread: `ldr x0, [x1]; brk` at code_va + 32.
+static int load_once(struct xh_cpu *cpu, uint64_t thread, uint64_t code_va, uint64_t va, struct xh_trap *trap, uint64_t *value)
+{
+  static struct xh_user_state ls;
+  zero(&ls, sizeof ls);
+  ls.pc = code_va + 32;
+  ls.x[1] = va;
+  int64_t rc;
+  while ((rc = H->thread_run(cpu, thread, &ls, trap)) == 0 && trap->kind == XH_TRAP_INTERRUPT) irq_upcall(cpu, NULL);
+  if (value) *value = ls.x[0];
+  return rc == 0 ? (int)trap->kind : -1;
+}
+
+static void test_unmap_queue(uint64_t task, uint64_t thread, uint64_t code_va, uint64_t data_pa)
+{
+  struct xh_trap trap;
+  uint64_t got = 0;
+  const uint64_t x_va = 0x400000000ull, fill_va = 0x500000000ull;
+  uint64_t other_pa = page_alloc();
+  *(volatile uint64_t *)(uintptr_t)kva(data_pa) = 0x1111;
+  *(volatile uint64_t *)(uintptr_t)kva(other_pa) = 0x2222;
+  // In the queue's order: an unmap, then a map of the same address to another page.
+  check(H->task_map(C0, task, x_va, 0x4000, XH_PROT_READ, data_pa) == 0 && load_once(C0, thread, code_va, x_va, &trap, &got) == XH_TRAP_BRK &&
+        got == 0x1111, "deferred unmaps: a page mapped and loaded");
+  check(H->task_unmap(C0, task, x_va, 0x4000) == 0 && H->task_map(C0, task, x_va, 0x4000, XH_PROT_READ, other_pa) == 0 &&
+        load_once(C0, thread, code_va, x_va, &trap, &got) == XH_TRAP_BRK && got == 0x2222,
+        "an unmap and a new map of the same address, queued: the thread sees the new page");
+  // A full queue (256): the next unmap is ordered and takes the queue with it; the last one is queued again.
+  int ok = 1;
+  for (unsigned i = 0; i < 300; i++) ok &= H->task_unmap(C0, task, fill_va + (uint64_t)i * 0x4000, 0x4000) == 0;
+  check(ok && H->task_unmap(C0, task, x_va, 0x4000) == 0 && load_once(C0, thread, code_va, x_va, &trap, NULL) == XH_TRAP_FAULT &&
+        trap.far == x_va, "301 unmaps while the thread is stopped (more than the queue holds): the last is in force");
+  // task_read after a queued unmap: the read must not see the old page (it fails; the kernel would fault it in).
+  uint64_t back = 0;
+  int64_t read = (H->task_map(C0, task, x_va, 0x4000, XH_PROT_READ, data_pa), H->task_read(C0, task, x_va, &back, 8));
+  if (read == -38) { put("SKIP task_read after queued maps and unmaps: this host has no process_vm_readv\n"); H->task_unmap(C0, task, x_va, 0x4000); }
+  else check(read == 8 && back == 0x1111 && H->task_unmap(C0, task, x_va, 0x4000) == 0 && H->task_read(C0, task, x_va, &back, 8) < 0,
+             "task_read after a queued map reads the page, after a queued unmap it fails");
+  // ram_discard (the kernel's free-page reporting, 0058) and a task's mapping of the page. One page in every
+  // mapping: given back, the task reads zero; written again by the kernel, the task reads the new value.
+  const uint64_t d_va = 0x600000000ull;
+  uint64_t d_pa = page_alloc();
+  *(volatile uint64_t *)(uintptr_t)kva(d_pa) = 0x3333;
+  if (H->info->features & XH_FEATURE_RAM_FIXED) {
+    put("SKIP ram_discard with a task's mapping: the RAM is held fixed (ram-giveback=0); check-arm64's first boot runs it\n");
+    return;
+  }
+  check(H->task_map(C0, task, d_va, 0x4000, XH_PROT_READ, d_pa) == 0 && load_once(C0, thread, code_va, d_va, &trap, &got) == XH_TRAP_BRK &&
+        got == 0x3333 && H->ram_discard(C0, d_pa, 0x4000) == 0 && load_once(C0, thread, code_va, d_va, &trap, &got) == XH_TRAP_BRK && got == 0 &&
+        (*(volatile uint64_t *)(uintptr_t)kva(d_pa) = 0x4444, load_once(C0, thread, code_va, d_va, &trap, &got)) == XH_TRAP_BRK && got == 0x4444,
+        "ram_discard of a page a task maps: the task reads zero, then what the kernel writes into the page again");
+  // The page's unmap queued (the thread is stopped), the page given back and used again by the kernel before the
+  // task runs: the task's next run carries the unmap out first and faults; it never sees the page's new data.
+  check(H->task_unmap(C0, task, d_va, 0x4000) == 0 && H->ram_discard(C0, d_pa, 0x4000) == 0 &&
+        (*(volatile uint64_t *)(uintptr_t)kva(d_pa) = 0x5555, load_once(C0, thread, code_va, d_va, &trap, NULL)) == XH_TRAP_FAULT && trap.far == d_va,
+        "ram_discard of a page whose unmap is queued: the task faults at its next run, the page's new data is not seen");
+}
+
+// Two threads of one task on two vCPUs. Thread A is stopped with the page at x_va mapped in its process; the kernel
+// queues 128 maps and then the unmap of x_va (no thread runs); then vCPU 1 releases thread B while vCPU 0 releases
+// thread A (round 0) or gives the task an order (round 1), so one of them takes the queue. Whoever does not must wait
+// until the unmap is done: both threads' loads of x_va fault, every time.
+static void test_unmap_race(uint64_t task, uint64_t a, uint64_t code_va, uint64_t data_pa)
+{
+  uint64_t b = 0;
+  if (H->thread_create(C0, task, &b)) { check(0, "unmap race: a second thread"); return; }
+  const uint64_t x_va = 0x400000000ull, fill_va = 0x600000000ull;
+  struct xh_trap trap;
+  unsigned rounds = 200, bad_a = 0, bad_b = 0, setup = 0;
+  worker.thread = b;
+  worker.done = worker.go = 0;
+  __atomic_store_n(&worker.armed, 1, __ATOMIC_RELEASE);
+  H->ipi(C0, 1, 6);
+  for (unsigned i = 0; i < rounds; i++) {
+    if (H->task_map(C0, task, x_va, 0x4000, XH_PROT_READ, data_pa) || load_once(C0, a, code_va, x_va, &trap, NULL) != XH_TRAP_BRK) { setup++; continue; }
+    for (unsigned j = 0; j < 128; j++) H->task_map(C0, task, fill_va + (uint64_t)j * 0x4000, 0x4000, XH_PROT_READ, data_pa);
+    H->task_unmap(C0, task, x_va, 0x4000);
+    zero(&worker_st, sizeof worker_st);
+    worker_st.pc = code_va + 32;
+    worker_st.x[1] = x_va;
+    uint32_t go = worker.go + 1;
+    __atomic_store_n(&worker.go, go, __ATOMIC_RELEASE);
+    if (i & 1) H->task_protect(C0, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC);
+    else if (load_once(C0, a, code_va, x_va, &trap, NULL) != XH_TRAP_FAULT || trap.far != x_va) bad_a++;
+    uint64_t start = now();
+    while (__atomic_load_n(&worker.done, __ATOMIC_ACQUIRE) != go && now() - start < H->info->timebase_hz * 20) {}
+    if (worker.done != go || worker.kind != XH_TRAP_FAULT || worker.far != x_va) bad_b++;
+    if (worker.done != go) break;
+  }
+  __atomic_store_n(&worker.armed, 0, __ATOMIC_RELEASE);
+  if (bad_a || bad_b || setup) { put("  unmap race: rounds, bad A, bad B, setup: "); hex(rounds); put(" "); hex(bad_a); put(" "); hex(bad_b); put(" "); hex(setup); put("\n"); }
+  check(!setup && !bad_a && !bad_b, "unmap race: 200 rounds, the thread that did not carry a queued unmap never sees the old page");
+  check(H->thread_destroy(C0, b) == 0, "unmap race: the second thread destroyed");
+}
+
+// WebKit's JIT (MAP_JIT) at the host-call level: a page is writable through one mapping and executable through
+// another of the same physical page (the "separated W^X heaps" WebKit uses on a host with no APRR/SPRR: real
+// hardware here has none). The thread writes an instruction sequence through the read-write alias, does the i-cache
+// maintenance an arm64 JIT must, and branches to the read-execute alias. The page is executed as it was written:
+// the two aliases share the physical page (two task_map mmaps of one RAM offset), and a store through the writable
+// one is seen by an instruction fetch through the executable one. 0067 (fault 10): the hosted layer carries no
+// per-thread W^X (one Linux process cannot give two threads different permissions of one page), so WebKit must not
+// take the per-thread path; this checks the aliasing path it does take.
+// JSC's first JIT thunk (JSC::LLInt::createJSGateThunk -> LinkBuffer::finalizeCodeWithoutDisassemblyImpl ->
+// sys_icache_invalidate): code written through the RW alias of a MAP_JIT page, then `dc cvau` + `dsb ish` +
+// `ic ivau` + `dsb ish` + `isb` on the **RX** alias, then a branch to it. resident = 1: the RX alias is mapped first.
+// resident = 0: it is not (as on the phone, where the hosted pmap maps a page into the task only when it faults), so
+// the alias's first access is the dc cvau. On arm64 hardware that faults as a data abort with ISS.CM and WnR set: the
+// stub must say XH_PROT_READ (the kernel then maps the RX page and the dc cvau is retried). Taken as a write, iOS
+// failed it on the RX entry (phone 2026-11-14: every WebContent process, "byte write Permission fault"). qemu-user
+// runs dc cvau / ic ivau as no-ops that never fault, so under qemu the first access is the branch (an exec fault).
+static void test_jit_icache(int resident)
+{
+  const char *what = resident ? "jit icache (RX alias resident)" : "jit icache (RX alias never touched)";
+  uint64_t task = 0, thread = 0;
+  if (H->task_create(C0, &task) < 0) { put("SKIP "); put(what); put(": task_create\n"); return; }
+  uint64_t code_pa = page_alloc(), jit_pa = page_alloc();
+  uint32_t *c = (uint32_t *)(uintptr_t)kva(code_pa);
+  c[0] = 0x52816c05; c[1] = 0x72ba5005; c[2] = 0xb9000025;      // mov w5,#0xb60; movk w5,#0xd280,lsl16; str w5,[x1]
+  c[3] = 0x52800405; c[4] = 0x72ba8405; c[5] = 0xb9000425;      // mov w5,#0x20;  movk w5,#0xd420,lsl16; str w5,[x1,#4]
+  c[6] = 0xd50b7b22; c[7] = 0xd5033b9f; c[8] = 0xd50b7522;      // dc cvau,x2; dsb ish; ic ivau,x2
+  c[9] = 0xd5033b9f; c[10] = 0xd5033fdf; c[11] = 0xd61f0040;    // dsb ish; isb; br x2   (x2: "mov x0,#0x5b; brk #1")
+  H->text_fixup(C0, c, 12 * 4);
+  const uint64_t code_va = 0x110000000ull, exec_va = 0x190000000ull, write_va = 0x1d0000000ull;
+  check(H->task_map(C0, task, write_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE | XH_PROT_EXEC, jit_pa) == 0 &&
+        H->task_map(C0, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa) == 0 &&
+        (!resident || H->task_map(C0, task, exec_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, jit_pa) == 0), what);
+  if (H->thread_create(C0, task, &thread) != 0) { check(0, "jit icache: thread_create"); H->task_destroy(C0, task); return; }
+  static struct xh_user_state st;
+  struct xh_trap trap;
+  zero(&st, sizeof st);
+  st.pc = code_va;
+  st.x[1] = write_va;
+  st.x[2] = exec_va;
+  int k = -1, faults = 0, cm_faults = 0, cm_as_write = 0, exec_faults = 0, other = 0;
+  for (int round = 0; round < 8; round++) {
+    int64_t r;
+    while ((r = H->thread_run(C0, thread, &st, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) irq_upcall(C0, NULL);
+    k = r == 0 ? (int)trap.kind : -1;
+    if (k != XH_TRAP_FAULT) break;
+    faults++;
+    if ((trap.far & ~0x3fffull) != exec_va) { other++; break; }
+    if (st.pc == code_va + 6 * 4 || st.pc == code_va + 8 * 4) {
+      // the cache maintenance on the RX alias faulted (arm64 hardware): a read, with ISS.CM in Linux's syndrome
+      cm_faults++;
+      if (trap.access != XH_PROT_READ || (trap.esr != 0 && !(trap.esr & (1ull << 8)))) cm_as_write++;
+      put("  "); put(what); put(": cache maintenance at pc "); hex(st.pc); put(" faulted: access ");
+      hex(trap.access); put(" esr "); hex(trap.esr); put("\n");
+    } else if (st.pc == exec_va) exec_faults++;
+    else { other++; break; }
+    // As the kernel does for a read or an execute fault on the RX entry: the page mapped read-execute, then retried.
+    if (H->task_map(C0, task, exec_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, jit_pa) != 0) { other++; break; }
+  }
+  int ran = k == XH_TRAP_BRK && st.x[0] == 0x5b && st.pc == exec_va + 4;
+  if (!ran || other) {
+    put("  "); put(what); put(": kind "); hex((uint64_t)(uint32_t)k); put(" x0 "); hex(st.x[0]); put(" pc "); hex(st.pc);
+    put(" far "); hex(trap.far); put(" faults "); hex((uint64_t)faults); put("\n");
+  }
+  check(ran && !other, resident ? "jit icache: dc cvau / ic ivau on the resident RX alias, then the code runs (x0 = 0x5b)"
+                                : "jit icache: dc cvau / ic ivau as the RX alias's first access, then the code runs (x0 = 0x5b)");
+  if (resident) check(faults == 0, "jit icache: no fault on the resident RX alias");
+  else {
+    check(!cm_as_write, "jit icache: a cache maintenance fault on the RX alias is a read (ISS.CM), not a write");
+    if (cm_faults == 0) put("NOTE jit icache: the cache maintenance did not fault (qemu-user runs dc cvau / ic ivau as no-ops); "
+                            "the RX alias's first fault was the branch\n");
+    check(cm_faults + exec_faults >= 1, "jit icache: the never-touched RX alias faulted once and was mapped read-execute");
+  }
+  check(H->thread_destroy(C0, thread) == 0 && H->task_destroy(C0, task) == 0, "jit icache: thread_destroy, task_destroy");
+}
+
+static void test_jit(void)
+{
+  uint64_t task = 0, thread = 0;
+  int64_t rc = H->task_create(C0, &task);
+  if (rc < 0) { put("SKIP jit: task_create returned "); hex((uint64_t)rc); put("\n"); return; }
+  // The writer stub (verified encodings): write "mov x0,#0x5a; brk #1" through x1 (the RW alias), clean and
+  // invalidate the two code words for the exec alias in x2, then branch to it.
+  uint64_t jcode_pa = page_alloc(), jit_pa = page_alloc();
+  uint32_t *jc = (uint32_t *)(uintptr_t)kva(jcode_pa);
+  jc[0] = 0x52816805; jc[1] = 0x72ba5005; jc[2] = 0xb9000025;      // mov w5,#0xb40; movk w5,#0xd280,lsl16; str w5,[x1]
+  jc[3] = 0x52800405; jc[4] = 0x72ba8405; jc[5] = 0xb9000425;      // mov w5,#0x20;  movk w5,#0xd420,lsl16; str w5,[x1,#4]
+  jc[6] = 0xd50b7b22; jc[7] = 0x91001046; jc[8] = 0xd50b7b26;      // dc cvau,x2; add x6,x2,#4; dc cvau,x6
+  jc[9] = 0xd5033b9f; jc[10] = 0xd50b7522; jc[11] = 0xd50b7526;    // dsb ish; ic ivau,x2; ic ivau,x6
+  jc[12] = 0xd5033b9f; jc[13] = 0xd5033fdf; jc[14] = 0xd61f0040;   // dsb ish; isb; br x2
+  H->text_fixup(C0, jc, 15 * 4);
+  const uint64_t jcode_va = 0x100000000ull, exec_va = 0x180000000ull, write_va = 0x1c0000000ull;
+  // The JIT page in one task_map must be read, write and execute at once (MAP_JIT's W+X reservation: the host must
+  // allow a W+X mapping of the RAM memfd).
+  check(H->task_map(C0, task, write_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE | XH_PROT_EXEC, jit_pa) == 0,
+        "jit: task_map of a W+X page (MAP_JIT)");
+  check(H->task_map(C0, task, exec_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, jit_pa) == 0,
+        "jit: the same physical page mapped read-execute at a second address (the W^X alias)");
+  check(H->task_map(C0, task, jcode_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, jcode_pa) == 0, "jit: the writer stub mapped");
+  if (H->thread_create(C0, task, &thread) != 0) { check(0, "jit: thread_create"); H->task_destroy(C0, task); return; }
+  static struct xh_user_state st;
+  struct xh_trap trap;
+  zero(&st, sizeof st);
+  st.pc = jcode_va;
+  st.x[1] = write_va;
+  st.x[2] = exec_va;
+  int k = -1;
+  int64_t r;
+  while ((r = H->thread_run(C0, thread, &st, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) irq_upcall(C0, NULL);
+  if (r == 0) k = (int)trap.kind;
+  if (!(k == XH_TRAP_BRK && st.x[0] == 0x5a && st.pc == exec_va + 4)) {
+    put("  jit: kind "); hex((uint64_t)(uint32_t)k); put(" x0 "); hex(st.x[0]); put(" pc "); hex(st.pc);
+    put(" jit_pa[0] "); hex(*(volatile uint32_t *)(uintptr_t)kva(jit_pa)); put("\n");
+  }
+  check(k == XH_TRAP_BRK && st.x[0] == 0x5a && st.pc == exec_va + 4,
+        "jit: code written through the RW alias runs through the RX alias (x0 = 0x5a at the brk)");
+  // The kernel's own view of the page sees the thread's JIT store too (shared memory, as copyio would read it).
+  check(*(volatile uint32_t *)(uintptr_t)kva(jit_pa) == 0xd2800b40,
+        "jit: the thread's store through the RW alias is in the kernel's view of the page");
+  check(H->thread_destroy(C0, thread) == 0, "jit: thread_destroy");
+  check(H->task_unmap(C0, task, exec_va, 0x4000) == 0 && H->task_unmap(C0, task, write_va, 0x4000) == 0, "jit: unmap the aliases");
+  check(H->task_destroy(C0, task) == 0, "jit: task_destroy");
+  test_jit_icache(1);
+  test_jit_icache(0);
+}
+
 static void test_tasks(void)
 {
   uint64_t task = 0, thread = 0;
@@ -198,9 +434,11 @@ static void test_tasks(void)
   code[4] = 0xf9000020;      // str x0, [x1]
   code[5] = 0xd4200020;      // brk #1
   code[6] = 0x14000000;      // b .
+  code[8] = 0xf9400020;      // ldr x0, [x1]      (test_unmap_race)
+  code[9] = 0xd4200020;      // brk #1
   // As the kernel does with a page of signed text before it maps it: on a host with no seccomp the
   // svc becomes the undefined instruction thread_run reports as a system call.
-  H->text_fixup(C0, code, 7 * 4);
+  H->text_fixup(C0, code, 10 * 4);
   const uint64_t code_va = 0x100000000ull, data_va = 0x200000000ull;
   check(H->task_map(C0, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa) == 0, "task_map of a code page at 0x100000000");
   check(H->task_map(C0, task, H->info->user_va_limit, 0x4000, XH_PROT_READ, code_pa) < 0, "task_map refuses the stub's region");
@@ -223,6 +461,9 @@ static void test_tasks(void)
   check(st.tsd == 0x1234500 && st.v[3].lo == 0x1122334455667788ull, "the thread register and a vector register came back unchanged");
   check(H->task_map(C0, task, data_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, data_pa) == 0, "the kernel maps the page (pmap_enter)");
   check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_BRK && st.pc == code_va + 20, "the store is retried, then brk traps");
+  // the store's fault came just before on this task: Linux's SIGTRAP carries that fault's syndrome as its own
+  // (stub.c), and the kernel would have reported the brk as a data abort
+  if (trapped) check(trap.esr == 0 && trap.insn == 0xd4200020, "brk after a fault: no syndrome of that fault, and the brk instruction for the kernel");
   check(*(uint64_t *)(uintptr_t)kva(data_pa) == 7, "the task's store is visible in the kernel's view of the page (shared memory)");
   uint64_t value = 0xfeedfacecafebeefull, back = 0;
   int64_t wrote = H->task_write(C0, task, data_va + 8, &value, 8);
@@ -230,6 +471,29 @@ static void test_tasks(void)
   else check(wrote == 8 && H->task_read(C0, task, data_va + 8, &back, 8) == 8 && back == value &&
              ((uint64_t *)(uintptr_t)kva(data_pa))[1] == value, "task_write and task_read (copyout, copyin)");
   check(H->task_protect(C0, task, data_va, 0x4000, XH_PROT_READ) == 0, "task_protect");
+  // task_map rides on the next release of a thread of the task (map-defer); an order given before that release
+  // (here the protect above, below an unmap) must find it done and keep its place after it.
+  st.pc = code_va + 16;                         // str x0, [x1]
+  st.x[1] = data_va;
+  check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_FAULT && trap.far == data_va && st.pc == code_va + 16,
+        "a store to the page made read-only faults");
+  const uint64_t other_va = 0x300000000ull;
+  check(H->task_map(C0, task, other_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, data_pa) == 0 && H->task_unmap(C0, task, other_va, 0x4000) == 0,
+        "a map and an unmap of another page before the thread runs");
+  st.x[1] = other_va;
+  check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_FAULT && trap.far == other_va,
+        "the unmap came after the map: the store faults");
+  check(H->task_map(C0, task, other_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, data_pa) == 0 &&
+        H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_BRK && st.pc == code_va + 20 &&
+        ((uint64_t *)(uintptr_t)kva(data_pa))[0] == st.x[0], "a map given before the run is in place when the thread runs");
+  // task_unmap while no thread of the task runs waits in the queue (task.c): it must be in force when the thread runs.
+  check(H->task_unmap(C0, task, other_va, 0x4000) == 0, "an unmap while the task's thread is stopped");
+  st.pc = code_va + 16;
+  st.x[1] = other_va;
+  check(H->thread_run(C0, thread, &st, &trap) == 0 && trap.kind == XH_TRAP_FAULT && trap.far == other_va,
+        "it is in force when the thread runs again: the store faults");
+  if (trapped) test_unmap_queue(task, thread, code_va, data_pa);
+  if (trapped) test_unmap_race(task, thread, code_va, data_pa);
   // Preemption: a thread that never traps is stopped when the vCPU's timer fires.
   st.pc = code_va + 24;
   uint32_t fires = timer_fires;
@@ -241,6 +505,281 @@ static void test_tasks(void)
   check(H->thread_destroy(C0, thread) == 0, "thread_destroy");
   check(H->task_unmap(C0, task, data_va, 0x4000) == 0, "task_unmap");
   check(H->task_destroy(C0, task) == 0, "task_destroy");
+}
+
+// ---- benchmarks of the trap path (boot argument testkernel-bench; `make bench-arm64`) -------------
+// Each loop times one kind of trip from the kernel's side, with the counter the iOS thread also reads (CNTVCT_EL0):
+// the user code stamps the time just before its svc (x0) and just after its resume, so the two hand-offs are seen
+// apart. Times go into a table of 4096 steps of one tick at 24 MHz or less (170 us at 24 MHz, 213 us at the phone's
+// 19.2 MHz) and of hz / 24 MHz ticks on a faster counter (qemu-user's is 1 GHz: 41 ns steps, 168 us), so the table
+// spans about the same time everywhere; later ones count in the last.
+#define BT 4096
+static void dec(uint64_t v)
+{
+  char b[21];
+  int i = 20;
+  b[i] = 0;
+  do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v);
+  put(b + i);
+}
+typedef struct { uint32_t *t; uint64_t n, sum, step; } bhist;
+static void bh_init(bhist *h)   // 4096 x 4 = one 16 KiB page
+{
+  h->t = (uint32_t *)(uintptr_t)kva(page_alloc());
+  h->n = h->sum = 0;
+  h->step = H->info->timebase_hz / 24000000u;
+  if (!h->step) h->step = 1;
+}
+static void bh_add(bhist *h, uint64_t ticks)
+{
+  uint64_t i = ticks / h->step;
+  h->t[i < BT ? i : BT - 1]++;
+  h->n++;
+  h->sum += ticks;
+}
+static uint64_t bh_q(const bhist *h, uint64_t per_mille)   // in ticks: the start of the step the quantile falls in
+{
+  uint64_t want = h->n * per_mille / 1000, seen = 0;
+  for (uint64_t i = 0; i < BT; i++) { seen += h->t[i]; if (seen > want) return i * h->step; }
+  return BT * h->step;
+}
+static void bh_put(const char *name, const bhist *h)
+{
+  uint64_t hz = H->info->timebase_hz;
+  put("BENCH ");
+  put(name);
+  put(": n ");
+  dec(h->n);
+  if (!h->n) { put("\n"); return; }
+  put(" mean ");
+  dec(h->sum * 1000000000ull / h->n / hz);
+  put(" ns, p50 ");
+  dec(bh_q(h, 500) * 1000000000ull / hz);
+  put(" p90 ");
+  dec(bh_q(h, 900) * 1000000000ull / hz);
+  put(" p99 ");
+  dec(bh_q(h, 990) * 1000000000ull / hz);
+  put(" ns\n");
+}
+
+static void bench(unsigned scale)
+{
+  uint64_t task = 0, thread = 0;
+  if (H->task_create(C0, &task) < 0) { put("BENCH skipped: no task layer\n"); return; }
+  uint64_t code_pa = page_alloc(), data_pa = page_alloc();
+  uint32_t *code = (uint32_t *)(uintptr_t)kva(code_pa);
+  // 0x00: the null system call               0x40: a store to an unmapped page, then a system call   0x80: a loop
+  static const uint32_t syscall_loop[] = { 0xd53be040, 0xd4001001, 0x17fffffe };              // mrs x0, cntvct; svc #0x80; b 0
+  static const uint32_t fault_loop[] = { 0xd53be040, 0xf9000041, 0xd53be043, 0xd4001001, 0x17fffffc };   // mrs x0; str x1, [x2]; mrs x3; svc; b 0x40
+  for (unsigned i = 0; i < 3; i++) code[i] = syscall_loop[i];
+  for (unsigned i = 0; i < 5; i++) code[16 + i] = fault_loop[i];
+  code[32] = 0x14000000;                                                                        // b .
+  H->text_fixup(C0, code, 33 * 4);
+  const uint64_t code_va = 0x100000000ull, data_va = 0x200000000ull;
+  H->task_map(C0, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa);
+  if (H->thread_create(C0, task, &thread)) { put("BENCH skipped: no thread\n"); return; }
+  static struct xh_user_state st;
+  struct xh_trap trap;
+  C0->irq_masked = 1;
+  H->timer_set(C0, UINT64_MAX);
+  irq_upcall(C0, NULL);
+
+  // 1. The null system call: svc, trap, the kernel hands it straight back.
+  bhist up, down, round;
+  bh_init(&up); bh_init(&down); bh_init(&round);
+  zero(&st, sizeof st);
+  st.pc = code_va;
+  uint64_t n = 20000ull * scale, before = 0, last = 0, bad = 0;
+  for (uint64_t i = 0; i < n; i++) {
+    before = now();
+    if (H->thread_run(C0, thread, &st, &trap) || trap.kind != XH_TRAP_SYSCALL) { bad++; if (trap.kind == XH_TRAP_INTERRUPT) irq_upcall(C0, NULL); continue; }
+    uint64_t t = now();
+    if (i && st.x[0] >= before && st.x[0] <= t) { bh_add(&up, t - st.x[0]); bh_add(&down, st.x[0] - before); }
+    if (last) bh_add(&round, t - last);
+    last = t;
+  }
+  bh_put("null syscall, round trip (kernel to kernel)", &round);
+  bh_put("  svc -> the kernel has the trap", &up);
+  bh_put("  the kernel releases -> user code runs", &down);
+  if (bad) { put("BENCH   (other traps: "); dec(bad); put(")\n"); }
+
+  // 2. A page fault the kernel resolves by mapping the page, then the page is unmapped again (svc).
+  bhist fault, map, unmap;
+  bh_init(&fault); bh_init(&map); bh_init(&unmap);
+  zero(&st, sizeof st);
+  st.pc = code_va + 0x40;
+  st.x[2] = data_va;
+  n = 5000ull * scale;
+  for (uint64_t i = 0; i < n; i++) {
+    if (H->thread_run(C0, thread, &st, &trap) || trap.kind != XH_TRAP_FAULT) { bad++; if (trap.kind == XH_TRAP_INTERRUPT) irq_upcall(C0, NULL); continue; }
+    uint64_t a = now();
+    H->task_map(C0, task, data_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, data_pa);
+    bh_add(&map, now() - a);
+    if (H->thread_run(C0, thread, &st, &trap) || trap.kind != XH_TRAP_SYSCALL) { bad++; continue; }
+    bh_add(&fault, st.x[3] - st.x[0]);
+    a = now();
+    H->task_unmap(C0, task, data_va, 0x4000);
+    bh_add(&unmap, now() - a);
+  }
+  bh_put("page fault filled by task_map, as user code sees it", &fault);
+  bh_put("  task_map (host call)", &map);
+  bh_put("  task_unmap (host call; queued while the thread is stopped)", &unmap);
+
+  // 3. The interrupt of a running thread: the timer fires 50 us into a loop that never traps.
+  bhist kick;
+  bh_init(&kick);
+  zero(&st, sizeof st);
+  st.pc = code_va + 0x80;
+  n = 2000ull * scale;
+  for (uint64_t i = 0; i < n; i++) {
+    uint64_t deadline = now() + H->info->timebase_hz / 20000;
+    H->timer_set(C0, deadline);
+    if (H->thread_run(C0, thread, &st, &trap) || trap.kind != XH_TRAP_INTERRUPT) { bad++; continue; }
+    uint64_t t = now();
+    if (t >= deadline) bh_add(&kick, t - deadline);
+    irq_upcall(C0, NULL);
+  }
+  bh_put("timer interrupt of a running thread: deadline -> the kernel has the trap", &kick);
+  H->timer_set(C0, UINT64_MAX);
+  irq_upcall(C0, NULL);
+
+  // 4. Free-page reporting (kernel 0058): ram_discard of one page and of 64 consecutive pages, and what a page costs
+  // when it is used again, as XNU zero-fills a page it takes (16 KiB of 8-byte stores): resident, or given back (the
+  // host's first touch of each 4 KiB part allocates and zeroes it).
+  bhist give1, give64, fill_res, fill_given;
+  bh_init(&give1); bh_init(&give64); bh_init(&fill_res); bh_init(&fill_given);
+  uint64_t run = page_alloc();
+  for (unsigned i = 1; i < 64; i++) page_alloc();
+  n = 50ull * scale;
+  for (uint64_t i = 0; i < n; i++) {
+    for (unsigned p = 0; p < 64; p++) {
+      volatile uint64_t *w = (volatile uint64_t *)(uintptr_t)kva(run + p * 0x4000ull);
+      uint64_t a = now();
+      for (unsigned k = 0; k < 0x4000 / 8; k++) w[k] = 0;
+      bh_add(&fill_res, now() - a);
+    }
+    uint64_t a = now();
+    if (H->ram_discard(C0, run, 64 * 0x4000ull)) bad++;
+    bh_add(&give64, now() - a);
+    for (unsigned p = 0; p < 64; p++) {
+      volatile uint64_t *w = (volatile uint64_t *)(uintptr_t)kva(run + p * 0x4000ull);
+      a = now();
+      for (unsigned k = 0; k < 0x4000 / 8; k++) w[k] = 0;
+      bh_add(&fill_given, now() - a);
+    }
+    for (unsigned p = 0; p < 64; p++) {
+      a = now();
+      if (H->ram_discard(C0, run + p * 0x4000ull, 0x4000)) bad++;
+      bh_add(&give1, now() - a);
+    }
+    for (unsigned p = 0; p < 64; p++) {                                  // all of each page resident again
+      volatile uint64_t *w = (volatile uint64_t *)(uintptr_t)kva(run + p * 0x4000ull);
+      for (unsigned k = 0; k < 0x4000 / 8; k += 512) w[k] = 1;
+    }
+  }
+  bh_put("ram_discard of one 16 KiB page (host call)", &give1);
+  bh_put("ram_discard of 64 consecutive pages, 1 MiB (host call)", &give64);
+  bh_put("zero-fill of a resident 16 KiB page", &fill_res);
+  bh_put("zero-fill of a 16 KiB page given back (the host fills it again)", &fill_given);
+  if (bad) { put("BENCH   (failed calls or other traps: "); dec(bad); put(")\n"); }
+  H->thread_destroy(C0, thread);
+  H->task_destroy(C0, task);
+  put("BENCH done\n");
+}
+
+// ---- the parallel test (boot argument testkernel-parallel; `make parallel-arm64`, host-overhead 2026-11-15) ----------
+// N threads of one task, one per vCPU, each the same busy work in user mode (a loop of `spin` iterations, then a system
+// call, `rounds` times), all at once: the wall time for 1, 2, 4 and 8 threads. With nothing in xnuhost's path that
+// serialises the vCPUs (a lock per task, the GIC's lock, the hand-off) the time stays flat while the host has a core per
+// thread, and the speed-up is N. Each vCPU runs its own thread; vCPU 0 starts the others with an SGI and takes part.
+static volatile struct { uint32_t go, n, done; uint64_t rounds, spin; uint64_t thread[16]; uint32_t bad; } par;
+static struct xh_user_state par_st[16];
+static uint64_t par_code_va;
+
+static void par_work(struct xh_cpu *cpu)
+{
+  struct xh_trap trap;
+  for (uint64_t r = 0; r < par.rounds; r++) {
+    struct xh_user_state *st = &par_st[cpu->index];
+    st->pc = par_code_va;
+    st->x[1] = par.spin;
+    int64_t rc;
+    while ((rc = H->thread_run(cpu, par.thread[cpu->index], st, &trap)) == 0 && trap.kind == XH_TRAP_INTERRUPT) irq_upcall(cpu, NULL);
+    if (rc || trap.kind != XH_TRAP_SYSCALL) __atomic_add_fetch(&par.bad, 1, __ATOMIC_RELAXED);
+  }
+}
+
+static void par_entry(struct xh_cpu *cpu, uint64_t arg)
+{
+  (void)arg;
+  H->irq_enable(cpu, 6, 1);
+  uint32_t seen = 0;
+  for (;;) {
+    uint32_t go = __atomic_load_n(&par.go, __ATOMIC_ACQUIRE);
+    if (go != seen) {
+      seen = go;
+      if (cpu->index < par.n) { par_work(cpu); __atomic_add_fetch(&par.done, 1, __ATOMIC_ACQ_REL); }
+      continue;
+    }
+    H->cpu_idle(cpu);
+    if (cpu->irq_pending) irq_upcall(cpu, NULL);
+  }
+}
+
+static void parallel_bench(struct xh_cpu *cpu, unsigned scale)
+{
+  static volatile struct xh_upcalls upcalls;
+  upcalls.irq = irq_upcall;
+  upcalls.cpu_entry = par_entry;
+  H->set_upcalls(cpu, (const struct xh_upcalls *)&upcalls);
+  cpu->irq_masked = 1;
+  H->timer_set(cpu, UINT64_MAX);
+  unsigned ncpu = H->info->ncpu > 16 ? 16 : H->info->ncpu;
+  uint64_t task = 0;
+  if (H->task_create(cpu, &task) < 0) { put("PARALLEL skipped: no task layer\n"); return; }
+  uint64_t code_pa = page_alloc();
+  uint32_t *code = (uint32_t *)(uintptr_t)kva(code_pa);
+  code[0] = 0xf1000421;   // subs x1, x1, #1
+  code[1] = 0x54ffffe1;   // b.ne 0
+  code[2] = 0xd4001001;   // svc #0x80
+  code[3] = 0x14000000;   // b .
+  H->text_fixup(cpu, code, 4 * 4);
+  par_code_va = 0x100000000ull;
+  H->task_map(cpu, task, par_code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa);
+  for (unsigned i = 0; i < ncpu; i++)
+    if (H->thread_create(cpu, task, (uint64_t *)&par.thread[i])) { put("PARALLEL skipped: no thread\n"); return; }
+  for (unsigned i = 1; i < ncpu; i++) H->cpu_start(cpu, i, 0, 0);
+  par.spin = 100000;
+  par.rounds = 100ull * scale;
+  uint64_t hz = H->info->timebase_hz, one = 0;
+  put("PARALLEL: "); dec(ncpu); put(" vCPUs; each thread "); dec(par.rounds); put(" rounds of "); dec(par.spin);
+  put(" iterations and a system call\n");
+  // One untimed round on every vCPU first: each thread's first run (its Linux thread placed, its pages mapped; under qemu
+  // the code translated) is not part of anyone's time.
+  par.n = ncpu;
+  par.done = 0;
+  __atomic_add_fetch(&par.go, 1, __ATOMIC_ACQ_REL);
+  for (unsigned i = 1; i < ncpu; i++) H->ipi(cpu, i, 6);
+  par_work(cpu);
+  while (__atomic_load_n(&par.done, __ATOMIC_ACQUIRE) < ncpu - 1) __asm__ volatile("yield");
+  for (unsigned n = 1; n <= ncpu; n *= 2) {
+    par.n = n;
+    par.done = 0;
+    uint64_t start = now();
+    __atomic_add_fetch(&par.go, 1, __ATOMIC_ACQ_REL);
+    for (unsigned i = 1; i < n; i++) H->ipi(cpu, i, 6);
+    par_work(cpu);
+    while (__atomic_load_n(&par.done, __ATOMIC_ACQUIRE) < n - 1) __asm__ volatile("yield");
+    uint64_t took = now() - start;
+    if (n == 1) one = took;
+    uint64_t us = took * 1000000 / hz, x100 = took ? one * n * 100 / took : 0;
+    put("PARALLEL "); dec(n); put(" threads: "); dec(us / 1000); put(" ms, speed-up "); dec(x100 / 100); put(".");
+    if (x100 % 100 < 10) put("0");
+    dec(x100 % 100); put(" (ideal "); dec(n); put(")\n");
+    if (n < ncpu && n * 2 > ncpu) n = ncpu / 2;      // 1, 2, 4, then all of them (a count that is no power of two too)
+  }
+  if (par.bad) { put("PARALLEL   (failed runs or other traps: "); dec(par.bad); put(")\n"); }
+  put("PARALLEL done\n");
 }
 
 __attribute__((noreturn)) void kernel_main(const struct boot_args *args, const struct xh_vector *vector, struct xh_cpu *cpu);
@@ -256,6 +795,17 @@ void kernel_main(const struct boot_args *args, const struct xh_vector *vector, s
     while (want[i] && c[i] == want[i]) i++;
     if (!want[i]) { put("TESTKERNEL: restart\n"); H->halt(cpu, XH_HALT_RESTART, 0); }
   }
+  // boot-args "testkernel-parallel[=SCALE]": only the parallel test (any number of vCPUs), then off.
+  for (const char *c = args->command_line; *c; c++) {
+    static const char want[] = "testkernel-parallel";
+    unsigned i = 0;
+    while (want[i] && c[i] == want[i]) i++;
+    if (!want[i]) {
+      next_page = (args->top_of_kernel_data + 0x3fff) & ~0x3fffull;
+      parallel_bench(cpu, c[i] == '=' && c[i + 1] >= '1' && c[i + 1] <= '9' ? (unsigned)(c[i + 1] - '0') : 1);
+      H->halt(cpu, XH_HALT_OFF, 0);
+    }
+  }
   // 1. What the loader handed over.
   check(args->revision == 2 && args->version == 2, "boot_args revision and version");
   check(args->virt_base == (uint64_t)(uintptr_t)__base, "boot_args.virtBase is where the kernel runs (no MMU switch)");
@@ -269,6 +819,13 @@ void kernel_main(const struct boot_args *args, const struct xh_vector *vector, s
   const uint8_t *chosen = adt_child(tree, "chosen"), *host = chosen ? adt_child(chosen, "xnuhost") : NULL;
   const uint8_t *v = host ? adt_prop(host, "vector", &len, NULL) : NULL;
   check(v && *(const uint64_t *)v == (uint64_t)(uintptr_t)vector, "/chosen/xnuhost vector");
+  // The RAM's size as XNU reads it in three places (ram=auto sizes all of them: docs/booter.md 1).
+  const uint8_t *dram = chosen ? adt_prop(chosen, "dram-size", &len, NULL) : NULL;
+  check(dram && len == 8 && *(const uint64_t *)dram == args->mem_size && vector->info->ram_size == args->mem_size && !(args->mem_size & 0x3fff),
+        "the RAM's size agrees: boot_args.memSize, /chosen dram-size, xh_info.ram_size");
+  put("TESTKERNEL: RAM ");
+  dec(args->mem_size >> 20);
+  put(" MiB\n");
   const uint8_t *cpus = adt_child(tree, "cpus");
   check(cpus && adt_child(cpus, "cpu2") && !adt_child(cpus, "cpu3"), "/cpus has the three CPUs");
   const uint8_t *io = adt_child(tree, "arm-io");
@@ -410,9 +967,37 @@ void kernel_main(const struct boot_args *args, const struct xh_vector *vector, s
         "text_fixup: TPIDRRO_EL0 reads become TPIDR_EL0 reads, TPIDR_EL0 reads (the CPU number) become 0");
   uint64_t scratch = page_alloc();
   *(volatile uint64_t *)(uintptr_t)kva(scratch) = 5;
-  check(H->ram_discard(cpu, scratch, 0x4000) == 0 && *(volatile uint64_t *)(uintptr_t)kva(scratch) == 0, "ram_discard gives pages back (they read as zero)");
+  if (H->info->features & XH_FEATURE_RAM_FIXED)
+    // The RAM held for the session (xnuhost's default since 2026-11-13, kernel 0067): nothing goes back.
+    check(H->ram_discard(cpu, scratch, 0x4000) == -1 && *(volatile uint64_t *)(uintptr_t)kva(scratch) == 5 &&
+          H->ram_discard(cpu, scratch + 0x800, 0x4000) == -1 && *(volatile uint64_t *)(uintptr_t)kva(scratch) == 5,
+          "ram_discard is refused while the RAM is held fixed (-EPERM), and the page keeps its data");
+  else {
+    check(H->ram_discard(cpu, scratch, 0x4000) == 0 && *(volatile uint64_t *)(uintptr_t)kva(scratch) == 0, "ram_discard gives pages back (they read as zero)");
+    // A run of three pages and its neighbours: only the run reads zero; refused: unaligned, empty, outside the RAM.
+    uint64_t run = page_alloc();
+    page_alloc(); page_alloc(); page_alloc(); page_alloc();
+    for (unsigned i = 0; i < 5; i++) *(volatile uint64_t *)(uintptr_t)kva(run + i * 0x4000ull) = 0x70 + i;
+    int zeroed = H->ram_discard(cpu, run + 0x4000, 3 * 0x4000) == 0;
+    for (unsigned i = 1; i < 4; i++) zeroed = zeroed && *(volatile uint64_t *)(uintptr_t)kva(run + i * 0x4000ull) == 0;
+    check(zeroed && *(volatile uint64_t *)(uintptr_t)kva(run) == 0x70 && *(volatile uint64_t *)(uintptr_t)kva(run + 4 * 0x4000ull) == 0x74,
+          "ram_discard of a run of pages: the run reads zero, the pages beside it keep their data");
+    check(H->ram_discard(cpu, run + 0x800, 0x4000) == -22 && H->ram_discard(cpu, run, 0x800) == -22 && H->ram_discard(cpu, run, 0) == -22 &&
+          H->ram_discard(cpu, H->info->ram_phys - 0x4000, 0x4000) == -22 &&
+          H->ram_discard(cpu, H->info->ram_phys + H->info->ram_size + (1ull << 30), 0x4000) == -22 &&
+          *(volatile uint64_t *)(uintptr_t)kva(run) == 0x70,
+          "ram_discard refuses an unaligned range, an empty one and one outside the RAM (-EINVAL), and changes nothing");
+  }
   check(H->wall_time(cpu) > 1700000000ull, "wall_time");
   test_tasks();
+  test_jit();
+  // boot-args "testkernel-bench" (`make bench-arm64`): the trap path's costs, after the checks.
+  for (const char *c = args->command_line; *c; c++) {
+    static const char want[] = "testkernel-bench";
+    unsigned i = 0;
+    while (want[i] && c[i] == want[i]) i++;
+    if (!want[i]) { bench(c[i] == '=' && c[i + 1] >= '1' && c[i + 1] <= '9' ? (unsigned)(c[i + 1] - '0') : 1); break; }
+  }
 
   put(failures ? "TESTKERNEL: FAILED\n" : "TESTKERNEL: all passed\n");
   H->halt(cpu, failures ? XH_HALT_PANIC : XH_HALT_OFF, (uint32_t)failures);

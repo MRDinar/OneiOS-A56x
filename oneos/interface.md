@@ -1,6 +1,8 @@
 # What the OneOS fork expects (session ABI 1)
 
-Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`).
+Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
+submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases").
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 
@@ -13,6 +15,11 @@ Anything below that the booter, release-kernel or image-build cannot meet: chang
   `oneios-runtime-<version>-arm64.tar.zst.sha256` holding one `sha256sum` line (`<64 hex>  <file name>`).
   `<version>` is `[0-9A-Za-z][0-9A-Za-z._-]*`. The app takes the latest release, or a pinned tag.
   The app can also import the same `.tar.zst` from a file ("I have the file"), for builds before a release.
+- The same release also carries the fork's APK, `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`, built from
+  the head of `oneios` by the same run (from 2026-11-15; `docs/releases.md`). Their names match no runtime pattern,
+  so the app's runtime download ignores them. A release built "apk only" has no runtime and is never marked latest:
+  the latest release always has the runtime asset. The notes name the fork commit and the APK's versionName and
+  versionCode.
 - zstd frame, window at most 2^27 (`zstd -19 --long=27` is fine), at most 512 MiB packed, 2 GiB unpacked.
 - Plain ustar/pax/GNU tar, regular files and directories only (no links, no devices), relative paths without
   `..`, either at the top level or under one top folder. Paths match `[A-Za-z0-9_][A-Za-z0-9._+-]*` per segment.
@@ -102,7 +109,20 @@ A tool the package lacks is shown as "Not in this runtime", not as a failure.
 | `data/` | the guest's writable state (Data store, anything xnuhost keeps). Survives a new runtime or image | xnuhost |
 | `session/` | this session: `xnuhost.pid`, `xnuhost.log`, `ready`, `return.request`, `tmp/`, the baseline | switch, xnuhost |
 | `logs/` | earlier sessions' `xnuhost-<epoch>.log` (the last 5; the next switch moves `session/xnuhost.log` there, so the epoch is that switch's time and the file's own time is its session's last line) | switch |
-| `switch.log`, `return.log`, `return.outcome`, `control/display.log`, `control/watchdog_feeder.log` | the fork's own logs: the switch, the return with the watcher and the key readers, how the last return ended, the display helper's output, the watchdog feeder | switch, return |
+| `switch.log`, `return.log`, `return.outcome`, `control/display.log`, `control/watchdog_feeder.log`, `control/usb.log` | the fork's own logs: the switch, the return with the watcher and the key readers, how the last return ended, the display helper's output, the watchdog feeder, the session's USB watcher (section 6a) | switch, return |
+| `tool/` | `TMPDIR` of `runtime/bin/oneios-tool serve` (section 9) | root's `tool` |
+| `make/` | Make iOS image's work folder (the tool's `make-image` `work`): the IPSW members, the volumes, the prelink's `work/`; removed by the tool on a cancel or a failure (its README) | oneios-tool |
+
+**What OneiOS's CLI writes there during a session** (`oneios-tool phone display-restart`, from the PC over adb;
+`tools/oneios-tool/README.md`, "The session's own commands"; stand-in tested, not run on the phone): it ends the
+display helper that `control/display.pid` names and starts another with the switch's own command line, in init's
+mount namespace, so `control/display.pid` then names the new one and `control/display.log` goes on with its
+lines; the return needs nothing new (it ends the helper by that pid file, and the helper is in the cgroup
+`oneios_session`). With `--lib` or `--dex` it replaces `runtime/bin/liboneios-display.so` or
+`runtime/lib/oneios-display.dex` and writes their lines in `runtime.sha256` and `runtime.ids` again, so the next
+preflight's `check_list runtime full` passes with the new files. The fork has no mode for the restart
+(`oneios_switch.sh`, `oneios_root.sh` at `3876dd5`); if it gets one (`oneios_switch.sh --display-restart`), the
+tool should call it instead of keeping its copy of the start line.
 
 ## 4. How the switch starts xnuhost
 
@@ -129,8 +149,32 @@ SELinux stays as One UI had it, usually Enforcing), detached, in a **new mount n
 What is running around it: One UI's kernel, init, vendor HALs, **surfaceflinger and the vendor composer**
 (left running for a root SurfaceControl layer, plan section 5.5), audioserver, netd, vold, keystore2, the
 radio. The switch holds the kernel wakelock `oneios_session` for the whole session (One UI's power manager is
-gone), and feeds Samsung's software watchdog. Gone: zygote, zygote_secondary, system_server and every app. So no InputDispatcher: read
+gone), and feeds Samsung's software watchdog. It saves One UI's clock caps (each cpufreq policy's
+`scaling_min_freq`/`scaling_max_freq`, `/sys/kernel/gpu/gpu_max_clock`, KGSL's `max_gpuclk`) and, once system_server
+is gone, writes the hardware's range; the return writes One UI's values back before zygote (`docs/hardware.md` 7d).
+**Asked of the fork, not done yet (fix-ram-hugepages, 2026-11-15):** the same for
+`/sys/kernel/mm/transparent_hugepage/shmem_enabled`: save it, write `advise` (Linux's default is `never`; GKI 6.1 has
+`CONFIG_TRANSPARENT_HUGEPAGE=y` and `..._MADVISE=y`), and write the saved value back at the return before zygote.
+With `advise` only mappings that ask (`MADV_HUGEPAGE`: xnuhost's window of the RAM memfd) get 2 MiB shmem pages, so
+One UI's own shmem is not changed. xnuhost writes nothing there: it reads the file at start and logs `memory: 2 MiB
+host pages: yes, ...` or `no (shmem_enabled never: ...)` (`docs/booter.md` 2.2, "2 MiB pages"). Gone: zygote, zygote_secondary, system_server and every app. So no InputDispatcher: read
 `/dev/input/event*` yourself. Do not `EVIOCGRAB` the volume-key device (see 6), or handle the chord yourself.
+
+**The display helper and the boot screen (rule, 2026-11-14).** The switch starts `bin/oneios-display` with a fresh
+`control/display.log` (the last session's moved to `display.log.1`, OneOS `fix-bootui-handoff`) and its pid in
+`control/display.pid`. Every helper of the session, also one started again by hand, has its pid appended to
+`control/display.pid` and its output appended to `control/display.log` (`runtime/display/README.md` has the command).
+The fork's boot screen (z 2,000,000,000) ends when a helper in `control/display.pid` logs `oneios-display: first frame
+posted` (or `layer up` after `session/ready`); the helper's layer (z 2,147,483,646, opaque) is above it. The
+helper does not re-create its layer at a display off or on: iOS's display off is a black frame on the same layer, so
+once the helper has posted, the boot screen shows through only when no helper runs.
+**Since 2026-11-15 both markers mean "iOS shows something"** (the fix of the black screen between the boot screen
+and the Apple logo, phone, main 3233fed): `session/ready` comes at the guest's first frame of its own that is not
+all black (below, "Ready signal"), and a helper started with `--session` posts nothing, so logs no `first frame
+posted` and leaves the boot screen visible under its empty layer, until `session/ready` exists. Its line then reads
+`oneios-display: first frame posted (...; held T s for session/ready, N wakes for flushes not shown)`; the prefix the fork
+matches is unchanged. A helper started again in a session that is already ready posts at once. The fork's rule
+(`display_up`), its 30 s rule for a renderer that never drew and the dead-man timer need no change.
 
 ## 5. What xnuhost must do for the switch
 
@@ -139,8 +183,13 @@ gone), and feeds Samsung's software watchdog. Gone: zygote, zygote_secondary, sy
 - **Write only under `/data/data` and `/data/session`.** Never to anything of One UI's.
 - **Ready signal:** create the file `/data/session/ready` when the guest's first frame is on screen
   (or when it would be, while there is no display yet). With the guest's framebuffer driver
-  (`kernel/patches/oneios-hosted/display/`) that is `backboardd`'s first frame; the kernel console, which the
-  driver also shows, does not count. Until then the switch's dead-man timer runs: no
+  (`kernel/patches/oneios-hosted/display/`) that is the first frame of backboardd's **that is not all black**
+  (since 2026-11-15: its first frames are black, and iOS's Apple logo comes after them), or, when every frame is
+  black, `ready-content-wait` seconds (120) after its first one; the kernel console, which the driver also shows,
+  does not count, lit or not (`docs/booter.md` 2.8, "the ready rule"). The line with it still begins `xnuhost I
+  guest ready: first frame` (`... with content, T s and N frames after the guest's first (black) frame`, or `...,
+  all black: no frame with content in 120 s ...`); `display: the guest's first frame of its own: all black ...`
+  marks where the rule before 2026-11-15 was ready. Until then the switch's dead-man timer runs: no
   `ready` after `ONEIOS_RETURN_MAX` seconds (600) means an automatic return to One UI.
 - **Exit means return.** When the xnuhost process ends for any reason, the watcher returns to One UI.
   Exit code 0 = the guest shut down; anything else is logged as a failure.
@@ -157,13 +206,98 @@ gone), and feeds Samsung's software watchdog. Gone: zygote, zygote_secondary, sy
 `oneios_return.sh` (run by the watcher, by Volume Up + Volume Down held 3 s, or by hand):
 
 1. `SIGTERM` to the xnuhost pid. xnuhost should flush `/data/data` and end its tasks; it has **20 s**.
+   **Default behaviour is unchanged** (immediate stop). A new setting `return-graceful-ms` (default 0; `docs/booter.md`
+   "The return") can, when turned on, make the first `SIGTERM` take up to that long before xnuhost stops: it asks iOS
+   to shut itself down first (so iOS saves what a clean power-off saves) and waits up to the limit, then stops as
+   before. When it is on, the fork still needs no change: the 20 s budget covers the default 10000, and a second
+   return — the Volume Up + Volume Down chord pressed again during the wait, which the fork turns into a second
+   `SIGTERM` — makes xnuhost stop at once. Keep the fork's SIGTERM-to-SIGKILL budget at or above the image's
+   `return-graceful-ms`; a shorter one has `SIGKILL` cut the shutdown short (still a correct, if abrupt, way back).
 2. `SIGKILL` to every process still in the namespace.
+   **Asked of the fork, not in it yet (radio2, 2026-11-12):** after this step and before zygote, when
+   `session/wifi.state` exists (xnuhost was killed before its own stop), run `runtime/bin/wifictl restore
+   /data/local/tmp/oneios/session/wifi.state`: it puts wlan0's GRO and `disable_ipv6` back and removes the file.
+   Without it nothing breaks (`docs/hardware.md` section 3, "Return": IPv6 off is how One UI's framework itself
+   leaves wlan0 between networks, GRO off only costs receive speed); a clean stop of xnuhost does it itself.
 3. Checks that nothing of the session is left and One UI's vold, keystore2, surfaceflinger and SELinux mode
    are as they were at the switch, on the same boot. Then starts One UI's zygote in place.
 4. Any failed check: reboot (the failsafe). A reboot is always a correct way back.
 
 The Volume Up + Volume Down chord is read on the host side with `getevent` (which does not grab), so it
 works whatever xnuhost is doing, as long as xnuhost does not grab that device.
+
+## 6a. USB and adb during a session
+
+**The rule: adb over USB works for the whole session, across unplug and replug, and the return leaves the USB
+gadget as One UI had it.** It is the fork's to keep (fork branch `fix-usb-adb`, akshaynexus/OneOS PR #1, **not merged yet**, 2026-11-13; its `docs/oneios.md`, "USB and
+adb during a session"); xnuhost only reads and logs it (`docs/booter.md` 2.9a).
+
+**Today the fork only records and logs (the repairs are off by default):** until a phone session has shown them right,
+the USB watcher and the return write nothing and log each repair they would make. A session turns them on with the
+file `usb-repair` in the stage at the switch (`su -c 'touch /data/local/tmp/oneios/usb-repair'`; recorded as
+`repair=1` in `control/base/usb`). So by default a session is as before for USB.
+
+Why the fork has to: the USB gadget's functions are set by One UI's framework (UsbDeviceManager in system_server,
+through the USB gadget HAL or init's `sys.usb.config` triggers of `init.usb.configfs.rc`), on every plug-in and
+unplug. The switch stops system_server, so from then on nobody re-arms the gadget: whatever unbinds it or drops
+adb from it during the session stays. adbd and the UDC binding themselves outlive the framework (this morning's
+session, 2026-11-13 at c1223f8, kept USB adb from before the switch to after the return with the cable in).
+
+What the fork does (`oneios_switch.sh`, `oneios_return.sh`):
+
+1. **At the switch's baseline** (One UI whole) it records `control/base/usb`: `sys.usb.config`, `sys.usb.state`,
+   `persist.sys.usb.config`, `sys.usb.controller`, `sys.usb.configfs`, `init.svc.adbd`, the gadget's UDC file
+   (`/config/usb_gadget/g1/UDC`) and whether USB debugging is on (adb in `sys.usb.config` or
+   `persist.sys.usb.config`, or `settings get global adb_enabled` = 1). `switch.log`: `USB of One UI: ...`.
+2. **After the framework's stop**, with USB debugging on, a USB watcher (`oneios_switch.sh --usb-watch`, a shell loop
+   in init's namespace and the root cgroup, never in xnuhost's; not a realtime thread; `control/usb.log`) reads the
+   gadget every 3 s and logs it when it changed, and makes at most one repair every 21 s, each only back to One UI's
+   own value: adbd not running (`ctl.start adbd`); adb gone from `sys.usb.config` (One UI's config again); the UDC
+   file empty while One UI had it bound (One UI's controller written into it); a cable in (`/sys/class/power_supply/usb/online`
+   = 1) for 15 s with `/sys/class/udc/<sys.usb.controller>/state` still `not attached`, `attached` or `powered`
+   (`sys.usb.config none`, then One UI's, as OneOS's adb watchdog of the Android sessions does; twice per plug-in at
+   most, so a charger that never enumerates is left alone). With USB debugging off it does nothing.
+3. **At the return** the watcher ends in step 1 (`control/usb-watch.off`, then its pid; it also ends on the state
+   `returning`), and in step 4, before One UI's zygote starts, `sys.usb.config` (with its triggers), adbd and the UDC
+   file go back to the record where they differ (`return.log`: `usb: before the restore: ...`, `usb: after the
+   restore: ...`). Logged only; never a reason for the failsafe.
+
+Only properties and named files: the UDC by the name in `sys.usb.controller`, never a listing of `/sys/class/udc`,
+the gadget or `/sys/class/power_supply`. Nothing persist is written, nothing under `/sys/power`, no reboot, no input
+device. The stand-in phone checks all three (`tools/oneios-tool/tests/phone/usb.sh`, from `run.sh`, against the
+fork's own scripts; skipped, with a line, against a fork checkout that has no `--usb-watch` yet). **Not run on the phone yet.**
+
+What was found about the fault of 2026-11-13 (the Mac saw no USB device during the session at c2d281a): see the fork's
+PR and `docs/oneios.md` there. In short: nothing of xnuhost or the bridges opens anything of USB, the gadget,
+configfs, Type-C or a power supply but read-only `power_supply` files, and sets no property (the sources at c2d281a;
+the diff c1223f8..c2d281a has no such change: 0062 is the guest's own IOKit trace); the fork's scripts touched no USB
+property or file before this change; and the Mac did not see the phone on USB **before** the switch either (that
+session was staged over wireless adb for that reason), with One UI's framework still running. So that session's
+missing USB was not caused by the switch; the cable, the Mac's port, or a gadget state One UI already had are left
+(a guess until the lines asked for in the PR come back).
+
+## 6b. The hardware backend (for the fork's later device profiles)
+
+xnuhost has two forms of the phone's hardware (`docs/hardware.md` 7e, `docs/booter.md` 1): `samsung` (today's
+Galaxy S24 Ultra paths, the default) and `treble` (vendor-neutral: the AIDL HALs through servicemanager, evdev by
+capabilities, standard sysfs classes by named paths). Nothing changes for the fork while it passes nothing: every
+bridge is `samsung`, exactly as before.
+
+A device profile of the fork chooses with settings, in the staged image set's `xnuhost.conf` or on the command line
+it builds (the command line wins per setting):
+
+| Setting | Values | Default |
+|---|---|---|
+| `hw-backend` | `samsung`, `treble` | `samsung` |
+| `hw-backend-<bridge>` | `samsung`, `treble`; bridge: `backlight`, `battery`, `thermal`, `haptics`, `touch`, `keys`, `audio`, `camera`, `wifi`, `bluetooth`, `display` | `hw-backend`'s |
+| `hw-backend-fallback` | `0` (a missing treble interface leaves the bridge off), `1` (it uses its samsung form) | `0` |
+
+On the command line: `--hw-backend treble`, `--hw-backend-battery samsung`, `--hw-backend-fallback 1` (or `--set
+KEY=VALUE`). A bad value or an unknown bridge ends xnuhost at start (exit 2, before the session) with
+`xnuhost: bad value for --hw-backend...` or `xnuhost: <file>:<line>: bad setting hw-backend...`. The log has one line per bridge, `hw: <bridge>: backend <name> (<why>)`, and for a
+treble interface that is missing `hw: <bridge>: treble: missing: <what>; ...`; the fork may show them in the
+session's log view. The fork's own scripts keep their Samsung paths (the backlight glob, `gpu_max_clock`,
+`cpufreq_limit`): the table in `docs/hardware.md` 7e lists their treble forms for the profiles.
 
 ## 7. Overlay mode
 
@@ -197,3 +331,39 @@ same files, redacted. It reads these lines and nothing else, so change one only 
 
 An exit with code 2 (setup) has no line of its own: the fork shows the last `xnuhost E` line of a log that never
 entered the kernel. A line that said so (`exit 2`) would be better, and the fork would read it as it is.
+
+## 9. oneios-tool in the app (fork branch `app-oneios-tool`, 2026-11-15; not run on the phone yet)
+
+The runtime package carries the Rust tools for the phone as `bin/oneios-tool` (`docs/releases.md`, "oneios-tool for
+the phone": why there and not in the APK). The fork runs it for one flow at a time, as root, with One UI up:
+
+- `oneios_root.sh tool work|read`: refuses without a stage or a staged runtime, when the runtime has no
+  `bin/oneios-tool` ("get a newer runtime"), when that file is not the one whose SHA-256 root recorded in
+  `runtime.sha256` at staging, and (`work` only) during a session. Then it prints `@@OK tool <mode>` and
+  `exec`s `nice -n 10 runtime/bin/oneios-tool serve --stage /data/local/tmp/oneios` with `TMPDIR=<stage>/tool`, on
+  the app's pipe. From there the lines are the tool's protocol (`tools/oneios-tool/README.md`, "serve": protocol 1,
+  one JSON object a line; the fork's `OneiosTool.kt` reads them). The fork reads `hello`'s `proto` and refuses
+  another one.
+- The app writes requests and `{"cmd":"cancel","id":...}`, and ends the flow by closing the pipe; the tool cancels
+  what runs, removes what it wrote, says `bye` and exits. When it has not ended 10 s after the pipe closed, the app
+  runs `oneios_root.sh untool`: every process whose command line holds `<stage>/runtime/bin/oneios-tool serve`, and
+  their children four levels down, get SIGTERM, then SIGKILL after 2 s; then it ends its `su`.
+- What the fork sends (`OneiosToolJob.kt`): `sums` of `runtime/` and `image/` against `runtime.sha256` and
+  `image.sha256` (`strict`), `cpu`, `log-list` and `log` (`file` `xnuhost`), `ioslog-boots` and `ioslog-show`
+  (`source` `<stage>/data/data.img`, `boot` `last`), and for Make iOS image root's `begin image`, then
+  `make-image` with `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`, `ids_list`
+  `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
+  with those four fields of `make-image`'s `ok`. **`make-image` is not in the tool yet**: the fork's request to the
+  Rust side is its step list (`download` of the released `xnu.macho`, `fetch` of the profile's IPSW members from
+  Apple's URL, `im4p`, `apfs-copy`, `tweaks`, `prelink` with the audit and `stubs-check`, the `receive`-style lists),
+  one `space` event before it writes, and those four result fields. Until then the tool answers `refused`
+  `unknown`; the app then also sends `tweaks` (refused `not-ported`: the root tweaks are still Python) and shows both
+  answers in the tool's words, and stages nothing. Not in the tool either: `scripts/image/build.sh`'s order and checks,
+  the AEA decryption.
+- Make iOS image's first request is `fetch` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`
+  (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
+- Pause and Resume: the fork sends `{"cmd":"pause","id":...}` and `{"cmd":"resume","id":...}` (the user's buttons;
+  and Android's default network lost and back) and shows `paused`, `resumed` and `net` (`state` `waiting`|`resumed`,
+  `next`, `text`; an `error` with the id and a code), only when `hello`'s `cmds` lists `pause` and `resume`. These follow
+  the tool's README of branch `tool-download-resume` ("Downloads on a mobile network"). A flow the
+  app was ended in is started again with the same requests; the tool goes on from what `resume` kept.

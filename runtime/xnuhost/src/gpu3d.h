@@ -44,6 +44,11 @@ struct xh_gpu3d {
   int      (*map_blob)(xh_gpu3d *b, uint32_t res, uint64_t *pool_offset, uint32_t *map_info);
   int      (*attach)(xh_gpu3d *b, uint32_t ctx, uint32_t res, bool attach);
   void     (*unref)(xh_gpu3d *b, uint32_t res);
+  // Optional (NULL: none). The guest's word on who submits (OneiOSAdreno.cpp oneios_gpu_hint; drm2kgsl/oneios_gpu_policy.h
+  // OG_HINT_*): byte 0 the task's role and DarwinBG, byte 1 the thread's QoS, byte 2 the time to the frame's deadline. Called
+  // right after a context is made (CTX_CREATE's context_init bits 8-23; byte 2 is 0) and before each SUBMIT_3D (the command
+  // header's three padding bytes). An older guest sends zeros.
+  void     (*hint)(xh_gpu3d *b, uint32_t ctx, const uint8_t hint[3]);
   // Set by the device before the first context.
   xh_gpu3d_retire retire;
   xh_virtio *dev;

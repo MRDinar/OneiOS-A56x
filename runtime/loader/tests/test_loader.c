@@ -177,6 +177,42 @@ static void test_machine(void)
   if (!t) { printf("  machine: %s\n", err); return; }
   // what ArmDTPlatform::configure requires
   CHECK(xl_adt_find(t, "cpus") && xl_adt_find(t, "arm-io") && xl_adt_find(t, "defaults") && xl_adt_find(t, "options"));
+  // the board without an identity tree: the target-type iOS names its jetsam properties by
+  {
+    xl_machine b;
+    machine_default(&b);
+    b.target_type = "V54";
+    xl_adt_node *bt = xl_machine_tree(&b, &err);
+    const xl_adt_prop *q = bt ? xl_adt_get(bt, "target-type") : NULL;
+    CHECK(q && !strcmp((const char *)q->value, "V54") && !xl_adt_get(t, "target-type"));
+    xl_adt_free(bt);
+  }
+  // no ram-view: the iPhone18,2's default task limit, no entitled raise
+  {
+    const xl_adt_prop *q = xl_adt_get(xl_adt_find(t, "defaults"), "kern.max_task_pmem");
+    uint32_t mb = 0;
+    if (q && q->length == 4) memcpy(&mb, q->value, 4);
+    CHECK(mb == 3376 && !xl_adt_get(xl_adt_find(t, "defaults"), "kern.entitled_max_task_pmem"));
+  }
+  {
+    // ram-view=12G: an iPhone18,2's own limits (24A446's DeviceTree /defaults); 6G: half of each
+    xl_machine v;
+    machine_default(&v);
+    v.view_size = 12ull << 30;
+    xl_adt_node *vt = xl_machine_tree(&v, &err);
+    const xl_adt_node *d = vt ? xl_adt_find(vt, "defaults") : NULL;
+    uint32_t mb[3] = { 0 };
+    const char *const names[3] = { "kern.max_task_pmem", "kern.entitled_max_task_pmem", "kern.entitled_dev_max_task_pmem" };
+    for (int i = 0; d && i < 3; i++) { const xl_adt_prop *q = xl_adt_get(d, names[i]); if (q && q->length == 4) memcpy(&mb[i], q->value, 4); }
+    CHECK(mb[0] == 3376 && mb[1] == 6144 && mb[2] == 6656);
+    xl_adt_free(vt);
+    v.view_size = 6ull << 30;
+    vt = xl_machine_tree(&v, &err);
+    d = vt ? xl_adt_find(vt, "defaults") : NULL;
+    const xl_adt_prop *q = d ? xl_adt_get(d, "kern.max_task_pmem") : NULL;
+    CHECK(q && q->length == 4 && (memcpy(&mb[0], q->value, 4), mb[0] == 1688));
+    xl_adt_free(vt);
+  }
   const xl_adt_node *chosen = xl_adt_find(t, "chosen");
   const xl_adt_prop *p = xl_adt_get(chosen, "nvram-bank-size");
   CHECK(p && p->length == 4);
@@ -386,7 +422,8 @@ static void test_place(void)
                             .virt_base = hosted ? 0x2000004000ull : FX_BASE,
                             .tree = tree, .command_line = "debug=0x8 -v", .legacy_boot_args = legacy,
                             .video = { 0x900000000ull, 1, 4 * 1080, 1080, 2340, 32 },
-                            .ramdisk = { disk, sizeof disk }, .trustcache = { tc.data, tc.size } };
+                            .ramdisk = { disk, sizeof disk }, .trustcache = { tc.data, tc.size },
+                            .mem_size_actual = hosted ? 12ull << 30 : 0 };   // ram-view: memSizeActual only, memSize stays the window
       xl_boot_layout l;
       CHECK(xl_boot_place(&r, &l, &err) == 0);
       if (err) { printf("  place: %s\n", err); xl_adt_free(tree); continue; }
@@ -404,7 +441,8 @@ static void test_place(void)
       memcpy(&dt, args + 0x60, 8);
       memcpy(&dtlen, args + 0x68, 4);
       memcpy(&actual, args + (legacy ? 728 : 0x478), 8);
-      CHECK(video0 == 0x900000000ull && dt == r.virt_base + (l.tree_pa - r.phys_base) && dtlen == l.tree_size && actual == window);
+      CHECK(video0 == 0x900000000ull && dt == r.virt_base + (l.tree_pa - r.phys_base) && dtlen == l.tree_size &&
+            actual == (hosted ? 12ull << 30 : window));
       CHECK(!strcmp((const char *)args + 0x6c, "debug=0x8 -v"));
       // the tree in the window parses and its memory-map names the copies
       xl_adt_node *placed = xl_adt_parse(ram + (l.tree_pa - r.phys_base), l.tree_size, &err);

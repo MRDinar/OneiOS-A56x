@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "brightness.h"
 #include "bridges/bridges.h"
+#include "bridges/hw_backend.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -31,6 +32,7 @@
 
 #define STEP_MS 16u
 #define TOUCH_MAX 4u
+enum { TOUCH_NONE = 0, TOUCH_SLEEP = 1, TOUCH_WAKE = 2 };
 #define ALS_STALE_MS 3000u                 // no report for this long: the sensor was turned off under us
 
 // ---- the curve ----------------------------------------------------------------------------------
@@ -123,8 +125,12 @@ struct br_bright {
   // touch IC (Samsung's sec input class): its power state follows the display's
   char touch[TOUCH_MAX][200];             // each IC's `enabled` file
   bool touch_on;                          // the worker's, after open
-  bool touch_sleep;                       // level 0 puts the IC to sleep
+  bool touch_sleep;                       // iOS's display off puts the IC to sleep
   unsigned touch_failures;
+  int touch_request;                      // TOUCH_*: what the worker does to the IC next (under lock)
+  bool display_on;                        // iOS's display power, as its framebuffer asked (under lock)
+  uint32_t lit_level;                     // the level before the display went off: where it comes back on
+  bool lit_linear;
   // light sensor
   int als_fd;
   char als_enable[260];
@@ -245,23 +251,43 @@ static int panel_find(const char *dir, char *node, size_t size, uint32_t *max)
   return found;
 }
 
+// The treble backend's lookup: the standard class device names only, each a named file; no folder is listed.
+static int panel_find_named(const char *dir, char *node, size_t size, uint32_t *max)
+{
+  static const char * const names[] = BR_BRIGHT_TREBLE_NAMES;
+  char path[300];
+  for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
+    snprintf(path, sizeof path, "%.200s/%s/max_brightness", dir, names[i]);
+    if (read_u32(path, max) == 0 && *max) { snprintf(node, size, "%.120s/%.60s/brightness", dir, names[i]); return 0; }
+  }
+  errno = ENOENT;
+  return -1;
+}
+
 static void *panel_worker(void *arg)
 {
   br_bright *b = arg;
   pthread_mutex_lock(&b->lock);
   while (!b->stop) {
-    if (!b->pending) { pthread_cond_wait(&b->wake, &b->lock); continue; }
-    uint64_t elapsed = now_ms() - b->started_ms;
-    b->level = br_bright_fade_at(b->from, b->target, elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed, b->fade_ms);
-    if (b->level == b->target) b->pending = false;
-    uint32_t value = br_bright_map(b->level, b->linear, b->info.floor, b->info.ceiling);
-    bool more = b->pending, lit = b->target != 0, risen = b->level != 0;
+    if (!b->pending && !b->touch_request) { pthread_cond_wait(&b->wake, &b->lock); continue; }
+    int touch = b->touch_request;
+    b->touch_request = TOUCH_NONE;
+    bool step = b->pending, more = false;
+    uint32_t value = 0;
+    if (step) {
+      uint64_t elapsed = now_ms() - b->started_ms;
+      b->level = br_bright_fade_at(b->from, b->target, elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed, b->fade_ms);
+      if (b->level == b->target) b->pending = false;
+      value = br_bright_map(b->level, b->linear, b->info.floor, b->info.ceiling);
+      more = b->pending;
+    }
     pthread_mutex_unlock(&b->lock);
-    // iOS's level crosses 0 (it sleeps or wakes the display): the touch IC goes with it. Off: the IC first, then
-    // the backlight. On: the backlight first (in a fade up, the first step above the lowest level).
-    if (!lit && b->touch_on && b->touch_sleep) touch_power(b, false);
-    panel_write(b, value);                 // outside the lock: br_bright_set never waits for the panel
-    if (lit && risen && !b->touch_on) touch_power(b, true);
+    // The touch IC follows iOS's display power (br_bright_display), never the backlight's level: asleep only when
+    // iOS turns its display off, woken at every display on and at every power-key press (br_bright_key). Off: the
+    // IC first, then the backlight. On: the backlight first.
+    if (touch == TOUCH_SLEEP && b->touch_sleep && b->touch_on) touch_power(b, false);
+    if (step) panel_write(b, value);       // outside the lock: br_bright_set never waits for the panel
+    if (touch == TOUCH_WAKE) touch_power(b, true);
     if (more) usleep(STEP_MS * 1000u);
     pthread_mutex_lock(&b->lock);
   }
@@ -381,15 +407,29 @@ br_bright *br_bright_open(const br_bright_options *options)
   br_bright *b = calloc(1, sizeof *b);
   if (!b) return NULL;
   b->fd = b->als_fd = -1;
+  b->display_on = true;                   // iOS draws from its start; its framebuffer says when it turns off
   b->als_scale = o.als_millilux_per_count ? o.als_millilux_per_count : 1000;
   b->info.max_nits = o.max_nits ? o.max_nits : 500;
   pthread_mutex_init(&b->lock, NULL);
   pthread_cond_init(&b->wake, NULL);
 
   const char *dir = o.backlight_dir ? o.backlight_dir : "/sys/class/backlight";
-  if (panel_find(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness) == 0 &&
+  bool treble = (b->info.backend = br_hw_select(BR_HW_BACKLIGHT, o.backend)) == BR_HW_TREBLE;
+  int found = treble ? panel_find_named(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness)
+                     : panel_find(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness);
+  if (found && treble) {
+    char what[400];
+    snprintf(what, sizeof what, "no backlight class device panel0-backlight, panel1-backlight, backlight, lcd-backlight or panel with a max_brightness under %.200s", dir);
+    if (!br_hw_missing(BR_HW_BACKLIGHT, what)) { pthread_mutex_destroy(&b->lock); pthread_cond_destroy(&b->wake); free(b); return NULL; }
+    treble = false;                       // hw-backend-fallback=1: the samsung form, all of it
+    b->info.backend = BR_HW_SAMSUNG;
+    found = panel_find(dir, b->info.node, sizeof b->info.node, &b->info.max_brightness);
+  }
+  if (found == 0 &&
       read_u32(b->info.node, &b->info.saved) == 0 && (b->fd = open(b->info.node, O_WRONLY | O_CLOEXEC)) >= 0) {
-    b->info.ceiling = o.ceiling && o.ceiling <= b->info.max_brightness ? o.ceiling : br_bright_ceiling(b->info.max_brightness);
+    // Samsung's doubled ranges end at the manual maximum; the treble backend takes the class device's range whole.
+    uint32_t top = treble ? b->info.max_brightness : br_bright_ceiling(b->info.max_brightness);
+    b->info.ceiling = o.ceiling && o.ceiling <= b->info.max_brightness ? o.ceiling : top;
     b->info.floor = o.floor ? o.floor : 1;
     if (b->info.floor > b->info.ceiling) b->info.floor = b->info.ceiling;
     b->written = b->info.saved;
@@ -408,19 +448,25 @@ br_bright *br_bright_open(const br_bright_options *options)
   int panel_errno = errno;
   // The touch IC, before the worker can run: One UI may have left it off, and nothing in a session wakes it.
   const char *touch_dir = o.touch_dir ? o.touch_dir : "/sys/class/sec";
-  b->info.touch_nodes = touch_find(touch_dir, b->touch);
+  b->info.touch_nodes = treble ? 0 : touch_find(touch_dir, b->touch);
   b->touch_sleep = !o.no_touch_off;
-  if (b->info.touch_nodes) {
+  if (treble) br_log(1, "brightness: touch: treble: no vendor-neutral power node for the touch IC: left alone (the panel driver's own)");
+  else if (b->info.touch_nodes) {
     touch_power(b, true);
     br_log(1, "brightness: touch: %u IC%s under %s (%s) woken; %s", b->info.touch_nodes, b->info.touch_nodes > 1 ? "s" : "", touch_dir, b->touch[0],
-           b->touch_sleep ? "asleep while iOS's level is 0, woken when it is not" : "kept awake at level 0 (ONEIOS_TSP_OFF=0)");
+           b->touch_sleep ? "asleep while iOS's display is off (its framebuffer's power request), woken at display on and at a power-key press; a brightness of 0 does not sleep it"
+                          : "kept awake when iOS's display is off (ONEIOS_TSP_OFF=0)");
   } else br_log(1, "brightness: touch: no sec_touchscreen IC under %s: its power state is left alone", touch_dir);
   if (b->info.panel)
     br_log(1, "brightness: panel on: %s, %u..%u of %u (One UI left %u%s), the slider squared", b->info.node, b->info.floor, b->info.ceiling,
            b->info.max_brightness, b->info.saved, b->info.saved ? "" : ": iOS starts from the start level");
   else br_log(0, "brightness: panel off: no writable backlight device under %s: %s", dir, strerror(panel_errno));
 
-  if (!o.no_als) als_open(b, &o);
+  if (!o.no_als && !treble) als_open(b, &o);
+  else if (!o.no_als && br_hw_fallback_allowed(br_hw_current())) {
+    br_log(1, "brightness: light sensor: treble: missing: the sensors HAL's light sensor (not read by this bridge yet); the samsung lookup instead (hw-backend-fallback=1)");
+    als_open(b, &o);
+  } else if (!o.no_als) br_log(1, "brightness: light sensor: treble: missing: the sensors HAL's light sensor (not read by this bridge yet); off (hw-backend-fallback=0): auto-brightness has no input");
   if (!b->info.panel && !b->info.als) { br_bright_close(b); return NULL; }
   return b;
 }
@@ -439,6 +485,42 @@ void br_bright_set(br_bright *b, uint32_t level, bool linear, uint32_t fade_ms)
   b->fade_ms = fade_ms;
   b->started_ms = now_ms();
   b->pending = true;
+  pthread_cond_signal(&b->wake);
+  pthread_mutex_unlock(&b->lock);
+}
+
+void br_bright_display(br_bright *b, bool on, const char *why)
+{
+  if (!b) return;
+  pthread_mutex_lock(&b->lock);
+  bool was = b->display_on;
+  b->display_on = on;
+  if (!on && was) {
+    // Off: the IC sleeps, then the backlight goes to the floor; the level is kept for the way back on.
+    b->lit_level = b->target;
+    b->lit_linear = b->linear;
+    b->touch_request = TOUCH_SLEEP;
+    if (b->info.panel) {
+      b->from = b->level; b->target = 0; b->fade_ms = 0; b->started_ms = now_ms(); b->pending = true;
+    }
+  } else if (on) {
+    // On (and every repeat of it): the level from before the off, then the IC woken, whatever it was believed to be.
+    if (!was && b->info.panel && b->target == 0 && b->lit_level) {
+      b->from = b->level; b->target = b->lit_level; b->linear = b->lit_linear; b->fade_ms = 0; b->started_ms = now_ms(); b->pending = true;
+    }
+    b->touch_request = TOUCH_WAKE;
+  }
+  pthread_cond_signal(&b->wake);
+  pthread_mutex_unlock(&b->lock);
+  br_log(1, "brightness: iOS's display %s (%s)%s", on ? "on" : "off", why ? why : "?",
+         on ? ": the touch IC woken" : b->touch_sleep ? ": the touch IC asleep, the panel at its floor" : ": the panel at its floor (touch-sleep=0)");
+}
+
+void br_bright_key(br_bright *b)
+{
+  if (!b || !b->info.touch_nodes) return;
+  pthread_mutex_lock(&b->lock);
+  b->touch_request = TOUCH_WAKE;            // iOS turns the display on or off next; an off sleeps it again
   pthread_cond_signal(&b->wake);
   pthread_mutex_unlock(&b->lock);
 }
@@ -466,7 +548,9 @@ void br_bright_close(br_bright *b)
   if (b->info.panel) {
     pthread_join(b->panel_thread, NULL);
     // One UI's own value; system_server sets it again when it starts. If that was 0, the start value: the return's
-    // screen needs a lit panel.
+    // screen needs a lit panel. Always written: the node may have been set outside the bridge during the session
+    // (`oneios-tool phone backlight set N`, or by hand), so the bridge's own last write is not the node's value.
+    __atomic_store_n(&b->written, UINT32_MAX, __ATOMIC_RELAXED);
     panel_write(b, b->info.start);
   }
   if (b->info.touch_nodes) touch_power(b, true);     // after the backlight; the return finds the IC awake

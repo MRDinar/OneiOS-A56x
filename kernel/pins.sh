@@ -9,11 +9,11 @@ XNU_VERSION=12377.121.6
 XNU_DARWIN=25.5.0
 # macOS release that ships this XNU (darwin-xnu-build's MACOS_VERSION, as iOSPlus10 scripts/ios26/build-kernel.sh).
 MACOS_VERSION=26.5
-# Headers-only KDK (kdk-headers.py). Only read when KDK_HEADERS=1; UniXNU's series builds without it.
+# Headers-only KDK (`oneios-tool kernel kdk-headers`). Only read when KDK_HEADERS=1; UniXNU's series builds without it.
 KDK_URL=https://github.com/dortania/KdkSupportPkg/releases/download/25F84/Kernel_Debug_Kit_26.5.2_build_25F84.dmg
 KDK_SHA256=faef4393becf65c88a2791770904909babf1826d23d2ea478bf878a6417851ab
 # Xcode on the Mac (the version UniXNU-droidvm records its 12377 arm64e build with).
-XCODE_VERSION=27.1
+XCODE_VERSION=27.2
 
 # external/NAME
 # Droid-VM-UniXNU is the build base: the fork of UniXNU that Droid-VM's iPadOS 27 guest is built with, the only

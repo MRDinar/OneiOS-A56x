@@ -43,8 +43,20 @@ struct xh_cpu {
   uint64_t host_sp;           // 0x30    host only
   uint64_t kernel_data;       // 0x38 K  free for the kernel (its cpu_data pointer)
   uint64_t tpidr_el1;         // 0x40 K  shadow of TPIDR_EL1 for trapped mrs/msr (current thread)
-  uint64_t reserved[7];       // 0x48
+  uint32_t perf_hint;         // 0x48 K  what the user thread this vCPU runs needs (XH_HINT_*), written by the kernel before
+                              //         thread_run (kernel 0075); 0 = no hint (an older kernel). Read by thread_run (its
+                              //         uclamp) and by any host code on the vCPU (the GPU path: the submitting thread's role)
+  uint32_t perf_reserved;     // 0x4c
+  uint64_t reserved[6];       // 0x50
 };                            // 0x80; host-private data follows
+
+// perf_hint: bits 0-10 the utilisation clamp floor the thread asks for (0-1024), and its role from XNU's own policy
+// (thread_get_perfcontrol_class, the task's effective QoS and darwin-background state: RunningBoard's roles reach it there).
+#define XH_HINT_VALID       (1u << 16)    // the kernel wrote this word
+#define XH_HINT_BACKGROUND  (1u << 17)    // background or utility QoS, darwin background: no floor, no ceiling of ours
+#define XH_HINT_UI          (1u << 18)    // UI, above-UI or user-initiated class (an app's main thread, its frame workers)
+#define XH_HINT_REALTIME    (1u << 19)    // a realtime thread (the render server's, audio)
+#define XH_HINT_FLOOR(h)    ((h) & 0x7ffu)
 
 // ---- saved register frames ---------------------------------------------------------------------
 struct xh_vreg { uint64_t lo, hi; };
@@ -86,7 +98,8 @@ struct xh_trap {
   uint64_t far;               // fault address (FAULT), instruction address (ILLEGAL, BRK)
   uint64_t esr;               // ESR_EL1 as Linux reported it, 0 if it did not
   uint32_t svc;               // SYSCALL: the svc immediate (0x80 for XNU's)
-  uint32_t access;            // FAULT: XH_PROT_* bit of the access that faulted, 0 if unknown
+  uint32_t access;            // FAULT: XH_PROT_* bit of the access that faulted, 0 if unknown (a cache
+                              // maintenance instruction, ESR ISS.CM: READ, though the hardware sets WnR)
   uint32_t insn;              // the instruction at the trap, when readable
   uint32_t exit_status;       // EXITED: the Linux wait status of the task process
 };
@@ -134,6 +147,8 @@ struct xh_info {
 #define XH_FEATURE_PAC          (1ull << 0)   // paca/pacg: arm64e runs; one key set for kernel and tasks
 #define XH_FEATURE_TASKS        (1ull << 1)   // the task trap layer works on this host (seccomp, memfd)
 #define XH_FEATURE_PAC_KEYS_OFF (1ull << 2)   // PR_PAC_SET_ENABLED_KEYS: plain arm64 tasks can run
+#define XH_FEATURE_RAM_FIXED    (1ull << 3)   // the RAM is held for the whole session (ram-giveback=0): ram_discard
+                                              // is refused (-EPERM); a kernel gives no free pages back (0067)
 
 // ---- calls from the host into the kernel --------------------------------------------------------
 struct xh_upcalls {
@@ -180,7 +195,15 @@ struct xh_vector {
   void     (*mmio_write)(struct xh_cpu *, uint64_t phys, uint32_t size, uint64_t value);
 
   // memory
-  int64_t  (*ram_discard)(struct xh_cpu *, uint64_t phys, uint64_t size);      // give free pages back to Linux
+  // Give free pages back to Linux: a hole punched in the RAM memfd (fallocate PUNCH_HOLE, the size kept). Only
+  // inside the kernel's window [info->ram_phys, +ram_size), host-page aligned, size > 0, else -EINVAL; fallocate's
+  // errno otherwise. Afterwards the range reads as zero in every mapping (the window, every task that maps it; a
+  // task's mapping is not removed, its next access gets the new page) and the host holds no memory for it until it
+  // is touched again (a read through a shared mapping fills it too). Kernel 0058's free-page reporting calls it for
+  // pages on XNU's free queue only (free_report.h); xnuhost counts it for its `memory:` log line. When info->features
+  // has XH_FEATURE_RAM_FIXED (the default since 2026-11-13: the RAM is held for the whole session) every call is
+  // refused with -EPERM and counted; kernel 0067 then does not call it.
+  int64_t  (*ram_discard)(struct xh_cpu *, uint64_t phys, uint64_t size);
   // User text, exactly once per page of original text, before it is mapped executable: `mrs xN,
   // TPIDRRO_EL0` becomes `mrs xN, TPIDR_EL0` (the TSD base), `mrs xN, TPIDR_EL0` becomes `mov xN, #0`
   // (iOS's CPU number: always 0) and `msr TPIDR_EL0, xN` becomes `nop`. A second pass over a

@@ -5,6 +5,11 @@
 // Panel: the backlight class device of Samsung's panel driver (/sys/class/backlight/panel), written
 // as root. It needs neither system_server nor surfaceflinger. Light sensor: the evdev device
 // "als_rear" (STK6D2x), read without EVIOCGRAB.
+//
+// Two backends (bridges/hw_backend.h, hw-backend-backlight): samsung, the above and the touch IC's power through
+// Samsung's sec class, unchanged; treble, the standard backlight class by named paths only (BR_BRIGHT_TREBLE_NAMES,
+// the whole max_brightness range), no touch IC node (none is vendor-neutral: left alone), and no light sensor yet
+// (the vendor-neutral one is the sensors HAL; hw-backend-fallback=1 uses the samsung lookup for it).
 #ifndef ONEIOS_BRIDGE_BRIGHTNESS_H
 #define ONEIOS_BRIDGE_BRIGHTNESS_H
 
@@ -12,6 +17,8 @@
 #include <stdint.h>
 
 #define BR_BRIGHT_FULL 65535u             // the level scale of the bridge channel (struct ob_bright_set)
+// The treble backend's backlight class devices, tried in this order (each DIR/NAME/max_brightness, a named file).
+#define BR_BRIGHT_TREBLE_NAMES { "panel0-backlight", "panel1-backlight", "backlight", "lcd-backlight", "panel" }
 
 // ---- the curve (pure) ---------------------------------------------------------------------------
 // The slider's top on the panel's scale. Samsung's node goes past the manual range when it also
@@ -56,6 +63,7 @@ typedef struct {
   uint32_t max_nits;                      // 0: 500, what iOS is told the top is    (ONEIOS_BRIGHT_NITS)
   uint32_t als_millilux_per_count;        // 0: 1000, uncalibrated                  (ONEIOS_ALS_SCALE)
   bool     no_als;
+  int      backend;                       // BR_HW_SAMSUNG, BR_HW_TREBLE (bridges/hw_backend.h); 0: the process's hw-backend
 } br_bright_options;
 
 typedef struct { uint32_t millilux, clear, ir, uv; } br_als_sample;
@@ -70,6 +78,7 @@ typedef struct {
   uint32_t max_nits;
   uint32_t start;                         // the node's value iOS starts from: saved, or the start level when saved is 0
   unsigned touch_nodes;                   // touch ICs found (sec_touchscreen)
+  int      backend;                       // BR_HW_SAMSUNG or BR_HW_TREBLE: the form in use
 } br_bright_info;
 
 typedef struct br_bright br_bright;
@@ -84,6 +93,12 @@ br_bright *br_bright_open(const br_bright_options *options);
 void br_bright_info_get(const br_bright *b, br_bright_info *out);
 // Never blocks: a worker writes the node, in steps of 16 ms when fade_ms is not 0.
 void br_bright_set(br_bright *b, uint32_t level, bool linear, uint32_t fade_ms);
+// iOS's display power (its framebuffer's power request, OB_BRIGHT_POWER). Off: the touch IC sleeps (unless
+// ONEIOS_TSP_OFF=0), then the panel goes to its floor, the level kept. On (every time): the level from before the off
+// when nothing has set another, then the IC woken. A level of 0 alone does neither: it is a dim panel, not an off one.
+void br_bright_display(br_bright *b, bool on, const char *why);
+// A press of the power key (xnuhost's evdev reader): the touch IC woken; iOS's display off that may follow sleeps it.
+void br_bright_key(br_bright *b);
 // The node's value written last (the saved one before the first set).
 uint32_t br_bright_current(br_bright *b);
 // Where the panel is now on the slider's scale (the squared curve undone), 0..BR_BRIGHT_FULL.

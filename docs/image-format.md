@@ -58,10 +58,11 @@ This is the plan's choice (section 4: UniXNU's release layout, `os.img` and `sys
 each volume's name, UUID, role, case sensitivity and seal flag, read from the APFS structures at build time.
 The kernel build pins the OS volume's UUID (the root is matched by it).
 
-Checked so far against Apple's files: the AppOS cryptex of 24A446 (16 MiB, fetched; raw APFS, volume
-`AppCryptex` `27C33F9D-750F-4413-8E83-25E83EA25A6F`, read by apfs-fuse). The OS and SystemOS images of 24A446
-have not been downloaded; iOS 26.5.2's are raw APFS in the same way, and `build.sh` stops with a clear line
-if an image is anything else (a UDIF image has to be converted to raw first).
+Checked against Apple's files of 24A446 (fetched and decrypted on the Linux PC for the phone's set of 2026-11-11 and again
+on the Mac on 2026-11-12, the same SHA-256 both times): `os.img` 10,359,930,880 bytes (`bba6accc...`), `systemos.img`
+6,157,238,272 (`a41d72a6...`), `app.img` 16,777,216 (`37f1a44e...`, volume `AppCryptex`
+`27C33F9D-750F-4413-8E83-25E83EA25A6F`); each is raw APFS. `build.sh` stops with a clear line if an image is
+anything else (a UDIF image has to be converted to raw first).
 
 ## 2. Profile
 
@@ -217,8 +218,8 @@ changes it (section 6).
 
 **`apfs-raw` (`build.sh --seed apfs`, macOS only).** The same content already unpacked into an APFS volume
 image with that UUID (`scripts/image/seed-apfs-macos.sh`: `newfs_apfs -e -x`, as UniXNU-droidvm's
-`build-droidvm-data-seed.py`). The guest then only copies it into the store. Written, not run: this
-project's build machine is Linux.
+`build-droidvm-data-seed.py`). The guest then only copies it into the store. It needs `sudo` (the files are
+written with their owners). Written, not run: the Mac session of 2026-11-12 had no `sudo`.
 
 ## 6. The userland hook
 
@@ -276,17 +277,63 @@ unpacked set and each image against its hash list; both are tested against tampe
 
 ## 8. Building: tools, and what needs macOS
 
+The same commands on Linux and on macOS; neither needs root. `build.sh` picks the way to read the images by
+`uname -s`.
+
 | Step | Linux | macOS |
 | --- | --- | --- |
-| List and fetch IPSW members | python3 3.11+ | same |
-| AEA decryption | `ipsw` 3.1.743 (`scripts/fetch/get-ipsw-cli.sh`, pinned by SHA-256). Its key fetch was run against 24A446's SystemOS header; the full decryption has not been run on 24A446 | same |
-| Read `/private/var` of the OS volume | `apfs-fuse` + `fusermount3`, no root | `hdiutil attach -readonly`, as root. Not run |
-| Seed as tar | yes | yes |
-| Seed as APFS (`--seed apfs`) | **no**: nothing on Linux writes this APFS | `newfs_apfs`, as root. Not run |
-| Hash lists, manifest, archive | python3, `zstd` | same |
-| Kernel inputs | python3, `lzfse` | same |
+| List and fetch IPSW members | python3 3.11+ | same (run on the Mac, 2026-11-12) |
+| AEA decryption | `ipsw` 3.1.743 (`scripts/fetch/get-ipsw-cli.sh`, pinned by SHA-256) | same, the macOS arm64 release (run on the Mac: both images of 24A446) |
+| Read the volumes (the seed's `/private/var`, the hook's three roots) | `apfs-fuse`, no root: owners as stored | `hdiutil attach -readonly -owners off`, no root: every file shows as the user's and is readable; the owners of `/private/var` come from the OS image's own APFS records (`imagetool.py tree-copy --owners-from`), checked entry by entry against the mount |
+| Seed as tar | yes | yes (xattrs read with libc's `listxattr`, which Python lacks on macOS) |
+| Seed as APFS (`--seed apfs`) | **no**: nothing on Linux writes this APFS | `newfs_apfs`, as root (`sudo`). Not run |
+| Hash lists, manifest, archive | python3, `zstd` | same (Homebrew's `zstd`) |
+| Kernel inputs | python3, and `lzfse` or `oneios-tool` (`image im4p`; `scripts/image/kernel-inputs.sh` takes the one that is there) | same |
 
-So the whole default path runs on Linux. macOS is needed only for the optional APFS seed.
+**The owners on macOS.** A volume a user attaches with owners honoured keeps root's folders closed to that user,
+and attaching as root needs `sudo`. So `build.sh` attaches with owners ignored and reads the real owner, group and
+mode of every entry below `/private/var` from the image itself: `oneios-tool image` (its APFS reader; `imagetool.py`'s `ApfsTree` before 2026-11-13) walks the volume's
+file-system tree (inode, directory and xattr records; no file data). On a sealed volume that tree is hashed and its
+index entries number their children relative to the root's object id (24A446: root 1158, children 1158 + n). The
+copy stops if an entry's type, mode or xattr names differ between the mount and the records, or if an entry is in
+one and not in the other. `oneios-tool image apfs-owners IMAGE [DIR]` prints what it reads.
+
+**A store that was used: block 0 is old, and the newest checkpoint may be cut off.** The read-only images above are
+written once, so block 0's superblock is current and `apfs-info` and `apfs-owners` read it as it is (imagetool.py's
+reader, no checks beyond its own). The Data store (`data/data.img`) is different: Apple's APFS writes block 0's copy
+of the container superblock only at a clean unmount, every session ends with the kernel killed, and a block that a
+later transaction frees is used again a few transactions on. Seen on a store written by iOS 27's own APFS on the PC
+(2026-11-13, `oneios-tool image apfs-checkpoints`; 94 container superblocks in a checkpoint descriptor area of 188
+blocks, transactions 105 to 198): block 0 still held transaction 14, whose object map block had become a node of the
+extent reference tree; of the 94 checkpoints only the newest ten passed, every older one names at least one block
+that was written again since. So a reader of a used store must (as "Mounting an Apple File System Partition" of
+Apple's reference says, and as apfs-fuse does) take block 0 only for the place of the checkpoint descriptor area
+(`nx_xp_desc_base`, `nx_xp_desc_blocks`), read every container superblock there, and use the one with the highest
+transaction that is whole; and since the last one may be half written, check before it trusts, and go on to the
+checkpoint before when a check fails (apfs-fuse stops at the newest superblock with a good checksum):
+
+- a block address against the container's block count and the file's length, before the block is read;
+- an object's header: the Fletcher-64 checksum of the block (`o_cksum`), its type, its object id (a physical
+  object's is its own address, a virtual one's is the id it was looked up by, the container superblock's is 1) and
+  a transaction (`o_xid`) that is not newer than the checkpoint's: a newer one means the block was written again;
+- a checkpoint's superblock is the last block of its own run in the descriptor area (`nx_xp_desc_index`,
+  `nx_xp_desc_len`, modulo the area's length), the blocks before it are its checkpoint map
+  (`checkpoint_map_phys_t`, the last one marked `CHECKPOINT_MAP_LAST`), and its container UUID is block 0's (a
+  superblock of a container that was there before the store was made again is not a candidate);
+- a tree node: root or not, its level one below its parent's, its table and every key and value inside the node.
+  The nodes of a sealed volume's hashed file-system tree, the root too, carry no header (32 zero bytes, the flag
+  `BTNODE_NOHEADER`): only their shape can be checked.
+
+The container's object map is `OMAP_MANUALLY_MANAGED` (no snapshots), so it keeps one mapping per volume: an older
+state of a volume is reached through an older checkpoint's object map, not through a history in the newest one
+(the format, keys of object id and transaction, would allow one). File contents carry no checksum in APFS.
+`oneios-tool`'s reader for used stores does all of this (`tools/oneios-tool/README.md` "The APFS reader").
+
+Checked on 2026-11-12: the Mac's `data.seed` and the phone's (built on the Linux PC with apfs-fuse, same hook) hold
+the same 20,847 entries with the same owners, modes, times, links, xattrs (none: `/private/var` of 24A446 has only
+`com.apple.decmpfs`, `com.apple.ResourceFork` and one `com.apple.fs.symlink`, all dropped) and contents, except the
+two plug-in binaries, which each host builds differently (`docs/gpu.md` section 7). The OS volume's `/private/var`
+has 20,799 entries (19,988 owned by mobile 501:501, 770 by root); every one agreed between the mount and the records.
 
 `build.sh` checks its tools before anything else and stops with one line (`build: missing tools: ...`), then
 its inputs (`build: missing inputs in ...: <names>`), the kernel collection and the hook. It builds in
@@ -298,8 +345,9 @@ much again for the archive.
 
 ## 9. Tests
 
-`scripts/image/tests/run.sh`: 22 tests on generated stand-in files (a ZIP laid out like an IPSW, minimal
-APFS superblocks, fake trust files and kernel). They cover the profile checks, the ZIP member fetch with
-resume and CRC failure, pin checks, the AEA header and IM4P readers, APFS facts, hash lists, the seed's
+`scripts/image/tests/run.sh`: 23 tests on generated stand-in files (a ZIP laid out like an IPSW, minimal
+APFS superblocks and a small APFS file-system tree, hashed and not, fake trust files and kernel). They pass on Linux
+and on macOS. They cover the profile checks, the ZIP member fetch with
+resume and CRC failure, pin checks, the AEA header and IM4P readers, APFS facts, the owner reader of macOS builds, hash lists, the seed's
 owner, mode and time rules and its reproducibility, manifest creation and every way verification refuses a
 set or an archive, and `build.sh` from stand-in inputs to a verified archive with a hook.

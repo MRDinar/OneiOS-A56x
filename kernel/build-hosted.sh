@@ -1,14 +1,21 @@
 #!/bin/bash
 # Build the hosted OneiOS XNU: the kernel of kernel/build-linux.sh plus the hosted machine layer
 # (kernel/patches/oneios-hosted), which runs as a Linux process under xnuhost instead of at EL1.
-#   scripts/bg.sh kernel-hosted kernel/build-hosted.sh
+#   scripts/bg.sh kernel-hosted env HOSTED_OUT=<name> kernel/build-hosted.sh
+#   XNU_FILESET_REFERENCE=1 ...  also the RELEASE reference of the prelink -> out/kernel/current-hosted*/reference.macho
+# Linux (x86_64 or arm64): the host's clang and xnu-linux-toolchain (kernel/linux/), as kernel/build-linux.sh.
+# macOS: Xcode's clang and iphoneos SDK, as kernel/build-macos.sh (Xcode of pins.sh; ALLOW_XCODE=1 accepts another,
+# XCODE_APP=... another place). Same series, archives and output on both.
+# Both need Rust (cargo) for tools/oneios-tool, which builds the board's archives (`oneios-tool kernel gen NAME`); it is
+# built when missing or stale (ONEIOS_TOOL=PATH: that binary instead).
 # Output: out/kernel-hosted/unixnu/oneios/<os profile>/oneios_hosted/kernel/kernel.macho, linked as
 # out/kernel/current-hosted/xnu.macho. The VM kernel's build (build-linux.sh, out/kernel/current) is not touched:
 # this one has its own output root and its own copy of the device repository (out/hosted-device: kernel/device as committed, with
 # the hosted series added to the board's patch series), so the two never share a work tree.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-[ "$(uname -s)" = Linux ] || { echo "build-hosted: Linux only" >&2; exit 1; }
+HOST=$(uname -s)
+case "$HOST" in Linux|Darwin) ;; *) echo "build-hosted: Linux or macOS only" >&2; exit 1 ;; esac
 # HOSTED_OUT=NAME: a second, independent work tree and output (out/kernel-hosted-NAME, out/hosted-device-NAME,
 # out/kernel/current-hosted-NAME), so that several people can build and edit at once. The default tree is the lead's.
 # It must be named: HOSTED_OUT=lead is the default tree (out/kernel-hosted, out/kernel/current-hosted), which is the
@@ -18,10 +25,16 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SUFFIX=${HOSTED_OUT:+-$HOSTED_OUT}
 export KERNEL_OUT=$ROOT/out/kernel-hosted$SUFFIX KERNEL_DEFCONFIG=oneios_hosted_defconfig
 . "$ROOT/kernel/lib/stage.sh"
-JOBS=${JOBS:-$(nproc)}
-TOOLCHAIN=${XNU_LINUX_PREFIX:-$ROOT/out/toolchain}
-"$ROOT/kernel/linux/setup-toolchain.sh"
-[ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/xnu-host-cc" ] && [ "$TOOLCHAIN/unixnu" -nt "$ROOT/kernel/linux/clang-wrapper" ] || "$ROOT/kernel/linux/unixnu-layout.sh"
+. "$ROOT/kernel/lib/host.sh"
+JOBS=${JOBS:-$(host_jobs)}
+T0=$(date +%s)
+if [ "$HOST" = Linux ]; then
+  TOOLCHAIN=${XNU_LINUX_PREFIX:-$ROOT/out/toolchain}
+  "$ROOT/kernel/linux/setup-toolchain.sh"
+  [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/xnu-host-cc" ] && [ "$TOOLCHAIN/unixnu" -nt "$ROOT/kernel/linux/clang-wrapper" ] || "$ROOT/kernel/linux/unixnu-layout.sh"
+else
+  xcode_setup build-hosted
+fi
 stage_sources
 
 # The device repository of this build: the committed one, the hosted defconfig, and the hosted series last.
@@ -34,7 +47,7 @@ export ONEIOS_REPO=$ROOT
 rm -rf "$DEVICE"; mkdir -p "$DEVICE"
 git -C "$ROOT" archive HEAD kernel/device | tar -x -C "$DEVICE" --strip-components=2
 cp "$ROOT/kernel/device/configs/oneios_hosted_defconfig" "$DEVICE/configs/"
-sed -i "s#^\.\./\.\./\.\./\.\./external/#$ROOT/external/#" "$DEVICE/patches/xnu-12377/series"
+sed_i "s#^\.\./\.\./\.\./\.\./external/#$ROOT/external/#" "$DEVICE/patches/xnu-12377/series"
 python3 -I - "$DEVICE/board.toml" "${HOSTED_SERIES:-$ROOT/kernel/patches/oneios-hosted/series}" <<'PY'
 import re, sys
 path, series = sys.argv[1:]
@@ -44,114 +57,72 @@ if n != 1:
     raise SystemExit('build-hosted: board.toml has no [kernel] patch_series')
 open(path, 'w').write(new)
 PY
-# The disks (0004-root-mount-launchd.patch): OneiOSHostedDisk and the source IOBlockStorageDevice as one more board
-# archive of this build only (kernel/patches/oneios-hosted/storage/build-oneios-hosted-storage.py), force-loaded by
-# the hosted defconfig. It goes before build-oneios-board.py, which stays the last of the committed list.
-cp "$ROOT/kernel/patches/oneios-hosted/storage/build-oneios-hosted-storage.py" "$DEVICE/scripts/"
-python3 -I - "$DEVICE/board.toml" <<'PY'
+# The board archives of this build only, each one more entry of board.toml's [kernel] archives, built between the two
+# kernel passes by `oneios-tool kernel gen NAME` (tools/oneios-tool/crates/oneios-kernel; the sources stay in
+# kernel/patches/oneios-hosted/NAME). In the order they are built:
+#   storage   The disks (0004-root-mount-launchd.patch): OneiOSHostedDisk and the source IOBlockStorageDevice,
+#             force-loaded by the hosted defconfig. Before the board's own entry, which is the last of the committed list.
+#   board     The committed entry: drivers/ and Droid-VM's cpufreq.
+#   aes       Software AES (0008-software-aes.patch): UniXNU's NativeAES under the collection's IOAESAccelerator.
+#             AppleImage4's start waits for it.
+#   keystore  The key store (0022-keystore.patch): UniXNU's AppleKeyStoreState with OneiOS's class keys and software
+#             key wrap. launchd and MobileKeyBag look for the AppleKeyStore service; the collection's AppleSEPKeyStore
+#             is left out (no Secure Enclave).
+#   net       The Wi-Fi, en0 (no numbered patch: oneios_drivers_start calls oneios_net_start): the Wi-Fi controller and
+#             interface under the collection's original IOEthernetController and IOEthernetInterface
+#             (IONetworking-24A446-v54.json is their layout; the collection keeps Apple's IONetworkingFamily), their
+#             station xnuhost's Wi-Fi bridge, and UniXNU-droidvm's virtio-net transport from xnuhost's /arm-io/net
+#             (README.md in the patch folder).
+#   hid       Touch, buttons and the light sensor (no numbered patch: oneios_drivers_start calls
+#             oneios_hid_input_start): UniXNU's NativeHidInput and OneiOSALSDevice under the collection's original
+#             IOHIDDevice (kernel/patches/oneios-hosted/hid/OriginalHidDeviceABI.h is its layout), fed by
+#             UniXNU-droidvm's virtio-input transport from xnuhost's input device. backboardd takes touches from its
+#             Digitizer service.
+#   audio     The speaker and the microphone (no numbered patch: oneios_drivers_start calls oneios_audio_start):
+#             UniXNU-droidvm's virtio-snd transport and its two IOAudio2Devices from xnuhost's /arm-io/virtio-snd.
+#   gpu       The GPU (0005-gpu-3d.patch): Droid-VM's virtio-gpu 3D driver, force-loaded like the board's others.
+#   display   The display (0020-display.patch): UniXNU's NativeMobileDisplay under the collection's
+#             IOMobileFramebufferLegacy, with Droid-VM's probe and virtio-gpu scanout client.
+#             CONFIG_XNU_NATIVE_LEGACY_DISPLAY makes UniXNU's build link
+#             build/native-legacy-display/libNativeLegacyDisplay.late.a and compile bsd_init's two calls into it.
+#             After the GPU's archive (the last): the scanout client uses that archive's transport.
+#
+# UniXNU's driver runs an archive entry that is not a script as a command, in the build tree: stage_tool
+# (kernel/lib/stage.sh) builds or finds oneios-tool and puts it on PATH under that name. The generators were Python
+# scripts until 2026-11-13 (build-oneios-NAME.py, copied into the device repository); their output is frozen in
+# tools/oneios-tool/tests/kernelgen/golden.
+stage_tool
+ENTRIES=()
+for name in storage board aes keystore net hid audio gpu display; do
+  ENTRIES+=("oneios-tool kernel gen $name")
+done
+python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" "${ENTRIES[@]}" <<'PY'
 import re, sys
-board = sys.argv[1]
+board, config, *entries = sys.argv[1:]
+# The archives: the committed list ends with the board's own entry; the hosted list takes its place.
 text = open(board).read()
-new, n = re.subn(r'^(\s*)("build-oneios-board\.py")', lambda m: m.group(1) + '"build-oneios-hosted-storage.py",\n' + m.group(1) + m.group(2), text, count=1, flags=re.M)
+new, n = re.subn(r'^(\s*)"oneios-tool kernel gen board",?\s*\n(\s*\])',
+                 lambda m: ''.join(f'{m.group(1)}"{entry}",\n' for entry in entries) + m.group(2), text, count=1, flags=re.M)
 if n != 1:
-    raise SystemExit('build-hosted: board.toml archives have no build-oneios-board.py')
+    raise SystemExit('build-hosted: board.toml archives do not end with the board\'s own entry')
 open(board, 'w').write(new)
-PY
-# The GPU (0005-gpu-3d.patch): Droid-VM's virtio-gpu 3D driver as one more board archive of this build only
-# (kernel/patches/oneios-hosted/gpu/build-oneios-gpu.py), force-loaded like the board's others.
-cp "$ROOT/kernel/patches/oneios-hosted/gpu/build-oneios-gpu.py" "$DEVICE/scripts/"
-python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" <<'PY'
-import re, sys
-board, config = sys.argv[1:]
-text = open(board).read()
-new, n = re.subn(r'("build-oneios-board\.py",?\s*\n)(\s*\])', lambda m: m.group(1).rstrip().rstrip(',') + ',\n  "build-oneios-gpu.py",\n' + m.group(2), text, count=1)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml archives do not end with build-oneios-board.py')
-open(board, 'w').write(new)
+# The archives the kernel force-loads beside the committed ones, in this order (the link order).
 text = open(config).read()
-new, n = re.subn(r'^(CONFIG_XNU_EXTRA_LD_ARCHIVES="[^"\n]*)"', lambda m: m.group(1) + ' -Wl,-force_load,{tree}/build/oneios-gpu/liboneiosgpu.a"', text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: the hosted defconfig has no CONFIG_XNU_EXTRA_LD_ARCHIVES')
-open(config, 'w').write(new)
-PY
-# Software AES (0008-software-aes.patch): UniXNU's NativeAES under the collection's IOAESAccelerator, one more board
-# archive of this build only (kernel/patches/oneios-hosted/aes/build-oneios-aes.py). AppleImage4's start waits for it.
-cp "$ROOT/kernel/patches/oneios-hosted/aes/build-oneios-aes.py" "$DEVICE/scripts/"
-python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" <<'PY'
-import re, sys
-board, config = sys.argv[1:]
-text = open(board).read()
-new, n = re.subn(r'^(\s*)("build-oneios-gpu\.py")', lambda m: m.group(1) + '"build-oneios-aes.py",\n' + m.group(1) + m.group(2), text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml archives have no build-oneios-gpu.py')
-open(board, 'w').write(new)
-text = open(config).read()
-new, n = re.subn(r'^(CONFIG_XNU_EXTRA_LD_ARCHIVES="[^"\n]*)"', lambda m: m.group(1) + ' -Wl,-force_load,{tree}/build/oneios-aes/liboneiosaes.a"', text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: the hosted defconfig has no CONFIG_XNU_EXTRA_LD_ARCHIVES')
-open(config, 'w').write(new)
-PY
-# The key store (0022-keystore.patch): UniXNU's AppleKeyStoreState with OneiOS's class keys and software key wrap, one
-# more board archive of this build only (kernel/patches/oneios-hosted/keystore/build-oneios-keystore.py). launchd and
-# MobileKeyBag look for the AppleKeyStore service; the collection's AppleSEPKeyStore is left out (no Secure Enclave).
-cp "$ROOT/kernel/patches/oneios-hosted/keystore/build-oneios-keystore.py" "$DEVICE/scripts/"
-python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" <<'PY'
-import re, sys
-board, config = sys.argv[1:]
-text = open(board).read()
-new, n = re.subn(r'^(\s*)("build-oneios-gpu\.py")', lambda m: m.group(1) + '"build-oneios-keystore.py",\n' + m.group(1) + m.group(2), text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml archives have no build-oneios-gpu.py')
-open(board, 'w').write(new)
-text = open(config).read()
-new, n = re.subn(r'^(CONFIG_XNU_EXTRA_LD_ARCHIVES="[^"\n]*)"', lambda m: m.group(1) + ' -Wl,-force_load,{tree}/build/oneios-keystore/liboneioskeystore.a"', text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: the hosted defconfig has no CONFIG_XNU_EXTRA_LD_ARCHIVES')
-open(config, 'w').write(new)
-PY
-# The display (0020-display.patch): UniXNU's NativeMobileDisplay under the collection's IOMobileFramebufferLegacy, with
-# Droid-VM's probe and virtio-gpu scanout client, one more board archive of this build only
-# (kernel/patches/oneios-hosted/display/build-oneios-display.py). CONFIG_XNU_NATIVE_LEGACY_DISPLAY makes UniXNU's
-# build link build/native-legacy-display/libNativeLegacyDisplay.late.a and compile bsd_init's two calls into it.
-# After the GPU's archive in the list (it is the last): the scanout client uses that archive's transport.
-cp "$ROOT/kernel/patches/oneios-hosted/display/build-oneios-display.py" "$DEVICE/scripts/"
-python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" <<'PY'
-import re, sys
-board, config = sys.argv[1:]
-text = open(board).read()
-new, n = re.subn(r'("build-oneios-gpu\.py",?\s*\n)(\s*\])', lambda m: m.group(1).rstrip().rstrip(',') + ',\n  "build-oneios-display.py",\n' + m.group(2), text, count=1)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml archives do not end with build-oneios-gpu.py')
-open(board, 'w').write(new)
-text = open(config).read()
+for name in ('gpu', 'aes', 'keystore', 'net', 'hid', 'audio'):
+    text, n = re.subn(r'^(CONFIG_XNU_EXTRA_LD_ARCHIVES="[^"\n]*)"',
+                      lambda m: m.group(1) + f' -Wl,-force_load,{{tree}}/build/oneios-{name}/liboneios{name}.a"', text, count=1, flags=re.M)
+    if n != 1:
+        raise SystemExit('build-hosted: the hosted defconfig has no CONFIG_XNU_EXTRA_LD_ARCHIVES')
 if 'CONFIG_XNU_NATIVE_LEGACY_DISPLAY' in text:
     raise SystemExit('build-hosted: the hosted defconfig already sets CONFIG_XNU_NATIVE_LEGACY_DISPLAY')
 open(config, 'w').write(text.rstrip('\n') + '\nCONFIG_XNU_NATIVE_LEGACY_DISPLAY=y\n')
-PY
-# Touch, buttons and the light sensor (no numbered patch: oneios_drivers_start calls oneios_hid_input_start):
-# UniXNU's NativeHidInput and OneiOSALSDevice under the collection's original IOHIDDevice
-# (kernel/patches/oneios-hosted/hid/OriginalHidDeviceABI.h is its layout), fed by
-# UniXNU-droidvm's virtio-input transport from xnuhost's input device: one more board archive of this build only
-# (kernel/patches/oneios-hosted/hid/build-oneios-hid.py). backboardd takes touches from its Digitizer service.
-cp "$ROOT/kernel/patches/oneios-hosted/hid/build-oneios-hid.py" "$DEVICE/scripts/"
-python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" <<'PY'
-import re, sys
-board, config = sys.argv[1:]
-text = open(board).read()
-new, n = re.subn(r'^(\s*)("build-oneios-gpu\.py")', lambda m: m.group(1) + '"build-oneios-hid.py",\n' + m.group(1) + m.group(2), text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml archives have no build-oneios-gpu.py')
-open(board, 'w').write(new)
-text = open(config).read()
-new, n = re.subn(r'^(CONFIG_XNU_EXTRA_LD_ARCHIVES="[^"\n]*)"', lambda m: m.group(1) + ' -Wl,-force_load,{tree}/build/oneios-hid/liboneioshid.a"', text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: the hosted defconfig has no CONFIG_XNU_EXTRA_LD_ARCHIVES')
-open(config, 'w').write(new)
 PY
 mkdir -p "$UNIXNU_OUT_DIR"
 [ -e "$UNIXNU_OUT_DIR/feeds" ] || [ ! -d "$ROOT/out/kernel/unixnu/feeds" ] || ln -s "$ROOT/out/kernel/unixnu/feeds" "$UNIXNU_OUT_DIR/feeds"
 
 run_build() {
+  # macOS has xcrun, plutil, codesign and csh in place (Xcode); Linux gets UniXNU's shims there in a namespace.
+  if [ "$HOST" = Darwin ]; then "$@"; return; fi
   if [ -x /usr/bin/xcrun ] && [ -x /usr/bin/plutil ] && [ -x /usr/bin/codesign ] && [ -x /bin/csh ]; then "$@"; return; fi
   local binds=() shim
   for shim in xcrun plutil codesign csh; do
@@ -159,8 +130,11 @@ run_build() {
   done
   bwrap --dev-bind / / --overlay-src /usr/bin --tmp-overlay /usr/bin "${binds[@]}" -- "$@"
 }
-export UNIXNU_TOOLCHAIN=$TOOLCHAIN/unixnu ONEIOS_IOS_VERSION=27.0 JOBS
-export PATH=$TOOLCHAIN/unixnu/hostbin:$PATH
+export JOBS
+if [ "$HOST" = Linux ]; then
+  export UNIXNU_TOOLCHAIN=$TOOLCHAIN/unixnu ONEIOS_IOS_VERSION=27.0
+  export PATH=$TOOLCHAIN/unixnu/hostbin:$PATH
+fi
 export UNIXNU_OUT=$UNIXNU_OUT_DIR
 export -f unixnu
 export UNIXNU DEVICE UNIXNU_OUT_DIR
@@ -178,10 +152,18 @@ SEALED=$WORK/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.b
 [ -f "$SEALED.crypto-hmac.json" ] || { echo "build-hosted: $SEALED was not sealed" >&2; exit 1; }
 mkdir -p "$ROOT/out/kernel/current-hosted$SUFFIX"
 cp "$SEALED" "$ROOT/out/kernel/current-hosted$SUFFIX/xnu.macho"
-# Post-link text fixes of the hosted layer (kernel/hosted-fixup.py: a vCPU's identity comes from xnuhost, not
+# Post-link text fixes of the hosted layer (`oneios-tool kernel hosted-fixup`, kernel/hosted-fixup.py until 2026-11-13: a
+# vCPU's identity comes from xnuhost, not
 # MPIDR_EL1), on the copy; then the seal again, over the changed text (the build's own seal script, which takes
 # an already sealed kernel).
 SEALED=$ROOT/out/kernel/current-hosted$SUFFIX/xnu.macho
-python3 -I "$ROOT/kernel/hosted-fixup.py" "$SEALED"
+"$ONEIOS_TOOL" kernel hosted-fixup "$SEALED"
 ( cd "$WORK/tree" && UNIXNU_XNU_ARCH=arm64e python3 scripts/seal-source-crypto-kernel.py "$SEALED" )
-echo "build-hosted: $ROOT/out/kernel/current-hosted$SUFFIX/xnu.macho ($(stat -c %s "$SEALED") bytes, sha256 $(sha256sum "$SEALED" | cut -c1-16)...)"
+# XNU_FILESET_REFERENCE=1: the RELEASE reference of the prelink (kernel/prelink/build.sh REFERENCE=), next to the kernel.
+REF=$WORK/tree/build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf
+if [ "${XNU_FILESET_REFERENCE:-0}" = 1 ]; then
+  [ -f "$REF" ] || { echo "build-hosted: XNU_FILESET_REFERENCE=1 left no $REF" >&2; exit 1; }
+  cp "$REF" "$ROOT/out/kernel/current-hosted$SUFFIX/reference.macho"
+  echo "build-hosted: reference $ROOT/out/kernel/current-hosted$SUFFIX/reference.macho ($(file_size "$REF") bytes)"
+fi
+echo "build-hosted: $ROOT/out/kernel/current-hosted$SUFFIX/xnu.macho ($(file_size "$SEALED") bytes, sha256 $(sha256 "$SEALED" | cut -c1-16)...) in $(( $(date +%s) - T0 )) s on $HOST"

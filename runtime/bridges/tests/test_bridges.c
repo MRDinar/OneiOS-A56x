@@ -111,7 +111,7 @@ static void make_sm8650(const char *root)
     { 792, 3148800, 499200, 2, 0x411fd811, "499200 614400 729600 844800 960000 1075200 1190400 1286400 1401600 1497600 1612800 1708800 1824000 1920000 2035200 2131200 2188800 2246400 2323200 2380800 2438400 2515200 2572800 2630400 2707200 2764800 2841600 2899200 2956800 3014400 3072000 3148800" },
     { 792, 3148800, 499200, 2, 0x411fd811, NULL }, { 792, 3148800, 499200, 2, 0x411fd811, NULL },
     { 790, 2956800, 499200, 5, 0x411fd811, "499200 2956800" }, { 790, 2956800, 499200, 5, 0x411fd811, NULL },
-    { 1024, 3398400, 480000, 7, 0x411fd821, "480000 3398400" },
+    { 1024, 3052800, 480000, 7, 0x411fd821, "480000 3052800" },   // the top (3398400) only as a boost frequency, below
   };
   for (unsigned i = 0; i < 8; i++) {
     char rel[128], text[512];
@@ -121,6 +121,7 @@ static void make_sm8650(const char *root)
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/related_cpus", i); snprintf(text, sizeof text, "%u %u\n", cpus[i].policy, i); put_file(root, rel, text);
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/regs/identification/midr_el1", i); snprintf(text, sizeof text, "0x%016x\n", cpus[i].midr); put_file(root, rel, text);
     if (cpus[i].table) { snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/scaling_available_frequencies", i); snprintf(text, sizeof text, "%s \n", cpus[i].table); put_file(root, rel, text); }
+    if (i == 7) { snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/scaling_boost_frequencies", i); put_file(root, rel, "3398400 \n"); }
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cache/index0/level", i); put_file(root, rel, "1\n");
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cache/index0/type", i); put_file(root, rel, "Data\n");
     snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cache/index0/size", i); put_file(root, rel, i < 2 ? "32K\n" : "64K\n");
@@ -143,6 +144,9 @@ static void test_cpu(const char *tmp)
   CHECK(t.cpu[0].nfreq == 18 && t.cpu[0].freq_khz[0] == 364800 && t.cpu[0].freq_khz[17] == 2265600);
   CHECK(t.cpu[1].nfreq == 2 && t.cpu[1].freq_khz[1] == 2265600);          // no table: the two ends
   CHECK(t.cpu[7].l2_bytes == 2048 * 1024 && t.cpu[0].l1d_bytes == 32 * 1024 && t.cpu[5].policy == 5);
+  // the X4's boost frequency joins its table and its top (scaling_boost_frequencies, host-overhead 2026-11-15)
+  CHECK(t.cpu[7].nfreq == 3 && t.cpu[7].freq_khz[2] == 3398400 && t.cpu[7].max_khz == 3398400 && t.cpu[7].boost_khz == 3398400);
+  CHECK(t.cpu[2].boost_khz == 0 && t.cpu[2].max_khz == 3148800);
 
   br_cpu_plan plan;
   CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0);
@@ -150,7 +154,10 @@ static void test_cpu(const char *tmp)
   CHECK(plan.v[0].type == 'E' && plan.v[1].type == 'E' && plan.v[2].type == 'P' && plan.v[7].type == 'P');
   CHECK(plan.v[0].affinity == 0x03 && plan.v[2].affinity == 0xfc);
   CHECK(plan.v[0].cluster_id == 0 && plan.v[7].cluster_id == 1);
-  CHECK(plan.v[2].max_khz == 3398400 && plan.v[2].capacity == 1024);      // the P cluster's fastest core
+  // each vCPU described as the core cpu-pin puts it on (vCPU i on CPU i), not as the fastest of its kind
+  CHECK(plan.v[2].max_khz == 3148800 && plan.v[2].capacity == 792 && plan.v[2].host_cpu == 2);
+  CHECK(plan.v[7].max_khz == 3398400 && plan.v[7].capacity == 1024 && plan.v[7].host_cpu == 7 && plan.v[7].freq_khz[plan.v[7].nfreq - 1] == 3398400);
+  CHECK(plan.v[5].max_khz == 2956800 && plan.v[0].max_khz == 2265600 && plan.v[0].host_cpu == 0);
   CHECK(br_cpu_plan_make(&t, 8, true, &plan) == 0);
   CHECK(plan.v[0].affinity == 0x01 && plan.v[1].affinity == 0x02 && plan.v[2].affinity == 0x80 && plan.v[3].affinity == 0x04);
   CHECK(plan.v[2].max_khz == 3398400 && plan.v[3].max_khz == 3148800);
@@ -159,17 +166,17 @@ static void test_cpu(const char *tmp)
   CHECK(br_cpu_plan_make(&t, 9, false, &plan) == -1 && br_cpu_plan_make(&t, 0, false, &plan) == -1);
 
   CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0);
-  CHECK(br_cpu_util_for(&plan, 2, 3398400) == 1024 && br_cpu_util_for(&plan, 2, 1699200) == 512 && br_cpu_util_for(&plan, 2, 0) == 0);
+  CHECK(br_cpu_util_for(&plan, 7, 3398400) == 1024 && br_cpu_util_for(&plan, 7, 1699200) == 512 && br_cpu_util_for(&plan, 7, 0) == 0);
   CHECK(br_cpu_util_for(&plan, 0, 2265600) == 325);
   br_cpufreq *d = br_cpufreq_create(&plan, NULL);
   CHECK(br_cpufreq_read(d, 0x08, 4) == 18);                                // vCPU 0: the E table
   br_cpufreq_write(d, 0x0c, 4, 17);
   CHECK(br_cpufreq_read(d, 0x10, 4) == 2265600);
-  CHECK(br_cpufreq_read(d, 2 * BR_CPUFREQ_WINDOW + 0x08, 4) == 2 && br_cpufreq_read(d, 2 * BR_CPUFREQ_WINDOW + 0x14, 4) == 1);
-  br_cpufreq_write(d, 2 * BR_CPUFREQ_WINDOW + 0x04, 4, 3398400);
-  CHECK(br_cpufreq_requested(d, 2) == 3398400 && br_cpufreq_read(d, 2 * BR_CPUFREQ_WINDOW, 4) == 3398400);
-  br_cpufreq_write(d, 2 * BR_CPUFREQ_WINDOW + 0x04, 4, 480000);            // the lowest entry drops the request
-  CHECK(br_cpufreq_requested(d, 2) == 0);
+  CHECK(br_cpufreq_read(d, 7 * BR_CPUFREQ_WINDOW + 0x08, 4) == 3 && br_cpufreq_read(d, 7 * BR_CPUFREQ_WINDOW + 0x14, 4) == 1);
+  br_cpufreq_write(d, 7 * BR_CPUFREQ_WINDOW + 0x04, 4, 3398400);
+  CHECK(br_cpufreq_requested(d, 7) == 3398400 && br_cpufreq_read(d, 7 * BR_CPUFREQ_WINDOW, 4) == 3398400);
+  br_cpufreq_write(d, 7 * BR_CPUFREQ_WINDOW + 0x04, 4, 480000);            // the lowest entry drops the request
+  CHECK(br_cpufreq_requested(d, 7) == 0);
   CHECK(br_cpufreq_read(d, 9 * BR_CPUFREQ_WINDOW + 0x08, 4) == 0);
   br_cpufreq_destroy(d);
 
@@ -228,8 +235,25 @@ static void test_haptic(void)
   CHECK(motor.uploads == 2);
   br_haptic_vib(h, 100, 300, 0);
   br_haptic_flush(h);
+  // The counter line's figures (fix-haptics): 4 vibrate requests (one of intensity 0), 3 stops asked, 3 effects
+  // played, 1 stop that reached the device, nothing failed.
+  br_haptic_stats st;
+  br_haptic_stats_get(h, &st);
+  CHECK(st.vib == 4 && st.stop == 2 && st.played == 3 && st.stopped == 1 && st.failed == 0);
+  br_haptic_stats_get(NULL, &st);
+  CHECK(st.vib == 0 && st.played == 0);
   br_haptic_close(h);                              // close stops a running effect
   CHECK(motor.stops == 2);
+
+  // haptics=sim: the stand-in takes every request, plays it, and counts it; a stop of a playing effect counts too.
+  br_haptic *sim = br_haptic_open_sim();
+  CHECK(sim != NULL);
+  for (unsigned i = 0; i < 20; i++) { br_haptic_vib(sim, 20, 600, 170); br_haptic_flush(sim); }
+  br_haptic_stop(sim);
+  br_haptic_flush(sim);
+  br_haptic_stats_get(sim, &st);
+  CHECK(st.vib == 20 && st.played == 20 && st.stop == 1 && st.stopped == 1 && st.failed == 0 && st.replaced == 0);
+  br_haptic_close(sim);
 }
 
 // ---- network -------------------------------------------------------------------------------------
@@ -338,10 +362,10 @@ static void hr_state(void *ctx, int state) { hci_record *r = ctx; r->states++; r
 
 // The LE scan shim (bt/le_scan.c) through br_hci: idle while the controller takes the extended commands; when it
 // refuses 0x2041, legacy commands go out and the guest sees the extended answers and reports.
-typedef struct { unsigned n; uint8_t last[300]; size_t length; uint8_t first[16]; } scan_record;
-static void sr_rx(void *ctx, uint8_t type, const uint8_t *packet, size_t length)
+typedef struct { unsigned n; uint8_t last[300]; size_t length; uint8_t first[16]; } le_scan_record;
+static void lsr_rx(void *ctx, uint8_t type, const uint8_t *packet, size_t length)
 {
-  scan_record *r = ctx;
+  le_scan_record *r = ctx;
   (void)type;
   if (r->n == 0) memcpy(r->first, packet, length < 16 ? length : 16);
   r->n++; r->length = length; memcpy(r->last, packet, length);
@@ -359,8 +383,8 @@ static void test_le_scan(void)
 
   // A controller that takes the extended commands: nothing changes.
   fake_radio radio = { 0 };
-  scan_record rec = { 0 };
-  br_hci *h = br_hci_create(&fake_radio_backend, &radio, sr_rx, NULL, &rec);
+  le_scan_record rec = { 0 };
+  br_hci *h = br_hci_create(&fake_radio_backend, &radio, lsr_rx, NULL, &rec);
   CHECK(br_hci_open(h) == 0);
   br_hci_set_state(h, 1);
   CHECK(br_hci_send(h, 1, mask, sizeof mask) == 0 && radio.last_length == sizeof mask && !memcmp(radio.last, mask, sizeof mask));
@@ -373,7 +397,7 @@ static void test_le_scan(void)
 
   // A controller that refuses them (the Mi A3's WCN3950 in iOSPlus10's log).
   memset(&radio, 0, sizeof radio); memset(&rec, 0, sizeof rec);
-  h = br_hci_create(&fake_radio_backend, &radio, sr_rx, NULL, &rec);
+  h = br_hci_create(&fake_radio_backend, &radio, lsr_rx, NULL, &rec);
   CHECK(br_hci_open(h) == 0);
   br_hci_set_state(h, 1);
   CHECK(br_hci_send(h, 1, mask, sizeof mask) == 0 && br_hci_send(h, 1, params, sizeof params) == 0 && radio.sends == 2);
@@ -433,6 +457,8 @@ static void test_bt(const char *tmp)
   uint8_t address[6];
   snprintf(path, sizeof path, "%s/bt_addr", tmp);
   FILE *f = fopen(path, "w"); fputs("A4:75:B9:01:02:03\n", f); fclose(f);
+  CHECK(br_bt_address(path, address) == 0 && !memcmp(address, "\xa4\x75\xb9\x01\x02\x03", 6));
+  f = fopen(path, "w"); fwrite("A4:75:B9:01:02:03\0", 1, 18, f); fclose(f);        // the S24 Ultra's file: 17 characters and a NUL
   CHECK(br_bt_address(path, address) == 0 && !memcmp(address, "\xa4\x75\xb9\x01\x02\x03", 6));
   f = fopen(path, "w"); fputs("a475b9010203", f); fclose(f);
   CHECK(br_bt_address(path, address) == 0 && address[5] == 3);
@@ -551,6 +577,9 @@ static void test_bridge_device(const char *tmp)
   send_message(&g, OB_CH_HAPTIC, OB_HAPTIC_STOP, NULL, 0);
   br_haptic_flush(haptic);
   CHECK(motor.stops == 1);
+  br_haptic_stats hs;                                 // the guest's two messages (and the device start's stops), as counted
+  br_haptic_stats_get(haptic, &hs);
+  CHECK(hs.vib == 1 && hs.stop >= 1 && hs.played == 1 && hs.stopped == 1 && hs.failed == 0);
 
   // Bluetooth: open, the HAL becomes ready, a command goes out, its event comes back.
   static const uint8_t reset[] = { 0x03, 0x0c, 0x00 }, complete[] = { 0x0e, 0x04, 0x01, 0x03, 0x0c, 0x00 };
@@ -595,6 +624,15 @@ static void test_bridge_device(const char *tmp)
   post1(&g, OB_QUEUE_TX, &lying, sizeof lying, false);
   CHECK(reap(&g, OB_QUEUE_TX) == 0 && dev_radio.sends == 1);
   send_message(&g, 99, 1, NULL, 0);
+
+  // The return's graceful-shutdown ask: a host->guest control message with no payload, queued like any other. Drain
+  // anything the HCI section left (leaving one buffer posted), then the ask is the next message delivered.
+  int left;
+  do { post1(&g, OB_QUEUE_RX, rx[0], OB_MAX_MESSAGE, true); left = reap(&g, OB_QUEUE_RX); } while (left >= 0);
+  CHECK(br_bridge_request_shutdown());
+  CHECK(reap(&g, OB_QUEUE_RX) == 8);
+  memcpy(&header, rx[0], 8);
+  CHECK(header.channel == OB_CH_CONTROL && header.type == OB_CTL_SHUTDOWN && header.length == 0);
 
   // A reset stops the motor and releases the controller.
   vib.on_ms = 5000;
@@ -710,6 +748,18 @@ static void test_bridge_brightness(const char *tmp)
   send_message(&g, OB_CH_BRIGHTNESS, OB_BRIGHT_SET, &shortened, 4);          // too short: ignored
   usleep(100000);
   CHECK(br_bright_current(bright) == 255);
+  // iOS's display off and on (the framebuffer's power request): the floor, then the level from before
+  struct ob_bright_power power = { 0, OB_POWER_FRAMEBUFFER };
+  send_message(&g, OB_CH_BRIGHTNESS, OB_BRIGHT_POWER, &power, sizeof power);
+  usleep(100000);
+  CHECK(br_bright_current(bright) == 1);
+  power.on = 1;
+  send_message(&g, OB_CH_BRIGHTNESS, OB_BRIGHT_POWER, &power, 4);            // too short: ignored
+  usleep(100000);
+  CHECK(br_bright_current(bright) == 1);
+  send_message(&g, OB_CH_BRIGHTNESS, OB_BRIGHT_POWER, &power, sizeof power);
+  usleep(100000);
+  CHECK(br_bright_current(bright) == 255);
   br_bright_close(bright);
   f = fopen(path, "r");
   unsigned back = 0;
@@ -727,6 +777,15 @@ static br_net *open_wire(const br_net_config *c, br_net_rx_fn rx, void *ctx)
   guest_rx = rx; guest_rx_ctx = ctx;
   if (socketpair(AF_UNIX, SOCK_DGRAM, 0, wire_pair)) return NULL;
   return wire_net = br_net_open_fd(c, wire_pair[0], rx, ctx);
+}
+
+typedef struct { guest *g; uint8_t *buffer; } late_post;
+static void *post_later(void *arg)
+{
+  late_post *l = arg;
+  usleep(10000);
+  post1(l->g, 0, l->buffer, 2048, true);
+  return NULL;
 }
 
 static void test_net_device(void)
@@ -761,6 +820,21 @@ static void test_net_device(void)
   CHECK(send(wire_pair[1], seen, 60, 0) == 60);
   usleep(20000);
   CHECK(reap(&g, 0) == -1);
+  // A frame of the Wi-Fi station's own type (0x88b5) is not dropped at once: it waits for a buffer. One posted 10 ms
+  // later takes it; with none, it is dropped after the wait (50 ms).
+  static uint8_t control[60];
+  control[12] = 0x88; control[13] = 0xb5; control[14] = 0x77;
+  late_post late = { &g, rxbuf[0] };
+  pthread_t poster;
+  CHECK(pthread_create(&poster, NULL, post_later, &late) == 0);
+  guest_rx(guest_rx_ctx, control, sizeof control);
+  pthread_join(poster, NULL);
+  CHECK(reap(&g, 0) == 72 && rxbuf[0][12 + 12] == 0x88 && rxbuf[0][12 + 14] == 0x77);
+  struct timespec t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  guest_rx(guest_rx_ctx, control, sizeof control);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  CHECK(reap(&g, 0) == -1 && (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000 >= 40);
   (void)wire;
   br_net_close(wire_net);
   close(wire_pair[1]);
@@ -821,6 +895,23 @@ static void test_snd_device(void)
   bool writable[3] = { false, false, true };
   post(&g, 2, bufs, lens, writable, 3);
   CHECK(reap(&g, 2) == 8 && status[0] == 0x8000 && sound.frames == 240 && sound.first == 1);
+  // Periods in flight: the device takes each period inside the guest's notify (a vCPU's MMIO write), so it is used
+  // and with the back end before the notify returns: none waits in the queue (the guest's 16 slots are only room).
+  // The time of that hop, notify to the back end's write, is printed.
+  double hop_sum = 0, hop_max = 0;
+  for (unsigned i = 0; i < 64; i++) {
+    struct timespec a, b;
+    unsigned before = sound.frames;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    post(&g, 2, bufs, lens, writable, 3);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    CHECK(sound.frames == before + 240 && reap(&g, 2) == 8);   // with the back end and used at once: 0 in flight
+    double us = (b.tv_sec - a.tv_sec) * 1e6 + (b.tv_nsec - a.tv_nsec) / 1e3;
+    hop_sum += us;
+    if (us > hop_max) hop_max = us;
+  }
+  printf("virtio-snd: 64 periods, each with the back end before its notify returned (0 in flight): %.1f us on average, %.1f us at most\n",
+         hop_sum / 64, hop_max);
 
   // Capture: posted buffers come back holding a period each.
   static uint32_t in_stream = 1, in_status[2][2];
@@ -841,11 +932,53 @@ static void test_snd_device(void)
   CHECK(snd_control(&g, command, sizeof command, reply, 4) == 0x8000 && sound.stops[1] == 1);
   // A period for a stopped stream is acknowledged and not played.
   post(&g, 2, bufs, lens, writable, 3);
-  CHECK(reap(&g, 2) == 8 && sound.frames == 240);
+  CHECK(reap(&g, 2) == 8 && sound.frames == 65 * 240);
 
   void *ctx;
   const br_audio_backend *null = br_audio_null(&ctx);
   CHECK(null->start(ctx, true, 48000, 2) == 0 && null->write(ctx, period, 240) == 240);
+  // The latency probe is the helper's only (xnuhost then leaves the kernel's default); telling the null back end is a no-op.
+  CHECK(br_audio_probe_latency(null, ctx, 10) == -ENOTSUP && br_audio_probe_latency(&fake_sound_backend, &sound, 10) == -ENOTSUP);
+  br_audio_told(null, ctx, 480);
+}
+
+// The stand-in controller (bt/hci_sim.c): what bluetoothd's first commands get back.
+typedef struct { unsigned packets, states, reports; int state; uint8_t last[260]; size_t length; } sim_record;
+static void sr_rx(void *ctx, uint8_t type, const uint8_t *packet, size_t length)
+{
+  sim_record *r = ctx;
+  if (type != 4) return;
+  r->packets++;
+  if (packet[0] == 0x3e) { r->reports++; return; }
+  r->length = length < sizeof r->last ? length : sizeof r->last;
+  memcpy(r->last, packet, r->length);
+}
+static void sr_state(void *ctx, int state) { sim_record *r = ctx; r->states++; r->state = state; }
+
+static void test_bt_sim(void)
+{
+  sim_record r = { 0 };
+  br_hci_sim_set_address((const uint8_t *)"\x02\x0e\x10\xaa\xbb\xcc");
+  br_hci *h = br_hci_open_sim(sr_rx, sr_state, &r);
+  CHECK(h != NULL);
+  static const uint8_t reset[] = { 0x03, 0x0c, 0x00 }, version[] = { 0x01, 0x10, 0x00 }, addr[] = { 0x09, 0x10, 0x00 };
+  static const uint8_t vendor[] = { 0x48, 0xfc, 0x01, 0x0d }, commands[] = { 0x02, 0x10, 0x00 }, inquiry[] = { 0x01, 0x04, 0x05, 0x33, 0x8b, 0x9e, 0x08, 0x00 };
+  static const uint8_t scan[] = { 0x0c, 0x20, 0x02, 0x01, 0x00 }, extscan[] = { 0x42, 0x20, 0x06, 0x01, 0x00, 0, 0, 0, 0 }, ext_feat[] = { 0x04, 0x10, 0x01, 0x01 };
+  CHECK(br_hci_send(h, 1, reset, 3) == -ENOTCONN);                    // not open yet
+  CHECK(br_hci_open(h) == 0 && r.states == 1 && r.state == 1);       // ready at once
+  CHECK(br_hci_send(h, 1, reset, 3) == 0 && r.length == 6 && !memcmp(r.last, "\x0e\x04\x01\x03\x0c\x00", 6));
+  CHECK(br_hci_send(h, 1, version, 3) == 0 && r.length == 14 && r.last[1] == 12 && r.last[5] == 0 && r.last[6] == 0x0d && r.last[10] == 0x1d);
+  CHECK(br_hci_send(h, 1, addr, 3) == 0 && r.length == 12 && !memcmp(r.last + 6, "\xcc\xbb\xaa\x10\x0e\x02", 6));   // little-endian
+  CHECK(br_hci_send(h, 1, commands, 3) == 0 && r.length == 70 && r.last[6] == 0xff && r.last[69] == 0xff);
+  CHECK(br_hci_send(h, 1, ext_feat, 4) == 0 && r.length == 16 && r.last[6] == 1 && r.last[7] == 2);
+  CHECK(br_hci_send(h, 1, vendor, 4) == 0 && r.length == 6 && r.last[5] == 0x01);   // Unknown HCI Command, as a Qualcomm chip
+  unsigned before = r.packets;
+  CHECK(br_hci_send(h, 1, inquiry, 8) == 0 && r.packets == before + 2 && r.last[0] == 0x01);   // Command Status, Inquiry Complete
+  CHECK(br_hci_send(h, 1, scan, 5) == 0 && r.reports == 1 && r.last[0] == 0x0e);     // a legacy LE scan hears one device
+  CHECK(br_hci_send(h, 1, extscan, 9) == 0 && r.reports == 2);                        // and an extended one
+  br_hci_close(h);
+  CHECK(r.state == 0);
+  br_hci_destroy(h);
 }
 
 int main(void)
@@ -857,6 +990,7 @@ int main(void)
   test_net();
   test_bt(tmp);
   test_le_scan();
+  test_bt_sim();
   test_bridge_device(tmp);
   test_bridge_brightness(tmp);
   test_bridge_battery(tmp);

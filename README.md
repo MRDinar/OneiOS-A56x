@@ -27,7 +27,24 @@ the collection builds; not yet run on the phone.
 Later sessions (2026-11-11): with the corrected collection and the Metal plug-in's grant the phone reaches the
 lock screen and, after unlock, the Home Screen, composited on the GPU at 40 to 60 frames a second; touch works.
 The Home Screen had no apps and SpringBoard died once on unlock (an assertion about a missing process identity):
-the removable system apps were never shown in `/Applications`. Hosted `0035` shows them; built, not yet run.
+the removable system apps were never shown in `/Applications`. Hosted `0035` shows them, `0037` keeps them
+registered after the first boot of a Data store, `0036` drops icons drawn blank by earlier boots; built, not yet run.
+
+First Mac builds on the phone (2026-11-12): the Mac `kernel.kc` panics in the first 2 s, in both builds tried
+(507 stubs pointing past the collection with XnuPrelink `b74ed7c`; then an original kernel function left on the
+stub, called by Sandbox; `kernel/prelink/README.md`, "On the phone"; agent prelink audits it). The Mac runtime
+0.1.7-dev with the Linux `kernel.kc` of 2026-11-11 boots to `session/ready` in about 80 s and to the lock screen;
+the Linux runtime 0.1.6 does the same, and the owner unlocked it to the Home Screen (empty: that kernel has no
+0035-0037). In both, the screen drew far fewer frames than on 2026-11-11 (0-20 per 10 s; cause not known) and the
+Volume Up + Volume Down chord did not return; five returns by `session/return.request` or after a panic all came back
+to One UI in place. Numbers per area: `docs/hardware.md` 0.1; the test cycle: `docs/building.md` section 6.
+
+The Mac `kernel.kc` with the known-good pairs (2026-11-12, agent prelink; `kernel/prelink/README.md`, "Known-good
+pairs" and "On the phone (2026-11-12, prelink)"): kernel and collection from origin/main `924a0d9` (series through
+0039), runtime 0.1.8-dev. Boot frame at +102 s, then about 11 minutes of lsd registering the staged apps (the first
+boot of 0035/0037 on this Data store) while SpringBoard waited for the LaunchServices database; then the lock screen,
+the owner's swipe unlocked it, and the Home Screen showed the apps (their icons do not draw right yet). No panic and
+no call to the panic stub in 23 minutes. This set is the phone's baseline now.
 
 On the PC (xnuhost under `qemu-aarch64`, 8 vCPUs, the real iOS 27.0.1 `24A446` image set, `kernel.kc` with the
 iPhone18,2 kexts), the boot gets through:

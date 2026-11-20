@@ -14,26 +14,17 @@
 #                          the volumes' files are already readable here (mounted by other means, or a
 #                          fixture): do not mount the images. With --os-root, apfs-fuse/hdiutil is not needed
 # Env: INPUTS (default inputs/<build>), OUT (default out/image).
-#
-# What it makes:
-#   os.img, systemos.img, app.img   the decrypted OS, SystemOS and AppOS images, byte for byte (raw APFS
-#                                   containers, read-only, mounted by the guest kernel's own APFS)
-#   *.hashes                        the SHA-256 of each 1 MiB chunk of an image, for checks while it is read
-#   trust/                          the three trust caches and root hashes, as shipped
-#   data.seed                       what the guest's Data volume starts from: the OS volume's /private/var
-#                                   after the userland hook, with owners and modes kept
-#   overlay/                        files the userland hook adds for the runtime (this project's own)
-#   kernel.kc                       the kernel collection (from the kernel build)
-#   manifest.json                   every file's size and SHA-256
-#
-# Linux: nothing here needs root; the OS volume is read through apfs-fuse (FUSE, read-only).
-# macOS: run with sudo; the OS volume is attached read-only with hdiutil. The macOS path is written
-# from UniXNU's scripts and has not been run. Only --seed apfs needs macOS (newfs_apfs).
+#      ONEIOS_TOOL=PATH    the image tool's binary. The tool is `oneios-tool image` (tools/oneios-tool, Rust: built when
+#                          it is missing or older than its sources, scripts/lib/oneios-tool.sh). It replaced
+#                          scripts/image/imagetool.py here on 2026-11-13 (the same files, byte for byte:
+#                          tools/oneios-tool/README.md "image"); that script is still in the tree, unused.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-TOOL=$ROOT/scripts/image/imagetool.py
 die() { echo "build: $*" >&2; exit 1; }
-tool() { python3 -I "$TOOL" "$@"; }
+# tool SUBCOMMAND ARGS...: the image tool.
+. "$ROOT/scripts/lib/oneios-tool.sh"
+oneios_tool "$ROOT" || die "the image tool is oneios-tool (Rust): cargo build --release --manifest-path tools/oneios-tool/Cargo.toml"
+tool() { "$ONEIOS_TOOL" image "$@"; }
 
 kernel= no_kernel=0 hook= no_hook=0 seed=tar pack=1 profile= os_root= sys_root= app_root=
 while [ $# -gt 0 ]; do
@@ -60,7 +51,7 @@ OS=$(uname -s)
 # ---- tools first: one line that names everything missing
 missing=()
 need() { command -v "$1" >/dev/null 2>&1 || missing+=("$1${2:+ ($2)}"); }
-need python3 "3.11 or newer"
+need python3 "3.11 or newer: the hook's record and the seed's record are written with it"
 [ "$pack" = 0 ] || need zstd
 case "$OS" in
 Linux)
@@ -70,12 +61,8 @@ Linux)
   fi
   [ "$seed" = tar ] || missing+=("macOS (--seed apfs makes an APFS volume; Linux builds --seed tar)") ;;
 Darwin)
-  [ "$seed" = tar ] || need newfs_apfs
-  if [ -z "$os_root" ]; then
-    need hdiutil
-    # an attached volume enforces the image's own permissions: only root reads all of /private/var
-    [ "$(id -u)" = 0 ] || missing+=("root (on macOS run it with sudo)")
-  fi ;;
+  [ "$seed" = tar ] || { need newfs_apfs; [ "$(id -u)" = 0 ] || missing+=("root (--seed apfs: run it with sudo)"); }
+  [ -n "$os_root" ] || need hdiutil ;;
 *) missing+=("Linux or macOS (this is $OS)") ;;
 esac
 [ ${#missing[@]} = 0 ] || die "missing tools: $(IFS=';'; echo "${missing[*]}" | sed 's/;/; /g')"
@@ -113,7 +100,7 @@ mounts=()
 unmount() {
   case "$OS" in
   Linux) fusermount3 -u "$1" 2>/dev/null || fusermount -u "$1" 2>/dev/null || true ;;
-  Darwin) hdiutil detach -quiet "$1" 2>/dev/null || hdiutil detach -quiet -force "$1" 2>/dev/null || true ;;
+  Darwin) hdiutil detach -quiet "$1" 2>/dev/null || hdiutil detach -quiet -force "$1" 2>/dev/null || true; rmdir "$1" 2>/dev/null || true ;;
   esac
 }
 cleanup() { for m in ${mounts[@]+"${mounts[@]}"}; do unmount "$m"; done; }
@@ -125,8 +112,10 @@ mount_ro() {
   case "$OS" in
   Linux) apfs-fuse "$1" "$2" >&2 || die "apfs-fuse cannot open $1"; echo "$2/root" ;;
   Darwin)
-    hdiutil attach -readonly -nobrowse -noverify -noautoopen -owners on -imagekey diskimage-class=CRawDiskImage \
-      -mountpoint "$2" "$1" >/dev/null || die "hdiutil cannot attach $1"
+    # -owners off: a user may read every file (the owners come from the image's records, see tree-copy below)
+    hdiutil attach -readonly -nobrowse -noverify -noautoopen -owners off -imagekey diskimage-class=CRawDiskImage \
+      -mountpoint "$2" "$1" 2>&1 >/dev/null | { grep -v 'is deprecated' >&2 || true; }
+    [ -d "$2/System" ] || die "hdiutil cannot attach $1"
     echo "$2" ;;
   esac
 }
@@ -151,12 +140,14 @@ done < <(tool profile "$profile" --members)
 
 # ---- the Data seed: the OS volume's /private/var, then the userland hook
 echo "reading $P_DATA_SOURCE of the OS volume"
+owners=()
 if [ -z "$os_root" ]; then
   mounts+=("$WORK/mnt/os")
   os_root=$(mount_ro "$NEW/$os_out" "$WORK/mnt/os")
+  [ "$OS" != Darwin ] || owners=(--owners-from "$NEW/$os_out" --owners-path "$P_DATA_SOURCE")
 fi
 [ -d "$os_root/$P_DATA_SOURCE" ] || die "the OS volume has no /$P_DATA_SOURCE"
-tool tree-copy "$os_root/$P_DATA_SOURCE" "$WORK/data" "$WORK/data.meta.json"
+tool tree-copy "$os_root/$P_DATA_SOURCE" "$WORK/data" "$WORK/data.meta.json" ${owners[@]+"${owners[@]}"}
 mkdir -p "$WORK/overlay"
 : > "$WORK/owners.tsv"
 tweaks=$WORK/tweaks.json

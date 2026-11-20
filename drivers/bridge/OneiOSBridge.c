@@ -27,6 +27,7 @@
 
 extern void IOSleep(unsigned milliseconds);
 extern void delay(int usec);
+void oneios_power_request(void);     // the graceful-shutdown hook (defined weak below; a guest helper overrides it)
 extern uint64_t kvtophys(vm_offset_t va);
 // ArmCpu (the GIC): a handler for one SPI, run in the primary interrupt context before the EOI; 0 when attached.
 extern int armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void *), void *context, uint32_t *readback, uint64_t *router);
@@ -199,6 +200,11 @@ static void ob_dispatch(const uint8_t *message, uint32_t written) {
             oneios_bridge_stage = 5;
             snprintf(oneios_bridge_status, sizeof(oneios_bridge_status), "up, host channels %#x", hello.channels);
             printf("ONEIOS BRIDGE: on: host protocol %u, channels %#x (1 control, 2 haptics, 4 Bluetooth)\n", hello.version, hello.channels);
+        } else if (header.type == OB_CTL_SHUTDOWN) {
+            // The return asked for a graceful power-off (xnuhost's return-graceful-ms). Hand it to the power-off path
+            // so iOS shuts down the way it does for the user, then halts; xnuhost kills at the limit either way.
+            printf("ONEIOS BRIDGE: host asked for a graceful shutdown (return)\n");
+            oneios_power_request();
         }
         return;
     }
@@ -316,14 +322,36 @@ void oneios_bridge_start(void) {
 // OneiOSHidInput.cpp), which subclasses the kernel collection's IOHIDDevice and so is linked only into a kernel built
 // for that collection (kernel/build-hosted.sh). Weak: a kernel linked without the archive starts none.
 __attribute__((weak)) void oneios_hid_input_start(void) {}
+// The speaker and the microphone: the hosted kernel's audio archive (kernel/patches/oneios-hosted/audio,
+// OneiOSAudio.c: UniXNU-droidvm's virtio-snd transport and IOAudio2Devices). Weak: a kernel without it has none.
+__attribute__((weak)) void oneios_audio_start(void) {}
+// The Wi-Fi, en0 on the phone's radio: the hosted kernel's network archive (kernel/patches/oneios-hosted/net,
+// OneiOSWifi.cpp: the Wi-Fi controller and interface under the collection's IOEthernetController and
+// IOEthernetInterface, UniXNU-droidvm's virtio-net transport). Weak: a kernel without it has no network interface.
+__attribute__((weak)) void oneios_net_start(void) {}
+// The video encoder and decoder: the hosted kernel's codec archive (kernel/patches/oneios-hosted/codec, OneiOSCodec.c:
+// UniXNU-droidvm's virtio-media transport, VideoToolbox's paravirtualized codec host and user client). It drives
+// xnuhost's "droidvm,virtio-media" device (runtime/bridges/encoder) so iOS's VideoToolbox encodes HEVC/H.264 and
+// CMPhoto writes HEIC. Weak: a kernel without the archive publishes no codec (VideoToolbox keeps its software codecs).
+__attribute__((weak)) void oneios_codec_start(void) {}
+// The graceful shutdown the return asks for (OB_CTL_SHUTDOWN above). The real power-off is a guest userspace helper
+// the Mac builds (userland/helpers/oneios-shutdown, docs/booter.md "The return"), which runs iOS's clean power-off so
+// SpringBoard tears down and persists its boot overlay for the next boot. Weak default: nothing, so a kernel or image
+// without the helper is simply killed at return-graceful-ms, exactly as before (the way back is never at risk).
+__attribute__((weak)) void oneios_power_request(void) {}
 
 void oneios_drivers_start(void) {
     oneios_bridge_start();
     (void)oneios_haptic_start();
     oneios_vibrator_start();
+    oneios_button_haptics_start();
     oneios_bt_start();
     oneios_backlight_start();
     oneios_battery_start();
+    oneios_thermal_start();
     oneios_camera_start();
     oneios_hid_input_start();   // after the backlight: the light sensor's device listens to its readings
+    oneios_net_start();
+    oneios_audio_start();
+    oneios_codec_start();
 }

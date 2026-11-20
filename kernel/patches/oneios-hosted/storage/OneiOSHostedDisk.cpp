@@ -8,7 +8,9 @@
 // the register sequence and the polled split queue are its own. What differs:
 //   - The registers are reached through xnuhost's mmio_read/mmio_write host calls (oneios_hosted_mmio_*,
 //     osfmk/arm64/hosted/hosted_blk.c), not through a mapping: a mapped device page of a hosted kernel is a
-//     fault per access. xnuhost serves a queue inside the notify call, so a request is done when it returns.
+//     fault per access. xnuhost serves a queue inside the notify call, so a request is done when it returns;
+//     except a flush, when the host offers featureLateFlush (fix-widget-kill-loop, 2026-11-15): its own thread runs
+//     the fdatasync(2) and completes the request later, and transfer() waits for it asleep (IOSleep), not on the vCPU.
 //   - Writes and flush, for a disk the device does not offer as read-only.
 //   - Verified root: xnuhost checks every chunk of a read-only image against the image set's hash lists before
 //     the guest sees it (runtime/xnuhost/src/imageset.c) and says so in the disk's device tree node
@@ -55,7 +57,11 @@ constexpr unsigned queueSize = 8;
 constexpr unsigned transferSize = 1U << 20;
 constexpr unsigned maxDisks = 16;
 enum : uint32_t { opRead = 0, opWrite = 1, opFlush = 4 };
-enum : uint32_t { featureReadOnly = 1U << 5, featureFlush = 1U << 9 };
+// featureLateFlush: OneiOS's own (the top device bit, unused by virtio-blk): the host serves a flush on a thread of its
+// own and completes it later, and this driver waits for it asleep. Without it xnuhost ran fdatasync(2) of the Data store
+// inside the notify call, so the vCPU was the host's until the phone's file system had written everything out.
+enum : uint32_t { featureReadOnly = 1U << 5, featureFlush = 1U << 9, featureLateFlush = 1U << 23 };
+constexpr unsigned lateFlushWaitMs = 60000;    // a flush that takes longer resets the disk (fails the request)
 struct Descriptor { uint64_t address; uint32_t length; uint16_t flags; uint16_t next; };
 struct Request { uint32_t operation; uint32_t reserved; uint64_t sector; };
 struct Used { uint32_t id; uint32_t length; };
@@ -78,6 +84,7 @@ class OneiOSHostedDisk : public IOBlockStorageDevice {
   bool online = false;
   bool writable = false;
   bool flushes = false;
+  bool lateFlush = false;            // featureLateFlush accepted
   bool verified = false;
   uint8_t verifiedDigest[32] = {};
   char role[16] = {};
@@ -168,8 +175,9 @@ bool OneiOSHostedDisk::configureQueue()
   if (!(highFeatures & 1)) return false;                    // VIRTIO_F_VERSION_1
   writable = !(lowFeatures & featureReadOnly);
   flushes = (lowFeatures & featureFlush) != 0;
+  lateFlush = flushes && (lowFeatures & featureLateFlush) != 0;
   write32(0x24, 0);
-  write32(0x20, lowFeatures & (featureReadOnly | featureFlush));
+  write32(0x20, lowFeatures & (featureReadOnly | featureFlush | featureLateFlush));
   write32(0x24, 1);
   write32(0x20, 1);
   write32(0x70, 11);
@@ -239,16 +247,21 @@ IOReturn OneiOSHostedDisk::transfer(uint32_t operation, uint64_t sector, uint32_
   dmaBarrier();
   write32(0x50, 0);
   auto *used = reinterpret_cast<volatile uint16_t *>(queue + 256);
+  // A late flush (featureLateFlush) is answered by the host's flush thread: the caller sleeps between looks, so its
+  // vCPU runs other threads (or idles) while the phone writes the Data store out. Everything else is answered inside
+  // the notify; the short spin is for a device model that answers a little later.
+  const bool late = operation == opFlush && lateFlush;
   uint64_t deadline;
-  clock_interval_to_deadline(5000, kMillisecondScale, &deadline);
-  while (used[1] == usedIndex) {             // a device model that answers later than its notify
+  clock_interval_to_deadline(late ? lateFlushWaitMs : 5000, kMillisecondScale, &deadline);
+  while (used[1] == usedIndex) {
     if (mach_absolute_time() >= deadline) {
       reset();
       __atomic_fetch_add(&oneios_hosted_disk_failures, 1, __ATOMIC_RELAXED);
       return kIOReturnTimeout;
     }
     dmaBarrier();
-    IODelay(10);
+    if (late) IOSleep(1);
+    else IODelay(10);
   }
   dmaBarrier();
   auto *element = reinterpret_cast<volatile Used *>(queue + 260) + usedIndex % queueSize;

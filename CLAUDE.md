@@ -26,18 +26,39 @@ command that no longer works, or a status that has moved on. If you are unsure w
 | The GPU path | `docs/gpu.md` |
 | The display helper | `runtime/display/README.md` |
 | The runtime package, `runtime.json`, releases, CI | `docs/releases.md` |
+| The fork submodule `app/` (its URL or branch, a new pin), the APK in releases, `.github/workflows/release.yml` | `docs/releases.md` "CI and releases", `docs/building.md` section 7, `oneos/interface.md` (and the fork's `docs/oneios.md` "CI") |
 | What the OneOS fork reads or does (session ABI, stage layout, start/stop) | `oneos/interface.md` (and the fork's `docs/oneios.md`) |
 | A new reference repo or pin | `docs/references.md`, `scripts/setup/get-references.sh` |
 | A phone check tool's commands or output | its `README.md` "On the phone" section |
+| The Rust tools (`tools/oneios-tool`: sym, log, image, remotezip, rangeserve, ioslog, prelink, kernel, package, phone, app, cycle, debug), a comparison with the tool they replace | `tools/oneios-tool/README.md` (commands, the comparison and its result, crates), `tools/oneios-tool/todo_rust.md` (what is left), `docs/building.md` section 10 |
+| The phone and app workflow (`oneios-tool phone`, `app`, `cycle`: a command, an option, a step, a phone rule) | `tools/oneios-tool/README.md` ("phone", "app", "cycle"), `docs/building.md` sections 6 and 7, and the stand-in phone's tests (`tools/oneios-tool/tests/phone`, `app`, `cycle`) |
 
 Write docs as facts: what it does, the exact commands, what was tested and what was not. Mark guesses as guesses.
 The board (`docs/agents.md`) is for coordination between agents; it is **not** a substitute for the docs above.
 
 ## Rules
 
+> **IMPORTANT (the owner's rule, 2026-11-15): fix, do not only probe.** Every attempt (a PR, a phone boot, an agent's
+> task) must be a **fix**, or a fix plus a debugging tool. A change that only adds log lines, traces or off-by-default
+> switches "to see on the next boot" is not enough on its own.
+> 1. Start from the logs and traces we already have: the session folders under `out/session-logs/`, iOS's own log
+>    (`oneios-tool ioslog`), the crash reports, `xnuhost.log`, the `oneios-cpu`, `oneios-mem` and `thermal` lines.
+>    Trace the fault to its cause in the code.
+> 2. Fix the cause in our code. Look in particular for memory leaks, forever or busy loops, polling without a sleep,
+>    the same event or result sent again and again (so that iOS redraws or asks again), and slow code paths in
+>    xnuhost, the bridges, the drivers and the kernel patches: these cause lag, heat, swapping and hangs.
+> 3. Say what the fix changes, how it was tested (host tests, a PC boot), and which lines on the phone prove it.
+>
+> A new trace or tool is allowed with a fix, or as a lasting debugging tool (an `oneios-tool` command, a cheap log
+> line that stays), never as a one-boot probe. Give this rule to every agent you start.
+>
+> **Also the owner's rule (2026-11-15): iOS's RAM is never swapped.** Boot with fixed, locked RAM (`ram-giveback=0`,
+> prefault and `mlock`) at the most that fits, all CPU cores, and no caps of ours on the GPU. Keep only the host's
+> headroom that the way back to One UI needs (`ram-session-reserve`).
+
 - **No Apple files in git or in releases.** IPSWs, cryptexes, kernelcaches, kexts, `kernel.kc`, the image set and
   anything built from them stay in `out/` and `inputs/` (git-ignored). Releases carry only this project's own code.
-  `runtime/package.sh` refuses Apple files; never work around it.
+  `runtime/package.sh` refuses Apple files (`oneios-tool package`); never work around it.
 - **Shared checkout** (several agents commit to `main` here): commit with a pathspec only
   (`git commit -- <your paths>`), never `git add -A`; `git pull --rebase origin main` before `git push origin main`
   (if other agents' unstaged files block the rebase, fetch and rebase only when origin moved). Never commit another
@@ -57,4 +78,14 @@ The board (`docs/agents.md`) is for coordination between agents; it is **not** a
   input devices (event0, event2, event4), run realtime threads, leave its namespace or cgroup, lower its OOM score,
   write under `/sys/power`, or reboot. See `oneos/interface.md` and the fork's `docs/oneios.md`.
 - Phone tools run as root with One UI running and must restore whatever they change.
+- **Phone and app work goes through `oneios-tool`** (`phone` status/switch/return/stage/sums/log/pull-data, and in a
+  session only `phone display-restart` (the display helper again, `--lib`/`--dex` for new files), `phone touch
+  status|wake`, `phone backlight status|set N`; `app`,
+  `cycle`). Use adb, the shell scripts or other tools directly only when the CLI fails or lacks the command, then
+  say so and fix or extend the CLI.
+- **No new Python.** Use `oneios-tool` (Rust) for every job it covers: `sym`, `sym kernel`, `log`, `ioslog`, `image`,
+  `remotezip`, `rangeserve`, `prelink`, `kernel`, `package`, `phone`, `app`, `cycle`, `debug` (the tests' helpers). A new tool, helper or test tool goes into `oneios-tool` (a command, or a
+  test in its crates) or plain POSIX shell. Python stays only as the frozen original that a Rust port is compared
+  against until it is retired (`tools/oneios-tool/todo_rust.md` section 7 lists what is left), and an existing Python
+  script runs only where no `oneios-tool` command does its job yet: say which one you ran.
 - Do not send the owner's email address to any service.
