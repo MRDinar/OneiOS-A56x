@@ -46,6 +46,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`; the command line wins |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
+| `--set display-direct=0` (or `display-direct=0` in `xnuhost.conf`) | 1 | 0: xnuhost copies every frame into the memfd, even for a helper that can copy from guest RAM (section 2.8, direct frames) |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
 | `DIR/os.img`, `systemos.img`, `app.img` | as present | read-only disks, in this order |
 | `--data DIR` | none | `data.img`: the Data store, sparse, created on the first start; `unique-chip-id` |
@@ -1105,8 +1106,32 @@ iOS flushes and how long the phone's storage takes for it.
   with a dex run by `app_process`). xnuhost therefore keeps the frame in a memfd and serves it on
   `<session>/display.sock` (`SOCK_SEQPACKET`): `hello {"XHD1", width, height, stride, format}`
   with the memfd as `SCM_RIGHTS`, then `flush {"XHDF", x, y, w, h}` per changed rectangle. The helper sends one
-  message the other way, straight after it connects: `panel {"XHDP", width, height, hz, 0}`. The helper that
+  message the other way, straight after it connects: `panel {"XHDP", width, height, hz, flags}`. The helper that
   owns the layer and copies from the memfd is `runtime/display` (`bin/oneios-display`, started by the fork's
+  switch on One UI's side; its README has the phone test).
+- **Direct frames: one copy a frame on the host, not two.** The guest's display driver scans out the compositor's
+  own surface (`SET_SCANOUT_BLOB` of a guest blob, then a whole-frame `RESOURCE_FLUSH`; its swap statistics count
+  these as `copy`, but the guest copies nothing). Before, xnuhost copied that surface into the memfd (18 MB a frame
+  at 1440x3120) and the helper copied the memfd into its layer's buffer. A helper that sets `flags` bit 0 (the
+  current one does, `--no-direct` turns it off) is sent `memory {"XHDM", RAM bytes low, high, slots, slot bytes}`
+  with the RAM memfd and a table memfd once the RAM is mapped, and maps both read-only. Each flush of a blob
+  scanout in B,G,R,X/A is then `frame {"XHDS", slot, seq low, seq high, 0}`: that slot of the table (4 of them) has
+  the frame's offset, stride, size, changed rectangle and its segments as RAM memfd offsets, and the helper copies
+  the rows from the guest's pages straight into the layer's buffer. xnuhost copies nothing. The guest's flush is
+  answered when the helper sends `done {"XHDA", seq low, seq high, flags, 0}` after posting the buffer, so the guest
+  does not draw into a surface that is still being read (`virtio_gpu.c` holds the reply on the fence list, as the
+  display's: ctx 0). A helper that does not answer within 100 ms is answered for. One that leaves, or a newer
+  helper, has its frames answered at once. `done` flags bit 0 (a frame it could not copy) turns direct frames off
+  for that helper. 2D resources, a scanout outside RAM or of another format, and a helper without the flag use the
+  memfd copy as before. `display-direct=0` (command line or `xnuhost.conf`) turns direct frames off for xnuhost.
+  Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (posted to in
+  the layer: mean X ms, max Y ms), T not answered within 100 ms, C flushes of xnuhost's own copy`. Why not zero
+  copies: surfaceflinger takes `AHardwareBuffer`s, and the NDK cannot wrap a udmabuf of guest pages as one (a
+  gralloc handle would have to be forged), and the guest's surfaces cannot be made gralloc buffers either, since the
+  guest allocates them in its own RAM. Droid-VM's host does one GPU blit instead, with a Vulkan dma-buf import that
+  needs the Turnip driver its app ships (`plans/DISPLAY_PIPELINE_DECOUPLING.md`); this phone's own Vulkan driver is
+  not known to import a udmabuf. Tested on the PC (`tests/test_display_mode.c` with the helper's `xhd.c` on the
+  other end, `tests/test_display.c`, the held flush in `test_xnuhost.c`); not yet run on the phone.
   switch on One UI's side; its README has the phone test). Not run on a phone yet.
 - **The frame's pixels** (`display-format=`, `--display-format`; `include/xnuhost/pixels.h`, which the helper
   includes too):

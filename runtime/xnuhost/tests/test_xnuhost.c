@@ -45,6 +45,21 @@ static xh_display fake_display;
 static unsigned flush_rect[4];
 xh_display *xh_display_get(void) { return fake_display.pixels ? &fake_display : NULL; }
 void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h) { flush_rect[0] = x; flush_rect[1] = y; flush_rect[2] = w; flush_rect[3] = h; flushes++; }
+// A display helper that copies frames itself (display.c's direct path): what it was handed, and its answer.
+static bool fake_direct, fake_refuse;
+static struct { xh_gpu_entry entries[4]; unsigned n, posts; uint64_t offset, seq; uint32_t stride, width, height, x, y, w, h; xh_display_done done; void *opaque; } fake_post;
+void xh_display_set_ram(int fd, uint64_t phys, uint64_t size) { (void)fd; (void)phys; (void)size; }
+bool xh_display_direct(void) { return fake_direct; }
+int xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, uint32_t stride, uint32_t width, uint32_t height,
+                    uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t seq, xh_display_done done, void *opaque)
+{
+  if (fake_refuse) return -1;
+  fake_post.n = n; memcpy(fake_post.entries, entries, (n < 4 ? n : 4) * sizeof *entries);
+  fake_post.offset = offset; fake_post.stride = stride; fake_post.width = width; fake_post.height = height;
+  fake_post.x = x; fake_post.y = y; fake_post.w = w; fake_post.h = h; fake_post.seq = seq; fake_post.done = done; fake_post.opaque = opaque;
+  fake_post.posts++;
+  return 0;
+}
 unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t text_hi, int ram_fd, int trap_fd);
 
 // ---- instructions -------------------------------------------------------------------------------
@@ -859,6 +874,28 @@ static void test_virtio_gpu3d(void)
   CHECK(flush_rect[0] == 1 && flush_rect[1] == 2 && flush_rect[2] == 3 && flush_rect[3] == 2);
   const uint8_t *px = fake_display.pixels + 2 * 32 + 1 * 4;
   CHECK(px[0] == 21 && px[1] == 0x20 && px[2] == 0x10 && fake_display.pixels[3 * 32 + 3 * 4] == 33 && fake_display.pixels[0] == 0 && fake_display.pixels[2 * 32 + 4 * 4] == 0);
+  // a helper that copies the frame itself: the flush is handed over, not copied here, and answered when it says so
+  fake_direct = true;
+  memset(fake_display.pixels, 0, 4 * 32);
+  flush_rect[2] = 0;
+  CLEAR(); cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 1; cmd[8] = 8; cmd[9] = 3; cmd[10] = 20;                 // (0,1) 8x3
+  CHECK(G(12, 24) == 0 && fake_post.posts == 1 && flush_rect[2] == 0 && fake_display.pixels[1 * 32] == 0);
+  CHECK(fake_post.n == 1 && fake_post.entries[0].addr == GUEST_PA + 0x40000 && fake_post.stride == 40 && fake_post.offset == 0);
+  CHECK(fake_post.width == 8 && fake_post.height == 4 && fake_post.x == 0 && fake_post.y == 1 && fake_post.w == 8 && fake_post.h == 3);
+  uint64_t first_seq = fake_post.seq;
+  CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
+  CHECK(G(12, 24) == 0 && fake_post.posts == 2 && fake_post.seq == first_seq + 1);                       // a second one, held too
+  fake_post.done(fake_post.opaque, first_seq);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 1);                                                       // the first answered
+  fake_post.done(fake_post.opaque, fake_post.seq);
+  CHECK((uint16_t)(used[1] - d.used_seen[0]) == 2 && resp[0] == 0x1100);
+  d.used_seen[0] = used[1];
+  fake_post.done(fake_post.opaque, fake_post.seq);                                                         // twice: nothing
+  CHECK(used[1] == d.used_seen[0]);
+  fake_refuse = true;                                                                                      // the helper went: copied here
+  CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
+  CHECK(G(12, 24) == 1 && resp[0] == 0x1100 && flush_rect[2] == 8 && fake_display.pixels[3 * 32 + 3 * 4] == 33);
+  fake_direct = fake_refuse = false;
   {
     // Half floats (display-format=rgba16f, oneios-display-wide=1): a 'RGhA' scanout's rows go to a half-float display as
     // they are, and a B,G,R,X one is decoded to linear light; onto the 8-bit display half floats are encoded and clamped.

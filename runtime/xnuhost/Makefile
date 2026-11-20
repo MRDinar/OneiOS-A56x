@@ -136,10 +136,12 @@ $(A)/xnuhost: $(SRC:%=$(A)/%.o) $(A)/kctx.o $(A)/arch.o $(patsubst ../loader/src
 $(H)/test_xnuhost: tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -DXH_HOST_TEST -fsanitize=address,undefined tests/test_xnuhost.c $(PORTABLE:%=src/%.c) ../loader/src/adt.c ../loader/src/boot.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
-# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket. (config.c asks ramfix.c whether a lock can work: xh_ram_can_lock)
-$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c $(HDR)
+# The real display.c (tests of test_xnuhost replace it) against a stand-in helper on the real socket, with the display
+# helper's own protocol code (runtime/display/src/xhd.c) on the other end for the direct frames. (config.c asks ramfix.c
+# whether a lock can work: xh_ram_can_lock)
+$(H)/test_display_mode: tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../display/src/xhd.c ../display/src/xhd.h ../bridges/hw/hw_backend.c $(HDR)
 	@mkdir -p $(H)
-	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
+	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -I../display/src -fsanitize=address,undefined tests/test_display_mode.c src/display.c src/config.c src/ramfix.c src/log.c ../display/src/xhd.c ../bridges/hw/hw_backend.c -lpthread -lm -o $@
 # The image set (imageset.c) on stand-in files; ONEIOS_IMAGE_SET=DIR adds a real set's lists and trust caches.
 $(H)/test_imageset: tests/test_imageset.c src/imageset.c $(HDR)
 	@mkdir -p $(H)

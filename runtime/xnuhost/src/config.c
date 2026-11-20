@@ -30,6 +30,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->display, "shm");
   strcpy(c->gpu, "auto");
   c->input = true;
+  c->display_direct = -1;
   c->touch_sleep = true;
   c->tasks = true;
   c->task_uid = -1;
@@ -149,6 +150,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     c->text_fixups_length += (unsigned)n + 1;
   }
   else if (!strcmp(key, "input")) return flag(value, &c->input);
+  else if (!strcmp(key, "display-direct")) { bool on; if (flag(value, &on)) return -1; c->display_direct = on; }
   else if (!strcmp(key, "input-script")) return copy(c->input_script, sizeof c->input_script, value);
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
@@ -304,6 +306,7 @@ int xh_config_finish(xh_config *c)
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;
+  if (c->display_direct < 0) c->display_direct = from_image.display_direct < 0 ? 1 : from_image.display_direct;
   if (!c->display_format) c->display_format = from_image.display_format ? from_image.display_format : XH_PIXELS_BGRX8;
   // The KMS back end scans out 32-bit pixels: half floats only go to a display helper (shm) or nowhere.
   if (c->display_format == XH_PIXELS_RGBA16F && !strcmp(c->display, "drm")) { fprintf(stderr, "xnuhost: display-format=rgba16f needs --display shm\n"); return -1; }

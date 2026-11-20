@@ -543,6 +543,7 @@ static int boot(void)
        (unsigned long long)g_mem.fd_phys, (unsigned long long)(g_mem.head >> 10));
   uint64_t phys = g_mem.phys;                       // physical = where it is mapped (mem.c)
   uint64_t media_pool_pa = phys + window + pool_bytes;              // after the GPU pool, before the framebuffer
+  xh_display_set_ram(g_mem.fd, phys, g_mem.size);   // a direct display helper copies frames from it
   boot_fb_pa = phys + window + pool_bytes + media_bytes;
   if (xh_mem_kva() == 0) { g_info.kva_base = g_mem.kva; g_info.kva_size = g_mem.kva_size; }
   LOGI("memory: %llu MiB at 0x%llx, physical = virtual (slide 0x%llx); I/O aperture 0x%llx",

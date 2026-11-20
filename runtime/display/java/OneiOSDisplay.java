@@ -10,7 +10,7 @@ import java.lang.reflect.Method;
 
 public final class OneiOSDisplay {
     private static native long nOpen(String socket, int waitMs);
-    private static native boolean nHello(long handle, int width, int height, int hz);
+    private static native boolean nHello(long handle, int width, int height, int hz, boolean direct);
     private static native int[] nInfo(long handle);                    // width, height, stride, format
     private static native int[] nFit(int sw, int sh, int dw, int dh);  // x, y, w, h
     private static native int[] nBuffer(int frameFormat);              // buffer format, dataspace
@@ -37,7 +37,7 @@ public final class OneiOSDisplay {
 
     private static int usage() {
         log("usage: oneios-display (--session DIR | --socket PATH) [--takeover] [--wait SECONDS] [--logical WxH]"
-            + " [--hz N] [--format bgra|rgbx] [--dataspace auto|unknown|srgb|p3|scrgb|scrgb-linear] [--no-projection]");
+            + " [--hz N] [--format bgra|rgbx] [--dataspace auto|unknown|srgb|p3|scrgb|scrgb-linear] [--no-projection] [--no-direct]");
         return 2;
     }
 
@@ -61,12 +61,13 @@ public final class OneiOSDisplay {
     private static int run(String[] args) throws Exception {
         String socket = null, lib = null, ready = null;
         int wait = 30, hz = 0, format = BGRA_8888, dataspace = -1;
-        boolean takeover = false, projection = true;
+        boolean takeover = false, projection = true, direct = true;
         int[] logical = null;
         for (int i = 0; i < args.length; i++) {
             String a = args[i];
             if (a.equals("--takeover")) { takeover = true; continue; }
             if (a.equals("--no-projection")) { projection = false; continue; }
+            if (a.equals("--no-direct")) { direct = false; continue; }   // xnuhost copies every frame into the memfd, as before
             if (i + 1 >= args.length) return usage();
             String v = args[++i];
             if (a.equals("--session")) { socket = v + "/display.sock"; ready = v + "/ready"; }
@@ -92,7 +93,7 @@ public final class OneiOSDisplay {
         Object transaction = TX.getConstructor().newInstance();
         int[] panel = panel(transaction, takeover && projection, takeover, logical);
         log("reporting the panel to xnuhost: " + panel[0] + "x" + panel[1] + " at " + panel[2] + " Hz");
-        if (!nHello(handle, panel[0], panel[1], panel[2])) { nClose(handle); return 3; }
+        if (!nHello(handle, panel[0], panel[1], panel[2], direct)) { nClose(handle); return 3; }
         int[] guest = nInfo(handle);
         int[] own = nBuffer(guest[3]);
         format = bufferFormat(guest[3], format);

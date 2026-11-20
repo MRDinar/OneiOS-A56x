@@ -4,7 +4,9 @@
 //         the memfd and the geometry, and is told of every changed rectangle. In a OneOS takeover
 //         session One UI's surfaceflinger and composer keep running and hold the panel, so a root
 //         SurfaceControl layer (OneOS's boot-status helper pattern) is the only way to the glass;
-//         the helper owns that layer and copies from the memfd. This is the default.
+//         the helper owns that layer and copies from the memfd. This is the default. A helper that says it can
+//         ("direct", below) is given guest RAM read-only instead, and copies each frame of a blob scanout straight
+//         from the guest's pages into its layer's buffer: one copy a frame on the host, not two.
 //   drm   Direct KMS scanout of a dumb buffer on /dev/dri/card0, for a session in which
 //         surfaceflinger and the composer are stopped (xnuhost is then the DRM master).
 //   none  The frame is kept in memory only (tests, headless bring-up).
@@ -21,6 +23,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 static xh_display display;
@@ -34,13 +37,215 @@ xh_display *xh_display_get(void) { return display.pixels ? &display : NULL; }
 //          sRGB, 2: R,G,B,A half floats, linear extended sRGB (include/xnuhost/pixels.h, display-format=)
 //   flush  { "XHDF", u32 x, u32 y, u32 w, u32 h }
 // and from the helper, once, straight after it connects, whatever xnuhost does with it:
-//   panel  { "XHDP", u32 width, u32 height, u32 hz, u32 0 }   the mode surfaceflinger runs the panel in
+//   panel  { "XHDP", u32 width, u32 height, u32 hz, u32 flags }  the mode surfaceflinger runs the panel in;
+//                                                               flags bit 0: the helper copies frames directly
+// The direct path, only to a helper that set that flag:
+//   memory { "XHDM", u32 RAM bytes low, high, u32 slots, u32 slot bytes } + the RAM memfd and the table memfd
+//   frame  { "XHDS", u32 slot, u32 seq low, u32 seq high, u32 0 }    the frame described in that slot of the table
+//   done   { "XHDA", u32 seq low, u32 seq high, u32 flags, 0 }  (helper -> xnuhost) every frame up to seq is in the
+//          layer; flags bit 0: the last one could not be copied from guest RAM (xnuhost copies the next ones itself)
+// A slot of the table: struct direct_slot, then nsegs { u64 RAM memfd offset, u64 length } in the scanout's order.
 struct shm_message { char magic[4]; uint32_t a, b, c, d; };
 static int shm_fd = -1, listen_fd = -1, client_fd = -1, first_client = -1;
+static uint32_t first_client_flags;
 static pthread_mutex_t client_lock = PTHREAD_MUTEX_INITIALIZER;
 static char socket_path[600];
 
-static void helper_attach(int fd)
+// ---- direct frames ------------------------------------------------------------------------------
+// The frame's rows are the guest's own pages (the compositor's surface, which the guest scans out with
+// SET_SCANOUT_BLOB and flushes whole): the helper maps guest RAM read-only and copies them into the layer's buffer.
+// The guest's flush is answered when the helper says the frame is in the layer (virtio_gpu.c holds the reply), so
+// the guest does not draw into a surface the helper still reads; a helper that does not answer within
+// DIRECT_TIMEOUT_MS is answered for, so that a stuck helper costs frames but never the guest.
+#define DIRECT_SLOTS 4
+#define DIRECT_SEGS 16384                            // virtio_gpu.c MAX_BLOB_ENTRIES
+#define DIRECT_TIMEOUT_MS 100
+struct direct_slot { uint64_t seq, offset; uint32_t stride, width, height, nsegs, x, y, w, h, format, pad[3]; };
+struct direct_seg { uint64_t offset, length; };
+#define DIRECT_SLOT_BYTES (sizeof(struct direct_slot) + DIRECT_SEGS * sizeof(struct direct_seg))
+_Static_assert(sizeof(struct direct_slot) == 64, "the table's layout is the helper's too (runtime/display/src/xhd.h)");
+static bool direct_enabled = true, client_direct, client_memory;
+static int ram_fd = -1, table_fd = -1;
+static uint64_t ram_phys, ram_size, client_gen;
+static uint8_t *table;
+typedef struct { uint64_t seq; long long posted_us; xh_display_done done; void *opaque; } outstanding;
+static outstanding out[16];
+static unsigned nout;
+static struct { uint64_t frames, total_us, max_us, timeouts, copies; long long since_us; } stats;
+
+static long long now_us(void)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (long long)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+
+// Takes the frames up to `seq` (all of them: UINT64_MAX; or those posted before `older_than_us`) off the list, with
+// client_lock held, into `done` for the caller to answer once the lock is let go.
+static unsigned take_done(uint64_t seq, long long older_than_us, outstanding *done, bool timed_out)
+{
+  unsigned n = 0, kept = 0;
+  long long now = now_us();
+  for (unsigned i = 0; i < nout; i++) {
+    bool take = older_than_us ? out[i].posted_us < older_than_us : out[i].seq <= seq;
+    if (!take) { out[kept++] = out[i]; continue; }
+    done[n++] = out[i];
+    if (timed_out) stats.timeouts++;
+    else {
+      uint64_t us = (uint64_t)(now - out[i].posted_us);
+      stats.frames++; stats.total_us += us;
+      if (us > stats.max_us) stats.max_us = us;
+    }
+  }
+  nout = kept;
+  return n;
+}
+
+static void answer(const outstanding *done, unsigned n)
+{
+  for (unsigned i = 0; i < n; i++) done[i].done(done[i].opaque, done[i].seq);
+}
+
+// With client_lock held. The RAM and the table go to a direct helper once the RAM is known (xh_display_set_ram).
+static void send_memory_locked(int fd)
+{
+  if (!client_direct || client_memory || ram_fd < 0 || table_fd < 0 || !direct_enabled) return;
+  struct shm_message m = { { 'X', 'H', 'D', 'M' }, (uint32_t)ram_size, (uint32_t)(ram_size >> 32), DIRECT_SLOTS, (uint32_t)DIRECT_SLOT_BYTES };
+  int fds[2] = { ram_fd, table_fd };
+  char control[CMSG_SPACE(sizeof fds)];
+  struct iovec iov = { &m, sizeof m };
+  struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+  memset(control, 0, sizeof control);
+  struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+  cm->cmsg_level = SOL_SOCKET;
+  cm->cmsg_type = SCM_RIGHTS;
+  cm->cmsg_len = CMSG_LEN(sizeof fds);
+  memcpy(CMSG_DATA(cm), fds, sizeof fds);
+  if (sendmsg(fd, &msg, MSG_NOSIGNAL) < 0) { LOGE("display: guest RAM could not be handed to the helper: %s", strerror(errno)); return; }
+  client_memory = true;
+  LOGI("display: the helper copies the guest's frames directly (guest RAM shared read-only, %llu MiB)", (unsigned long long)(ram_size >> 20));
+}
+
+void xh_display_set_ram(int fd, uint64_t phys, uint64_t size)
+{
+  if (backend != BACK_SHM || !direct_enabled) return;
+  size_t bytes = DIRECT_SLOTS * DIRECT_SLOT_BYTES;
+  int t = (int)syscall(SYS_memfd_create, "xnuhost-frames", 1u /* MFD_CLOEXEC */);
+  uint8_t *map = t >= 0 && !ftruncate(t, (off_t)bytes) ? mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, t, 0) : MAP_FAILED;
+  if (map == MAP_FAILED) { LOGE("display: no table for direct frames: %s", strerror(errno)); if (t >= 0) close(t); return; }
+  pthread_mutex_lock(&client_lock);
+  ram_fd = fd; ram_phys = phys; ram_size = size; table_fd = t; table = map;
+  if (client_fd >= 0) send_memory_locked(client_fd);
+  pthread_mutex_unlock(&client_lock);
+}
+
+bool xh_display_direct(void)
+{
+  pthread_mutex_lock(&client_lock);
+  bool on = backend == BACK_SHM && client_fd >= 0 && client_direct && client_memory;
+  pthread_mutex_unlock(&client_lock);
+  return on;
+}
+
+int xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, uint32_t stride, uint32_t width, uint32_t height,
+                    uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t seq, xh_display_done done, void *opaque)
+{
+  outstanding over[16];
+  unsigned nover = 0;
+  int result = -1;
+  pthread_mutex_lock(&client_lock);
+  if (backend != BACK_SHM || client_fd < 0 || !client_direct || !client_memory || !table) goto out;
+  struct direct_slot *slot = (struct direct_slot *)(table + (seq % DIRECT_SLOTS) * DIRECT_SLOT_BYTES);
+  struct direct_seg *segs = (struct direct_seg *)(slot + 1);
+  unsigned count = 0;
+  for (unsigned i = 0; i < n; i++) {
+    uint64_t pa = entries[i].addr, len = entries[i].length;
+    if (pa < ram_phys || len > ram_size || pa - ram_phys > ram_size - len) goto out;      // not RAM: the copy here instead
+    uint64_t at = pa - ram_phys;
+    if (count && segs[count - 1].offset + segs[count - 1].length == at) { segs[count - 1].length += len; continue; }
+    if (count == DIRECT_SEGS) goto out;
+    segs[count++] = (struct direct_seg){ at, len };
+  }
+  *slot = (struct direct_slot){ .seq = 0, .offset = offset, .stride = stride, .width = width, .height = height, .nsegs = count,
+                                .x = x, .y = y, .w = w, .h = h, .format = 1 };
+  __atomic_store_n(&slot->seq, seq, __ATOMIC_RELEASE);
+  if (nout == sizeof out / sizeof *out) nover = take_done(out[0].seq, 0, over, true);  // the oldest, unanswered
+  struct shm_message m = { { 'X', 'H', 'D', 'S' }, (uint32_t)(seq % DIRECT_SLOTS), (uint32_t)seq, (uint32_t)(seq >> 32), 0 };
+  if (send(client_fd, &m, sizeof m, MSG_NOSIGNAL | MSG_DONTWAIT) < 0) goto out;
+  out[nout++] = (outstanding){ seq, now_us(), done, opaque };
+  result = 0;
+out:
+  pthread_mutex_unlock(&client_lock);
+  answer(over, nover);
+  return result;
+}
+
+// One per helper: reads its messages (the late panel report that says it is direct, the frames it has shown), answers
+// for frames it took too long over, and when it goes, for all of them.
+typedef struct { int fd; uint64_t gen; } reader_arg;
+static void *reader_main(void *arg)
+{
+  reader_arg r = *(reader_arg *)arg;
+  free(arg);
+  outstanding done[16];
+  for (;;) {
+    pthread_mutex_lock(&client_lock);
+    bool current = r.gen == client_gen, waiting = nout > 0;
+    pthread_mutex_unlock(&client_lock);
+    if (!current) break;
+    struct pollfd p = { r.fd, POLLIN, 0 };
+    int ready = poll(&p, 1, waiting ? 10 : 200);
+    if (ready < 0 && errno != EINTR) break;
+    unsigned n = 0;
+    bool gone = false;
+    if (ready > 0) {
+      struct shm_message m;
+      ssize_t got = recv(r.fd, &m, sizeof m, MSG_DONTWAIT);
+      if (got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR)) gone = true;
+      else if (got == (ssize_t)sizeof m && !memcmp(m.magic, "XHDA", 4)) {
+        pthread_mutex_lock(&client_lock);
+        n = take_done((uint64_t)m.a | (uint64_t)m.b << 32, 0, done, false);
+        bool off = (m.c & 1) && r.gen == client_gen && client_direct;
+        if (off) client_direct = false;
+        pthread_mutex_unlock(&client_lock);
+        if (off) LOGE("display: the helper could not copy a frame from guest RAM; xnuhost copies the frames again");
+      } else if (got == (ssize_t)sizeof m && !memcmp(m.magic, "XHDP", 4) && (m.d & 1)) {
+        pthread_mutex_lock(&client_lock);
+        if (r.gen == client_gen && !client_direct) { client_direct = true; send_memory_locked(r.fd); }
+        pthread_mutex_unlock(&client_lock);
+      }
+    }
+    if (gone) break;
+    answer(done, n);
+    long long now = now_us();
+    pthread_mutex_lock(&client_lock);
+    n = take_done(0, now - DIRECT_TIMEOUT_MS * 1000ll, done, true);
+    bool report = now - stats.since_us >= 10000000ll;
+    uint64_t frames = stats.frames, total = stats.total_us, max = stats.max_us, timeouts = stats.timeouts, copies = stats.copies;
+    if (report) { memset(&stats, 0, sizeof stats); stats.since_us = now; }
+    pthread_mutex_unlock(&client_lock);
+    answer(done, n);
+    if (report && (frames || timeouts || copies))
+      LOGI("display: 10 s: %llu frames copied by the helper from guest RAM (posted to in the layer: mean %.1f ms, max %.1f ms), "
+           "%llu not answered within %d ms, %llu flushes of xnuhost's own copy", (unsigned long long)frames,
+           frames ? total / 1000.0 / frames : 0.0, max / 1000.0, (unsigned long long)timeouts, DIRECT_TIMEOUT_MS, (unsigned long long)copies);
+  }
+  // The helper is gone or another one took over: what it was shown is answered for.
+  // (A helper that took over has had the frames already: helper_attach answered for them, and later ones are its own.)
+  pthread_mutex_lock(&client_lock);
+  unsigned n = 0;
+  if (r.gen == client_gen) {
+    n = take_done(UINT64_MAX, 0, done, true);
+    if (client_fd >= 0) close(client_fd);
+    client_fd = -1; client_gen++; client_direct = client_memory = false;
+  }
+  pthread_mutex_unlock(&client_lock);
+  answer(done, n);
+  close(r.fd);
+  return NULL;
+}
+
+static void helper_attach(int fd, uint32_t flags)
 {
   struct shm_message hello = { { 'X', 'H', 'D', '1' }, display.width, display.height, display.stride, display.format };
   char control[CMSG_SPACE(sizeof(int))];
@@ -53,11 +258,26 @@ static void helper_attach(int fd)
   cm->cmsg_len = CMSG_LEN(sizeof(int));
   memcpy(CMSG_DATA(cm), &shm_fd, sizeof(int));
   if (sendmsg(fd, &msg, MSG_NOSIGNAL) < 0) { close(fd); return; }
+  reader_arg *r = malloc(sizeof *r);
+  outstanding done[16];
   pthread_mutex_lock(&client_lock);
   if (client_fd >= 0) close(client_fd);          // the newest helper wins
+  unsigned n = take_done(UINT64_MAX, 0, done, true);   // the last one's frames: it will not answer for them now
   client_fd = fd;
+  client_gen++;
+  client_direct = direct_enabled && (flags & 1);
+  client_memory = false;
+  send_memory_locked(fd);
+  pthread_t thread;
+  if (r) { r->fd = dup(fd); r->gen = client_gen; }
+  if (!r || r->fd < 0 || pthread_create(&thread, NULL, reader_main, r)) {
+    if (r && r->fd >= 0) close(r->fd);
+    free(r);
+    client_direct = false;                           // nobody would read its answers
+  } else pthread_detach(thread);
   pthread_mutex_unlock(&client_lock);
-  LOGI("display: a helper connected");
+  answer(done, n);
+  LOGI("display: a helper connected%s", client_direct ? " (it copies frames directly)" : "");
   xh_display_flush(0, 0, display.width, display.height);
 }
 
@@ -67,7 +287,7 @@ static void *accept_main(void *arg)
   for (;;) {
     int fd = accept4(listen_fd, NULL, NULL, SOCK_CLOEXEC);
     if (fd < 0) { if (errno == EINTR) continue; return NULL; }
-    helper_attach(fd);
+    helper_attach(fd, 0);                           // a later report says whether it is direct (reader_main)
   }
 }
 
@@ -110,7 +330,7 @@ static bool helper_report(xh_panel_mode *panel)
   if (wait_readable(first_client, HELPER_REPORT_MS) <= 0) { LOGI("display: the helper did not report the panel's mode"); return false; }
   struct shm_message m;
   ssize_t n = recv(first_client, &m, sizeof m, MSG_DONTWAIT);
-  if (n >= 0 && xh_panel_report(&m, (size_t)n, panel)) return true;
+  if (n >= 0 && xh_panel_report(&m, (size_t)n, panel)) { first_client_flags = m.d; return true; }
   LOGI("display: the helper's report of the panel's mode was not usable");
   return false;
 }
@@ -122,7 +342,7 @@ static int shm_frame(void)
   if (shm_fd < 0 || ftruncate(shm_fd, (off_t)bytes)) return -1;
   display.pixels = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
   if (display.pixels == MAP_FAILED) { display.pixels = NULL; return -1; }
-  if (first_client >= 0) { helper_attach(first_client); first_client = -1; }
+  if (first_client >= 0) { helper_attach(first_client, first_client_flags); first_client = -1; }
   if (listen_fd < 0) return 0;
   pthread_t thread;
   return pthread_create(&thread, NULL, accept_main, NULL) ? -1 : 0;
@@ -227,6 +447,7 @@ static bool panel_native(xh_panel_mode *native) { (void)native; return false; }
 
 int xh_display_init(const xh_config *c, unsigned *width, unsigned *height, unsigned *hz)
 {
+  direct_enabled = c->display_direct;
   backend = !strcmp(c->display, "drm") ? BACK_DRM : !strcmp(c->display, "shm") ? BACK_SHM : BACK_NONE;
   if (backend == BACK_DRM && drm_init()) return -1;
   if (backend == BACK_SHM && shm_listen(c)) return -1;
@@ -274,6 +495,7 @@ void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
   if (backend == BACK_DRM) drm_flush(x, y, w, h);
   if (backend != BACK_SHM) return;
   pthread_mutex_lock(&client_lock);
+  stats.copies++;
   if (client_fd >= 0) {
     struct shm_message m = { { 'X', 'H', 'D', 'F' }, x, y, w, h };
     // Only a helper that is gone loses its socket. A full queue (EAGAIN) or a passing shortage (ENOBUFS, ENOMEM)
@@ -282,7 +504,7 @@ void xh_display_flush(unsigned x, unsigned y, unsigned w, unsigned h)
     if (send(client_fd, &m, sizeof m, MSG_NOSIGNAL | MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != EINTR) {
       if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN) {
         LOGI("display: the helper's socket is gone (%s): closed", strerror(errno));
-        close(client_fd); client_fd = -1;
+        close(client_fd); client_fd = -1; client_gen++; client_direct = client_memory = false;    // its reader answers for its frames
       } else {
         static unsigned dropped;
         if (dropped++ % 1000 == 0) LOGI("display: a flush to the helper failed (%s): dropped, the socket kept (%u so far)", strerror(errno), dropped);
