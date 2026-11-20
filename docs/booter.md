@@ -702,6 +702,13 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
   inside a code page with one of the encodings; code that writes `TPIDR_EL0`.
 - **Plain arm64 binaries**: `thread_set_pac(thread, 0)` turns the keys off for that thread
   (`PR_PAC_SET_ENABLED_KEYS`).
+- **A task's end.** `task_destroy` sends the factory `M_KILL`, sends the process `SIGKILL` and waits (asleep, on the
+  vCPU, up to 20 s) until the factory reports its exit, so that no page the kernel frees is still mapped in a process
+  that runs. A death that takes 250 ms or more is a line: `tasks: pid N took T ms to die (the kill to the factory's
+  report; its vCPU waited)` (fix-widget-kill-loop, 2026-11-15). iOS's own exit watchdogs count that time: WidgetKit
+  gives a widget extension a few seconds after chronod asks RunningBoard to end it (5 s, read in 24A446's WidgetKit, not
+  proven to be that timer) before it logs `Extension process termination watchdogged
+  pid (N) after Ns` in chronod's log.
 
 ### 2.6a The cost of the trap path (perf, 2026-11-12)
 
@@ -995,7 +1002,7 @@ and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order
 | Device | File | Backed by | Guest driver it is written for |
 | --- | --- | --- | --- |
 | Block, read-only (`F_RO`) | `virtio_blk.c`, `blk.c` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
-| Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync` | the Data store window (node `data-store`) |
+| Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync` (on the disk's flush thread: "Disks" below) | the Data store window (node `data-store`) |
 | Input | `virtio_input.c`, `input.c` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
 | GPU, 2D scanout | `virtio_gpu.c`, `display.c` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
 | Console | `uart.c` | the log | XNU's PL011 console (`uart0`) |
@@ -1066,6 +1073,29 @@ bridge leaves its network and gives wlan0's settings back (`br_wlan_close`), and
 
 Where UniXNU's RamBlock keeps the Data seed in RAM and changed pages in a store window, xnuhost has
 Linux's page cache and a sparse file: the store is a raw image.
+
+**Disks: where a request is served** (`virtio_blk.c`; fix-widget-kill-loop, 2026-11-15). The guest's driver
+(`kernel/patches/oneios-hosted/storage/OneiOSHostedDisk.cpp`) sends one request at a time per disk and polls for the
+answer, and xnuhost serves reads and writes inside the notify, on the vCPU that wrote the register (a `pread` or
+`pwrite` of the image: Linux's page cache). A **flush** was served the same way: `fdatasync(2)` of the 32 GiB
+`data.img` ran on the vCPU until the phone's file system had written every dirty page of the store out, and every
+APFS transaction, `F_FULLFSYNC` and `F_BARRIERFSYNC` of iOS (SQLite's commits, the atomic plist writes of cfprefsd,
+chronod's timeline and snapshot archives) sends one; meanwhile the vCPU ran nothing else and took no interrupt. Now a
+writable disk offers `VIRTIO_BLK_F_LATE_FLUSH` (bit 23, OneiOS's own: the top device-specific bit, which virtio-blk
+leaves unused); a driver that accepts it gets its flushes served by the disk's flush thread (`xh-blk-flush`, a normal
+thread), completed from there into the used ring, and waits for them asleep (`IOSleep(1)` between looks, 60 s before
+it resets the disk; reads and writes keep the 10 us spin of a notify that answers at once). A reset of the device drops
+a flush in progress. `blk-late-flush=0` (`--set`, `xnuhost.conf`) does not offer the bit: the flush on the vCPU, as
+before; a kernel from before this change does not accept it, so it gets that too. The start line says which:
+`disk: a flush of a writable disk runs on the disk's flush thread when the guest's driver asks for that (blk-late-flush=1)`.
+What the flush itself costs is the same either way (the same `fdatasync`); what changes is that the guest keeps the
+vCPU while it runs.
+
+A lasting line per disk, once a minute while it is used: `disk N: 60 s: reads R (M MiB, T ms, slowest S ms), writes W
+(M MiB, T ms, slowest S ms), flushes F (on its thread|on the vCPU: T ms, mean A ms, slowest S ms)` (N as in the start
+line `disk N: PATH, ...`). Reads and writes are the time the vCPUs spent in the host for them (a read-only image's
+includes its chunk checks), the flushes the `fdatasync`'s own time. On the phone the Data store's line says how often
+iOS flushes and how long the phone's storage takes for it.
 
 ### 2.8 Display and input: the choice
 

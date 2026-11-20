@@ -37,6 +37,7 @@ void xh_config_defaults(xh_config *c)
   c->bridges = -1;
   c->scale_fixup = -1;
   c->setway_skip = -1;
+  c->blk_late_flush = -1;
   c->perf_log = c->spin_host = c->spin_task = c->map_defer = c->cpu_pin = -1;
   c->gpu_priority = -1;
   strcpy(c->bluetooth, "auto");
@@ -163,6 +164,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "haptics")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) strcpy(c->haptics, value); }
   else if (!strcmp(key, "legacy-boot-args")) return flag(value, &c->legacy_boot_args);
   else if (!strcmp(key, "setway-skip")) { bool on; if (flag(value, &on)) return -1; c->setway_skip = on; }
+  else if (!strcmp(key, "blk-late-flush")) { bool on; if (flag(value, &on)) return -1; c->blk_late_flush = on; }
   else if (!strcmp(key, "perf-log")) { ok = number(value, 0, 86400, &c->perf_log); }
   else if (!strcmp(key, "spin-host")) { ok = number(value, 0, 1000, &c->spin_host); }
   else if (!strcmp(key, "spin-task")) { ok = number(value, 0, 1000, &c->spin_task); }
@@ -290,6 +292,7 @@ int xh_config_finish(xh_config *c)
   if (!*c->boot_args) strcpy(c->boot_args, from_image.boot_args);
   if (!c->width) c->width = from_image.width;
   if (c->setway_skip < 0) c->setway_skip = from_image.setway_skip < 0 ? 1 : from_image.setway_skip;
+  if (c->blk_late_flush < 0) c->blk_late_flush = from_image.blk_late_flush < 0 ? 1 : from_image.blk_late_flush;
   if (c->perf_log < 0) c->perf_log = from_image.perf_log;
   if (c->spin_host < 0) c->spin_host = from_image.spin_host;
   if (!*c->gpu_level) strcpy(c->gpu_level, *from_image.gpu_level ? from_image.gpu_level : "deadline");

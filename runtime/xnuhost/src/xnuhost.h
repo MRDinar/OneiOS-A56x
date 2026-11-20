@@ -115,6 +115,7 @@ typedef struct {
   int   log_level;
   bool  legacy_boot_args;
   int   setway_skip;        // a trapped dc set/way ends the guest's set/way loop of its level at once (sysreg.c): 1 (default), 0, -1 = unset
+  int   blk_late_flush;     // virtio_blk.c: the Data store's flushes on a thread of their own, completed later (the guest driver asks): 1 (default), 0, -1 = unset
   int   perf_log;           // perf.c: seconds between two "perf:" reports; 0 = only at the stop and on SIGQUIT; -1 = unset (30)
   int   spin_host, spin_task;   // task.c: microseconds a vCPU (spin-host) and an iOS thread (spin-task) spin for the other
                             // side of a hand-off before they sleep in a futex; -1 = unset (the defaults in task.c)
@@ -621,12 +622,17 @@ void       xh_virtio_push(xh_virtio *dev, unsigned queue, uint16_t head, uint32_
 void       xh_virtio_config_changed(xh_virtio *dev);
 // Whether the guest's driver has set DRIVER_OK: the device's queues are in use.
 bool       xh_virtio_ready(xh_virtio *dev);
+// The features the guest's driver accepted (bits 0-63).
+uint64_t   xh_virtio_driver_features(xh_virtio *dev);
 // Test hook: guest memory translation (default xh_ram).
 extern void *(*xh_virtio_translate)(uint64_t pa, uint64_t len);
 uint64_t   xh_virtio_mmio_read(xh_virtio *dev, uint64_t offset, unsigned size);
 void       xh_virtio_mmio_write(xh_virtio *dev, uint64_t offset, unsigned size, uint64_t value);
 
+// xh_blk_late_flush (set before the disks are made): offer VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) on a writable disk; a flush the driver sends after
+// accepting it is run on the disk's flush thread and completed from there (config blk-late-flush; docs/booter.md "Disks").
 xh_virtio *xh_virtio_blk_create(uint64_t base, unsigned spi, xh_blk *disk);
+extern bool xh_blk_late_flush;
 xh_virtio *xh_virtio_input_create(uint64_t base, unsigned spi);
 xh_virtio *xh_virtio_gpu_create(uint64_t base, unsigned spi, unsigned width, unsigned height);
 

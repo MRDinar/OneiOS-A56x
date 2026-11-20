@@ -580,6 +580,10 @@ static int boot(void)
   xh_gic_map();
   xh_uart_init(XL_BOARD_UART);
   if (image_set_open()) return -1;
+  // A writable disk's flush on a thread of its own when the guest's driver takes it (virtio_blk.c, blk-late-flush).
+  xh_blk_late_flush = config.blk_late_flush != 0;
+  LOGI("disk: a flush of a writable disk runs %s (blk-late-flush=%d)",
+       xh_blk_late_flush ? "on the disk's flush thread when the guest's driver asks for that" : "on the vCPU that sent it", xh_blk_late_flush ? 1 : 0);
   for (unsigned i = 0; i < config.ndisk; i++) {
     xh_blk *disk = xh_blk_open(&config.disk[i], &error);
     if (!disk) { LOGE("disk %s: %s (%s)", config.disk[i].path, error, strerror(errno)); return -1; }

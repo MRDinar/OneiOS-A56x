@@ -277,3 +277,7 @@
 # waits for the first completed shared region; the phone boots, newfs_apfs succeeds and session/ready arrives. The
 # pmap entries-kept path works; the shared-region no-op count was still 0, so that optimization and typing A/B stay open.
 0080-shared-region-protect.patch
+# fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,
+# 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
+# flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush
+# thread, not on the vCPU that sent the flush (docs/booter.md 2.7, "Disks"). Reads and writes are unchanged.
