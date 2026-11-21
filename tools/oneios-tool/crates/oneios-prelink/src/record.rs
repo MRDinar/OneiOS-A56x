@@ -117,7 +117,14 @@ pub fn run(args: Args) -> Result<()> {
     record.set("bytes", Value::Int(image.len() as i128));
     record.set("sha256", sha256_hex(&image));
     record.set("releasable", false);
-    record.set("why_not_releasable", "contains the kexts of Apple's kernelcache (and the kernel links UniXNU's source corecrypto)");
+    // The emitter seals a kernel that links UniXNU's source corecrypto, and says "none: ..." for one that does not
+    // (ONEIOS_CRYPTO=original, the releasable xnu.macho) in the report's statistics: Apple's kexts either way.
+    let source_crypto = prelink.get("statistics").and_then(|s| s.get("corecrypto_hmac_sha256")).and_then(Value::as_str).is_none_or(|text| !text.starts_with("none"));
+    record.set("why_not_releasable", if source_crypto {
+        "contains the kexts of Apple's kernelcache (and the kernel links UniXNU's source corecrypto)"
+    } else {
+        "contains the kexts of Apple's kernelcache (the kernel links no source corecrypto)"
+    });
     let mut inputs = Value::dict();
     inputs.set("kernel", file(&args.kernel, None)?);
     inputs.set("kernelcache", file(&args.kernelcache, Some("iPhone18,2 iOS 27.0.1 (24A446) kernelcache.release.v54, decoded"))?);

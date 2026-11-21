@@ -32,6 +32,12 @@
   "restricted_sources": [
     "corecrypto-2023 (github.com/ONLYA/corecrypto-2023: Apple corecrypto, Internal Use License)"
   ],
+  "linked": {
+    "XNU_SOURCE_CORECRYPTO14": {
+      "archive": "tree/build/corecrypto-2023/libcorecrypto_kernel_noasm-namespaced.a",
+      "checked": false
+    }
+  },
   "releasable": false,
   "unixnu_patches": [
     {

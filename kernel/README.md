@@ -17,8 +17,16 @@ This is the VM kernel. The kernel xnuhost runs is the **hosted** one (`build-hos
 
 ```sh
 scripts/bg.sh kernel-hosted env HOSTED_OUT=lead ALLOW_XCODE=1 XNU_FILESET_REFERENCE=1 kernel/build-hosted.sh
-# -> out/kernel/current-hosted/xnu.macho, and with XNU_FILESET_REFERENCE=1 reference.macho (the prelink's reference)
+# -> out/kernel/current-hosted/xnu.macho, xnu.macho.build.json (its build record), series.txt, and with
+#    XNU_FILESET_REFERENCE=1 reference.macho (the prelink's reference)
 ```
+
+The hosted build record (since 2026-11-21) is the record of the `xnu.macho` the build leaves, after `oneios-tool
+kernel hosted-fixup` and the seal (`kernel build-record finish --kernel FILE --post-link STEP...`): its SHA-256 and
+size are that file's, its patches the board series and the hosted series in order, and it is written next to the
+file (no `builds/` entry, no `current` link). `kernel/publish.sh --hosted NAME` packs that folder
+([docs/releases.md](../docs/releases.md), "The kernel in a release"). The release kernel is
+`HOSTED_OUT=release ONEIOS_CRYPTO=original` ("Releases and licences" below).
 
 `ALLOW_XCODE=1` is for a Mac whose Xcode is not the pin's (27.2); Linux ignores it. Without
 `XNU_FILESET_REFERENCE=1` the build skips the RELEASE reference. Mac run of 2026-11-12 (Apple M4, 10 cores,
@@ -166,18 +174,25 @@ of 85 distinct registers, 127 `wfe`, 101 `tlbi`, 85 `dc`, 4 `ic`, 4 `at`, 4 `wfi
 
 - XNU is under the Apple Public Source License 2.0; a kernel in a release carries `kernel/NOTICE.kernel` and its
   build record names every modification (APSL 2.2).
-- **The kernel built today may not be released**, and `runtime/package.sh` leaves it out: UniXNU's kernel recipe
-  links its source corecrypto (`corecrypto-2023`, Apple's Internal Use License, no redistribution), and the ArmCpu
-  and pthread recipes require it. The record says `"releasable": false`. Owners build the kernel themselves
-  (91 s on Linux); a release is runtime-only until a configuration without that source links and boots.
-- `ONEIOS_CRYPTO=original` (`kernel/build-hosted.sh`, docs/building.md section 2) links no source corecrypto: the
-  kernel uses the kernelcache's own corecrypto kext once prelinked. Ported from the A56 fork (docs/a56.md), where it
-  booted to the iOS 16.5 lock screen on that phone; untested on the S24 Ultra. Such an `xnu.macho` removes the
-  corecrypto reason above; whether it may be released is **not yet checked**: the record still says
-  `"releasable": false`, and the other linked parts (ArmCpu, libpthread, libfirehose, the board's archives, the KDK
-  headers the build reads) need a licence review first — the owner's call. A prelinked `kernel.kc` is never
-  releasable either way (Apple's kexts): the plan is for each phone to prelink its own from the kernelcache it
-  downloads from Apple.
+- **The VM kernel and the default hosted kernel (`ONEIOS_CRYPTO=source`) may not be released**, and
+  `runtime/package.sh` leaves them out: UniXNU's kernel recipe links its source corecrypto (`corecrypto-2023`,
+  Apple's Internal Use License, no redistribution), and the ArmCpu and pthread recipes require it to be built. The
+  record says `"releasable": false`.
+- **The release kernel is the hosted `ONEIOS_CRYPTO=original` one** (the owner's call of 2026-11-21: the OneOS
+  app's update downloads it with the runtime package and prelinks it on the phone with the phone's own kernelcache).
+  `kernel/build-hosted.sh ONEIOS_CRYPTO=original` (docs/building.md section 2) links no source corecrypto: the
+  kernel collection's own `com.apple.kec.corecrypto` serves the crypto KPIs once prelinked. Its record counts it:
+  0 of the corecrypto-2023 archive's 1191 global symbols are external symbols of the kernel (a source kernel: 878),
+  `"restricted_sources": []`, `"releasable": true`; the build fails otherwise. The 18 `cc*` symbols such a kernel
+  has are XNU's own `osfmk/corecrypto` (APSL). The other linked parts are under the licences listed at the end of
+  this section. A prelinked `kernel.kc` is never releasable (Apple's kexts): each phone prelinks its own.
+- Proven for the first candidate, `xnu-12377.121.6-ios-27.0.1-24A446-703a6b34e73f` (2026-11-21, Linux PC): the build
+  (318 s, 20 cores), the record (`"releasable": true`), `kernel/publish.sh --hosted release` and `runtime/package.sh`
+  with it (`REQUIRE_KERNEL=1`: `runtime.json` names it); the prelink with the phone's code (`oneios-tool prelink
+  build`, no reference: 2.8 s, 698 MB peak RSS, audit 0 failures, stubs 666 good / 0 bad, 93 originals on the stub,
+  96,206,848 bytes, the same SHA-256 twice); the PC boot to SpringBoard and PosterBoard, no panic: see
+  [kernel/prelink/README.md](prelink/README.md), "Original corecrypto". **Not proven**: the prelink's time and memory
+  on the phone, a boot on the phone.
 - Never in git or a release: the kernelcache, a prelinked `kernel.kc`, KDK headers (`out/`).
 - UniXNU, UniXNU-droidvm: BSD-2-Clause-Patent. xnu-linux-toolchain: see its repository. libdispatch (firehose):
   Apache 2.0. libpthread, libplatform: APSL 2.0.

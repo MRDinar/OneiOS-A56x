@@ -8,8 +8,11 @@
 # XCODE_APP=... another place). Same series, archives and output on both.
 # Both need Rust (cargo) for tools/oneios-tool, which builds the board's archives (`oneios-tool kernel gen NAME`); it is
 # built when missing or stale (ONEIOS_TOOL=PATH: that binary instead).
-# Output: out/kernel-hosted/unixnu/oneios/<os profile>/oneios_hosted/kernel/kernel.macho, linked as
-# out/kernel/current-hosted/xnu.macho. The VM kernel's build (build-linux.sh, out/kernel/current) is not touched:
+# Output: out/kernel/current-hosted*/xnu.macho (the sealed, fixed-up link of
+# out/kernel-hosted*/unixnu/oneios/<os profile>/oneios_hosted), its build record xnu.macho.build.json and series.txt
+# (`oneios-tool kernel build-record finish --kernel`: the record of that final file, the one kernel/publish.sh
+# --hosted NAME packs), and with ONEIOS_CRYPTO=source xnu.macho.crypto-hmac.json (the seal's report).
+# The VM kernel's build (build-linux.sh, out/kernel/current) is not touched:
 # this one has its own output root and its own copy of the device repository (out/hosted-device: kernel/device as committed, with
 # the hosted series added to the board's patch series), so the two never share a work tree.
 set -euo pipefail
@@ -175,13 +178,20 @@ fi
 # whose HMAC field is empty: corecrypto's integrity self-test fails on it (-2074).
 SEALED=$WORK/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped
 [ "$CRYPTO" = original ] || [ -f "$SEALED.crypto-hmac.json" ] || { echo "build-hosted: $SEALED was not sealed" >&2; exit 1; }
-mkdir -p "$ROOT/out/kernel/current-hosted$SUFFIX"
-cp "$SEALED" "$ROOT/out/kernel/current-hosted$SUFFIX/xnu.macho"
+KDIR=$ROOT/out/kernel/current-hosted$SUFFIX
+mkdir -p "$KDIR"
+# A record, series or seal report of an earlier build in this folder is not this kernel's.
+rm -f "$KDIR/xnu.macho.build.json" "$KDIR/series.txt" "$KDIR/xnu.macho.crypto-hmac.json"
+cp "$SEALED" "$KDIR/xnu.macho"
+# The changes made to the link's output, in order, for the build record (source: the build's seal, then ours below).
+POST_LINK=()
+[ "$CRYPTO" = original ] || POST_LINK+=(--post-link seal)
+POST_LINK+=(--post-link hosted-fixup)
 # Post-link text fixes of the hosted layer (`oneios-tool kernel hosted-fixup`, kernel/hosted-fixup.py until 2026-11-13: a
 # vCPU's identity comes from xnuhost, not
 # MPIDR_EL1), on the copy; then the seal again, over the changed text (the build's own seal script, which takes
 # an already sealed kernel).
-SEALED=$ROOT/out/kernel/current-hosted$SUFFIX/xnu.macho
+SEALED=$KDIR/xnu.macho
 "$ONEIOS_TOOL" kernel hosted-fixup "$SEALED"
 if [ "$CRYPTO" = original ]; then
   # No source POST to seal; and the kernel must hold no symbol of the source corecrypto archive.
@@ -197,6 +207,15 @@ if [ "$CRYPTO" = original ]; then
   fi
 else
   ( cd "$WORK/tree" && UNIXNU_XNU_ARCH=arm64e python3 scripts/seal-source-crypto-kernel.py "$SEALED" )
+  POST_LINK+=(--post-link seal)
+fi
+# The build record of the file left in $KDIR (its sha256, bytes and Mach-O facts; the board's and the hosted series'
+# patches; the profile and build id), and series.txt beside it. It counts the source corecrypto archive's symbols in
+# the kernel itself: ONEIOS_CRYPTO=original must come out releasable, source does not (Apple's Internal Use License).
+case "$HOST" in Darwin) RECORD_HOST=macos ;; *) RECORD_HOST=linux ;; esac
+"$ONEIOS_TOOL" kernel build-record finish --host "$RECORD_HOST" --work "$WORK" --config "$CONFIG_NAME" --kernel "$SEALED" "${POST_LINK[@]}" --repo "$ROOT"
+if [ "$CRYPTO" = original ] && ! grep -q '"releasable": true' "$SEALED.build.json"; then
+  echo "build-hosted: the original-corecrypto kernel's record is not releasable ($SEALED.build.json: restricted_sources, linked)" >&2; exit 1
 fi
 # XNU_FILESET_REFERENCE=1: the RELEASE reference of the prelink (kernel/prelink/build.sh REFERENCE=), next to the kernel.
 REF=$WORK/tree/build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf

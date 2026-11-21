@@ -78,7 +78,8 @@ Linux or macOS, the same command (the script picks the toolchain by `uname -s`):
 
 ```sh
 scripts/bg.sh kernel-hosted env HOSTED_OUT=me kernel/build-hosted.sh
-# -> out/kernel/current-hosted-me/xnu.macho (the hosted kernel: board series + kernel/patches/oneios-hosted/series)
+# -> out/kernel/current-hosted-me/xnu.macho (the hosted kernel: board series + kernel/patches/oneios-hosted/series),
+#    xnu.macho.build.json (its build record) and series.txt
 ```
 
 - **Linux** (x86_64 or arm64): stock clang plus xnu-linux-toolchain's ld64, mig and iig, set up by the script into
@@ -123,22 +124,32 @@ scripts/bg.sh kernel-hosted env HOSTED_OUT=me kernel/build-hosted.sh
 - The VM kernel (UniXNU's own board, not used by xnuhost): `scripts/bg.sh kernel kernel/build-linux.sh`; on a Mac,
   `kernel/build-macos.sh`. See [kernel/README.md](../kernel/README.md).
 
-The kernel links Apple's `corecrypto` under its Internal Use License: it is built locally and never released.
+- The build record (since 2026-11-21): the last step, `oneios-tool kernel build-record finish --kernel
+  out/kernel/current-hosted-me/xnu.macho --post-link ...`, writes `xnu.macho.build.json` and `series.txt` next to the
+  kernel, for the file as the build leaves it (after `kernel hosted-fixup` and the seal). It prints the build id, the
+  SHA-256, the patches, how many of the source corecrypto archive's symbols the kernel holds and whether the kernel
+  may be released. `kernel/publish.sh --hosted me` packs that folder (section 8, [releases.md](releases.md)).
 
-`ONEIOS_CRYPTO=original` builds a kernel without it (default `source`):
+The default kernel links Apple's `corecrypto` (UniXNU's source, corecrypto-2023) under its Internal Use License: it is
+built locally and never released (its record says `"releasable": false`).
+
+`ONEIOS_CRYPTO=original` builds a kernel without it (default `source`); **this is the kernel a release carries**:
 
 ```sh
-scripts/bg.sh kernel-nocc env HOSTED_OUT=nocc ONEIOS_CRYPTO=original kernel/build-hosted.sh
-scripts/bg.sh prelink-nocc env KERNEL=out/kernel/current-hosted-nocc/xnu.macho OUT=out/kernel/24A446-nocc kernel/prelink/build.sh
+scripts/bg.sh kernel-release env HOSTED_OUT=release ONEIOS_CRYPTO=original kernel/build-hosted.sh
+scripts/bg.sh prelink-release env KERNEL=out/kernel/current-hosted-release/xnu.macho OUT=out/kernel/24A446-release kernel/prelink/build.sh
+kernel/publish.sh --hosted release      # the archive for a release and its line for kernel/release-kernel.txt
 ```
 
 The kernel then uses the kernel collection's own `com.apple.kec.corecrypto` (which the source-mode bootstrap already
 starts early) and has no source fallback (`kernel/patches/oneios-hosted/optional/original-corecrypto-only.patch`,
 added to this build's series only). Nothing is sealed (`kernel/patches/unixnu/0003-skip-source-seal.patch`), and the
-build fails if a global symbol of the source corecrypto archive is in the kernel. Ported from the A56 fork (docs/a56.md):
-there it booted iOS 16.5 to the lock screen on the Galaxy A56; on the S24 Ultra it is untested. Licences of the rest
-of such a kernel: `kernel/README.md` "Releases and licences". Whether such a kernel may be released is **not
-decided**: the licence question belongs to the owner (docs/a56.md, "licence call").
+build fails if a global symbol of the source corecrypto archive is in the kernel, or if its build record is not
+`"releasable": true`. Ported from the A56 fork (docs/a56.md), where it booted iOS 16.5 to the lock screen on the
+Galaxy A56. On this tree (2026-11-21, Linux PC, 20 cores): built in 336 s, prelinked (audit and stubs-check pass)
+and PC-booted ([kernel/prelink/README.md](../kernel/prelink/README.md), "Original corecrypto"); not yet booted on the
+S24 Ultra. The owner decided on 2026-11-21 that such a kernel is the one to release (`kernel/README.md` "Releases and
+licences").
 
 ## 3. The kernel collection (`kernel.kc`)
 

@@ -296,14 +296,60 @@ package and not in the APK** (as `lib/arm64-v8a/liboneios-tool.so`):
 
 The kernel is not built in CI. A build machine builds it (`kernel/README.md`), and:
 
-1. `kernel/publish.sh` packs `out/kernel/current/` (`xnu.macho`, its build record, the series report) as
-   `xnu-<build id>.tar.zst` and uploads it to the release `kernel-<build id>` of this repository. It runs the same
-   Apple-file check first.
+1. `kernel/publish.sh` packs a kernel folder (`xnu.macho`, its build record `xnu.macho.build.json`, the series
+   report `series.txt`) as `<build id>.tar.zst` (`xnu-12377.121.6-ios-27.0.1-24A446-<12 hex>.tar.zst`) in
+   `out/kernel/publish/`, prints its SHA-256 and the line for step 2, and with `--upload` uploads it to the release
+   `kernel-<build id>` of this repository. It runs the runtime package's own check first (`oneios-tool package
+   check`: a record of this builder, of these bytes, not prelinked, no kernelcache kext, no restricted source).
+   Which folder: `kernel/publish.sh --hosted NAME` is `out/kernel/current-hosted-NAME` (`kernel/build-hosted.sh
+   HOSTED_OUT=NAME`; `--hosted lead` is `out/kernel/current-hosted`); `KERNEL_DIR=DIR` any folder; neither:
+   `out/kernel/current` (the VM kernel of `kernel/build-linux.sh`, which xnuhost does not run). Before 2026-11-21
+   the script still called the deleted `runtime/package/pack.py`, so it could not pack anything.
 2. `kernel/release-kernel.txt` gets one line, `kernel-<build id> <sha256 of the archive>`, in a commit.
 3. The runtime job (of every build, not only a release) downloads that archive, checks the SHA-256, and `runtime/package.sh` checks the build record
-   again before the kernel goes into the package.
+   again before the kernel goes into the package as `kernel/xnu.macho` and `kernel/xnu.macho.build.json`;
+   `runtime.json`'s `"kernel"` is then `{"path": "kernel/xnu.macho", "build_id", "sha256", "xnu", "profile",
+   "record": "kernel/xnu.macho.build.json"}`, taken from the record.
 
 Without `kernel/release-kernel.txt` the runtime package has no kernel (`"kernel": null`).
+
+**The kernel to release is the hosted one, built with `ONEIOS_CRYPTO=original`** (the owner's call of 2026-11-21):
+the OneOS app's update pulls the runtime package, pairs its `kernel/xnu.macho` with the phone's own Apple
+kernelcache (`oneios-tool serve prelink`) and boots the `kernel.kc` it made. The default hosted kernel
+(`ONEIOS_CRYPTO=source`) links UniXNU's source corecrypto (corecrypto-2023, Apple's Internal Use License): its
+record lists it in `restricted_sources`, says `"releasable": false`, and both `kernel/publish.sh` and
+`runtime/package.sh` refuse it. The steps for a release kernel:
+
+```sh
+scripts/bg.sh kernel-release env HOSTED_OUT=release ONEIOS_CRYPTO=original kernel/build-hosted.sh
+#   -> out/kernel/current-hosted-release/{xnu.macho, xnu.macho.build.json, series.txt}; the build fails when the
+#      record is not "releasable": true
+scripts/bg.sh prelink-release env KERNEL=out/kernel/current-hosted-release/xnu.macho OUT=out/kernel/24A446-release kernel/prelink/build.sh
+#   audit and stubs-check must pass; then a PC boot (docs/building.md section 5) with --kernel out/kernel/24A446-release/kernel.kc
+kernel/publish.sh --hosted release          # pack and check; --upload only for the build to release
+```
+
+The hosted build record (`oneios-tool kernel build-record finish --kernel FILE --post-link STEP...`, written by
+`kernel/build-hosted.sh` since 2026-11-21) is the record of the file the build leaves, after `kernel hosted-fixup`
+and (source only) the seal: its `sha256`, `bytes` and `macho` are that file's; `patches` are the board series and
+`kernel/patches/oneios-hosted/series` in order (plus `optional/original-corecrypto-only.patch` for original);
+`profile` is the OS profile (`ios-27.0.1-24A446`); `defconfig` `oneios_hosted_defconfig`; `hosted: true` and
+`post_link` (`["hosted-fixup"]` for original, `["seal", "hosted-fixup", "seal"]` for source) are its own fields, and
+the post-link steps are part of the build id. Whether the source corecrypto is linked is counted, not assumed:
+`linked.XNU_SOURCE_CORECRYPTO14` gives how many of the archive's global symbols
+(`tree/build/corecrypto-2023/libcorecrypto_kernel_noasm-namespaced.a`, 1191) are external symbols of the kernel
+(`in_kernel`): 878 for a source kernel, 0 for original. A configuration that builds the archive is restricted when
+`in_kernel` is not 0 or the archive cannot be read. The 18 `cc*` symbols an original kernel still has are XNU's own
+APSL `osfmk/corecrypto` (`ccsha256_di`, `ccdrbg_*`), not the archive's.
+
+The first release candidate (2026-11-21, not uploaded; the lead publishes it after review): build
+`xnu-12377.121.6-ios-27.0.1-24A446-703a6b34e73f`, `xnu.macho` 24,488,792 bytes, SHA-256
+`326e2144d512d78990d6c0cd0e2c7ffdf2696b0fdb03cb05827a2be59b5a040c`, 166 patches, `"releasable": true`; archive
+`out/kernel/publish/xnu-12377.121.6-ios-27.0.1-24A446-703a6b34e73f.tar.zst`, line
+`kernel-xnu-12377.121.6-ios-27.0.1-24A446-703a6b34e73f 4cf558f572443d2f6e9f14d629ab4705fa596ec52b595861735a46b1fa61d980`.
+CI's step was replayed with it (the archive unpacked, `REQUIRE_KERNEL=1 KERNEL_DIR=... runtime/package.sh
+0.0.0-kcheck`): `runtime.json`'s `"kernel"` names that build id and SHA-256. An earlier build of the same day
+(`...-5f699bc0f23e`) is not a candidate: it has the old hosted 0068 and dies at launchd. What was proven for it: kernel/README.md "Releases and licences".
 
 ## Released
 

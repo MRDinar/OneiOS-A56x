@@ -185,7 +185,7 @@ fn the_build_record_is_build_record_pys() {
     let root = root.canonicalize().unwrap();
     let work = made_up_build(&root);
     let out = root.join("out/kernel");
-    build_record::finish(&root, "linux", &work, "oneios_test_defconfig", &out).unwrap();
+    build_record::finish(&root, "linux", &work, "oneios_test_defconfig", build_record::Place::Out(&out)).unwrap();
     let target = out.join("current").canonicalize().unwrap();
     // the machine's part (the compiler's and the linker's versions) and the checkouts' commits are not frozen
     let record = pyjson::load(target.join("xnu.macho.build.json")).unwrap();
@@ -194,5 +194,40 @@ fn the_build_record_is_build_record_pys() {
     assert_eq!(pyjson::dumps(&kept, Some(2), false) + "\n", golden("synthetic/build-record.json"));
     assert_eq!(std::fs::read_to_string(target.join("series.txt")).unwrap(), golden("synthetic/build-record.series.txt"));
     assert_eq!(std::fs::read(target.join("xnu.macho")).unwrap(), build_record::fake_kernel());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The hosted kernel (kernel/build-hosted.sh): the record of the final file, next to it; the work tree's source
+/// corecrypto archive defines symbols the kernel does not hold (ONEIOS_CRYPTO=original), so it is releasable.
+#[test]
+fn the_hosted_record_is_of_the_final_file() {
+    use oneios_common::pyjson::{self, Value};
+    use sha2::Digest;
+    let root = std::env::temp_dir().join(format!("oneios-kernel-hosted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let work = made_up_build(&root);
+    let archive = work.join("tree/build/corecrypto-2023/libcorecrypto_kernel_noasm-namespaced.a");
+    std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    std::fs::write(&archive, build_record::fake_archive(&["_cc_clear"])).unwrap();
+    // the shipped file is not the link's output: another kernel (here, one with a symbol table)
+    let folder = root.join("out/kernel/current-hosted-t");
+    std::fs::create_dir_all(&folder).unwrap();
+    let shipped = folder.join("xnu.macho");
+    std::fs::write(&shipped, build_record::fake_kernel_with(&["_kernel_bootstrap"])).unwrap();
+    let steps = ["hosted-fixup".to_string()];
+    build_record::finish(&root, "linux", &work, "oneios_hosted_defconfig", build_record::Place::Hosted { kernel: &shipped, post_link: &steps }).unwrap();
+    let record = pyjson::load(folder.join("xnu.macho.build.json")).unwrap();
+    let bytes = std::fs::read(&shipped).unwrap();
+    assert_eq!(record.get("bytes").and_then(Value::as_int), Some(bytes.len() as i128));
+    assert_eq!(record.get("sha256").and_then(Value::as_str), Some(oneios_common::hex(&sha2::Sha256::digest(&bytes)).as_str()));
+    assert_ne!(bytes, build_record::fake_kernel());
+    assert_eq!(record.get("releasable"), Some(&Value::Bool(true)));
+    assert_eq!(record.get("defconfig").and_then(Value::as_str), Some("oneios_hosted_defconfig"));
+    assert_eq!(record.get("profile").and_then(Value::as_str), Some("ios-test"));
+    assert_eq!(std::fs::read_to_string(folder.join("series.txt")).unwrap(), golden("synthetic/build-record.series.txt"));
+    // nothing below out/kernel/builds, no current link: the VM kernel's place is not touched
+    assert!(!root.join("out/kernel/builds").exists() && !root.join("out/kernel/current").exists());
     let _ = std::fs::remove_dir_all(&root);
 }

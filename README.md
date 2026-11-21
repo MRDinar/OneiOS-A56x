@@ -50,6 +50,7 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Auto-brightness via light sensor | Attaches, no readings through it yet | [docs/hardware.md](docs/hardware.md) |
 | Shared-region protect no-op count still 0 | Optimization unproven | kernel README "0080" |
 | Mac kernel panics in first 2 s | Old news, Mac runtime boots with Linux `kernel.kc` | `kernel/prelink/README.md` |
+| Kernels built from `main` between the A56 merge (`b2fa083`) and 2026-11-21 died at launchd (`mach_ports_lookup() failed: -300`, panic `initproc exited`) | Fixed: hosted 0068 is opt-in (`oneios-legacy-registered-ports=1`); PC boot to SpringBoard again | `kernel/patches/oneios-hosted/README.md` (A56 section) |
 | Never goals | Passcode, Face ID, Wallet, calls, SMS | — |
 
 ## Devices
@@ -84,8 +85,9 @@ oneos/                the contract with the OneOS fork (akshaynexus/OneOS, branc
 
 - **No Apple files in git or in releases.** IPSWs, cryptexes, kernelcaches, kexts, `kernel.kc` and every image built
   from them stay in `out/` and `inputs/` (git-ignored). Scripts fetch them from Apple and build them on the owner's
-  machine. Releases carry only this project's own code (scripts, runtime binaries, the OneOS patches); the kernel is
-  built locally (it links Apple's corecrypto).
+  machine. Releases carry only this project's own code (scripts, runtime binaries, the OneOS patches). The default
+  kernel is built locally (it links Apple's corecrypto); a release carries only the hosted `ONEIOS_CRYPTO=original`
+  `xnu.macho` (no Apple code in it), which each phone prelinks into its own `kernel.kc` ([docs/releases.md](docs/releases.md)).
 - Long jobs run in tmux: `scripts/bg.sh NAME COMMAND...`.
 - Every change updates the docs that describe it: [CLAUDE.md](CLAUDE.md).
 

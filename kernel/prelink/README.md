@@ -444,6 +444,43 @@ the HMACs), `prelink audit` 3 s, the record and the chunk hashes 1 s.
   are the candidates (`prelink lead-imports` prints them); the code picks among them. A boot on the PC costs about ten
   minutes to the first user process, so a batch is paired this way and then confirmed with one boot.
 
+## Original corecrypto: the release kernel (2026-11-21, release-kernel)
+
+The kernel a release carries is `kernel/build-hosted.sh` with `ONEIOS_CRYPTO=original` (docs/releases.md "The kernel
+in a release"): no source corecrypto in `xnu.macho`, so the native kernel has no `__fips_hmacs` field to seal; the
+emitter's no-seal path says so in the report (`statistics.corecrypto_hmac_sha256`: `none: no source corecrypto in
+the kernel`), the collection's own `com.apple.kec.corecrypto` authenticates itself, and the record's
+`why_not_releasable` reads `contains the kexts of Apple's kernelcache (the kernel links no source corecrypto)`.
+
+Run on the Linux PC (20 cores), kernel `xnu-12377.121.6-ios-27.0.1-24A446-703a6b34e73f` (24,488,792 bytes), with the
+code the phone runs (`oneios-tool prelink build`, the same steps `serve prelink` takes; no reference kernel, as on a
+phone):
+
+```sh
+oneios-tool prelink build --kernel out/kernel/current-hosted-release/xnu.macho \
+  --kernelcache out/kernel-inputs/24A446/kernelcache.macho --profile kernel/unixnu/profiles/os/ios-27.0.1-24A446/profile.toml \
+  --reviewed kernel/prelink/reviewed-24A446-v54.json --more-reviewed kernel/prelink/lead/reviewed-lead-24A446-v54.json \
+  --more-reviewed kernel/prelink/user/reviewed-user-24A446-v54.json --pairs kernel/prelink/pairs-24A446.json \
+  --stubs kernel/prelink/stubs-24A446.json --xnuprelink external/XnuPrelink --out out/kernel/24A446-release3 --repo .
+```
+
+- 2.8 s, 698 MB peak RSS (zsh `time`'s max RSS); `stubs: 666 good, 0 bad`; `audit: 276aadac762bcbc7: 2711 paired, 93
+  functions on the stub, 9 data unpaired; 0 failures`; 96,206,848 bytes. The same SHA-256 from a second run. The
+  source-crypto kernel of the same tree (`kernel/prelink/build.sh`, the script path) gives the same counts
+  (2711 / 93 / 9, 0 failures) and is sealed (`corecrypto_hmac_sha256` a digest).
+- PC boot (docs/building.md section 5's command, `--kernel out/kernel/24A446-release3/kernel.kc`, a new Data volume,
+  8 vCPUs, 4 GiB, `--display none`): the kernel's crypto ran on the collection's corecrypto (AppleImage4, the APFS
+  mounts and the Data volume's first start, AMFI, the keybag); `hello, launchd` at +184 s; `Returned from calling the
+  FIPS_POST function in the corecrypto.dylib: result = true` at +189 s; `Early boot complete. Continuing system boot.`
+  at +201 s; `SpringBoard[32]` running at +217 s; the session's `ready` (the guest's first frame of its own) at
+  +314 s; SpringBoard bootstrapped PosterBoard (pid 147) in iOS's own log; no panic in 15 minutes. The reference,
+  a source-crypto kernel of 2026-11-20 (`logs/rpc-boot.log` there): SpringBoard at +217 s, PosterBoard by +387 s.
+- The first boot of an original kernel from `main` stopped at launchd: `pid 1 exited -- ... mach_ports_lookup()
+  failed: -300`, then `panic(...): initproc exited`. A source-crypto kernel of the same `main` stopped the same way:
+  the cause was hosted 0068 (the A56 port), not the crypto mode; fixed in 0068 (series comment).
+- Not proven: the prelink's time and memory on the phone (the phone runs the same code on its own kernelcache:
+  expect seconds, not minutes, and under 1 GB, as here, but not measured), and any boot of this kernel on the phone.
+
 ## What is not done
 
 - **The pairing is incomplete.** A kext call to an original kernel function with no pair goes to
