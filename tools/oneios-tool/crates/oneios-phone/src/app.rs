@@ -186,14 +186,33 @@ pub fn source_version(fork: &Fork) -> Result<Version> {
     let quoted = |key: &str| -> Option<String> {
         text.lines().find_map(|l| l.trim().strip_prefix(key)?.trim().strip_prefix("= \"")?.strip_suffix('"').map(str::to_string))
     };
-    let code = text.lines().find_map(|l| l.trim().strip_prefix("versionCode")?.trim().strip_prefix('=')?.trim().parse().ok());
+    // Since the fork's 0.5.14 (2026-11-15) both are counted from git, as Gradle does it: `versionCode = 143 +
+    // commitsSinceBase`, `versionName = "0.5." + (14 + commitsSinceBase)`, commitsSinceBase = `git rev-list --count
+    // <versionBase>..HEAD` (0 when git cannot tell, as the script's catch does). Literal values still read as before.
+    let commits = || -> u64 {
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix("val versionBase")?.trim().strip_prefix("= \"")?.split('"').next().map(str::to_string))
+            .and_then(|base| git(fork, &["rev-list", "--count", &format!("{base}..HEAD")]))
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let value = |key: &str| text.lines().find_map(|l| l.trim().strip_prefix(key)?.trim().strip_prefix('=').map(|v| v.trim().to_string()));
+    let code = value("versionCode").and_then(|v| match v.split_once('+') {
+        Some((n, rest)) if rest.trim() == "commitsSinceBase" => n.trim().parse::<u64>().ok().map(|n| n + commits()),
+        _ => v.parse().ok(),
+    });
+    let counted_name = value("versionName").and_then(|v| {
+        let (prefix, rest) = v.strip_prefix('"')?.split_once("\" + (")?;
+        let (n, tail) = rest.split_once('+')?;
+        (tail.trim() == "commitsSinceBase)").then(|| n.trim().parse::<u64>().ok().map(|n| format!("{prefix}{}", n + commits())))?
+    });
     let series = fs::read_to_string(fork.dir.join("app-android/gradle.properties"))
         .ok()
         .and_then(|p| p.lines().find_map(|l| l.trim().strip_prefix("oneos.series=").map(|v| v.trim().to_string())))
         .filter(|v| !v.is_empty());
     Ok(Version {
         id: quoted("applicationId").ok_or_else(|| anyhow!("{}: no applicationId", path.display()))?,
-        name: quoted("versionName").ok_or_else(|| anyhow!("{}: no versionName", path.display()))?,
+        name: counted_name.or_else(|| quoted("versionName")).ok_or_else(|| anyhow!("{}: no versionName", path.display()))?,
         code: code.ok_or_else(|| anyhow!("{}: no versionCode", path.display()))?,
         series,
     })
@@ -603,6 +622,47 @@ mod tests {
     }
     fn text(p: &Path) -> String {
         p.display().to_string()
+    }
+
+    fn gradle(dir: &Path, body: &str) {
+        let path = dir.join("app-android/app/build.gradle.kts");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("android {{\n    defaultConfig {{\n        applicationId = \"com.fahadali.oneos\"\n{body}    }}\n}}\n")).unwrap();
+    }
+
+    #[test]
+    fn source_version_reads_literal_values() {
+        let s = Scratch::new("version-literal");
+        let dir = s.dir("fork");
+        gradle(&dir, "        versionCode = 115\n        versionName = \"0.4.86\"\n");
+        let v = source_version(&Fork { dir, how: "test" }).unwrap();
+        assert_eq!((v.id.as_str(), v.name.as_str(), v.code), ("com.fahadali.oneos", "0.4.86", 115));
+    }
+
+    #[test]
+    fn source_version_counts_commits_as_gradle_does() {
+        let s = Scratch::new("version-counted");
+        let dir = s.dir("fork");
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        for n in 0..3 {
+            git(&["commit", "-q", "--allow-empty", "-m", &format!("c{n}")]);
+        }
+        let counted = format!("        val versionBase = \"{base}\" // the base\n        val commitsSinceBase = 0\n        versionCode = 143 + commitsSinceBase\n        versionName = \"0.5.\" + (14 + commitsSinceBase)\n");
+        gradle(&dir, &counted);
+        let v = source_version(&Fork { dir: dir.clone(), how: "test" }).unwrap();
+        assert_eq!((v.name.as_str(), v.code), ("0.5.17", 146));
+        // A base git does not know: 0 commits, as the script's catch gives.
+        gradle(&dir, &counted.replace(&base, "0123456789abcdef0123456789abcdef01234567"));
+        let v = source_version(&Fork { dir, how: "test" }).unwrap();
+        assert_eq!((v.name.as_str(), v.code), ("0.5.14", 143));
     }
 
     #[test]

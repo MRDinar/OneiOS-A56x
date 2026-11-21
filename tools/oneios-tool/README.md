@@ -2459,6 +2459,10 @@ with stand-ins. `app version` was run on the real clone.
 
 ```sh
 oneios-tool app version [--no-phone]     # applicationId, versionName, versionCode, the commit; the installed app's version and certificate
+#   versionName/versionCode as Gradle computes them: literal, or (the fork since 0.5.14) `143 + commitsSinceBase` and
+#   `"0.5." + (14 + commitsSinceBase)` with commitsSinceBase = `git rev-list --count <versionBase>..HEAD` (0 when git
+#   cannot tell). Until 2026-11-21 it read only the literal form: on the fork at 7e34fa4 `app version`, and the app and
+#   cycle checks that use it, failed (5 checks).
 oneios-tool app doctor                   # JDK 21, an Android SDK with platform 37, the GitHub Packages login
 oneios-tool app build [--no-test]        # cd app-android && ./gradlew test assembleFullDebug; then the APK's path, size, sha256, version
 oneios-tool app install [APK]            # adb install -r of the build output (or APK)

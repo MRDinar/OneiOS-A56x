@@ -219,8 +219,10 @@ no_session "$P" && ok "cycle: One UI is back, no session" || bad "cycle: a sessi
 for f in xnuhost.log switch.log return.log return.outcome sums.txt summary.md; do [ -s "$D/full/$f" ] || bad "cycle: $f is missing in out/session-logs/DATE/full"; done
 cmp -s "$D/full/xnuhost.log" "$S/session/xnuhost.log" && ok "cycle: out/session-logs/DATE/full has the session's log, the fork's logs and sums.txt" || bad "cycle: the collected log"
 # The source version is the fork checkout's own (ONEOS_DIR), not a fixed one: it moves with each upstream merge.
-src_name=$(sed -n 's/^ *versionName = "\([^"]*\)".*/\1/p' "$FORK/app-android/app/build.gradle.kts" | head -1)
-src_code=$(sed -n 's/^ *versionCode = \([0-9]*\).*/\1/p' "$FORK/app-android/app/build.gradle.kts" | head -1)
+# The source's version as Gradle computes it (since the fork's 0.5.14 both are counted from git): the tool's own reader,
+# whose evaluation of both forms app.rs's unit tests check (source_version_*).
+src_name=$("$TOOL" app version --no-phone --oneos "$FORK" | sed -n 's/^versionName: \([^ ]*\) .*/\1/p')
+src_code=$("$TOOL" app version --no-phone --oneos "$FORK" | sed -n 's/^versionCode: //p')
 for want in "^# Cycle full" "every step that ran ended well" "prelink: audit 0 failures \(build.sh exit 0\), stubs: 666 good, 0 bad" "app source: $src_name \\(versionCode $src_code\\)" "app installed: 0.4.86 \(versionCode 115\)" "^\| stage \| [0-9.]+ \| ok \|" "^\| return \| [0-9.]+ \| ok \|" "^- \+[0-9]+ s ready: .*guest ready: first frame" "^## Panics" "^none$" "One UI restored in place \(Enforcing\)" "  image/kernel.kc$"; do
   grep -Eq "$want" "$D/full/summary.md" && ok "summary.md: $(printf '%s' "$want" | cut -c1-60)" || bad "summary.md: $want"
 done
