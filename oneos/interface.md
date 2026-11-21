@@ -2,7 +2,9 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases").
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `53abb04`, 2026-11-21:
+upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, no change to
+session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 
@@ -111,6 +113,8 @@ A tool the package lacks is shown as "Not in this runtime", not as a failure.
 | `logs/` | earlier sessions' `xnuhost-<epoch>.log` (the last 5; the next switch moves `session/xnuhost.log` there, so the epoch is that switch's time and the file's own time is its session's last line) | switch |
 | `switch.log`, `return.log`, `return.outcome`, `control/display.log`, `control/watchdog_feeder.log`, `control/usb.log` | the fork's own logs: the switch, the return with the watcher and the key readers, how the last return ended, the display helper's output, the watchdog feeder, the session's USB watcher (section 6a) | switch, return |
 | `tool/` | `TMPDIR` of `runtime/bin/oneios-tool serve` (section 9) | root's `tool` |
+| `kb/` | the kernel update's pairing files and Apple's decoded `kernelcache.macho` with `kernelcache.sha256` (fetched from Apple by the phone itself, kept for later updates; not under `runtime/` or `image/`) | root's `kbinput`, `kbcache` |
+| `make-kernel/` | Update the kernel's work folder: `inputs/` (the fetched IM4P, removed after the decode), `kernelcache.macho` (the decode), `out/` (the built kernel.kc until `finish kernel`); removed by root's `kbclean` after a stop that cannot resume | oneios-tool, root |
 | `make/` | Make iOS image's work folder (the tool's `make-image` `work`): the IPSW members, the volumes, the prelink's `work/`; removed by the tool on a cancel or a failure (its README) | oneios-tool |
 
 **What OneiOS's CLI writes there during a session** (`oneios-tool phone display-restart`, from the PC over adb;
@@ -370,6 +374,17 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   the AEA decryption.
 - Make iOS image's first request is `fetch` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`
   (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
+- Update the kernel (fork `53abb04`, not run on a phone; no PC needed): root's `status` and `kbinput` ×12, then in one
+  `tool work` session, unless `kb/kernelcache.macho` is the pin of the fork's `kb/kb.json`: `fetch` with `profile`
+  `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, `indir` `<stage>/make-kernel/inputs`, `only`
+  `["kernelcache"]`, `resume`; `im4p` with `in` `<stage>/make-kernel/inputs/kernelcache.release.v54`, `out`
+  `<stage>/make-kernel/kernelcache.macho`; root's `kbcache <bytes> <sha256>`. Then `prelink` (`out`
+  `<stage>/make-kernel/out`) and, on the user's Activate, root's `finish kernel` (the old set kept as `kernel.prev`,
+  every hash and list rewritten). The fork relies on: `fetch` taking `only` as a list of roles, the profile's role
+  `kernelcache` and member `kernelcache.release.v54`, `im4p`'s `ok` carrying `bytes` and `sha256`, and the runtime
+  package's `kernel/xnu.macho` (`runtime.json` `kernel`). Change these only together with the fork's
+  `OneiosTool.kernelcacheFetchRequest` and `kernelcacheDecodeRequest`. Measured on the Linux PC: fetch 12.4 s, im4p
+  0.1 s, 78,135,296 bytes, sha256 `349c4692...` (the pin).
 - Pause and Resume: the fork sends `{"cmd":"pause","id":...}` and `{"cmd":"resume","id":...}` (the user's buttons;
   and Android's default network lost and back) and shows `paused`, `resumed` and `net` (`state` `waiting`|`resumed`,
   `next`, `text`; an `error` with the id and a code), only when `hello`'s `cmds` lists `pause` and `resume`. These follow
