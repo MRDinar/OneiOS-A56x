@@ -9,7 +9,6 @@ ok() { pass=$((pass + 1)); echo "ok $pass: $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 for f in kernel/*.sh kernel/lib/*.sh kernel/linux/*.sh kernel/prelink/*.sh kernel/tests/*.sh scripts/image/kernel-inputs.sh; do bash -n "$f" || fail "syntax: $f"; done
-for f in kernel/*.py kernel/linux/*.py; do [ -e "$f" ] || continue; python3 -I -m py_compile "$f" || fail "syntax: $f"; done
 ok "script syntax"
 
 # The portable helpers (kernel/lib/host.sh) with this host's tools: GNU on Linux, BSD on macOS.
@@ -44,6 +43,19 @@ if [ -x "$tool" ]; then
   ok "patch series and profile"
   "$tool" kernel build-record --self-test || fail "build record"
   ok "build record"
+  # build-hosted.sh's two edits of its device copy, on copies of the committed board.toml and hosted defconfig: a
+  # change of either that the edits no longer take fails here, not in a kernel build.
+  t=$(mktemp -d)
+  cp kernel/device/board.toml kernel/device/configs/oneios_hosted_defconfig "$t/"
+  "$tool" kernel hosted-series "$t/board.toml" "$ROOT/kernel/patches/oneios-hosted/series" || fail "hosted-series"
+  entries=(); for name in storage board aes keystore net hid audio gpu display; do entries+=("oneios-tool kernel gen $name"); done
+  "$tool" kernel hosted-archives "$t/board.toml" "$t/oneios_hosted_defconfig" "${entries[@]}" || fail "hosted-archives"
+  grep -q "\"$ROOT/kernel/patches/oneios-hosted/series\"\]" "$t/board.toml" || fail "hosted-series: no hosted series in board.toml"
+  [ "$(grep -c '"oneios-tool kernel gen ' "$t/board.toml")" = 9 ] || fail "hosted-archives: not the nine archives"
+  [ "$(tail -1 "$t/oneios_hosted_defconfig")" = CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y ] || fail "hosted-archives: defconfig"
+  ! "$tool" kernel hosted-archives "$t/board.toml" "$t/oneios_hosted_defconfig" x 2> /dev/null || fail "hosted-archives took an edited board.toml again"
+  rm -rf "$t"
+  ok "build-hosted's device edits take the committed board.toml and hosted defconfig"
 else
   echo "skipped: patch series and profile, build record (no $tool: cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)"
 fi

@@ -4,7 +4,8 @@
 # The compiler is the host's clang. About 5 minutes; run it in tmux:
 #   scripts/bg.sh toolchain kernel/linux/setup-toolchain.sh
 # Host packages: git cmake make clang flex bison autoconf automake pkg-config python3, and libdispatch with
-# BlocksRuntime (Arch: libdispatch or swift; Debian/Ubuntu: libdispatch-dev libblocksruntime-dev).
+# BlocksRuntime (Arch: libdispatch or swift; Debian/Ubuntu: libdispatch-dev libblocksruntime-dev). python3 is for the
+# toolchain's own scripts (its iig) and UniXNU's driver, not for any script of this repository.
 # The upstream bootstrap clones branch heads; this script puts the commits of kernel/pins.sh there first.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

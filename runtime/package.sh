@@ -13,9 +13,8 @@
 #   scripts/               runtime/scripts/* (session helpers), when there are any
 #   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record
 #   NOTICE, LICENSE        licences; the APSL notice when a kernel is inside
-# Nothing of Apple's goes in: `oneios-tool package` (tools/oneios-tool/crates/oneios-package; it was package/pack.py
-# until 2026-11-13) refuses firmware names and containers, and any Mach-O that is
-# not our own source-built XNU (docs/releases.md).
+# Nothing of Apple's goes in: `oneios-tool package` (tools/oneios-tool/crates/oneios-package) refuses firmware names
+# and containers, and any Mach-O that is not our own source-built XNU (docs/releases.md).
 # Nothing that Android cannot load goes in either: runtime/package/elf-check.sh reads every dynamic ELF file of the
 # stage (the display helper's library, the dynamic helpers) and the package is refused (exit 3) when one needs a
 # library that is no API 30 stub of the NDK, or has an undefined symbol that none of its NEEDED libraries defines.

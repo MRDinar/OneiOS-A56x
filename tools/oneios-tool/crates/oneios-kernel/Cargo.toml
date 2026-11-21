@@ -31,5 +31,8 @@ toml = { version = "1", default-features = false, features = ["std", "parse", "s
 # final URL.
 flate2 = "1"
 roxmltree = "0.20"
+# display-capture: display.sock (SOCK_SEQPACKET, SCM_RIGHTS), the frame's memfd; host-cc: uname's machine.
+libc.workspace = true
+memmap2.workspace = true
 lzma-rs = "0.3"
 ureq = "2"

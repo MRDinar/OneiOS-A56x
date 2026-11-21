@@ -6,10 +6,7 @@
 #   tools/oneios-tool/tests/packagepy/compare-golden.sh    every case against golden/cases.txt: one line per case
 #                                                          (same | DIFFERENT), then the counts; exit 1 when one differs
 #   UPDATE=1 ...                                           write golden/cases.txt from this run instead
-#   IMPL=python ...                                        run pack.py instead of the command: only at a commit that
-#                                                          still has it (the golden was frozen with IMPL=python
-#                                                          UPDATE=1 at the last such commit, then checked with the
-#                                                          command)
+# (the golden was frozen from pack.py at the last commit that had it, then checked with the command)
 #
 # Every stage is made here: files of a few made-up bytes with the names and the first bytes the rules look at (a
 # Mach-O header of 32 bytes, an Image4 tag, a UDIF trailer's four letters). No Apple file is read.
@@ -20,19 +17,13 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
 TOOL=${ONEIOS_TOOL:-$ROOT/tools/oneios-tool/target/release/oneios-tool}
-IMPL=${IMPL:-rust}
 [ -x "$TOOL" ] || { echo "compare-golden: no $TOOL (cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)" >&2; exit 2; }
 W=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/packagepy.XXXXXX")" && pwd -P)
 [ "${KEEP:-0}" = 1 ] || trap 'chmod -R u+rwx "$W" 2>/dev/null; rm -rf "$W"' EXIT
 FOUND=$W/found.txt; : > "$FOUND"
 S=$W/s
 sha() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
-step() {
-  if [ "$IMPL" = python ]; then
-    [ -f "$ROOT/runtime/package/pack.py" ] || { echo "compare-golden: runtime/package/pack.py is not there (retired): IMPL=python cannot run" >&2; exit 2; }
-    python3 -I "$ROOT/runtime/package/pack.py" "$@"
-  else "$TOOL" package "$@"; fi
-}
+step() { "$TOOL" package "$@"; }
 # stage: an empty stage. put PATH [BYTES]: a file of the stage (printf's escapes). c NAME ARGS...: one case.
 stage() { chmod -R u+rwx "$S" 2>/dev/null; rm -rf "$S"; mkdir -p "$S"; }
 put() { mkdir -p "$(dirname "$S/$1")"; printf "${2:-x}" > "$S/$1"; }
@@ -154,7 +145,7 @@ ln "$S/NOTICE" "$S/NOTICE2"; printf 'NOTICE\nNOTICE2\n' > "$W/members"; c "archi
 sed 's/^\(stderr: package: refused: kernel\/xnu.macho: unreadable build record:\).*/\1 .../' "$FOUND" > "$FOUND.n" && mv "$FOUND.n" "$FOUND"
 if [ "${UPDATE:-0}" = 1 ]; then
   mkdir -p "$HERE/golden"; cp "$FOUND" "$HERE/golden/cases.txt"
-  echo "compare-golden: golden/cases.txt written from IMPL=$IMPL ($(grep -c '^== ' "$FOUND") cases)"; exit 0
+  echo "compare-golden: golden/cases.txt written ($(grep -c '^== ' "$FOUND") cases)"; exit 0
 fi
 block() { awk -v n="== $1" '$0 == n {on=1; print; next} /^== / {on=0} on' "$2"; }
 same=0; differ=0
@@ -163,5 +154,5 @@ while read -r name; do
   else differ=$((differ + 1)); echo "DIFFERENT  $name"; diff <(block "$name" "$HERE/golden/cases.txt") <(block "$name" "$FOUND") | head -8; fi
 done < <(grep '^== ' "$HERE/golden/cases.txt" | sed 's/^== //')
 [ "$(grep -c '^== ' "$FOUND")" = "$(grep -c '^== ' "$HERE/golden/cases.txt")" ] || { differ=$((differ + 1)); echo "DIFFERENT  the list of cases"; }
-echo "packagepy (IMPL=$IMPL): $same the same, $differ different"
+echo "packagepy: $same the same, $differ different"
 [ $differ = 0 ]

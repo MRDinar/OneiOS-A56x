@@ -51,15 +51,11 @@ rm -rf "$DEVICE"; mkdir -p "$DEVICE"
 git -C "$ROOT" archive HEAD kernel/device | tar -x -C "$DEVICE" --strip-components=2
 cp "$ROOT/kernel/device/configs/oneios_hosted_defconfig" "$DEVICE/configs/"
 sed_i "s#^\.\./\.\./\.\./\.\./external/#$ROOT/external/#" "$DEVICE/patches/xnu-12377/series"
-python3 -I - "$DEVICE/board.toml" "${HOSTED_SERIES:-$ROOT/kernel/patches/oneios-hosted/series}" <<'PY'
-import re, sys
-path, series = sys.argv[1:]
-text = open(path).read()
-new, n = re.subn(r'(patch_series\s*=\s*\[[^\]]*?)\]', lambda m: m.group(1).rstrip().rstrip(',') + ', "' + series + '"]', text, count=1)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml has no [kernel] patch_series')
-open(path, 'w').write(new)
-PY
+# oneios-tool (kernel/lib/stage.sh: built when missing or stale, on PATH for UniXNU's driver) makes this build's two
+# edits of the device copy: the hosted series last in board.toml's patch_series (`kernel hosted-series`), and below
+# the archives and the defconfig (`kernel hosted-archives`). Inline Python until 2026-11-21: the same text.
+stage_tool
+"$ONEIOS_TOOL" kernel hosted-series "$DEVICE/board.toml" "${HOSTED_SERIES:-$ROOT/kernel/patches/oneios-hosted/series}"
 # The board archives of this build only, each one more entry of board.toml's [kernel] archives, built between the two
 # kernel passes by `oneios-tool kernel gen NAME` (tools/oneios-tool/crates/oneios-kernel; the sources stay in
 # kernel/patches/oneios-hosted/NAME). In the order they are built:
@@ -90,36 +86,18 @@ PY
 #             build/native-legacy-display/libNativeLegacyDisplay.late.a and compile bsd_init's two calls into it.
 #             After the GPU's archive (the last): the scanout client uses that archive's transport.
 #
-# UniXNU's driver runs an archive entry that is not a script as a command, in the build tree: stage_tool
-# (kernel/lib/stage.sh) builds or finds oneios-tool and puts it on PATH under that name. The generators were Python
+# UniXNU's driver runs an archive entry that is not a script as a command, in the build tree: stage_tool (above;
+# kernel/lib/stage.sh) built or found oneios-tool and put it on PATH under that name. The generators were Python
 # scripts until 2026-11-13 (build-oneios-NAME.py, copied into the device repository); their output is frozen in
 # tools/oneios-tool/tests/kernelgen/golden.
-stage_tool
 ENTRIES=()
 for name in storage board aes keystore net hid audio gpu display; do
   ENTRIES+=("oneios-tool kernel gen $name")
 done
-python3 -I - "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" "${ENTRIES[@]}" <<'PY'
-import re, sys
-board, config, *entries = sys.argv[1:]
-# The archives: the committed list ends with the board's own entry; the hosted list takes its place.
-text = open(board).read()
-new, n = re.subn(r'^(\s*)"oneios-tool kernel gen board",?\s*\n(\s*\])',
-                 lambda m: ''.join(f'{m.group(1)}"{entry}",\n' for entry in entries) + m.group(2), text, count=1, flags=re.M)
-if n != 1:
-    raise SystemExit('build-hosted: board.toml archives do not end with the board\'s own entry')
-open(board, 'w').write(new)
-# The archives the kernel force-loads beside the committed ones, in this order (the link order).
-text = open(config).read()
-for name in ('gpu', 'aes', 'keystore', 'net', 'hid', 'audio'):
-    text, n = re.subn(r'^(CONFIG_XNU_EXTRA_LD_ARCHIVES="[^"\n]*)"',
-                      lambda m: m.group(1) + f' -Wl,-force_load,{{tree}}/build/oneios-{name}/liboneios{name}.a"', text, count=1, flags=re.M)
-    if n != 1:
-        raise SystemExit('build-hosted: the hosted defconfig has no CONFIG_XNU_EXTRA_LD_ARCHIVES')
-if 'CONFIG_XNU_NATIVE_LEGACY_DISPLAY' in text:
-    raise SystemExit('build-hosted: the hosted defconfig already sets CONFIG_XNU_NATIVE_LEGACY_DISPLAY')
-open(config, 'w').write(text.rstrip('\n') + '\nCONFIG_XNU_NATIVE_LEGACY_DISPLAY=y\n')
-PY
+# The archives: the committed list ends with the board's own entry; the hosted list takes its place. The defconfig:
+# the archives the kernel force-loads beside the committed ones, in the link order (gpu aes keystore net hid audio),
+# and CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y. Refused (nothing written) when either file is not as expected.
+"$ONEIOS_TOOL" kernel hosted-archives "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" "${ENTRIES[@]}"
 # ONEIOS_CRYPTO=original: a kernel with none of the source corecrypto in it. The source-mode bootstrap
 # (prng_random.c, UniXNU's) already starts the kernel collection's own com.apple.kec.corecrypto early; its fallback,
 # the source provider's corecrypto_kext_start, is the kernel's one reference into the source corecrypto archive
@@ -206,6 +184,7 @@ if [ "$CRYPTO" = original ]; then
     echo "build-hosted: llvm-nm or the corecrypto archive missing: the no-corecrypto check was not run" >&2
   fi
 else
+  # UniXNU's own seal script (the build tree's scripts/, from the pinned UniXNU): other projects' Python, run as it is.
   ( cd "$WORK/tree" && UNIXNU_XNU_ARCH=arm64e python3 scripts/seal-source-crypto-kernel.py "$SEALED" )
   POST_LINK+=(--post-link seal)
 fi

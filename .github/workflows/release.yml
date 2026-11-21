@@ -107,13 +107,12 @@ jobs:
           set -euo pipefail
           [ "$(git ls-files -s app | cut -d' ' -f1)" = 160000 ] || { echo "::error::app is not a submodule"; exit 1; }
           [ -z "$(ls -A app 2>/dev/null)" ] || { echo "::error::app/ has files: the runtime job must not check out the fork"; exit 1; }
-      - name: No firmware or large binaries in git
+      - name: No firmware, no large binaries and no Python in git
         run: .github/scripts/check-tracked-files.sh
       - name: Script syntax
         run: |
           set -euo pipefail
           git ls-files -z '*.sh' | xargs -0 -n1 bash -n
-          git ls-files -z '*.py' | xargs -0 python3 -m py_compile
           shellcheck -S error $(git ls-files 'kernel/*.sh' 'runtime/*.sh' '.github/*.sh')
       - name: NDK 28.2.13676358, the Rust target and oneios-tool
         run: .github/scripts/setup-build.sh

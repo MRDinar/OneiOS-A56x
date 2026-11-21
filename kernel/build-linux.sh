@@ -13,6 +13,8 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 [ "$(uname -s)" = Linux ] || { echo "build-linux: this is the Linux build; on a Mac use kernel/build-macos.sh" >&2; exit 1; }
+# python3: only for other projects' scripts the build runs as they are (UniXNU's ./unixnu driver and its seal script,
+# xnu-linux-toolchain's iig); this repository has no Python of its own.
 for t in clang git make cmake ninja python3 flex bison m4 dsymutil; do
   command -v $t >/dev/null || command -v llvm-$t >/dev/null || { echo "build-linux: missing host tool $t" >&2; exit 1; }
 done

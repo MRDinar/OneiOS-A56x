@@ -72,7 +72,9 @@ The driver stops before the prelink (`--skip-prelink`): no kernelcache is read.
 
 Host packages: `clang lld llvm git make cmake ninja python3 flex bison m4 autoconf automake pkg-config bubblewrap`,
 libdispatch with BlocksRuntime (Arch: `swift` or `libdispatch`; Debian: `libdispatch-dev libblocksruntime-dev`),
-`libbsd`, `libuuid`. No root, no SDK, no KDK.
+`libbsd`, `libuuid`, and Rust (`cargo`, for `tools/oneios-tool`). No root, no SDK, no KDK. `python3` is for other
+projects' scripts the build runs as they are (UniXNU's `./unixnu` driver and its scripts, xnu-linux-toolchain's
+`iig`, Droid-VM's `build-droidvm-gpu.py`); this repository has no Python of its own since 2026-11-21.
 
 - `linux/setup-toolchain.sh` builds [xnu-linux-toolchain](https://github.com/Allenwdk/xnu-linux-toolchain) (pin
   `909990e`) into `out/toolchain`: cctools-port ld64-956.6, mig, lzfse, unifdef, tcsh and the Python `iig`, all at

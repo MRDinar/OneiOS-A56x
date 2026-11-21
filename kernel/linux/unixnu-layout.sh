@@ -53,22 +53,9 @@ oneios_tool "$ROOT"
 "$ONEIOS_TOOL" kernel iig-fix "$XCT/bin/iig"
 chmod +x "$XCT/bin/iig"
 # Host headers and libraries of xnu's SETUP tools: cctools' <mach-o/*.h> and libmacho/libstuff, and UniXNU's
-# xnu-host-cc with its prefix header (taken from its setup-toolchain.py, so they stay in step with the pin).
+# xnu-host-cc with its prefix header and copyfile.h (`oneios-tool kernel host-cc`: the texts are read from its
+# setup-toolchain.py, never run, so they stay in step with the pin; an inline Python import of it until 2026-11-21).
 cp -R "$SRC/cctools/include/." "$CLT/include/"
 cp "$SRC/src/cctools-port/cctools/libmacho/.libs/libmacho.a" "$SRC/src/cctools-port/cctools/libstuff/.libs/libstuff.a" "$CLT/lib/"
-python3 -I - "$UNIXNU/scripts/linux/setup-toolchain.py" "$CLT" "$HOST_CLANG" <<'PY'
-import importlib.util, platform, sys
-from pathlib import Path
-spec = importlib.util.spec_from_file_location('setup_toolchain', sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-clt, clang = Path(sys.argv[2]), sys.argv[3]
-include = clt / 'include'
-(include / 'unixnu-host-prefix.h').write_text(module.HOST_PREFIX_H)
-(include / 'copyfile.h').write_text(module.COPYFILE_H)
-arch = '-D__arm64__ -fsigned-char' if platform.machine() == 'aarch64' else ''
-wrapper = clt / 'bin/xnu-host-cc'
-wrapper.write_text(module.HOST_CC.format(clang=clang, arch_defs=arch, include=include, lib=clt / 'lib'))
-wrapper.chmod(0o755)
-PY
+"$ONEIOS_TOOL" kernel host-cc "$UNIXNU/scripts/linux/setup-toolchain.py" "$CLT" "$HOST_CLANG"
 echo "unixnu-layout: $DST"

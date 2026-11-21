@@ -35,7 +35,7 @@
 # Capabilities: none but CAP_SETFCAP (--cap-drop ALL --cap-add SETFCAP). test-binder's `unshare -Urm` maps uid 0, which
 # the kernel allows only with CAP_SETFCAP; the binderfs mount in that namespace and LeakSanitizer's ptrace of its own
 # threads need nothing more (there is no seccomp filter). Nothing else of the Mac is mounted.
-# Env: IMAGE (oneios-hosttests:2, built from the Containerfile below when missing), NDK (host.mk's default),
+# Env: IMAGE (oneios-hosttests:3, built from the Containerfile below when missing), NDK (host.mk's default),
 #      JOBS (parallel make jobs and the container's CPUs; default: the Mac's CPUs), MEMORY (the container's, 8G),
 #      KERNEL (another kernel file for the container).
 set -uo pipefail
@@ -111,7 +111,7 @@ fi
 # ---- macOS: the Android parts here, the suite in an arm64 Linux container of Apple's `container` ----
 command -v container > /dev/null || { echo "host-tests: no container tool: brew install container && container system start" >&2; exit 1; }
 container system status > /dev/null 2>&1 || container system start --enable-kernel-install || exit 1
-IMAGE=${IMAGE:-oneios-hosttests:2}
+IMAGE=${IMAGE:-oneios-hosttests:3}
 MEMORY=${MEMORY:-8G}
 KVER=6.18.56
 KSHA=4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89
@@ -120,11 +120,12 @@ KERNEL=${KERNEL:-$KOUT/vmlinux-$KVER-oneios}
 if ! container image inspect "$IMAGE" > /dev/null 2>&1; then
   echo "host-tests: building $IMAGE"
   ctx=$(mktemp -d)
-  # the tests' tools, and what a kernel build needs (bc bison flex libelf-dev libssl-dev)
+  # the tests' tools, and what a kernel build needs (bc bison flex libelf-dev libssl-dev). No python3: the suite has
+  # no Python (image :2 had it, for runtime/package/test.sh's checks until 2026-11-21; :3 is the image without it).
   cat > "$ctx/Containerfile" <<'CONTAINERFILE'
 FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      build-essential clang lld make patch python3 zstd openjdk-17-jdk-headless util-linux mount file ca-certificates \
+      build-essential clang lld make patch zstd openjdk-17-jdk-headless util-linux mount file ca-certificates \
       bc bison flex libelf-dev libssl-dev xz-utils kmod cpio \
     && rm -rf /var/lib/apt/lists/*
 CONTAINERFILE

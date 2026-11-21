@@ -201,8 +201,8 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
 - **plan**: whether the run releases, the version (`0.0.0-ci` when not), what it builds. A release's version must be
   `N.N.N[-suffix]` and its commit on `main`.
 - **runtime**: what `ci.yml` and the old `release.yml` did, on every build. `app/` must be an empty submodule
-  folder (this job never checks the fork out); no firmware in git (`check-tracked-files.sh`); `bash -n`,
-  `py_compile`, `shellcheck -S error`; NDK 28.2.13676358, the `aarch64-linux-android` Rust target and
+  folder (this job never checks the fork out); no firmware and no Python in git (`check-tracked-files.sh`: a
+  tracked `*.py`, or an executable with a python shebang, fails it since 2026-11-21); `bash -n`, `shellcheck -S error`; NDK 28.2.13676358, the `aarch64-linux-android` Rust target and
   **oneios-tool** (`.github/scripts/setup-build.sh`: a current stable Rust, `cargo build --release --manifest-path
   tools/oneios-tool/Cargo.toml`, a few minutes); Droid-VM's virglrenderer (below); the host tests
   (`runtime/package/elf-check-test.sh`: the link rule of shared objects and the NEEDED and symbol check, above;

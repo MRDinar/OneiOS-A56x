@@ -22,24 +22,31 @@ P=$OUT_DIR/oneios-runtime-$V-arm64.tar.zst
 [ "$(wc -l < "$P.sha256" | tr -d ' ')" = 1 ] || fail ".sha256 is not one line"
 [ "$(zstd -dc "$P" | tar -t | head -1)" = runtime.json ] || fail "runtime.json is not the first member"
 mkdir "$T/x" && zstd -dc "$P" | tar -x -C "$T/x"
-python3 -I - "$T/x" $V <<'PY' || fail "manifest does not match the content"
-import hashlib, json, os, sys
-root, version = sys.argv[1:]
-m = json.load(open(os.path.join(root, 'runtime.json')))
-assert (m['format'], m['name'], m['version'], m['arch'], m['session_abi']) == (1, 'oneios-runtime', version, 'arm64', 1), m
-assert m['xnuhost'] == 'bin/xnuhost' and len(m['git']['commit']) == 40 and m['min_oneos_fork']
-listed = {f['path']: f for f in m['files']}
-on_disk = {os.path.relpath(os.path.join(d, n), root) for d, _, ns in os.walk(root) for n in ns} - {'runtime.json'}
-assert set(listed) == on_disk, (set(listed) ^ on_disk)
-for path, f in listed.items():
-    data = open(os.path.join(root, path), 'rb').read()
-    assert len(data) == f['size'] and hashlib.sha256(data).hexdigest() == f['sha256'], path
-    assert f['mode'] == ('0755' if os.access(os.path.join(root, path), os.X_OK) else '0644'), path
-assert listed['bin/xnuhost']['mode'] == '0755'
-# the phone checks the OneOS fork's Hardware checks screen runs (runtime/build.sh stages them)
-for tool in ('gpuctl', 'bridgectl', 'wifictl', 'brightctl', 'displayctl', 'camctl', 'oneios-camera', 'oneios-audio', 'oneios-display', 'oneios-encoder', 'encctl'):
-    assert listed['bin/' + tool]['mode'] == '0755', tool
-PY
+# The manifest (oneios-tool json: runtime/package.sh builds or finds the tool the same way, ONEIOS_TOOL=PATH another).
+. "$ROOT/scripts/lib/oneios-tool.sh"
+oneios_tool "$ROOT"
+J=("$ONEIOS_TOOL" json)
+M=$T/x/runtime.json
+manifest_check() {
+  local path size sha mode want on_disk listed
+  [ "$("${J[@]}" get "$M" format)/$("${J[@]}" get "$M" name)/$("${J[@]}" get "$M" version)/$("${J[@]}" get "$M" arch)/$("${J[@]}" get "$M" session_abi)" = "1/oneios-runtime/$V/arm64/1" ] || { echo "format, name, version, arch, session_abi: $(cat "$M")"; return 1; }
+  [ "$("${J[@]}" get "$M" xnuhost)" = bin/xnuhost ] || { echo "xnuhost"; return 1; }
+  [ "$("${J[@]}" get "$M" git.commit | tr -d '\n' | wc -c | tr -d ' ')" = 40 ] || { echo "git.commit"; return 1; }
+  [ -n "$("${J[@]}" get "$M" min_oneos_fork)" ] || { echo "min_oneos_fork"; return 1; }
+  listed=$("${J[@]}" lines "$M" files path | LC_ALL=C sort)
+  on_disk=$(cd "$T/x" && find . ! -type d ! -path ./runtime.json | sed 's#^\./##' | LC_ALL=C sort)
+  [ "$listed" = "$on_disk" ] || { echo "listed and on disk differ:"; diff <(echo "$listed") <(echo "$on_disk"); return 1; }
+  while IFS="$(printf '\t')" read -r path size sha mode; do
+    [ "$(wc -c < "$T/x/$path" | tr -d ' ')" = "$size" ] && [ "$("${SHA256[@]}" "$T/x/$path" | cut -d' ' -f1)" = "$sha" ] || { echo "size or sha256: $path"; return 1; }
+    if [ -x "$T/x/$path" ]; then want=0755; else want=0644; fi
+    [ "$mode" = "$want" ] || { echo "mode $mode, not $want: $path"; return 1; }
+  done < <("${J[@]}" lines "$M" files path size sha256 mode)
+  # the phone checks the OneOS fork's Hardware checks screen runs (runtime/build.sh stages them)
+  for tool in xnuhost gpuctl bridgectl wifictl brightctl displayctl camctl oneios-camera oneios-audio oneios-display oneios-encoder encctl; do
+    [ "$("${J[@]}" get "$M" "files[path=bin/$tool].mode")" = 0755 ] || { echo "bin/$tool is not 0755"; return 1; }
+  done
+}
+manifest_check || fail "manifest does not match the content"
 ok "package, checksum, member order, manifest"
 zstd -dc "$P" | tar -tv | awk '$1 !~ /^-/ {bad=1} END {exit bad}' || fail "a member is not a regular file"
 ok "regular files only"
@@ -78,21 +85,15 @@ refuse() { # NAME, then a command that fills $T/extra
   ok "refused: $name ($(grep -m1 'refused' "$T/log" | cut -c1-110))"
 }
 touch_file() { mkdir -p "$(dirname "$T/extra/$1")"; printf 'x' > "$T/extra/$1"; }
-macho() { # PATH FILETYPE: a minimal arm64 Mach-O header
+macho() { # PATH FILETYPE: a minimal arm64 Mach-O header (mach_header_64, little-endian), then 64 zero bytes
   mkdir -p "$(dirname "$T/extra/$1")"
-  python3 -I -c 'import struct,sys; open(sys.argv[1],"wb").write(struct.pack("<IIIIIIII",0xfeedfacf,0x0100000c,2,int(sys.argv[2]),0,0,0,0)+b"\0"*64)' "$T/extra/$1" "$2"
+  { printf '\317\372\355\376\014\000\000\001\002\000\000\000'; printf "\\$(printf %03o "$2")\\000\\000\\000"; dd if=/dev/zero bs=80 count=1 2> /dev/null; } > "$T/extra/$1"
 }
 record() { # PATH [KEY=JSON...]: a build record for the Mach-O, with fields replaced
-  python3 -I - "$T/extra/$1" "${@:2}" <<'PY'
-import hashlib, json, sys
-path = sys.argv[1]
-r = {'builder': 'oneios-kernel', 'build_id': 'test-1', 'sha256': hashlib.sha256(open(path, 'rb').read()).hexdigest(),
-     'prelinked': False, 'kernelcache_kexts_added': False, 'apple_binary_inputs': [], 'restricted_sources': [], 'xnu': 'xnu-0', 'profile': 'test'}
-for pair in sys.argv[2:]:
-    key, value = pair.split('=', 1)
-    r[key] = json.loads(value)
-json.dump(r, open(path + '.build.json', 'w'))
-PY
+  local r=$T/extra/$1.build.json pair
+  printf '{"builder": "oneios-kernel", "build_id": "test-1", "sha256": "%s", "prelinked": false, "kernelcache_kexts_added": false, "apple_binary_inputs": [], "restricted_sources": [], "xnu": "xnu-0", "profile": "test"}\n' \
+    "$("${SHA256[@]}" "$T/extra/$1" | cut -d' ' -f1)" > "$r"
+  for pair in "${@:2}"; do "${J[@]}" set "$r" "${pair%%=*}" "${pair#*=}" || fail "record: $pair"; done
 }
 refuse "kernelcache by name" touch_file firmware/kernelcache.release.iphone18
 refuse "a path the fork's unpacker rejects (comma)" touch_file notes,v2.txt
@@ -135,7 +136,8 @@ rm -rf "$T/extra" "$OUT_DIR" "$T/k"; mkdir -p "$T/k" "$T/extra/kernel"
 macho kernel/xnu.macho 2; record kernel/xnu.macho
 mv "$T/extra/kernel/xnu.macho" "$T/extra/kernel/xnu.macho.build.json" "$T/k/"
 KERNEL_DIR=$T/k "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package with a kernel"; }
-zstd -dc "$P" | tar -xO runtime.json | python3 -I -c 'import json,sys; m=json.load(sys.stdin); assert m["kernel"]["build_id"]=="test-1" and m["kernel"]["path"]=="kernel/xnu.macho", m' || fail "kernel not in the manifest"
+zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
+[ "$("${J[@]}" get "$T/m.json" kernel.build_id)/$("${J[@]}" get "$T/m.json" kernel.path)" = test-1/kernel/xnu.macho ] || fail "kernel not in the manifest"
 zstd -dc "$P" | tar -xO NOTICE | grep -q 'Apple Public Source License' || fail "no APSL notice"
 ok "own kernel accepted, APSL notice present"
 echo "all $pass tests passed"

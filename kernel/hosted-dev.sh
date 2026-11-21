@@ -28,16 +28,15 @@ patch)
   now=$(tree_now)
   git -C "$TREE" diff-tree -p --no-renames refs/hosted/base "$now" > "$PATCH.new"
   mv "$PATCH.new" "$PATCH"
-  # The build compares each patch's hash with its record and starts the tree over when one differs.
-  python3 -I - "$WORK/xnu-inputs.json" "$PATCH" <<'PY'
-import hashlib, json, sys
-stamp, patch = sys.argv[1:]
-record = json.load(open(stamp))
-for entry in record['patches']:
-    if entry['path'] == patch:
-        entry['sha256'] = hashlib.sha256(open(patch, 'rb').read()).hexdigest()
-open(stamp, 'w').write(json.dumps(record, indent=2) + '\n')
-PY
+  # The build compares each patch's hash with its record and starts the tree over when one differs
+  # (`oneios-tool json set` keeps the record's layout: Python's json.dumps indent 2, as the build writes it).
+  . "$ROOT/scripts/lib/oneios-tool.sh"
+  oneios_tool "$ROOT"
+  . "$ROOT/kernel/lib/host.sh"
+  # A new patch (not in series yet) is in no record: nothing to set, as before.
+  if "$ONEIOS_TOOL" json get "$WORK/xnu-inputs.json" "patches[path=$PATCH].path" > /dev/null 2>&1; then
+    "$ONEIOS_TOOL" json set "$WORK/xnu-inputs.json" "patches[path=$PATCH].sha256" "\"$(sha256 "$PATCH")\""
+  fi
   echo "hosted-dev: $PATCH ($(grep -c '^diff --git' "$PATCH") files, $(wc -l < "$PATCH") lines)" ;;
 build)
   HOSTED_OUT=${HOSTED_OUT:-lead} exec "$ROOT/kernel/build-hosted.sh" ;;

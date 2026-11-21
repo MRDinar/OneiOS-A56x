@@ -12,6 +12,10 @@
 //!   kernel series-check      the checks of the series and the profiles that need no sources (kernel/tests/host.sh)
 //!   kernel layout hid|net    the record of the original classes a board driver subclasses, from the kernelcache
 //!   kernel port-legacy-display   the display's record: Droid-VM's reviewed iPad layout carried over to this kernelcache
+//!   kernel hosted-series     board.toml of build-hosted.sh's device copy: the hosted series last in patch_series
+//!   kernel hosted-archives   that board.toml's archives and the hosted defconfig's force-loads (kernel/build-hosted.sh)
+//!   kernel host-cc           xnu-host-cc and its two headers from UniXNU's setup-toolchain.py (kernel/linux/unixnu-layout.sh)
+//!   kernel display-capture   a client of xnuhost's display.sock on a PC boot: what the screen shows, as PNGs
 //!
 //! Each was a Python script (kernel/patches/oneios-hosted/*/build-oneios-*.py, kernel/device/scripts/
 //! build-oneios-board.py, kernel/build-record.py, hid/layout.py, net/layout.py, display/port-legacy-display.py); the module of each has the script's name and its description,
@@ -29,10 +33,13 @@ pub mod build_oneios_keystore;
 pub mod build_oneios_net;
 pub mod build_record;
 pub mod class_record;
+pub mod display_capture;
 pub mod drivers_build;
 pub mod gen;
 pub mod hid_layout;
+pub mod host_cc;
 pub mod hosted_fixup;
+pub mod hosted_device;
 pub mod iig_fix;
 pub mod kdk_headers;
 pub mod layout;
@@ -101,6 +108,27 @@ pub enum Command {
     KdkHeaders(kdk_headers::Args),
     /// Fix a copy of xnu-linux-toolchain's iig for xnu-12377's .iig files, in place
     IigFix { path: PathBuf },
+    /// build-hosted.sh's device copy: SERIES as the last entry of board.toml's [kernel] patch_series, in place
+    HostedSeries { board: PathBuf, series: String },
+    /// build-hosted.sh's device copy: the ENTRYs in the board's archive entry's place, and the hosted defconfig's
+    /// force-loads and legacy display, in place
+    HostedArchives {
+        board: PathBuf,
+        defconfig: PathBuf,
+        #[arg(required = true)]
+        entries: Vec<String>,
+    },
+    /// xnu-host-cc and its two headers in CLT, from the text of UniXNU's scripts/linux/setup-toolchain.py
+    HostCc {
+        /// UniXNU's scripts/linux/setup-toolchain.py (read, not run)
+        setup_toolchain: PathBuf,
+        /// The toolchain's CommandLineTools/usr
+        clt: PathBuf,
+        /// The host's clang
+        clang: String,
+    },
+    /// Watch what xnuhost shows on a PC boot: a client of SESSION/display.sock (Linux; not beside oneios-display)
+    DisplayCapture(display_capture::Args),
     /// Checks of the kernel's series and profiles that need no sources (exit 1 with a line per failed check)
     SeriesCheck {
         /// This repository's checkout (default: the current directory)
@@ -152,6 +180,10 @@ pub fn main(command: Command) -> i32 {
         Command::HostedFixup { kernel } => hosted_fixup::main(&kernel).map(|()| 0),
         Command::KdkHeaders(args) => kdk_headers::main(args).map(|()| 0),
         Command::IigFix { path } => iig_fix::main(&path).map(|()| 0),
+        Command::HostedSeries { board, series } => hosted_device::series_main(&board, &series).map(|()| 0),
+        Command::HostedArchives { board, defconfig, entries } => hosted_device::archives_main(&board, &defconfig, &entries).map(|()| 0),
+        Command::HostCc { setup_toolchain, clt, clang } => host_cc::main(&setup_toolchain, &clt, &clang).map(|()| 0),
+        Command::DisplayCapture(args) => display_capture::main(args).map(|()| 0),
         Command::SeriesCheck { repo } => series_check::main(repo.as_deref()),
     };
     match result {

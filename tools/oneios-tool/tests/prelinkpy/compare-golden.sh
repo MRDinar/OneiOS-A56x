@@ -8,9 +8,7 @@
 #   tools/oneios-tool/tests/prelinkpy/compare-golden.sh PRELINK_OUT KERNEL    also the lead tools' cases, against
 #                                                                             golden/KERNEL-SHA256-PREFIX.txt
 #   UPDATE=1 ...     write the golden from this run instead
-#   IMPL=python ...  run the Python scripts instead of the commands: only at a commit that still has them (the
-#                    goldens were frozen with IMPL=python UPDATE=1 at the last such commit, then checked with the
-#                    commands)
+# (the goldens were frozen from the Python scripts at the last commit that had them, then checked with the commands)
 #
 #   PRELINK_OUT   the output folder of kernel/prelink/build.sh for KERNEL (out/kernel/24A446: its
 #                 work/match.map.json and kernel.kc.prelink.json are what the lead tools read)
@@ -31,11 +29,10 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
 TOOL=${ONEIOS_TOOL:-$ROOT/tools/oneios-tool/target/release/oneios-tool}
-IMPL=${IMPL:-rust}
 CACHE=${KERNELCACHE:-$ROOT/out/kernel-inputs/24A446/kernelcache.macho}
 XP=${XNUPRELINK:-$ROOT/external/XnuPrelink}
 [ -f "$XP/fixtures/fileset-24A446-symbols.json" ] || XP=$ROOT/external/Droid-VM-UniXNU/kits/XnuPrelink
-[ $# -eq 0 ] || [ $# -eq 2 ] || { sed -n '2,29p' "$0" >&2; exit 2; }
+[ $# -eq 0 ] || [ $# -eq 2 ] || { sed -n '2,27p' "$0" >&2; exit 2; }
 [ -x "$TOOL" ] || { echo "compare-golden: no $TOOL (cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)" >&2; exit 2; }
 [ -f "$CACHE" ] || { echo "compare-golden: no kernelcache at $CACHE (scripts/image/kernel-inputs.sh, or KERNELCACHE=FILE)" >&2; exit 2; }
 W=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/prelinkpy.XXXXXX")" && pwd -P)
@@ -45,24 +42,13 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 
 D=$ROOT/kernel/prelink
 GOLDEN=${GOLDEN:-$HERE/golden}
 
-# step NAME ARGS...: one tool, by the chosen implementation. REPO is the checkout the lead tools work in.
+# step NAME ARGS...: one tool. REPO is the checkout the lead tools work in.
 step() {
   local name=$1; shift
-  if [ "$IMPL" = python ]; then
-    local script
-    case "$name" in
-      lead-between) script=$REPO/kernel/prelink/lead/between.py ;;   # they find their checkout from their own place
-      lead-imports) script=$REPO/kernel/prelink/lead/imports.py ;;
-      *) script=$D/$name.py ;;
-    esac
-    [ -f "$script" ] || { echo "compare-golden: $script is not there (retired): IMPL=python cannot run" >&2; exit 2; }
-    python3 -I "$script" "$@"
-  else
-    case "$name" in
-      lead-*) "$TOOL" prelink "$name" "$@" --repo "$REPO" ;;
-      *) "$TOOL" prelink "$name" "$@" ;;
-    esac
-  fi
+  case "$name" in
+    lead-*) "$TOOL" prelink "$name" "$@" --repo "$REPO" ;;
+    *) "$TOOL" prelink "$name" "$@" ;;
+  esac
 }
 # a NAME COMMAND...: one case: stdout (as it is up to 12 lines, else its hash and line count; the disassembly's
 # lines counted apart), stderr, the status.
@@ -129,7 +115,6 @@ if [ $# -eq 2 ]; then
   cp "$FOUND" "$W/kernelcache.found"; : > "$FOUND"
   REPO=$W/repo; mkdir -p "$REPO/kernel/prelink/lead" "$REPO/out/kernel/current-hosted" "$REPO/out/kernel-inputs/24A446"
   cp "$D/reviewed-24A446-v54.json" "$REPO/kernel/prelink/"
-  for f in between.py imports.py; do [ ! -f "$D/lead/$f" ] || cp "$D/lead/$f" "$REPO/kernel/prelink/lead/"; done
   ln -s "$ROOT/external" "$REPO/external"; ln -s "$OUT" "$REPO/out/kernel/24A446"
   ln -s "$CACHE" "$REPO/out/kernel-inputs/24A446/kernelcache.macho"; ln -s "$KERNEL" "$REPO/out/kernel/current-hosted/xnu.macho"
   L=$REPO/kernel/prelink/lead/lead-reviewed.json
@@ -148,7 +133,7 @@ fi
 if [ "${UPDATE:-0}" = 1 ]; then
   mkdir -p "$GOLDEN"; cp "$FOUND" "$golden"
   [ ! -f "$W/kernelcache.found" ] || cp "$W/kernelcache.found" "$GOLDEN/kernelcache.txt"
-  echo "compare-golden: $golden written from IMPL=$IMPL ($(grep -c '^== ' "$FOUND") cases)"; exit 0
+  echo "compare-golden: $golden written ($(grep -c '^== ' "$FOUND") cases)"; exit 0
 fi
 block() { awk -v n="== $1" '$0 == n {on=1; print; next} /^== / {on=0} on' "$2"; }
 same=0; differ=0
@@ -163,5 +148,5 @@ compare() { # FOUND GOLDEN
 }
 if [ -f "$W/kernelcache.found" ]; then compare "$W/kernelcache.found" "$GOLDEN/kernelcache.txt"; fi
 compare "$FOUND" "$golden"
-echo "prelinkpy (IMPL=$IMPL): $same the same, $differ different"
+echo "prelinkpy: $same the same, $differ different"
 [ $differ = 0 ]

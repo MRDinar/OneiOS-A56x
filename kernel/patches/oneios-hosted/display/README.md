@@ -22,7 +22,7 @@ iPhone18,2 kernelcache and to xnuhost:
 | `OneiOSDisplay.cpp` | here | The kernel's two entries, the parent class under xnuhost's slide, the display's switches as defaults, the log lines, Droid-VM's default-surface factory |
 | `legacy-display-24A446-v54.json` | `oneios-tool kernel port-legacy-display` (was `port-legacy-display.py` here) | The original class in this kernelcache: 379 slots with their diversities, the fields and functions the backend uses |
 | `oneios-tool kernel gen display` | `tools/oneios-tool/crates/oneios-kernel/src/build_oneios_display.rs` (was `build-oneios-display.py` here) | The archive (below) |
-| `display-capture.py` | here | A client of `display.sock` for the PC: says when the picture changed and writes PNGs |
+| `oneios-tool kernel display-capture` | `tools/oneios-tool/crates/oneios-kernel/src/display_capture.rs` (was `display-capture.py` here, until 2026-11-21) | A client of `display.sock` for the PC: says when the picture changed and writes PNGs |
 
 The transport (`DroidVMVirtioGpu.cpp`) and the 3D half are in the GPU's archive (`../gpu`, `docs/gpu.md`).
 

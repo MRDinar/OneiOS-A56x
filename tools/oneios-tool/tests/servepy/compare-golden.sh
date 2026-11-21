@@ -6,8 +6,7 @@
 #
 #   tools/oneios-tool/tests/servepy/compare-golden.sh     every request against golden/cases.txt; exit 1 on a difference
 #   UPDATE=1 ...                                          write golden/cases.txt from this run instead
-#   IMPL=python ...                                       start rangeserve.py instead: only at a commit that still
-#                                                         has it (the golden was frozen with IMPL=python UPDATE=1)
+# (the golden was frozen from rangeserve.py at the last commit that had it, then checked with the command)
 #
 # The folder served is made here (made-up bytes); the server binds 127.0.0.1 on PORT (default 18787) and is ended
 # at the end. Needs curl. Not compared: the Server and Date headers and the body of a 404 (Python's own page).
@@ -15,7 +14,7 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
 TOOL=${ONEIOS_TOOL:-$ROOT/tools/oneios-tool/target/release/oneios-tool}
-IMPL=${IMPL:-rust}; PORT=${PORT:-18787}
+PORT=${PORT:-18787}
 [ -x "$TOOL" ] || { echo "compare-golden: no $TOOL (cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)" >&2; exit 2; }
 command -v curl >/dev/null || { echo "compare-golden: no curl" >&2; exit 2; }
 W=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/servepy.XXXXXX")" && pwd -P)
@@ -24,12 +23,7 @@ mkdir -p "$W/dir/sub"
 i=0; while [ $i -lt 3000 ]; do printf 'line %05d of a made-up file\n' $i; i=$((i + 1)); done > "$W/dir/set.tar.zst"
 printf 'abc  set.tar.zst\n' > "$W/dir/set.tar.zst.sha256"; : > "$W/dir/empty"; echo hidden > "$W/dir/.hidden"; echo inner > "$W/dir/sub/inner"
 echo "a name with a space" > "$W/dir/a b.txt"; ln -s set.tar.zst "$W/dir/link.zst"; ln -s sub "$W/dir/dirlink"
-if [ "$IMPL" = python ]; then
-  [ -f "$ROOT/scripts/serve/rangeserve.py" ] || { echo "compare-golden: scripts/serve/rangeserve.py is not there (retired): IMPL=python cannot run" >&2; exit 2; }
-  python3 -I "$ROOT/scripts/serve/rangeserve.py" "$W/dir" "$PORT" 2> "$W/server.log" &
-else
-  "$TOOL" rangeserve "$W/dir" "$PORT" 2> "$W/server.log" &
-fi
+"$TOOL" rangeserve "$W/dir" "$PORT" 2> "$W/server.log" &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null; [ "${KEEP:-0}" = 1 ] || rm -rf "$W"' EXIT
 n=0; until curl -s -o /dev/null "http://127.0.0.1:$PORT/empty" || [ $n -ge 50 ]; do n=$((n + 1)); sleep 0.1; done
@@ -81,7 +75,7 @@ q "404: the folder above" '/%2e%2e'
 kill $SERVER 2>/dev/null
 if [ "${UPDATE:-0}" = 1 ]; then
   mkdir -p "$HERE/golden"; cp "$FOUND" "$HERE/golden/cases.txt"
-  echo "compare-golden: golden/cases.txt written from IMPL=$IMPL ($(grep -c '^== ' "$FOUND") cases)"; exit 0
+  echo "compare-golden: golden/cases.txt written ($(grep -c '^== ' "$FOUND") cases)"; exit 0
 fi
 block() { awk -v n="== $1" '$0 == n {on=1; print; next} /^== / {on=0} on' "$2"; }
 same=0; differ=0
@@ -90,5 +84,5 @@ while read -r name; do
   else differ=$((differ + 1)); echo "DIFFERENT  $name"; diff <(block "$name" "$HERE/golden/cases.txt") <(block "$name" "$FOUND") | head -8; fi
 done < <(grep '^== ' "$HERE/golden/cases.txt" | sed 's/^== //')
 [ "$(grep -c '^== ' "$FOUND")" = "$(grep -c '^== ' "$HERE/golden/cases.txt")" ] || { differ=$((differ + 1)); echo "DIFFERENT  the list of cases"; }
-echo "servepy (IMPL=$IMPL): $same the same, $differ different"
+echo "servepy: $same the same, $differ different"
 [ $differ = 0 ]

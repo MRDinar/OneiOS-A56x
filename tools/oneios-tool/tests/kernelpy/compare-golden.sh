@@ -6,10 +6,8 @@
 #   tools/oneios-tool/tests/kernelpy/compare-golden.sh     every case against golden/cases.txt: one line per case
 #                                                          (same | DIFFERENT), then the counts; exit 1 when one differs
 #   UPDATE=1 ...                                           write golden/cases.txt from this run instead
-#   IMPL=python ...                                        run the Python scripts instead of the commands: only at a
-#                                                          commit that still has them (the goldens were frozen with
-#                                                          IMPL=python UPDATE=1 at the last such commit, then checked
-#                                                          with the commands)
+# The goldens were frozen from the Python scripts at the last commit that had them, then checked with the commands;
+# the scripts are gone (Python is retired from this repository), so this compares the commands with that output.
 #
 # Every input is made here or by `oneios-tool debug fixture` (crates/oneios-testkit): a made-up kernel, a made-up
 # iig (fixtures/iig.in), a copy of this checkout's series and profiles with one thing broken per case, a made-up
@@ -18,13 +16,12 @@
 # A case is: the command's stdout and stderr, its exit status, and the SHA-256 of what it wrote, with the scratch
 # folder's path taken out. Not covered here: `kdk-headers` on a real Kernel Debug Kit and over HTTP (hdiutil, macOS
 # only; on macOS its cases here are skipped, because hdiutil attaches no made-up image), and `drivers` in a real
-# kernel tree (compare-python.sh, before the retirement: README "kernelpy").
+# kernel tree (compared with the Python before the retirement: README "kernelpy").
 # Env: ONEIOS_TOOL (the binary), KEEP=1 (keep the scratch folder), TMPDIR.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
 TOOL=${ONEIOS_TOOL:-$ROOT/tools/oneios-tool/target/release/oneios-tool}
-IMPL=${IMPL:-rust}
 [ -x "$TOOL" ] || { echo "compare-golden: no $TOOL (cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)" >&2; exit 2; }
 # (the real path: on macOS /tmp is a link, and the steps print resolved paths)
 W=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/kernelpy.XXXXXX")" && pwd -P)
@@ -32,26 +29,13 @@ W=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/kernelpy.XXXXXX")" && pwd -P)
 FOUND=$W/found.txt; : > "$FOUND"
 sha() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
-# step NAME ARGS...: one of the five steps, by the chosen implementation. REPO is the checkout a step works in.
+# step NAME ARGS...: one of the five steps. REPO is the checkout a step works in.
 step() {
   local name=$1; shift
-  if [ "$IMPL" = python ]; then
-    local script
-    case "$name" in
-      hosted-fixup) script=$ROOT/kernel/hosted-fixup.py ;;
-      iig-fix) script=$ROOT/kernel/linux/iig-fix.py ;;
-      kdk-headers) script=$ROOT/kernel/kdk-headers.py ;;
-      series-check) script=$REPO/kernel/tests/series-check.py ;;   # it finds its checkout from its own place
-      drivers) script=$REPO/drivers/build.py ;;                    # and so does this one
-    esac
-    [ -f "$script" ] || { echo "compare-golden: $script is not there (retired): IMPL=python cannot run" >&2; exit 2; }
-    python3 -I "$script" "$@"
-  else
-    case "$name" in
-      series-check|drivers) "$TOOL" kernel "$name" "$@" --repo "$REPO" ;;
-      *) "$TOOL" kernel "$name" "$@" ;;
-    esac
-  fi
+  case "$name" in
+    series-check|drivers) "$TOOL" kernel "$name" "$@" --repo "$REPO" ;;
+    *) "$TOOL" kernel "$name" "$@" ;;
+  esac
 }
 # a NAME COMMAND...: one case: the command's stdout, then its stderr (the scratch folder and an archive's size taken
 # out; apart, because Python wrote its buffered stdout after the stderr of a failure), and its status.
@@ -83,7 +67,6 @@ fresh() {
   cp -R "$ROOT/kernel/device" "$REPO/kernel/device"; cp "$ROOT/kernel/pins.sh" "$REPO/kernel/"
   cp -R "$ROOT/kernel/unixnu/profiles/os/ios-27.0.1-24A446" "$REPO/kernel/unixnu/profiles/os/"
   cp "$ROOT/profiles/ios-27.0.1-iPhone18,2.toml" "$REPO/profiles/"
-  [ ! -f "$ROOT/kernel/tests/series-check.py" ] || cp "$ROOT/kernel/tests/series-check.py" "$REPO/kernel/tests/"
 }
 S=kernel/device/patches/xnu-12377
 edit() { sed "$1" "$REPO/$2" > "$W/edit.tmp" && mv "$W/edit.tmp" "$REPO/$2"; }
@@ -126,7 +109,6 @@ fi
 # compiler is a stand-in that writes what it was asked to compile, or fails for a source that says so
 REPO=$W/checkout; mkdir -p "$REPO/drivers" "$W/records/osfmk/DEVELOPMENT" "$W/records/bsd/DEVELOPMENT" "$W/records/iokit/DEVELOPMENT" "$W/tree"
 cp "$HERE/fixtures/drivers-sources.txt" "$REPO/drivers/sources.txt"
-[ ! -f "$ROOT/drivers/build.py" ] || cp "$ROOT/drivers/build.py" "$REPO/drivers/"
 grep -v '^#' "$REPO/drivers/sources.txt" | while read -r universe name; do
   [ -n "$name" ] || continue
   mkdir -p "$REPO/drivers/$(dirname "$name")"; echo "/* stand-in for $name ($universe) */" > "$REPO/drivers/$name"
@@ -156,7 +138,7 @@ REPO=$ROOT
 # ---- the result
 if [ "${UPDATE:-0}" = 1 ]; then
   mkdir -p "$HERE/golden"; cp "$FOUND" "$HERE/golden/cases.txt"
-  echo "compare-golden: golden/cases.txt written from IMPL=$IMPL ($(grep -c '^== ' "$FOUND") cases)"; exit 0
+  echo "compare-golden: golden/cases.txt written ($(grep -c '^== ' "$FOUND") cases)"; exit 0
 fi
 block() { awk -v n="== $1" '$0 == n {on=1; print; next} /^== / {on=0} on' "$2"; }
 same=0; differ=0
@@ -166,5 +148,5 @@ while read -r name; do
 done < <(grep '^== ' "$HERE/golden/cases.txt" | sed 's/^== //')
 # (a case that ran and is not in the golden counts too)
 [ "$(grep -c '^== ' "$FOUND")" = "$(grep -c '^== ' "$HERE/golden/cases.txt")" ] || { differ=$((differ + 1)); echo "DIFFERENT  the list of cases"; }
-echo "kernelpy (IMPL=$IMPL): $same the same, $differ different"
+echo "kernelpy: $same the same, $differ different"
 [ $differ = 0 ]

@@ -8,8 +8,8 @@ frame from the socket and shows it on a surfaceflinger layer above everything el
 **On the phone since the sessions of 2026-11-11** (backboardd's frames on the panel, `README.md` "Status"; the 2026-11-12 23:45 boot logged `1440x3120 buffer, stride 1472, format 5`). The colour handling of 2026-11-13 (dataspaces, half floats) has not run there; its first test is `displayctl test --format rgba16f` below.
 
 What the guest shows comes from its framebuffer driver (`kernel/patches/oneios-hosted/display/`): the kernel
-console until `backboardd`'s first frame, then iOS. On the PC, `display-capture.py` in that folder is a client of
-`display.sock` in this helper's place: it says when the picture changed and writes it as PNGs.
+console until `backboardd`'s first frame, then iOS. On the PC, `oneios-tool kernel display-capture` (tools/oneios-tool) is a
+client of `display.sock` in this helper's place: it says when the picture changed and writes it as PNGs.
 
 ```sh
 make               # build/android: oneios-display, liboneios-display.so, oneios-display.dex, displayctl

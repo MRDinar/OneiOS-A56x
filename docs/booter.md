@@ -1231,7 +1231,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   them) beside the eight 8-bit ones, and writes every flush in the frame's own format: half floats copied, 8-bit
   pixels (the boot console) decoded to linear light, and on a `bgrx` frame half floats encoded to sRGB and clamped.
   The log says `display: the frame's pixels: ...`. `rgba16f` needs `--display shm` (KMS takes 32-bit pixels), and
-  `display-capture.py` (PC) reads format 1 only. Host-tested (`make test`: the 2D and blob paths, a pixel split
+  `oneios-tool kernel display-capture` (PC) reads both (a half-float frame as sRGB, clamped). Host-tested (`make test`: the 2D and blob paths, a pixel split
   between two blob segments); not run on a phone. Whether iOS then renders half floats is the Metal plug-in's
   (`userland/metal/DisplayWide.inc`, built on the Mac).
 - **The mode is the one surfaceflinger runs the panel in.** The guest's frame (the boot framebuffer, the virtio-gpu
@@ -1339,7 +1339,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   The main loop's copy of the boot framebuffer ends at the guest's first frame of its own, as before (it used to end
   at ready, which was that frame).
   **PC boot (2026-11-15, `--display shm`, qemu-aarch64, kernel.kc bf31eb0d, the PC image set, a seeded Data store,
-  `display-capture.py` beside it):** `display-capture.py`'s first picture, at +0.5 s, is the empty memfd, black: what
+  `display-capture.py` (now `oneios-tool kernel display-capture`) beside it):** its first picture, at +0.5 s, is the empty memfd, black: what
   the display helper posted before this fix, a second after it connected, over the boot screen. Then 2742 flushes
   of the black boot framebuffer (not counted). backboardd opened the framebuffer at +534.7 s, swap 1 at +576.2 s,
   `guest ready: first frame (it has content)` at +576.3 s, and the capture's next picture (577.1 s after its hello,
