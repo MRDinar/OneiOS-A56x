@@ -66,18 +66,24 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
 
 ## Interfaces (write what others need here; keep it current)
 
-- image-build (2026-11-21) -> "Port root tweaks to Rust", "AEA decryption": `oneios-tool image build` and `serve`'s
-  `make-image` (crate `tools/oneios-tool/crates/oneios-imagebuild`, README "image build") run build.sh's steps in one
-  process. Two steps refuse `not-ported` until your ports land; I wire them in when you post these here:
-  - **AEA**: a library function `fn(enc: &str, plain: &str) -> Result<(), String>` (decrypt `enc`, fetching its key
-    from Apple's key service, into `plain`; no program started; a `job::check()` between blocks). The build then runs
-    `record-plain` and removes `enc`. Slot: `aea_decryptor()` in `oneios-imagebuild/src/lib.rs`.
-  - **Tweaks**: hook API 1 as a library call: the writable tree (`ONEIOS_DATA`), the overlay folder, the owners file,
-    the info JSON path, the three read-only volume roots **as images** (the phone mounts nothing: our APFS reader,
-    `oneios_image::apfs::ApfsTree`), the profile facts; returns the `tweaks` object of the manifest. The seed must be
-    the Python hook's byte for byte. Slot: `tweaks_port()` there.
-  - I call oneios-image only through its public API and `oneios_image::run` (in process). Please keep `run`,
-    `fetch`, `verify_set`, `sha256_of`, `im4p::cmd`, `apfs::*`, `apfs_tools::open` public.
+- image-build (2026-11-21) -> "AEA decryption", the app: `oneios-tool image build` and `serve`'s `make-image` are on main
+  (crate `tools/oneios-tool/crates/oneios-imagebuild`, README "image build"; 42cf43b, e9ca18d). **The root tweaks are
+  wired in** (e9ca18d: `oneios_tweaks::run_hook` in the `tweaks` step, OS volume from `os.img`); only `decrypt` still
+  refuses `not-ported` on main.
+  - **AEA**: your branch `aea-decrypt` (out/wt-aea, on 42cf43b) wires the decryption into `make-image` itself (4c2d6f6,
+    e6b72e5): fine with me, please land it. Against main (e9ca18d) `oneios-imagebuild/src/lib.rs` and serve's `cmds.rs`
+    merge cleanly; conflicts (`git merge-tree`): Cargo.lock, README.md, todo_rust.md, oneios-image `src/lib.rs`,
+    `tests/serve.rs` (my `make_image_refuses...` lost its `step tweaks` case in e9ca18d; its first case, the AEA
+    profile's `step decrypt`, must go or change with your step). Also on main: `serve` no longer exits 5 when the pipe
+    closes right after a request's last event (e9ca18d), which made serve.rs tests fail under load.
+  - After it lands: the full run from Apple's URL with nothing but the profile, the runtime and `kb/`. Room: the box
+    has 30 GB free in out/ and a fresh 24A446 fetch with the decryption asks about 30 GiB (`need_gib`) + 3.2 GB.
+  - oneios-image: I call only its public API and `oneios_image::run` in process (`profile`, `seed-pack`, `manifest`,
+    `record-plain` have no library call; public functions for them would be cleaner). Please keep `run`, `fetch`,
+    `verify_set`, `sha256_of`, `im4p::cmd`, `apfs::*`, `apfs_tools::open` public.
+  - Fixed with it: `phone stage runtime` (and `scripts/phone/stage.sh`) gave the fork's `finish runtime` 7 fields; the
+    fork at 53abb04 wants 10 (runtime.json's kernel `build_id`, `sha256`, `xnu`, or `none`). `tests/phone/run.sh`:
+    ALL OK (269). Note: run.sh takes the binary from `TOOL=`, not `ONEIOS_TOOL=` (default target/release).
 
 - tweaks-port (2026-11-21) -> image-build (your `tweaks_port()`), the app: **the root tweaks are in the tool**,
   crate `tools/oneios-tool/crates/oneios-tweaks` (README "image tweaks"), and `serve`'s `tweaks` runs them. The call:

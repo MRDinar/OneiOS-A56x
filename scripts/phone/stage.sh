@@ -47,7 +47,8 @@ print("$R begin runtime")
 for p, s, h, m in files:
     print(f"$R receive runtime {p} {s} {h} {m} < {tmp}/{p}")
 formats = ",".join(str(x) for x in j["image_formats"])
-print(f"$R finish runtime {len(files)} {j['version']} {j['session_abi']} {j['xnuhost']} {formats} {1 if j.get('placeholder') else 0}")
+k = j["kernel"] if isinstance(j.get("kernel"), dict) else {}
+print(f"$R finish runtime {len(files)} {j['version']} {j['session_abi']} {j['xnuhost']} {formats} {1 if j.get('placeholder') else 0} {k.get('build_id', 'none')} {k.get('sha256', 'none')} {k.get('xnu', 'none')}")
 print(f"cat {stage}/runtime.conf; rm -rf {tmp}")
 PY
 	;;

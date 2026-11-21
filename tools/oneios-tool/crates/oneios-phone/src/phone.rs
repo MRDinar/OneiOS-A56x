@@ -201,12 +201,18 @@ pub fn runtime_script(dir: &str, asis: bool) -> Result<String> {
         Some(serde_json::Value::String(s)) if s.is_empty() => 0,
         _ => 1,
     };
+    // The kernel's three facts (runtime.json's `kernel`: build id, SHA-256, xnu), or `none` for a runtime without
+    // one: the fork's `finish runtime` takes them since 53abb04 (ten fields) and records them in runtime.conf.
+    let (krb, ksha, kxnu) = match j.get("kernel") {
+        Some(k @ serde_json::Value::Object(_)) => (json_word(k, "build_id")?, json_word(k, "sha256")?, json_word(k, "xnu")?),
+        _ => ("none".to_string(), "none".to_string(), "none".to_string()),
+    };
     let mut script = format!("set -e; R=\"sh {STAGE}/bin/oneios_root.sh\"\n$R begin runtime\n");
     for (path, size, sha, mode) in &files {
         script += &format!("$R receive runtime {path} {size} {sha} {mode} < {TMP}/{path}\n");
     }
     script += &format!(
-        "$R finish runtime {} {} {} {} {formats} {placeholder}\n",
+        "$R finish runtime {} {} {} {} {formats} {placeholder} {krb} {ksha} {kxnu}\n",
         files.len(),
         json_word(&j, "version")?,
         json_word(&j, "session_abi")?,

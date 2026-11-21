@@ -1539,6 +1539,8 @@ on the phone**. `scripts/phone/stage.sh` stays until they have.
 ```sh
 oneios-tool phone status                      # root, the host phone, the installed app, the session, `oneios_root.sh status` (read only)
 oneios-tool phone stage runtime DIR           # an unpacked runtime package, through oneios_root.sh begin/receive/finish
+                                              #   (finish's ten fields: runtime.json's kernel build_id, sha256, xnu last,
+                                              #   or `none` each; the fork's script since 53abb04, fixed here 2026-11-21)
 oneios-tool phone stage runtime-asis DIR      # the same with each file's own size and SHA-256
 oneios-tool phone stage image DIR             # files of an image set at their paths; image.sha256 and image.ids follow
 oneios-tool phone status --watch [SECONDS]    # the same again every 5 s until Ctrl-C
