@@ -385,13 +385,12 @@ static bool driver_init(driver *d, uint64_t features, unsigned queues, uint64_t 
   return (R(d, 0x70) & 15) == 15;
 }
 
-// Posts a chain of parts (address, length, device-writable) and kicks. Returns the used length, or -1.
-static int64_t driver_send(driver *d, unsigned q, const uint64_t parts[][3], unsigned n, bool kick)
+// Posts a chain of parts (address, length, device-writable) from descriptor `first` and kicks. Returns the used
+// length, or -1.
+static int64_t driver_send_at(driver *d, unsigned q, unsigned first, const uint64_t parts[][3], unsigned n, bool kick)
 {
   struct vdesc *desc = xh_ram(d->queue_pa[q], 0x1000);
   uint16_t *avail = xh_ram(d->queue_pa[q] + 0x1000, 0x1000), *used = xh_ram(d->queue_pa[q] + 0x2000, 0x1000);
-  // Single buffers take one descriptor each; longer chains alternate between the queue's halves.
-  unsigned first = n == 1 ? d->avail[q] % 8u : (d->avail[q] % 2u) * 4;
   for (unsigned i = 0; i < n; i++)
     desc[first + i] = (struct vdesc){ parts[i][0], (uint32_t)parts[i][1], (uint16_t)((parts[i][2] ? 2 : 0) | (i + 1 < n ? 1 : 0)), (uint16_t)(first + i + 1) };
   avail[2 + d->avail[q] % 8] = (uint16_t)first;
@@ -402,6 +401,12 @@ static int64_t driver_send(driver *d, unsigned q, const uint64_t parts[][3], uns
   uint32_t length = ((uint32_t *)(used + 2))[2 * (d->used_seen[q] % 8) + 1];
   d->used_seen[q]++;
   return length;
+}
+
+// The same; single buffers take one descriptor each, longer chains alternate between the queue's halves (0 and 4).
+static int64_t driver_send(driver *d, unsigned q, const uint64_t parts[][3], unsigned n, bool kick)
+{
+  return driver_send_at(d, q, n == 1 ? d->avail[q] % 8u : (d->avail[q] % 2u) * 4, parts, n, kick);
 }
 
 static void test_virtio_blk(const char *dir)
@@ -691,12 +696,14 @@ static int fake_submit_fence(xh_gpu3d *b, uint32_t ctx, uint32_t ring, uint64_t 
   if (ring == 0) b->retire(b->dev, ctx, ring, fence);
   return 0;
 }
-static volatile int fake_blob_held;                  // the lanes' test: blob 0x5105 is made only once this is 0
+static volatile int fake_blob_held;                  // the lanes' test: blob 0x5105 (bit 0), 0x5106 (bit 1) made once their bit is 0
+static volatile uint64_t fake_blob_in;               // the blob held in the fake now (0: none)
 static int fake_create_blob(xh_gpu3d *b, uint32_t ctx, uint32_t res, uint32_t mem, uint32_t flags, uint64_t blob_id, uint64_t size, const xh_gpu_entry *entries, unsigned n)
 {
   (void)b;
   if (blob_id == 0xbad) return -EINVAL;
-  while (blob_id == 0x5105 && fake_blob_held) usleep(1000);
+  while ((blob_id == 0x5105 || blob_id == 0x5106) && (fake_blob_held & (1 << (blob_id - 0x5105)))) { fake_blob_in = blob_id; usleep(1000); }
+  fake_blob_in = 0;
   fake.blobs++;
   fake.blob_ctx = ctx; fake.blob_mem = mem; fake.blob_flags = flags; fake.blob_id = blob_id; fake.blob_size = size;
   fake.nentries = n;
@@ -1149,18 +1156,27 @@ static void test_virtio_gpu3d(void)
     CLEAR(); cmd[0] = 0x200; cmd[4] = 41; cmd[6] = 14; cmd[7] = 6; memcpy(&cmd[8], "xnu:backboardd", 14);
     CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
     uint32_t *ca = xh_ram(GUEST_PA + 0x33000, 4096), *ra = xh_ram(GUEST_PA + 0x34000, 4096), *cb = xh_ram(GUEST_PA + 0x35000, 4096), *rb = xh_ram(GUEST_PA + 0x36000, 4096);
-    memset(ca, 0, 4096); memset(cb, 0, 4096); memset(ra, 0xee, 64); memset(rb, 0xee, 64);
-    ca[0] = 0x10c; ca[4] = 40; ca[6] = 600; ca[7] = 2; ca[10] = 0x5105; ca[12] = 16384;              // the app's blob, held
+    uint32_t *cc = xh_ram(GUEST_PA + 0x37000, 4096), *rc = xh_ram(GUEST_PA + 0x38000, 4096);
+    memset(ca, 0, 4096); memset(cb, 0, 4096); memset(cc, 0, 4096); memset(ra, 0xee, 64); memset(rb, 0xee, 64); memset(rc, 0xee, 64);
+    ca[0] = 0x10c; ca[4] = 40; ca[6] = 600; ca[7] = 2; ca[10] = 0x5105; ca[12] = 16384;              // the app's blobs, held
+    memcpy(cc, ca, 14 * 4); cc[6] = 601; cc[10] = 0x5106;
     cb[0] = 0x207; cb[4] = 41; cb[6] = 8; memcpy(&cb[8], "frame!!!", 8);                            // the render server's SUBMIT_3D
     uint16_t *used0 = xh_ram(d.queue_pa[0] + 0x2000, 0x1000), seen = d.used_seen[0];
-    fake_blob_held = 1;
+    fake_blob_held = 3;
     driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x33000, 14 * 4, 0 }, { GUEST_PA + 0x34000, 24, 1 } }, 2, true);
-    driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x35000, 10 * 4, 0 }, { GUEST_PA + 0x36000, 24, 1 } }, 2, true);
-    for (int i = 0; i < 2000 && rb[0] != 0x1100; i++) usleep(1000);
-    CHECK(rb[0] == 0x1100 && ra[0] == 0xeeeeeeee);                                                  // the submit answered, the blob not yet
+    driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x37000, 14 * 4, 0 }, { GUEST_PA + 0x38000, 24, 1 } }, 2, true);
+    driver_send_at(&d, 0, 2, (const uint64_t[][3]){ { GUEST_PA + 0x35000, 10 * 4, 0 }, { GUEST_PA + 0x36000, 24, 1 } }, 2, true);   // three chains at once: 0, 4, 2
+    // The submit is answered while both blobs wait; or, when the slow lane took the first blob's turn before the submit
+    // came, right after that one blob and before the second (the fast lane's turn at the lock), however the threads run.
+    bool released = false;
+    for (int i = 0; i < 20000 && rb[0] != 0x1100; i++) {
+      if (!released && fake_blob_in == 0x5105 && xh_virtio_gpu_fast_waiting(dev)) { fake_blob_held = 2; released = true; }
+      usleep(1000);
+    }
+    CHECK(rb[0] == 0x1100 && rc[0] == 0xeeeeeeee && (released || ra[0] == 0xeeeeeeee));
     fake_blob_held = 0;
     xh_virtio_gpu_idle(dev);
-    CHECK(ra[0] == 0x1100 && (uint16_t)(used0[1] - seen) == 2);
+    CHECK(ra[0] == 0x1100 && rc[0] == 0x1100 && (uint16_t)(used0[1] - seen) == 3);
     d.used_seen[0] = used0[1];
     CLEAR(); cmd[0] = 0x201; cmd[4] = 40;
     CHECK(G(6, 24) == 1 && resp[0] == 0x1100);

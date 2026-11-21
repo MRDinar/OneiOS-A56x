@@ -384,11 +384,19 @@ destroys the contexts and blobs on the device's thread and drops what was held.
 `CTX_CREATE`), context creation and every command of no context (the display's flush, the 2D commands) at once; every
 other context's commands go, in their order, to a second thread, the slow lane. A mutex makes the two take turns at the
 device's tables and the renderer, so the render server's frame waits for at most one of an app's blobs (1-30 ms each on
-the phone, 64-102 per 10 s while Settings opened), not for all of them. A fast-lane command that names a resource the
+the phone, 64-102 per 10 s while Settings opened), not for all of them. Since 2026-11-21 that bound holds: the slow
+lane starts no blob while the queue's thread has commands to serve (`fast_waiting`). Before, the mutex was not fair:
+the slow lane's thread, unlocking and locking it again on its own CPU between blobs, mostly won it back, and between
+the lane choice of an app's next blob and the render server's submit it took the next blob's turn, so a frame could
+wait for several blobs. A fast-lane command that names a resource the
 slow lane has not made yet (an app's surface the render server attaches, the unref of an app's blob) waits for the slow
 lane's commands that came before it and runs again. A device reset drops the slow lane's chains of the old queue. Test:
-`test_virtio_gpu3d` (all its contexts are the slow lane's now, and one case holds an app's blob while the render
-server's submission is answered). Not yet run on the phone.
+`test_virtio_gpu3d` (all its contexts are the slow lane's now, and one case holds two of an app's blobs: the render
+server's submission is answered before both, or right after the first when the slow lane had started it, never after
+the second; 8 runs green with every core of the PC busy, where the old one-blob check failed 2 of 3: it asked for the
+submission before the one blob, which the slow lane may rightly have started first; the test's `driver_send_at` puts
+the third outstanding chain at descriptor 2, clear of the other two). The test cannot force the scheduling that showed the unfair mutex; that part of the fix is from the
+code. Not yet run on the phone.
 
 **Display.** `SET_SCANOUT_BLOB` makes a guest blob the scanout; `RESOURCE_FLUSH` copies its rows from the guest's
 pages to the display (a CPU copy per frame: crosvm's zero-copy import to the compositor is not done here).

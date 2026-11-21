@@ -116,9 +116,11 @@ typedef struct {
   // the 2D commands) at once, and hands every other context's commands, in their order, to the slow lane's thread.
   // An app that makes 100 blobs at its launch (1-30 ms each on the phone: udmabufs, KGSL's import and bind) then no
   // longer holds back the render server's next frame and the display's flush behind them. `cmd` makes the two take
-  // turns at the state above and the renderer (a frame waits for one blob at most, not for all of them).
+  // turns at the state above and the renderer (a frame waits for one blob at most, not for all of them): the slow lane
+  // starts no command while the fast lane has commands to serve (`fast_waiting`, under `pl`; fast_want).
   pthread_mutex_t cmd;
   pthread_cond_t slow_cv;
+  unsigned fast_waiting;
   struct slow_job *slow_head, **slow_tail;
   uint64_t slow_queued, slow_done;
 } gpu_state;
@@ -886,6 +888,19 @@ static bool slow_lane(gpu_state *g, const gpu_hdr *h)
   return false;
 }
 
+// The fast lane's claim on `cmd`: from its first command to the ring's end, dropped while it waits for the slow lane.
+// A mutex is not fair: the slow lane's thread, unlocking and locking it again on its own CPU between an app's blobs,
+// mostly won it back, and a frame of the render server waited for several blobs, not one. And between two commands
+// of the fast lane's thread (the lane choice of an app's next blob, then the render server's submit) the slow lane
+// took the next blob's turn.
+static void fast_want(gpu_state *g, bool on)
+{
+  pthread_mutex_lock(&g->pl);
+  if (on) g->fast_waiting++;
+  else if (!--g->fast_waiting) pthread_cond_broadcast(&g->slow_cv);
+  pthread_mutex_unlock(&g->pl);
+}
+
 static void *slow_worker(void *arg)
 {
   gpu_state *g = arg;
@@ -900,6 +915,9 @@ static void *slow_worker(void *arg)
     bool current = j->gen == g->gen;                 // a chain from before a reset is the old queue's: dropped
     xh_virtio_unlock(g->dev);
     if (current) {
+      pthread_mutex_lock(&g->pl);
+      while (g->fast_waiting) pthread_cond_wait(&g->slow_cv, &g->pl);     // the fast lane first
+      pthread_mutex_unlock(&g->pl);
       pthread_mutex_lock(&g->cmd);
       work(g, j->head, j->iov, j->n, j->gen, false);
       pthread_mutex_unlock(&g->cmd);
@@ -925,6 +943,7 @@ static void *worker(void *arg)
     bool reset = g->reset_requested;
     g->reset_requested = false;
     pthread_mutex_unlock(&g->pl);
+    fast_want(g, true);
     if (reset) { pthread_mutex_lock(&g->cmd); teardown(g); pthread_mutex_unlock(&g->cmd); }
     for (;;) {
       uint16_t head;
@@ -936,8 +955,8 @@ static void *worker(void *arg)
       gpu_hdr h;
       pthread_mutex_lock(&g->cmd);
       bool slow = peek_hdr(iov, n, &h) && slow_lane(g, &h);
-      pthread_mutex_unlock(&g->cmd);
       if (slow) {
+        pthread_mutex_unlock(&g->cmd);
         slow_job *j = malloc(sizeof *j + n * sizeof *iov);
         if (!j) continue;                            // the chain is lost; so is the guest's command
         *j = (slow_job){ .head = head, .n = n, .gen = gen };
@@ -953,18 +972,20 @@ static void *worker(void *arg)
       pthread_mutex_lock(&g->pl);
       uint64_t before = g->slow_queued;              // the slow lane's commands that came before this one
       pthread_mutex_unlock(&g->pl);
-      pthread_mutex_lock(&g->cmd);
       uint32_t status = work(g, head, iov, n, gen, true);
       pthread_mutex_unlock(&g->cmd);
       if (status == RESP_PENDING_RETRY) {
+        fast_want(g, false);                         // the slow lane's turn, up to this command's place
         pthread_mutex_lock(&g->pl);
         while (g->slow_done < before) pthread_cond_wait(&g->slow_cv, &g->pl);
         pthread_mutex_unlock(&g->pl);
+        fast_want(g, true);
         pthread_mutex_lock(&g->cmd);
         work(g, head, iov, n, gen, false);
         pthread_mutex_unlock(&g->cmd);
       }
     }
+    fast_want(g, false);
     pthread_mutex_lock(&g->pl);
     g->served = upto;
     pthread_cond_broadcast(&g->idle);
@@ -980,6 +1001,15 @@ void xh_virtio_gpu_idle(xh_virtio *dev)
   pthread_mutex_lock(&g->pl);
   while (g->served != g->kicks || g->slow_done != g->slow_queued) pthread_cond_wait(&g->idle, &g->pl);
   pthread_mutex_unlock(&g->pl);
+}
+
+unsigned xh_virtio_gpu_fast_waiting(xh_virtio *dev)
+{
+  gpu_state *g = xh_virtio_opaque(dev);
+  pthread_mutex_lock(&g->pl);
+  unsigned n = g->fast_waiting;
+  pthread_mutex_unlock(&g->pl);
+  return n;
 }
 
 static const xh_virtio_ops gpu_ops = { .device_id = 16, .features = 0, .nqueues = 2, .handle = gpu_handle,
