@@ -1887,6 +1887,16 @@ fn make_image_decrypts_the_aea_members_with_the_key_services_key() {
     assert!(Path::new(&b.stage("make/inputs/.aea-keys/K5=.pem")).is_file(), "the key, kept in the inputs' folder");
     assert!(!Path::new(&b.stage("make/inputs/001-00001-001.dmg.aea")).exists(), "the encrypted member is removed");
     nothing_left(&b, "make-aea");
+    // without the fetch: the encrypted members are inputs (the decrypt step makes the plain images), not missing ones
+    for (name, plain) in [("001-00001-001.dmg", noise(9000, 31)), ("001-00002-001.dmg", noise(70_000, 32))] {
+        std::fs::write(b.stage(&format!("make/inputs/{name}.aea")), seal(plain)).unwrap();
+        std::fs::remove_file(b.stage(&format!("make/inputs/{name}"))).unwrap();
+    }
+    begin_image(&b);
+    let last = s.ask(make_image(&b, "n", json!({"profile": profile, "tweaks": false, "kc": kc, "fetch": false})));
+    assert!(last["text"].as_str().unwrap_or("").contains("not a raw APFS image"), "{last}");
+    assert_eq!(std::fs::read(b.stage("make/inputs/001-00001-001.dmg")).unwrap(), noise(9000, 31));
+    nothing_left(&b, "make-aea, no fetch");
     let (status, rest, _) = s.end(true);
     assert_eq!(status, 0);
     clean_bye(&rest, "eof");

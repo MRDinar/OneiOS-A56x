@@ -1311,7 +1311,7 @@ this (crate `crates/oneios-imagebuild`). The steps, in build.sh's order and with
 
 | Step | What | build.sh's |
 |---|---|---|
-| `check` | the profile (`image profile --shell`, `--members`), the inputs that are there, the kernel's inputs, the set folder (absent or empty), and **one** room check for everything the build writes (`serve`: one `space` event). What the tool cannot do yet is refused here, before anything is fetched or written: `not-ported`, `step decrypt` (an AEA image to decrypt) | the tool and input checks at its top |
+| `check` | the profile (`image profile --shell`, `--members`), the inputs that are there, the kernel's inputs, the set folder (absent or empty), and **one** room check for everything the build writes (`serve`: one `space` event). What the tool cannot do is refused here, before anything is fetched or written (`not-ported`: nothing since 2026-11-21, the AEA decryption and the root tweaks are in it) | the tool and input checks at its top |
 | `directory`, `download` | `image fetch` of the profile's members into INDIR (resumable; a member that is there and whole is not fetched again; an AEA whose decrypted image `record-plain` recorded is not fetched) | `scripts/fetch/fetch.sh` before it |
 | `decrypt` | the AEA images into their plain images (`aea_decrypt` of oneios-image, since 2026-11-21: the key from Apple's key service kept in INDIR/.aea-keys/, the profile's `plain_sha256`, resumable; only this step's progress, no steps or room of its own), then `record-plain` and the `.aea` removed | `oneios-tool image aea-decrypt` in fetch.sh (`ipsw fw aea` before 2026-11-21) |
 | `place` | the images and trust files into the set: hard links where the folder allows, else copies (`put`); each volume must pass `apfs-info` | `put`, `apfs-info` |
@@ -1360,8 +1360,15 @@ Disk: the images are hard links (no room); the set's own new files are `data.see
 `kernel.kc` (96,206,848) and the hash lists; the work folder holds the copied tree (1.2 GB, removed after the seed),
 the seed, the decoded kernelcache (78 MB) and the prelink's work while they run. The room asked: 3.2 GB.
 **Not run on the phone.** The AEA decryption is `make-image`'s `decrypt` step since 2026-11-21 (the runs above had the
-PC's decrypted images; a whole set from the encrypted members: below). On a stand-in IPSW whose OS and SystemOS
-members are AEA archives, the key from a local key service: `make_image_decrypts_the_aea_members_with_the_key_services_key`.
+PC's decrypted images). **From the encrypted
+members** (2026-11-21, the Linux PC): `image build PROFILE --indir DIR --no-fetch --no-tweaks --kernel-kc
+out/kernel/24A446/kernel.kc`, DIR holding the two `.aea` members fetched from Apple that day and the other members:
+the key fetched from Apple's key service for the OS image and taken from `DIR/.aea-keys/` for SystemOS, both
+decrypted to their pins, `verify` ok, 51.6 s, peak memory 1,041 MiB (the APFS copy's, not the decryption's);
+`os.img`, `systemos.img`, `app.img` (their chunk hash lists) and the trust files the same as `out/image/24A446`'s.
+On a stand-in IPSW whose OS and SystemOS members are AEA archives: `make_image_decrypts_the_aea_members_with_the_key_services_key`
+(with the fetch, and with `fetch` false and only the encrypted members there, which `--no-fetch` refused as
+missing inputs before).
 
 Tests: `tests/serve.rs` `make_image_*` (four, on a stand-in IPSW served by `rangeserve`: every refusal and that it
 writes nothing; one `space` event and the refusal when the room is short; pause, resume and cancel through the

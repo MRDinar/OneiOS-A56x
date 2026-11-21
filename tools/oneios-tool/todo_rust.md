@@ -676,8 +676,9 @@ Open, in the order they matter for "make the iOS image on the phone":
 4. ~~**The IPSW's AEA images are decrypted by an outside program** on the PC.~~ Done 2026-11-21: `image
    aea-decrypt` and `serve`'s `aea` (README "aea-decrypt"): both images of 24A446 decrypt to their pinned SHA-256 on the
    PC, the key from Apple's key service, every byte authenticated, at most about 60 MB of RAM; `scripts/fetch/fetch.sh`
-   uses it. It is `make-image`'s `decrypt` step too (`aea_decryptor()`, `embedded`). Left: the run on the phone (the time, and
-   the heat of the 16.5 GB written), and one `image build` from Apple's URL with the real AEA images.
+   uses it. It is `make-image`'s `decrypt` step too (`aea_decryptor()`, `embedded`). A whole set from the
+   encrypted 24A446 members ran on the PC (`image build --no-fetch --no-tweaks`, 51.6 s; README "image build"). Left:
+   the run on the phone (the time, and the heat of the 16.5 GB written).
 5. **The prelink's time is in the steps' own serial work**, not in what was put into threads. CPU per step on the
    Linux PC: `match` 3.9 s, `emit` 2.0 s, `align` 1.2 s and 0.9 s, `audit` 1.2 s, `record` 0.9 s, `hosted` 0.7 s,
    `kclasses`, `structors`, `vtables` 0.4 to 0.5 s each. Each step reads and parses the two kernels again (they

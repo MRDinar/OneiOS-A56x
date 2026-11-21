@@ -468,8 +468,10 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     let indir = args.indir.trim_end_matches('/').to_string();
     let record = inputs_record(&indir);
     if !args.fetch {
-        // build.sh: one line that names every missing input
-        let absent: Vec<&str> = p.members.iter().filter(|m| m.out.is_some() && size_of(&format!("{indir}/{}", m.name)).is_none()).map(|m| m.name.as_str()).collect();
+        // build.sh: one line that names every missing input (an AEA member: its plain image, or the encrypted member,
+        // which the decrypt step makes the plain image of)
+        let encrypted_there = |m: &Member| m.aea && size_of(&format!("{indir}/{}", m.path.rsplit('/').next().unwrap_or(&m.path))).is_some();
+        let absent: Vec<&str> = p.members.iter().filter(|m| m.out.is_some() && size_of(&format!("{indir}/{}", m.name)).is_none() && !encrypted_there(m)).map(|m| m.name.as_str()).collect();
         if !absent.is_empty() {
             return Err(refused("not-found", format!("missing inputs in {indir}: {} (fetch them first)", absent.join(" "))));
         }
