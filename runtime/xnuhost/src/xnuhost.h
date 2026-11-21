@@ -13,6 +13,7 @@
 #include "gpu3d.h"
 #include "xnuhost/pixels.h"
 #include "bridges/hw_backend.h"     // br_hw_settings: hw-backend, hw-backend-<bridge>, hw-backend-fallback (runtime/bridges)
+#include "bridges/host_device.h"    // br_host_device: the host phone and its defaults (host-device=, runtime/bridges/hw/host_device.c)
 
 #define XH_MAX_CPUS 8
 
@@ -92,7 +93,7 @@ typedef struct {
   char  display[16];        // "shm", "drm", "none"
   unsigned display_format;  // display-format=: the frame's pixels, XH_PIXELS_BGRX8 ("bgrx", the default) or XH_PIXELS_RGBA16F
                             // ("rgba16f": half floats, wide colour and EDR kept; the guest is told oneios-display-wide=1)
-  char  gpu[8];             // "auto" (3D when the host has KGSL, udmabuf and a dma heap), "3d" (or do not start), "2d"
+  char  gpu[8];             // "" unset until xh_config_finish, then "auto" (3D when the host has KGSL, udmabuf and a dma heap), "3d" (or do not start), "2d"
   char  gpu_level[12];      // gpu-level=: "deadline" (default: the top level only for frames that would miss), "hold" (every
                             // render-server frame at the top, as before 2026-11-15), "governor" (never asked); docs/gpu.md 2.2b
   int   gpu_priority;       // gpu-priority=0: KGSL queue priorities as the guest asks, not by the owner's class (-1 unset: 1)
@@ -145,6 +146,14 @@ typedef struct {
   bool  bluetooth_given, haptics_given, wifi_given; // set here (xh_config_set): the command line wins over the image set's
   br_hw_settings hw;        // hw-backend=samsung|treble, hw-backend-<bridge>=..., hw-backend-fallback=0|1: which form of the
                             // phone's hardware each bridge uses (bridges/hw_backend.h; docs/hardware.md, "Hardware backends")
+  // The host phone (bridges/host_device.h; docs/hardware.md, "The host device"): host-device=auto|none|NAME ("" unset: auto),
+  // host-props=FILE (a getprop dump read instead of the property area), host-root=DIR (stands for / for the sysfs and proc
+  // fallbacks). xh_config_finish sets host (NULL: none or unknown) and host_line, the start's one line (main.c logs it).
+  char  host_device[32];
+  char  host_props[256];
+  char  host_root[256];
+  const br_host_device *host;
+  char  host_line[1536];
 } xh_config;
 
 void xh_config_defaults(xh_config *c);

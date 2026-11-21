@@ -546,7 +546,7 @@ build.
 
 ```sh
 T=tools/oneios-tool/target/release/oneios-tool        # cargo build --release --manifest-path tools/oneios-tool/Cargo.toml
-$T phone status                    # root, the installed app, the session, oneios_root.sh status (@@RESULT ready 1: a switch would start)
+$T phone status                    # root, the host phone (host: NAME ... defaults: ...), the installed app, the session, oneios_root.sh status (@@RESULT ready 1: a switch would start)
 $T phone stage runtime DIR         # an unpacked runtime package        (scripts/phone/stage.sh runtime DIR)
 $T phone stage image DIR           # kernel.kc, kernel.kc.hashes, manifest.json, overlay/... at their paths
 $T phone sums                      # the staged files' sha256
@@ -712,9 +712,15 @@ One UI's. How the screen runs them and what it tests: the fork's `docs/oneios.md
 
 Or by hand, from `STAGE/bin` pushed to `/data/local/tmp`, as root: `gpuctl` (or one step of it:
 `gpuctl nodes|routes|probe|submit|large`, [gpu.md](gpu.md) section 4), `displayctl test`,
-`bridgectl cpu|haptic|haptic-pattern|bt|audio`, `wifictl status|scan` (read only; `join NAME PASSPHRASE` takes the Wi-Fi from One UI while it runs), `brightctl info|levels|als`, `batteryctl [watch S]`, `thermalctl [watch -i S -n N | top -i S]`
+`bridgectl host|cpu|haptic|haptic-pattern|bt|audio`, `wifictl status|scan` (read only; `join NAME PASSPHRASE` takes the Wi-Fi from One UI while it runs), `brightctl info|levels|als`, `batteryctl [watch S]`, `thermalctl [watch -i S -n N | top -i S]`
 (read only; `watch` logs temperatures, clocks, battery current and the session's CPU, `top` xnuhost's busiest threads), `camctl --backend ndk list|capture`.
 Each tool's README has its exact commands and what a pass looks like. **None of this has run on the phone yet.**
+
+**Which phone xnuhost thinks it is on:** `oneios-tool phone status` prints `host: NAME (...), matched by
+ro.product.model=...; defaults: ...` (or `host: unknown phone (...)`), and `bridgectl host` on the phone the same with the
+whole table; xnuhost's log has the line at its start. On another phone the defaults of its row in
+`runtime/bridges/hw/host_device.c` apply ([hardware.md](hardware.md) 7h); `--host-device none` (or
+`ONEIOS_HOST_DEVICE=none` for the ctl tools) runs today's defaults, `--host-device NAME` forces a row.
 
 **Galaxy S25 probe:** `tools/probe/s25-probe.sh` is a read-only script for the phone (root, One UI running): CPU,
 kernel config, KGSL, panel, touch, haptics, battery, Bluetooth HAL kind, SELinux. `adb push

@@ -54,7 +54,13 @@ SH
   printf '#!/bin/sh\nexec "$@"\n' > "$P/data/adb/ksu/bin/busybox"
   printf '#!/bin/sh\nexit 0\n' > "$P/.fake/bin/chown"
   printf '#!/bin/sh\n[ "$1" = package ] && cat "$FAKE_PHONE/.fake/package.txt" 2>/dev/null\nexit 0\n' > "$P/.fake/bin/dumpsys"
-  printf '#!/bin/sh\ncase "$1" in ro.product.model) echo SM-S928B ;; esac\n' > "$P/.fake/bin/getprop"
+  # getprop: the S24 Ultra's model, or with .fake/props (a getprop dump, "[key]: [value]" lines) that phone's properties
+  cat > "$P/.fake/bin/getprop" <<'SH'
+#!/bin/sh
+f=$FAKE_PHONE/.fake/props
+if [ -f "$f" ]; then sed -n "s/^\[$1\]: \[\(.*\)\]\$/\1/p" "$f"; exit 0; fi
+case "$1" in ro.product.model) echo SM-S928B ;; esac
+SH
   printf '#!/bin/sh\n[ "$1" = path ] && [ -f "$FAKE_PHONE/data/app/~~fake==/$2-1==/base.apk" ] && echo "package:/data/app/~~fake==/$2-1==/base.apk"\nexit 0\n' > "$P/.fake/bin/pm"
   # su: `su -c CMD`. As on the phone, the command runs as root: `id -u` there says 0.
   cat > "$P/.fake/bin/su" <<'SU'

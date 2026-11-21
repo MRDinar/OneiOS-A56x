@@ -1722,6 +1722,154 @@ static void test_queue_join(void)
 static bool fake_can;
 static bool fake_can_lock(void) { return fake_can; }
 
+// The host phone (bridges/host_device.h, config.c host_device_layer; docs/hardware.md "The host device"): each known
+// phone's defaults under the command line and the image set, an unknown phone, a forced one, detection off; and the
+// proof that the S24 Ultra's entry and an unknown phone finish to exactly the config of detection off (today's).
+static void host_props(const char *dir, const char *name, const char *model, const char *soc, char *out, size_t size)
+{
+  snprintf(out, size, "%s/%s.props", dir, name);
+  FILE *f = fopen(out, "w");
+  if (f) { fprintf(f, "[ro.product.model]: [%s]\n[ro.soc.model]: [%s]\n[ro.soc.manufacturer]: [QTI]\n", model, soc); fclose(f); }
+}
+
+// The command line of the OneOS fork's session plus the host settings, finished; the config's host fields cleared after
+// (so two configs compare whole). 0, or -1 when xh_config_args or xh_config_finish refused.
+static int host_finish(xh_config *c, const char *image, const char *meminfo, const char *root, const char *props, const char *device,
+                       const char *extra)
+{
+  char ram_meminfo[400], host_root[400], host_props[400], host_device[64];
+  snprintf(ram_meminfo, sizeof ram_meminfo, "ram-meminfo=%s", meminfo);
+  snprintf(host_root, sizeof host_root, "host-root=%s", root);
+  snprintf(host_props, sizeof host_props, "host-props=%s", props ? props : "");
+  snprintf(host_device, sizeof host_device, "host-device=%s", device ? device : "auto");
+  char *argv[16] = { "xnuhost", "--image", (char *)image, "--ram", "4G", "--set", ram_meminfo, "--set", host_root };
+  int argc = 9;
+  if (props) { argv[argc++] = "--set"; argv[argc++] = host_props; }
+  if (device) { argv[argc++] = "--set"; argv[argc++] = host_device; }
+  if (extra) { argv[argc++] = "--set"; argv[argc++] = (char *)extra; }
+  xh_config_defaults(c);
+  return xh_config_args(c, argc, argv) || xh_config_finish(c) ? -1 : 0;
+}
+
+static void host_clear(xh_config *c)
+{
+  memset(c->host_device, 0, sizeof c->host_device);
+  memset(c->host_props, 0, sizeof c->host_props);
+  memset(c->host_root, 0, sizeof c->host_root);
+  memset(c->host_line, 0, sizeof c->host_line);
+  c->host = NULL;
+}
+
+static void test_host_device(const char *dir)
+{
+  char image[300], root[300], meminfo[300], path[400], props[400];
+  snprintf(image, sizeof image, "%s/host-image", dir);
+  snprintf(root, sizeof root, "%s/host-root", dir);
+  mkdir(image, 0700);
+  mkdir(root, 0700);
+  static const char *const files[] = { "kernel.kc", "os.img", "systemos.img", "data.seed" };
+  for (unsigned i = 0; i < 4; i++) { snprintf(path, sizeof path, "%s/%s", image, files[i]); FILE *f = fopen(path, "w"); fputs("x", f); fclose(f); }
+  snprintf(meminfo, sizeof meminfo, "%s/host-meminfo", dir);       // a fixed MemAvailable: two finishes agree
+  FILE *m = fopen(meminfo, "w");
+  if (m) { fputs("MemTotal:       11746000 kB\nMemAvailable:    9000000 kB\n", m); fclose(m); }
+
+  // Today's defaults: detection off.
+  xh_config off, c;
+  CHECK(host_finish(&off, image, meminfo, root, NULL, "none", NULL) == 0 && !off.host &&
+        !strcmp(off.host_line, "host: detection off (host-device=none): today's defaults"));
+  CHECK(!strcmp(off.gpu, "auto") && !off.hw.all && off.hw.fallback < 0);
+  for (unsigned i = 0; i < BR_HW_NBRIDGE; i++) CHECK(!off.hw.one[i]);
+  host_clear(&off);
+
+  // The S24 Ultra (the home device) and an unknown phone: byte for byte today's config.
+  host_props(dir, "s24u", "SM-S928B", "SM8650", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s24-ultra") &&
+        strstr(c.host_line, "host: galaxy-s24-ultra (Galaxy S24 Ultra (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; read: ") &&
+        strstr(c.host_line, "; defaults: none (today's)"));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  CHECK(host_finish(&c, image, meminfo, root, props, "galaxy-s24-ultra", NULL) == 0 && strstr(c.host_line, "host-device=galaxy-s24-ultra (forced)"));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  host_props(dir, "pixel", "Pixel 11 Pro", "Tensor G5", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && !c.host &&
+        strstr(c.host_line, "host: unknown phone (read: ro.product.model=Pixel 11 Pro ro.product.device=(none) ") &&
+        strstr(c.host_line, "ro.soc.model=Tensor G5 ro.soc.manufacturer=QTI): today's defaults (host-device=NAME forces one of galaxy-s24-ultra, "));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  // No property area at all (this PC: no bionic, no file) is an unknown phone too.
+  CHECK(host_finish(&c, image, meminfo, root, NULL, NULL, NULL) == 0 && !c.host && strstr(c.host_line, "unknown phone (read: no property area)"));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  // The S25 Ultra and the S25: no defaults of their own (docs/s25.md: everything else is [U]).
+  host_props(dir, "s25u", "SM-S938B", "SM8750", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s25-ultra") && strstr(c.host_line, "defaults: none (today's)"));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  host_props(dir, "s25", "SM-S931B", "SM8750", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s25"));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  // The S26 Ultra: its brightness cap is an environment default (main.c sets it); the config is today's.
+  unsetenv("ONEIOS_BRIGHT_MAX");
+  host_props(dir, "s26u", "SM-S948B", "SM8850", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s26-ultra") &&
+        strstr(c.host_line, "matched by ro.product.model=SM-S948B") && strstr(c.host_line, "; defaults: ONEIOS_BRIGHT_MAX=2300") && !getenv("ONEIOS_BRIGHT_MAX"));
+  host_clear(&c);
+  CHECK(!memcmp(&c, &off, sizeof c));
+  // The A56: gpu=2d, under the command line and the image set.
+  host_props(dir, "a56", "SM-A566E", "s5e8855", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-a56") && !strcmp(c.gpu, "2d") &&
+        strstr(c.host_line, "; defaults: gpu=2d") && !strstr(c.host_line, "not taken"));
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, "gpu=auto") == 0 && !strcmp(c.gpu, "auto") &&
+        strstr(c.host_line, "gpu=2d not taken (the command line or the image set gives it)"));
+  CHECK(host_finish(&c, image, meminfo, root, props, "none", NULL) == 0 && !strcmp(c.gpu, "auto"));
+  CHECK(host_finish(&c, image, meminfo, root, props, "NONE", NULL) == 0 && !c.host && !strcmp(c.gpu, "auto"));
+  snprintf(path, sizeof path, "%s/xnuhost.conf", image);
+  FILE *f = fopen(path, "w");
+  if (f) { fputs("gpu=3d\n", f); fclose(f); }
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && !strcmp(c.gpu, "3d") && strstr(c.host_line, "gpu=2d not taken"));
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, "gpu=2d") == 0 && !strcmp(c.gpu, "2d"));   // the command line over the image set
+  if ((f = fopen(path, "w"))) { fputs("host-device=none\n", f); fclose(f); }                        // the image set may turn it off
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && !c.host && !strcmp(c.gpu, "auto"));
+  CHECK(host_finish(&c, image, meminfo, root, props, "auto", NULL) == 0 && c.host == br_host_find("galaxy-a56"));   // and the command line on
+  unlink(path);
+  // Forced: a name wins over the phone's properties; a name that is not in the table is refused, and so is a property
+  // file that cannot be read.
+  host_props(dir, "s24u", "SM-S928B", "SM8650", props, sizeof props);
+  CHECK(host_finish(&c, image, meminfo, root, props, "galaxy-a56", NULL) == 0 && c.host == br_host_find("galaxy-a56") && !strcmp(c.gpu, "2d") &&
+        strstr(c.host_line, "host-device=galaxy-a56 (forced); read: ro.product.model=SM-S928B"));
+  CHECK(host_finish(&c, image, meminfo, root, props, "pixel-11", NULL) != 0);
+  xh_config_defaults(&c);
+  CHECK(xh_config_set(&c, "host-device", "pixel-11") != 0 && xh_config_set(&c, "host-device", "galaxy-s26-ultra") == 0 &&
+        xh_config_set(&c, "host-device", "auto") == 0 && xh_config_set(&c, "host-device", "none") == 0);
+  snprintf(path, sizeof path, "%s/no-such.props", dir);
+  CHECK(host_finish(&c, image, meminfo, root, path, NULL, NULL) != 0);
+  // Every entry of the table: forced, it finishes, and each of its xnuhost defaults is what the finished config holds.
+  unsigned n = 0;
+  const br_host_device *t = br_host_table(&n);
+  for (unsigned i = 0; i < n; i++) {
+    CHECK(host_finish(&c, image, meminfo, root, NULL, t[i].name, NULL) == 0 && c.host == &t[i]);
+    for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].config[k]; k++) {
+      const char *eq = strchr(t[i].config[k], '=');
+      char key[64];
+      snprintf(key, sizeof key, "%.*s", eq ? (int)(eq - t[i].config[k]) : 0, t[i].config[k]);
+      xh_config want;
+      xh_config_defaults(&want);
+      CHECK(eq && xh_config_set(&want, key, eq + 1) == 0);
+      if (!strcmp(key, "gpu")) CHECK(!strcmp(c.gpu, want.gpu));
+      else {
+        br_hw_settings_merge(&want.hw, &off.hw);
+        CHECK(!memcmp(&c.hw, &want.hw, sizeof c.hw));
+      }
+    }
+  }
+  // The selftest leaves no gpu unset.
+  char *selftest[] = { "xnuhost", "--selftest" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 2, selftest) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.gpu, "auto") && !*c.host_line);
+}
+
 static void test_config(const char *dir)
 {
   xh_config c;
@@ -2769,6 +2917,7 @@ int main(void)
   test_usb(dir);
   if (!freopen("/dev/null", "w", stderr)) failures++;   // the refusals below print their reasons
   test_config(dir);
+  test_host_device(dir);
   char command[300];
   snprintf(command, sizeof command, "rm -rf %s", dir);
   if (system(command)) failures++;

@@ -1238,6 +1238,11 @@ int main(int argc, char **argv)
   if (xh_config_args(&config, argc, argv) || xh_config_finish(&config)) return EXIT_SETUP;
   xh_log_open(NULL, config.log_level);
   LOGI("xnuhost: session ABI %d, mode %s, pid %d", config.session_abi, config.mode, getpid());
+  // The host phone (bridges/host_device.h, config.c): what was found, from which property, and each default it changed.
+  // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
+  // variable the session already set wins.
+  if (*config.host_line) LOGI("%s", config.host_line);
+  br_host_env_apply(config.host);
   host_facts();
   if (!config.selftest) ram_choice_log();
   if (!config.selftest) usb_tick(true, "");

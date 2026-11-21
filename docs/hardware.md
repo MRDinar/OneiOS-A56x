@@ -29,6 +29,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
 | Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
+| Host device (2026-11-21) | - | `runtime/bridges/hw/host_device.c`: which known phone xnuhost runs on (properties, soc0, the device tree) and its defaults from one table; `host-device=auto\|none\|NAME` (section 7h) | host-tested; not run on a phone |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.c` (evdev, no grab) and `virtio_input.c`; `input_script.c` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
 | S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); never run on the phone (section 7f) |
 
@@ -2608,6 +2609,8 @@ a second, vendor-neutral backend, `treble`, sits beside them so that the image c
 | `hw-backend-<bridge>` | `samsung`, `treble` | one bridge, over `hw-backend`: `backlight`, `battery`, `thermal`, `haptics`, `touch`, `keys`, `audio`, `camera`, `wifi`, `bluetooth`, `display` (for tests, or a phone whose one part is Samsung's) |
 | `hw-backend-fallback` | `0` (default), `1` | a treble bridge whose interface is missing uses its samsung form (1) or stays off (0) |
 
+Under them since 2026-11-21: the host phone's table entry (section 7h) may hold `hw-backend*` defaults; none
+does yet, so every known phone is samsung everywhere unless a setting says otherwise.
 In xnuhost.conf (the image set's or the overlay's), with `--set KEY=VALUE`, or as `--hw-backend treble`,
 `--hw-backend-battery treble`; the command line wins per setting. The ctl tools (`brightctl`, `batteryctl`,
 `thermalctl`, `bridgectl`) read `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_<BRIDGE>` and `ONEIOS_HW_FALLBACK`.
@@ -2928,6 +2931,71 @@ kernel without it is unchanged.
 - `oneios-tool ioslog`: **no** `CMPhotoCompressionSessionAddImage ... (codec: 'hvc1')` /
   `kCMBaseObjectError_UnsupportedOperation`; WidgetRenderer **without** `Content load failed`; `oneios-gpu-pixels:
   WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`).
+
+## 7h. The host device (host-device, 2026-11-21)
+
+One tree for every known host phone: xnuhost finds which phone it runs on at its start and takes that phone's
+defaults from one compiled-in table, `runtime/bridges/hw/host_device.c` (API `runtime/bridges/include/bridges/host_device.h`).
+The table is the source of truth: the one host profile file, `profiles/host-galaxy-s25-ultra-sm8750.toml`, is a
+record for the port docs and is read by no code. The bridges' ctl tools (`brightctl`, `batteryctl`, `thermalctl`,
+`bridgectl`) and `oneios-tool phone status` use the same table.
+
+**What is read** (once, read only): the properties `ro.product.model`, `ro.product.device`, `ro.board.platform`,
+`ro.soc.model`, `ro.soc.manufacturer` (bionic's property area, as `usb.c` reads it: `__system_property_find` and
+`__system_property_read_callback`), and as fallbacks `/sys/devices/soc0/machine`, `/sys/devices/soc0/soc_id` (logged
+only) and `/proc/device-tree/compatible`. Matched in this order, the first entry that matches wins: a model prefix, a
+codename, the SoC (`ro.soc.model`, then soc0's machine), the platform, the device tree's compatible list (an entry
+`vendor,NAME` whose NAME is the SoC or the platform [I]: a board's own `qcom,pineapple-mtp` does not match). A SoC or
+platform match alone means "that SoC's entry" (an S24 or S24+ on SM8650 gets the S24 Ultra's: no change).
+
+**Precedence:** an explicit setting (the command line; the image set's `xnuhost.conf` or the overlay's; an
+environment variable that is set) > the table's default > the built-in default.
+
+| Setting (xnuhost; the ctl tools' variable) | Values | What |
+|---|---|---|
+| `host-device` (`ONEIOS_HOST_DEVICE`) | `auto` (default), `none`, a name below | `auto`: detect; `none`: no entry, today's defaults (nothing is read); a name: that entry whatever the phone says (the properties are still read for the log). A name that is not in the table is refused at start |
+| `host-props=FILE` (`ONEIOS_HOST_PROPS`) | a getprop dump | read instead of the property area: `adb shell getprop` lines (`[key]: [value]`) or `key=value` (build.prop). Host tests; a PC replaying a phone. A file that cannot be read is refused |
+| `host-root=DIR` (`ONEIOS_HOST_ROOT`) | a folder | stands for `/` for the sysfs and proc fallbacks (tests) |
+
+**The table** (each entry holds only settings that already exist as options; marks as in `docs/s25.md`):
+
+| Name | Matched by | Defaults it changes | Why, and what is not set |
+|---|---|---|---|
+| `galaxy-s24-ultra` | `SM-S928*`, `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
+| `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [I] | none | the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.c`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
+| `galaxy-s25` | `SM-S931*`, `pa1q`, `SM8750`, `sun` [I] | none | as the S25 Ultra; its Bluetooth HAL (HIDL or AIDL) is [U] |
+| `galaxy-s26-ultra` | `SM-S948*`, SoC `SM8850` (codename and platform [U], not matched) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/test_brightness.c`, `test_sm8850_manual_brightness_cap`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
+| `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). Touch, haptics, battery and thermal names [U]: samsung stays |
+
+Which keys an entry may hold: xnuhost settings that `config.c` merges as device defaults (`gpu`, `hw-backend*`; an
+entry with another key makes xnuhost refuse to start, and `test_xnuhost` forces every entry and checks each default
+lands), and environment variables a bridge reads (`ONEIOS_BRIGHT_MAX`; xnuhost sets them while it has one thread,
+without overwriting a variable the session set). `gpu`'s default moved with this: unset until `xh_config_finish`, so an
+image set's `gpu=` is now taken (it was read and dropped before; no image this tree writes has one).
+
+**The log line** (xnuhost's start, right after `xnuhost: session ABI ...`):
+
+```
+host: galaxy-s24-ultra (Galaxy S24 Ultra (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; read: ro.product.model=SM-S928B ro.product.device=e3q ro.board.platform=pineapple ro.soc.model=SM8650 ro.soc.manufacturer=QTI; defaults: none (today's)
+host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; read: ...; defaults: gpu=2d
+host: galaxy-a56 (...), ...; defaults: gpu=2d not taken (the command line or the image set gives it)
+host: galaxy-s26-ultra (...), matched by ro.product.model=SM-S948B; read: ...; defaults: ONEIOS_BRIGHT_MAX=2300
+host: unknown phone (read: ro.product.model=Pixel 11 Pro ro.product.device=... ...): today's defaults (host-device=NAME forces one of galaxy-s24-ultra, ...)
+host: detection off (host-device=none): today's defaults
+```
+
+The ctl tools print the same line first (`bridges: host: ...`, or `  host: ...` in `bridgectl`); `bridgectl host` prints
+what was read, the match and the whole table (read only, safe beside One UI and beside a session).
+
+**Tested** (2026-11-21, on the PC; no phone): `runtime/bridges/hw/test_hw_backend.c` (each phone, a codename, a SoC and
+a platform alone, soc0's machine, the compatible list, an unknown phone, getprop and build.prop dumps, forced, none, a
+bad name, a missing file, the environment's defaults taken and kept, the ctl tools' line); `runtime/xnuhost/tests/test_xnuhost.c`
+`test_host_device` (the S24 Ultra, an unknown phone, no property area, the S25s and the S26 finish to exactly the config of
+`host-device=none`; the A56's `gpu=2d` under the command line and the image set; the image set's `host-device=none`;
+every entry forced); the stand-in phone (`tools/oneios-tool/tests/phone/hw-backend.sh`: `brightctl` on an S26 Ultra's
+panel, 1..2300 of 12750 detected, 1..12750 with `none` or the S24's properties, a set `ONEIOS_BRIGHT_MAX` kept; `run.sh`:
+`phone status`'s host line for each phone). **Not run on a phone**: the first phone start shows the line above; on the
+S24 Ultra it must say `galaxy-s24-ultra ... defaults: none (today's)`.
 
 ## 8. Sources
 

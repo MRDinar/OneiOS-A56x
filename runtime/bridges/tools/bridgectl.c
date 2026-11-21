@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // bridgectl: tries each host bridge on the phone, without xnuhost or a guest. Run as root (su):
+//   bridgectl host                   the host phone: the properties read, the table entry they match and why, the table
+//                                    (read only; ONEIOS_HOST_PROPS=FILE: a getprop dump of another phone)
 //   bridgectl cpu [NVCPU]            the host's cores and the vCPU plan made from them
 //   bridgectl haptic-inspect              O_RDONLY evdev queries only: name, sine/periodic/gain bits, max effects
 //   bridgectl haptic-hal-inspect          read-only AIDL getCapabilities/version: never on, off or amplitude
@@ -9,6 +11,7 @@
 //   bridgectl haptic-hal-heavy-click      ACTIVE one-shot IVibrator.perform(HEAVY_CLICK, STRONG); explicit opt-in required
 //   bridgectl haptic [MS [INTENSITY [HZ]]]   one vibration (default 200 ms, 1000, resonance)
 //   bridgectl haptic-pattern         three taps and a ramp: what an iOS pattern feels like
+// Every command first says the host phone (a "host: ..." line; ONEIOS_HOST_DEVICE=auto|none|NAME, bridges/host_device.h).
 // The backend: ONEIOS_HW_BACKEND, ONEIOS_HW_BACKEND_<BRIDGE>, ONEIOS_HW_FALLBACK (bridges/hw_backend.h): haptic's is
 // the evdev device (samsung) or the vibrator HAL (treble). Off the phone: ONEIOS_INPUT_DIR, ONEIOS_BINDER.
 //   bridgectl bt                     opens the Bluetooth HAL, sends HCI Reset and Read BD_ADDR, prints the events
@@ -25,6 +28,7 @@
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
 #include "../hal/hal.h"
+#include "bridges/host_device.h"
 #include <math.h>
 #include <dirent.h>
 #include <errno.h>
@@ -37,6 +41,38 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+// `bridgectl host`: the host phone as xnuhost sees it (bridges/host_device.h), read only: what was read, which entry
+// it matched and why, and the table (each phone's match strings and defaults). ONEIOS_HOST_DEVICE, ONEIOS_HOST_PROPS
+// (a getprop dump of another phone) and ONEIOS_HOST_ROOT as for xnuhost's host-device=, host-props=, host-root=.
+static int host_cmd(void)
+{
+  br_host_facts f;
+  const br_host_device *e = NULL;
+  char why[300], read[400];
+  if (br_host_choose(getenv("ONEIOS_HOST_DEVICE"), getenv("ONEIOS_HOST_PROPS"), getenv("ONEIOS_HOST_ROOT"), &f, &e, why, sizeof why)) {
+    printf("host: %s\n", why);
+    return 1;
+  }
+  br_host_describe(&f, read, sizeof read);
+  printf("read: %s\n", read);
+  printf("host: %s (%s)\n", e ? e->name : "none", why);
+  unsigned n = 0;
+  const br_host_device *t = br_host_table(&n);
+  for (unsigned i = 0; i < n; i++) {
+    printf("%c %-17s %s; model", &t[i] == e ? '*' : ' ', t[i].name, t[i].label);
+    for (unsigned k = 0; k < BR_HOST_MATCH && t[i].models[k]; k++) printf(" %s*", t[i].models[k]);
+    for (unsigned k = 0; k < BR_HOST_MATCH && t[i].devices[k]; k++) printf("%s%s", k ? " " : ", device ", t[i].devices[k]);
+    for (unsigned k = 0; k < BR_HOST_MATCH && t[i].socs[k]; k++) printf("%s%s", k ? " " : ", soc ", t[i].socs[k]);
+    for (unsigned k = 0; k < BR_HOST_MATCH && t[i].platforms[k]; k++) printf("%s%s", k ? " " : ", platform ", t[i].platforms[k]);
+    printf("; defaults:");
+    bool any = false;
+    for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].config[k]; k++, any = true) printf(" %s", t[i].config[k]);
+    for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].env[k]; k++, any = true) printf(" %s", t[i].env[k]);
+    printf("%s\n", any ? "" : " none");
+  }
+  return 0;
+}
 
 static int cpu(int argc, char **argv)
 {
@@ -604,9 +640,15 @@ int main(int argc, char **argv)
   const char *bad = NULL;
   br_hw_settings_init(&hw);
   if (br_hw_settings_env(&hw, &bad)) { fprintf(stderr, "bridgectl: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  // The host phone (bridges/host_device.h): its environment defaults (ONEIOS_BRIGHT_MAX on the S26 Ultra) and hw-backend
+  // defaults under the environment's own, as xnuhost takes them; ONEIOS_HOST_DEVICE=none: today's defaults.
+  char host[512];
+  if (br_host_tool(&hw, NULL, host, sizeof host)) { fprintf(stderr, "bridgectl: %s\n", host); return 2; }
+  br_log(1, "%s", host);
   br_hw_configure(&hw);
-  if (argc < 2) { fprintf(stderr, "usage: bridgectl cpu|haptic-inspect|haptic-hal-inspect|haptic-hal-primitives|haptic-native-inspect|haptic-hal-click|haptic-hal-heavy-click|haptic|haptic-pattern|bt|net|audio|audio-loop ... (see tools/bridgectl.c)\n"); return 2; }
-  if (!strcmp(argv[1], "cpu")) rc = cpu(argc, argv);
+  if (argc < 2) { fprintf(stderr, "usage: bridgectl host|cpu|haptic-inspect|haptic-hal-inspect|haptic-hal-primitives|haptic-native-inspect|haptic-hal-click|haptic-hal-heavy-click|haptic|haptic-pattern|bt|net|audio|audio-loop ... (see tools/bridgectl.c)\n"); return 2; }
+  if (!strcmp(argv[1], "host")) rc = host_cmd();
+  else if (!strcmp(argv[1], "cpu")) rc = cpu(argc, argv);
   else if (!strcmp(argv[1], "haptic-inspect")) rc = haptic_inspect();
   else if (!strcmp(argv[1], "haptic-hal-inspect")) rc = haptic_hal_inspect();
   else if (!strcmp(argv[1], "haptic-hal-primitives")) rc = haptic_hal_primitives();
