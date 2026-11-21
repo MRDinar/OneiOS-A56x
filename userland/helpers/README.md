@@ -2,7 +2,7 @@
 
 Small programs of ours that run inside the iOS guest. Source only; built by `build.sh` with the toolchain of
 `scripts/ios` (docs/building.md section 9): Xcode's clang, ld and iPhoneOS SDK on macOS, the cross toolchain on
-Linux, linked against the guest's iOS 27 stubs and signed by `scripts/ios/ios-sign.py`. Built on the Mac
+Linux, linked against the guest's iOS 27 stubs and signed by `oneios-tool ios sign`. Built on the Mac
 (Xcode 27.2) on 2026-11-12; not built on Linux since the theos branch went.
 
 | File | What | Host test |

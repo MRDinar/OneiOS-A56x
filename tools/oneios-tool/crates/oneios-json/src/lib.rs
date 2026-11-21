@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::Path;
 
+/// An object whose keys keep their order.
+pub type Map = IndexMap<String, Value>;
+
 /// A JSON value whose objects keep their keys' order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]

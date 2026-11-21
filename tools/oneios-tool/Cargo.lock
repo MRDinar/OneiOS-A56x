@@ -1280,6 +1280,26 @@ dependencies = [
  "oneios-tweaks",
  "rayon",
 ]
+[[package]]
+name = "oneios-ios"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "flate2",
+ "libc",
+ "oneios-common",
+ "oneios-image",
+ "oneios-json",
+ "oneios-sym",
+ "oneios-tweaks",
+ "plist",
+ "rayon",
+ "regex",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
 
 [[package]]
 name = "oneios-ioslog"
@@ -1466,6 +1486,7 @@ dependencies = [
  "oneios-ksym",
  "oneios-log",
  "oneios-package",
+ "oneios-ios",
  "oneios-phone",
  "oneios-prelink",
  "oneios-serve",

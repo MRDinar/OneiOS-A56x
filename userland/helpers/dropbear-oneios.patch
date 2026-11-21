@@ -1,0 +1,73 @@
+# OneiOS: dropbear DROPBEAR_2022.83 for the guest (userland/helpers/build-dropbear.sh): the login shell is
+# /private/var/oneios/bin/zsh and the only authorized_keys is /private/var/root/.ssh/authorized_keys (its permissions
+# checked alone: no home folder to check). Applied with fuzz 0: a moved pin fails here, not quietly.
+diff -ru a/common-session.c b/common-session.c
+--- a/common-session.c
++++ b/common-session.c
+@@ -610,11 +610,8 @@
+ 
+ const char* get_user_shell() {
+ 	/* an empty shell should be interpreted as "/bin/sh" */
+-	if (ses.authstate.pw_shell[0] == '\0') {
+-		return "/bin/sh";
+-	} else {
+-		return ses.authstate.pw_shell;
+-	}
++	(void)ses.authstate.pw_shell;
++	return "/private/var/oneios/bin/zsh";
+ }
+ void fill_passwd(const char* username) {
+ 	struct passwd *pw = NULL;
+diff -ru a/svr-authpubkey.c b/svr-authpubkey.c
+--- a/svr-authpubkey.c
++++ b/svr-authpubkey.c
+@@ -464,12 +464,7 @@
+ 	} else {
+ 		/* we don't need to check pw and pw_dir for validity, since
+ 		 * its been done in checkpubkeyperms. */
+-		len = strlen(ses.authstate.pw_dir);
+-		/* allocate max required pathname storage,
+-		 * = path + "/.ssh/authorized_keys" + '\0' = pathlen + 22 */
+-		filename = m_malloc(len + 22);
+-		snprintf(filename, len + 22, "%s/.ssh/authorized_keys",
+-					ses.authstate.pw_dir);
++		filename = m_strdup("/private/var/root/.ssh/authorized_keys");
+ 
+ 		authfile = fopen(filename, "r");
+ 		if (!authfile) {
+@@ -535,33 +530,8 @@
+ 
+ 	TRACE(("enter checkpubkeyperms"))
+ 
+-	if (ses.authstate.pw_dir == NULL) {
+-		goto out;
+-	}
+-
+-	if ((len = strlen(ses.authstate.pw_dir)) == 0) {
+-		goto out;
+-	}
+-
+-	/* allocate max required pathname storage,
+-	 * = path + "/.ssh/authorized_keys" + '\0' = pathlen + 22 */
+-	len += 22;
+-	filename = m_malloc(len);
+-	strlcpy(filename, ses.authstate.pw_dir, len);
+-
+-	/* check ~ */
+-	if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
+-		goto out;
+-	}
+-
+-	/* check ~/.ssh */
+-	strlcat(filename, "/.ssh", len);
+-	if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
+-		goto out;
+-	}
+-
+-	/* now check ~/.ssh/authorized_keys */
+-	strlcat(filename, "/authorized_keys", len);
++	(void)len;
++	filename = m_strdup("/private/var/root/.ssh/authorized_keys");
+ 	if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
+ 		goto out;
+ 	}

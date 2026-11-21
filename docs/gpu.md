@@ -1033,7 +1033,7 @@ scripts/bg.sh metal userland/metal/build.sh      # stage, turnip, plugin, finish
 The steps are the kernel base's own scripts (`build-turnip-darwin.py`, `build-adreno-metal-bridge.py`,
 `build-adreno-metal-plugin.py`, `--target ios27`), run from a staged copy of its tree in `out/metal/root` with
 `userland/metal/shim/` first in `PATH`: `xcrun`'s clang is `scripts/ios/ios-clang` (so the links go through `ios-ld`
-and the stubs), `codesign` is `scripts/ios/ios-sign.py`, `strip` and `nm` are the linker's siblings; on macOS every
+and the stubs), `codesign` is `oneios-tool ios codesign` (over `ios sign`), `strip` and `nm` are the linker's siblings; on macOS every
 other `xcrun` question, and any about another SDK (rustc's `--sdk macosx` for the crates' build scripts), goes to
 Xcode's `xcrun`, and `SDKROOT` is left unset so those build scripts link for the Mac. The staged copies differ from
 upstream in the lines `stage` prints: meson's build-machine compiler, ninja's job count, a longer limit for the Rust
@@ -1046,7 +1046,7 @@ and not placed.
 
 **The bundle** (`out/userland/NativeAdrenoMetal.bundle`): `Info.plist` (`org.blu-sharky.NativeAdrenoMetal`, principal
 class `NativeAdrenoMetalDevice`, MinimumOSVersion 27.0), `NativeAdrenoMetal`, `libvulkan_freedreno.dylib` (opened by
-path by the plug-in), `oneios-target`. Both binaries are signed by `scripts/ios/ios-sign.py`;
+path by the plug-in), `oneios-target`. Both binaries are signed by `oneios-tool ios sign` (through the `codesign` shim);
 `NativeAdrenoMetal.build.json` beside the bundle records the SDK, the stubs' cache, the source pins, sizes and CDHashes.
 
 **Appended for backboardd** (`stage`, after the address check): `drivers/brightness/BacklightMode.inc` (BLControl,
@@ -1083,7 +1083,10 @@ and refuses to go on if the arm64e code holds an address the file does not name.
 
 QuartzCore's code is at the same addresses in both caches; its `__DATA_DIRTY` and the CFString are 0x4000 higher in
 the iPhone's. Placed as upstream builds it, the plug-in would have written the headroom, the threshold, the option
-byte and the once token 16 KiB below their places in backboardd. How they were found:
+byte and the once token 16 KiB below their places in backboardd. How they were found (with blacktop's `ipsw`
+program, a reverse-engineering tool installed by hand from its releases: no script of this project needs it since
+2026-11-21, when `scripts/fetch/get-ipsw-cli.sh` went; `oneios-tool image apfs-copy out/image/24A446/systemos.img
+System/Library/Caches/com.apple.dyld out/ios27-cache` makes the cache's copy without a mount):
 
 ```sh
 apfs-fuse -o ro out/image/24A446/systemos.img MNT       # the cache: MNT/root/System/Library/Caches/com.apple.dyld/

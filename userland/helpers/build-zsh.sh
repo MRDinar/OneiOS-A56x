@@ -12,6 +12,8 @@ SHA256=9ee07990dca582d977ecb99f0f4396c301c5d197e29e9ea6be1d23fbe0ec9ce0
 WORK=$REPO/out/userland/zsh-armv8e/work
 
 . "$REPO/scripts/ios/env.sh"
+. "$REPO/scripts/lib/oneios-tool.sh"
+oneios_tool "$REPO"
 mkdir -p "$OUT" "$WORK"
 macos_sdk=$(xcrun --sdk macosx --show-sdk-path)
 tarball=$WORK/${TAG}.tar.gz
@@ -64,9 +66,9 @@ cat >"$ENT" <<'P'
 <plist version="1.0"><dict><key>com.apple.private.security.no-container</key><true/></dict></plist>
 P
 cp "$src/Src/zsh" "$OUT/zsh"
-"$IOS_DIR/ios-sign.py" --identifier com.oneios.zsh --entitlements "$ENT" "$OUT/zsh" >/dev/null
+"$ONEIOS_TOOL" ios sign --identifier com.oneios.zsh --entitlements "$ENT" "$OUT/zsh" >/dev/null
 rm -f "$ENT"
-python3 -I "$HERE/../tweak" cdhash "$OUT/zsh" | tee /tmp/zsh-cdhash.txt
+"$ONEIOS_TOOL" image tweaks cdhash "$OUT/zsh" | tee /tmp/zsh-cdhash.txt
 grep -q 'arm64e pages=4096' /tmp/zsh-cdhash.txt || {
   echo "build-zsh.sh: zsh is not arm64e with 4 KiB pages (line above)" >&2; exit 1
 }

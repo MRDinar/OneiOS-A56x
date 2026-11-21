@@ -80,6 +80,11 @@ enum Tool {
         #[command(subcommand)]
         command: oneios_json::Command,
     },
+    /// The iOS user-space toolchain's steps: sign, codesign, macho-check, tbds, and the Metal build's (README "ios")
+    Ios {
+        #[command(subcommand)]
+        command: oneios_ios::Command,
+    },
 }
 
 /// `oneios-tool [--jobs N] [--nice N] TOOL ...`: the two options every command that runs alone takes, before the
@@ -153,6 +158,7 @@ fn main() {
             Tool::Serve(cli) => oneios_serve::main(cli),
             Tool::Debug { command } => oneios_testkit::main(command),
             Tool::Json { command } => oneios_json::main(command),
+            Tool::Ios { command } => oneios_ios::main(command),
         },
         Err(e) if !e.use_stderr() => {
             let _ = e.print();

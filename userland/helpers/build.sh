@@ -5,10 +5,10 @@
 #   userland/helpers/build.sh --host [OUT_DIR] host build with cc, for the tests (all but oneios-mg)
 #
 # Output: OUT_DIR/{oneios-init,oneios-bootstat,oneios-seed,oneios-mg,oneios-thermal} and OUT_DIR/cdhashes.txt. Give OUT_DIR to
-# `roottweak apply --helpers`. Any other signed Mach-O put into OUT_DIR is installed too (a dropbear named
+# `oneios-tool image tweaks apply --helpers`. Any other signed Mach-O put into OUT_DIR is installed too (a dropbear named
 # "dropbear" is started as the ssh service on port 2222): see README.md.
 #
-# Toolchain: scripts/ios (docs/building.md section 9): ios-clang, then ios-sign.py, whose signature is byte for byte
+# Toolchain: scripts/ios (docs/building.md section 9): ios-clang, then `oneios-tool ios sign`, whose signature is byte for byte
 #   `codesign --force --sign - --pagesize 4096`. macOS: Xcode's clang, ld and iPhoneOS SDK. Linux: the cross toolchain
 #   (scripts/setup/ios-toolchain.sh says what is missing). The link is against the guest's iOS 27 stubs (out/ios27-tbd)
 #   when they are there, else against the SDK's.
@@ -41,8 +41,10 @@ cat > "$ENT" <<'P'
 P
 
 . "$REPO/scripts/ios/env.sh"
+. "$REPO/scripts/lib/oneios-tool.sh"
+oneios_tool "$REPO"
 compile() { "$IOS_DIR/ios-clang" -target "$TARGET" "${WARN[@]}" "$@"; }
-sign() { "$IOS_DIR/ios-sign.py" --identifier "com.oneios.$(basename "$1")" --entitlements "$ENT" "$1" >/dev/null; }
+sign() { "$ONEIOS_TOOL" ios sign --identifier "com.oneios.$(basename "$1")" --entitlements "$ENT" "$1" >/dev/null; }
 echo "helpers: SDK $IOS_SDK_VERSION ($IOS_SDK); stubs $([ -f "$IOS_TBD/usr/lib/libSystem.B.tbd" ] && echo "$IOS_TBD" || echo "none: the SDK's own"); $("$IOS_CLANG" --version | head -1)"
 
 compile "$HERE/oneios-init.c" -o "$OUT/oneios-init"
@@ -53,7 +55,7 @@ compile "$HERE/oneios-thermal.c" -framework IOKit -framework CoreFoundation -o "
 for name in oneios-init oneios-bootstat oneios-seed oneios-mg oneios-thermal; do sign "$OUT/$name"; done
 rm -f "$ENT"
 # The same reader the image build uses: fails on a file that is not signed, says the architecture and page size.
-python3 -I "$HERE/../tweak" cdhash "$OUT/oneios-init" "$OUT/oneios-bootstat" "$OUT/oneios-seed" "$OUT/oneios-mg" "$OUT/oneios-thermal" | tee "$OUT/cdhashes.txt"
+"$ONEIOS_TOOL" image tweaks cdhash "$OUT/oneios-init" "$OUT/oneios-bootstat" "$OUT/oneios-seed" "$OUT/oneios-mg" "$OUT/oneios-thermal" | tee "$OUT/cdhashes.txt"
 if grep -v -q 'arm64e pages=4096' "$OUT/cdhashes.txt"; then
   echo "build.sh: a helper is not arm64e with 4 KiB signature pages (lines above)" >&2; exit 1
 fi

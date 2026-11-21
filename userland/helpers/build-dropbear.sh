@@ -17,6 +17,8 @@ AUTHKEYS=/private/var/root/.ssh/authorized_keys
 SHELL=/private/var/oneios/bin/zsh
 
 . "$REPO/scripts/ios/env.sh"
+. "$REPO/scripts/lib/oneios-tool.sh"
+oneios_tool "$REPO"
 mkdir -p "$OUT" "$WORK"
 tarball=$WORK/${TAG}.tar.gz
 if [ ! -f "$tarball" ] || [ "$(openssl dgst -sha256 "$tarball" | awk '{print $2}')" != "$SHA256" ]; then
@@ -28,40 +30,9 @@ fi
 src=$WORK/dropbear-$TAG
 rm -rf "$src"
 tar -xzf "$tarball" -C "$WORK"
-python3 - "$src" "$AUTHKEYS" "$SHELL" <<'PY'
-import sys
-from pathlib import Path
-src = Path(sys.argv[1])
-auth, shell = sys.argv[2], sys.argv[3]
-
-def one(path, old, new):
-    p = src / path
-    text = p.read_text()
-    if text.count(old) != 1:
-        sys.exit(f"{path}: expected one match, got {text.count(old)}")
-    p.write_text(text.replace(old, new))
-
-one('common-session.c',
-    '\tif (ses.authstate.pw_shell[0] == \'\\0\') {\n\t\treturn "/bin/sh";\n\t} else {\n\t\treturn ses.authstate.pw_shell;\n\t}',
-    f'\t(void)ses.authstate.pw_shell;\n\treturn "{shell}";')
-one('svr-authpubkey.c',
-    '\t\tlen = strlen(ses.authstate.pw_dir);\n\t\t/* allocate max required pathname storage,\n'
-    '\t\t * = path + "/.ssh/authorized_keys" + \'\\0\' = pathlen + 22 */\n\t\tfilename = m_malloc(len + 22);\n'
-    '\t\tsnprintf(filename, len + 22, "%s/.ssh/authorized_keys",\n\t\t\t\t\tses.authstate.pw_dir);',
-    f'\t\tfilename = m_strdup("{auth}");')
-perms_old = (
-    '\tif (ses.authstate.pw_dir == NULL) {\n\t\tgoto out;\n\t}\n\n'
-    '\tif ((len = strlen(ses.authstate.pw_dir)) == 0) {\n\t\tgoto out;\n\t}\n\n'
-    '\t/* allocate max required pathname storage,\n\t * = path + "/.ssh/authorized_keys" + \'\\0\' = pathlen + 22 */\n'
-    '\tlen += 22;\n\tfilename = m_malloc(len);\n\tstrlcpy(filename, ses.authstate.pw_dir, len);\n\n'
-    '\t/* check ~ */\n\tif (checkfileperm(filename) != DROPBEAR_SUCCESS) {\n\t\tgoto out;\n\t}\n\n'
-    '\t/* check ~/.ssh */\n\tstrlcat(filename, "/.ssh", len);\n\tif (checkfileperm(filename) != DROPBEAR_SUCCESS) {\n\t\tgoto out;\n\t}\n\n'
-    '\t/* now check ~/.ssh/authorized_keys */\n\tstrlcat(filename, "/authorized_keys", len);\n\tif (checkfileperm(filename) != DROPBEAR_SUCCESS) {\n\t\tgoto out;\n\t}')
-perms_new = (
-    f'\t(void)len;\n\tfilename = m_strdup("{auth}");\n'
-    '\tif (checkfileperm(filename) != DROPBEAR_SUCCESS) {\n\t\tgoto out;\n\t}')
-one('svr-authpubkey.c', perms_old, perms_new)
-PY
+# The login shell and the one authorized_keys (AUTHKEYS, SHELL above): dropbear-oneios.patch, made for this pin
+# (fuzz 0: a moved pin fails here)
+patch -s -F 0 -p1 -d "$src" < "$HERE/dropbear-oneios.patch"
 
 cat >"$src/localoptions.h" <<'H'
 #define DROPBEAR_SVR_PASSWORD_AUTH 0
@@ -91,9 +62,9 @@ cat >"$ENT" <<'P'
 <plist version="1.0"><dict><key>com.apple.private.security.no-container</key><true/></dict></plist>
 P
 cp "$src/dropbear" "$OUT/dropbear"
-"$IOS_DIR/ios-sign.py" --identifier com.oneios.dropbear --entitlements "$ENT" "$OUT/dropbear" >/dev/null
+"$ONEIOS_TOOL" ios sign --identifier com.oneios.dropbear --entitlements "$ENT" "$OUT/dropbear" >/dev/null
 rm -f "$ENT"
-python3 -I "$HERE/../tweak" cdhash "$OUT/dropbear" | tee /tmp/dropbear-cdhash.txt
+"$ONEIOS_TOOL" image tweaks cdhash "$OUT/dropbear" | tee /tmp/dropbear-cdhash.txt
 grep -q 'arm64e pages=4096' /tmp/dropbear-cdhash.txt || {
   echo "build-dropbear.sh: dropbear is not arm64e with 4 KiB pages (line above)" >&2; exit 1
 }

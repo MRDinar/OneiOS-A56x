@@ -1,0 +1,32 @@
+[package]
+name = "oneios-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# `oneios-tool ios`: the iOS user-space toolchain's own steps (scripts/ios): sign (the ad-hoc signature, was
+# ios-sign.py), codesign (the shim the Metal build puts on PATH), macho-check (was macho-check.py), tbds (the
+# guest's .tbd stubs from its dyld shared cache, was make-tbds.py over the `ipsw` program), and the Metal build's
+# own steps (userland/metal/build.sh: stage-edit, record, gpuaddon).
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+regex = "1"
+flate2 = "1"
+# The entitlements: XML or binary property lists
+plist = { version = "1", default-features = false }
+oneios-common.workspace = true
+oneios-json.workspace = true
+# The dyld shared cache (its files, mappings, images, load commands)
+oneios-sym.workspace = true
+# The cache's folder copied out of systemos.img without a mount (image apfs-copy's reader)
+oneios-image.workspace = true
+# The CDHash, identifier and page size of a signed file, as `image tweaks cdhash` reads them
+oneios-tweaks.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true

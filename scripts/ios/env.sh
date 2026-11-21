@@ -8,7 +8,7 @@
 #   IOS_SDK      the iPhoneOS SDK (headers, and .tbd stubs as a fallback). Default on macOS:
 #                `xcrun --sdk iphoneos --show-sdk-path`. On Linux: the newest iPhoneOS*.sdk that
 #                `xtool sdk install Xcode.xip` extracted under ~/.config/swiftpm/swift-sdks/darwin.artifactbundle.
-#   IOS_TBD      .tbd stubs made from the guest's own iOS 27 shared cache (scripts/ios/make-tbds.py), laid out like
+#   IOS_TBD      .tbd stubs made from the guest's own iOS 27 shared cache (`oneios-tool ios tbds`), laid out like
 #                an SDK; the linker looks here before IOS_SDK. Default: out/ios27-tbd. Used when it exists.
 #   IOS_LD       the linker, one that reads .tbd stubs. Default on macOS: `xcrun --sdk iphoneos --find ld` (Xcode's).
 #                On Linux: Apple's ld64 built with libtapi, out/ios-toolchain/cctools/bin/ld

@@ -6,7 +6,8 @@
 #   scripts/setup/ios-toolchain.sh --ld       Linux: build Apple's ld64 with .tbd support into out/ios-toolchain (about
 #                                             6 min; scripts/bg.sh ios-ld scripts/setup/ios-toolchain.sh --ld)
 #   scripts/setup/ios-toolchain.sh --tbd      make the iOS 27 stubs from the image set's shared cache (out/ios27-tbd,
-#                                             scripts/ios/make-tbds.py; about 6 min)
+#                                             `oneios-tool ios tbds [--cache DIR] [NAME...]`; about 5 s, and a 7 GB
+#                                             copy of the cache's folder into out/ios27-cache first when there is none)
 #   scripts/setup/ios-toolchain.sh --test     build, sign and check a small executable (out/ios-test)
 #
 # The parts (scripts/ios/env.sh has the variables that override each):
@@ -18,12 +19,12 @@
 #   clang    macOS: Xcode's. Linux: the host's, 19 or newer (arm64e).
 #   stubs    out/ios27-tbd: what iOS 27.0.1 (24A446) exports, from the guest's own shared cache. Derived from
 #            Apple's binaries: never committed.
-#   signing  scripts/ios/ios-sign.py with the linker's sibling codesign_allocate (Xcode's on macOS, cctools' on
+#   signing  `oneios-tool ios sign` with the linker's sibling codesign_allocate (Xcode's on macOS, cctools' on
 #            Linux); its output is byte for byte Apple's `codesign --force --sign - --pagesize 4096`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PREFIX=$ROOT/out/ios-toolchain
-# tpoechtrager/apple-libtapi, branch 1600.0.11.8 (the TAPI of Xcode 16; reads the .tbd v4 of the SDK and of ipsw).
+# tpoechtrager/apple-libtapi, branch 1600.0.11.8 (the TAPI of Xcode 16; reads the .tbd v4 of the SDK and of `oneios-tool ios tbds`).
 TAPI_URL=https://github.com/tpoechtrager/apple-libtapi.git
 TAPI_COMMIT=2a5705470a92691520fa2ff589482ea6c4039740
 
@@ -70,12 +71,10 @@ check() {
     cc=$(xcrun --sdk iphoneos --find clang 2>/dev/null) || missing+=("Xcode with the iOS platform (xcode-select -s /Applications/Xcode.app)")
   else
     cc=$(command -v clang) || missing+=("clang (19 or newer)")
-    for tool in llvm-nm llvm-objdump; do command -v $tool >/dev/null || missing+=("$tool"); done
   fi
   if [ -n "$cc" ] && ! echo 'int x;' | "$cc" -target arm64e-apple-ios27.0 -x c -c - -o /dev/null 2>/dev/null; then
     missing+=("a clang that compiles for arm64e-apple-ios (LLVM 19 or newer; this one is $("$cc" --version | head -1))")
   fi
-  python3 -c 'import yaml' 2>/dev/null || missing+=("python3 with PyYAML (macho-check.py)")
   if ! sdk_line=$( (IOS_LD=$(type -P true); . "$ROOT/scripts/ios/env.sh" && echo "$IOS_SDK $IOS_SDK_VERSION") 2>/dev/null); then
     missing+=("an iPhoneOS SDK (macOS: Xcode's iOS platform, Linux: xtool sdk install Xcode_27.1.xip, or IOS_SDK=DIR)")
   fi
@@ -107,6 +106,8 @@ check() {
 
 run_test() {
   . "$ROOT/scripts/ios/env.sh"
+  . "$ROOT/scripts/lib/oneios-tool.sh"
+  oneios_tool "$ROOT"
   local out=$ROOT/out/ios-test
   mkdir -p "$out"
   cat > "$out/hello.c" <<'EOF'
@@ -120,15 +121,15 @@ int main(void) {
 EOF
   echo "ios toolchain: SDK $IOS_SDK_VERSION ($IOS_SDK), target $IOS_TARGET"
   "$ROOT/scripts/ios/ios-clang" -O2 -Wall -Werror "$out/hello.c" -framework CoreFoundation -o "$out/hello"
-  "$ROOT/scripts/ios/ios-sign.py" --identifier com.oneios.hello "$out/hello" | tee "$out/hello.cdhash"
-  python3 -I "$ROOT/userland/tweak" cdhash "$out/hello"
-  "$ROOT/scripts/ios/macho-check.py" "$out/hello"
+  "$ONEIOS_TOOL" ios sign --identifier com.oneios.hello "$out/hello" | tee "$out/hello.cdhash"
+  "$ONEIOS_TOOL" image tweaks cdhash "$out/hello"
+  "$ONEIOS_TOOL" ios macho-check "$out/hello"
 }
 
 case "${1:-}" in
   "") check ;;
   --ld) build_ld ;;
-  --tbd) shift; "$ROOT/scripts/ios/make-tbds.py" "$@" ;;
+  --tbd) shift; . "$ROOT/scripts/lib/oneios-tool.sh"; oneios_tool "$ROOT"; "$ONEIOS_TOOL" ios tbds "$@" ;;
   --test) check && run_test ;;
   *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

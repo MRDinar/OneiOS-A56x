@@ -304,7 +304,7 @@ scale (3.27 would give 440 points) is not something UIKit has. So 3 stays the de
 
 Built by `helpers/build.sh` for `arm64e-apple-ios27.0` with the toolchain of `scripts/ios` (`docs/building.md`
 section 9: Xcode's on macOS, the cross toolchain on Linux), linked against the guest's iOS 27 stubs and signed by
-`scripts/ios/ios-sign.py` with 4 KiB pages and the `no-container` entitlement (XML and DER). Built on the Mac on
+`oneios-tool ios sign` with 4 KiB pages and the `no-container` entitlement (XML and DER). Built on the Mac on
 2026-11-12 (Xcode 27.2): all four pass `macho-check.py` (`oneios-thermal`, added the same day, builds and signs; not checked with `macho-check.py`, not run in a guest). `oneios-bootstat` declares libproc's two calls itself (the
 iPhoneOS SDK has no `libproc.h`; 24A446's libSystem exports both). **Not in any image yet:** with helpers in the seed
 the kernel starts `oneios-init`, which changes every boot, so the Mac build went to `out/userland/helpers-mac`, which

@@ -37,6 +37,7 @@ oneios-serve = { path = "crates/oneios-serve" }
 oneios-tweaks = { path = "crates/oneios-tweaks" }
 oneios-imagebuild = { path = "crates/oneios-imagebuild" }
 oneios-json = { path = "crates/oneios-json" }
+oneios-ios = { path = "crates/oneios-ios" }
 
 [profile.release]
 opt-level = 3
