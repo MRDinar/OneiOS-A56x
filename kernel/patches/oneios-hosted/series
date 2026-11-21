@@ -216,6 +216,13 @@
 # port-a56 (Galaxy A56, iOS 16.5/20F66 userland on the 24A446 collection; docs/a56.md): the 16.5 Mach user ABI carries
 # the registered ports in one OOL descriptor. task.defs exposes mach_ports_register/lookup to KERNEL_SERVER too, and
 # the hosted shims translate to the 3-port kernel RPCs; 27's userland never takes this path. Numbered 0068: free here.
+# release-kernel (2026-11-21): that was wrong, and every iOS 27 boot of a kernel with it ended at launchd. The 16.5 form
+# and iOS 27's _kernelrpc_mach_ports_register3/lookup3 are the same mig ids (3403, 3404), so the server answered 27's
+# launchd with an OOL array: "pid 1 exited -- ... mach_ports_lookup() failed: -300" (MIG_TYPE_ERROR), then the panic
+# "initproc exited" (PC boot of the ONEIOS_CRYPTO=original kernel, 2026-11-21, +184 s; the A56 merge b2fa083).
+# Now task.defs is not touched: the 16.5 form is its own MIG file (osfmk/mach/hosted_task_ios16.defs, compiled as
+# hosted_task_ios16_server.c), and mig_init puts its two stubs in the dispatch table in place of task.defs' only with
+# oneios-legacy-registered-ports=1, which userland/roottweak writes into a 20F66 image's xnuhost.conf. Default: the 27 form.
 0068-hosted-ios16-registered-ports.patch
 # fix-brightness-touch (2026-11-14): iOS's display power for the host. backboardd's IOMobileFramebufferRequestPowerChange
 # (IOMobileFramebufferUserClient selector 12, one scalar: the state) is answered as before (unsupported by this family)

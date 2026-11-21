@@ -1,31 +1,138 @@
---- a/osfmk/mach/task.defs
-+++ b/osfmk/mach/task.defs
-@@ -132,7 +132,7 @@
-  *	Stash a handful of ports for the target task; child
-  *	tasks inherit this stash at task_create time.
-  */
--#if LIBSYSCALL_INTERFACE
-+#if LIBSYSCALL_INTERFACE || KERNEL_SERVER
- routine	mach_ports_register(
- 		target_task	: task_t;
- 		init_port_set	: mach_port_array_t =
-@@ -148,7 +148,7 @@
- /*
-  *	Retrieve the stashed ports for the target task.
-  */
--#if LIBSYSCALL_INTERFACE
-+#if LIBSYSCALL_INTERFACE || KERNEL_SERVER
- routine	mach_ports_lookup(
- 		target_task	: task_t;
- 	out	init_port_set	: mach_port_array_t =
+--- /dev/null
++++ b/osfmk/mach/hosted_task_ios16.defs
+@@ -0,0 +1,35 @@
++/*
++ * OneiOS hosted (0068): the iOS 16.5 form of the task subsystem's registered-port routines. 16.5's userland
++ * (libsyscall's LIBSYSCALL_INTERFACE stubs) carries the ports in one out-of-line descriptor; iOS 27's sends the
++ * same message ids (3403, 3404) with three port descriptors (_kernelrpc_mach_ports_register3/lookup3, the
++ * kernel's own server form in task.defs, which this file leaves alone). Only one form can answer an id, so the
++ * kernel serves this one in place of task.defs' for those two ids only when the boot asks for it
++ * (oneios-legacy-registered-ports=1, osfmk/kern/ipc_kobject.c's mig_init): a 16.5 image's xnuhost.conf
++ * (userland/roottweak). Without it, iOS 27's launchd gets the reply its stub expects.
++ */
++subsystem
++#if	KERNEL_SERVER || KOBJECT_SERVER
++	KernelServer
++#endif	/* KERNEL_SERVER || KOBJECT_SERVER */
++	  hosted_task_ios16 3400;
++
++#include <mach/std_types.defs>
++#include <mach/mach_types.defs>
++
++/* 3400 task_create, 3401 task_terminate, 3402 task_threads: task.defs' */
++skip;
++skip;
++skip;
++
++/* 3403 */
++routine	mach_ports_register(
++		target_task	: task_t;
++		init_port_set	: mach_port_array_t =
++					^array[] of mach_port_t);
++
++/* 3404 */
++routine	mach_ports_lookup(
++		target_task	: task_t;
++	out	init_port_set	: mach_port_array_t =
++					^array[] of mach_port_t);
++
+--- a/osfmk/mach/Makefile
++++ b/osfmk/mach/Makefile
+@@ -412,6 +412,7 @@
+ 	task_server.c \
+ 	thread_act_server.c \
+ 	upl_server.c \
++	hosted_task_ios16_server.c \
+ 	vm_map_server.c \
+ 	vm32_map_server.c
+ 
+--- a/osfmk/conf/files
++++ b/osfmk/conf/files
+@@ -282,6 +282,7 @@
+ ./mach/processor_server.c		standard
+ ./mach/processor_set_server.c		standard
+ ./mach/task_server.c			standard
++./mach/hosted_task_ios16_server.c	standard
+ ./mach/thread_act_server.c		standard
+ ./mach/vm32_map_server.c		standard
+ ./mach/mach_test_upcall_user.c		standard
+--- a/osfmk/kern/ipc_kobject.c
++++ b/osfmk/kern/ipc_kobject.c
+@@ -88,6 +88,10 @@
+ #include <mach/processor_server.h>
+ #include <mach/processor_set_server.h>
+ #include <mach/task_server.h>
++#if XNU_HOSTED
++#include <mach/hosted_task_ios16_server.h>
++#include <pexpert/pexpert.h>
++#endif
+ #include <mach/mach_voucher_server.h>
+ #ifdef VM32_SUPPORT
+ #include <mach/vm32_map_server.h>
+@@ -266,6 +270,41 @@
+ 	/* 77417305: pad to allow for MIG routines removals/cleanups */
+ 	mach_kobj_count += 32;
+ 
++#if XNU_HOSTED
++	/*
++	 * OneiOS hosted (0068): an iOS 16.5 userland sends mach_ports_register/lookup (3403, 3404) with the registered
++	 * ports in one OOL descriptor; iOS 27's sends the same ids in task.defs' 3-port form, which stays the default.
++	 * oneios-legacy-registered-ports=1 answers those two ids with hosted_task_ios16.defs' stubs instead. (Read
++	 * here, not as a TUNABLE: a TUNABLE's name in this file conflicts with mig_e's __startup_const section.)
++	 */
++	uint32_t hosted_legacy_registered_ports = 0;
++	(void)PE_parse_boot_argn("oneios-legacy-registered-ports", &hosted_legacy_registered_ports,
++	    sizeof(hosted_legacy_registered_ports));
++	if (hosted_legacy_registered_ports) {
++		const struct mig_kern_subsystem *ios16 = (const struct mig_kern_subsystem *)&hosted_task_ios16_subsystem;
++		for (j = 0; j < ios16->end - ios16->start; j++) {
++			if (!ios16->kroutine[j].kstub_routine) {
++				continue;
++			}
++			nentry = j + ios16->start;
++			for (pos = 0; pos < MAX_MIG_ENTRIES; pos++) {
++				if (mig_buckets[pos].num == nentry) {
++					break;
++				}
++			}
++			if (pos == MAX_MIG_ENTRIES) {
++				panic("hosted: mig id %d of the iOS 16 registered ports is not in the table", nentry);
++			}
++			assert3u(ios16->kroutine[j].reply_descr_count, <=, IPC_KOBJECT_RDESC_MAX);
++			mig_buckets[pos].kroutine = ios16->kroutine[j].kstub_routine;
++			mig_buckets[pos].kreply_size = ios16->kroutine[j].max_reply_msg;
++			mig_buckets[pos].kreply_desc_cnt = ios16->kroutine[j].reply_descr_count;
++		}
++		printf("hosted: mig ids %d-%d answer in the iOS 16 registered-ports form (oneios-legacy-registered-ports=1)\n",
++		    ios16->start + 3, ios16->end - 1);
++	}
++#endif
++
+ 	printf("mig_table_max_displ = %d mach_kobj_count = %d\n",
+ 	    mig_table_max_displ, mach_kobj_count);
+ }
 --- a/osfmk/kern/ipc_tt.c
 +++ b/osfmk/kern/ipc_tt.c
-@@ -2273,6 +2273,46 @@
+@@ -82,6 +82,9 @@
+ #include <mach/memory_object_types.h>
+ #include <mach/mach_traps.h>
+ #include <mach/task_server.h>
++#if XNU_HOSTED
++#include <mach/hosted_task_ios16_server.h>
++#endif
+ #include <mach/thread_act_server.h>
+ #include <mach/mach_host_server.h>
+ #include <mach/host_priv_server.h>
+@@ -2273,6 +2276,50 @@
  	return KERN_SUCCESS;
  }
  
 +#if XNU_HOSTED
-+/* The 16.5 Mach user ABI carries the registered ports in one OOL descriptor. */
++/*
++ * OneiOS hosted (0068): the iOS 16.5 Mach user ABI carries the registered ports in one OOL descriptor
++ * (osfmk/mach/hosted_task_ios16.defs); served only with oneios-legacy-registered-ports=1 (ipc_kobject.c's
++ * mig_init). Both translate to the 3-port kernel RPCs above.
++ */
 +kern_return_t
 +mach_ports_register(task_t task, mach_port_array_t ports, mach_msg_type_number_t count)
 +{

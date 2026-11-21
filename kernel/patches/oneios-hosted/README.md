@@ -157,11 +157,19 @@ Changed (all `#if XNU_HOSTED`):
 
 Not built or run here — host-tested only (the series resolves, the staged and golden tests pass). The fork
 (`Musicalista/OneiOS-A56`) booted 20F66 to the lock screen on the A56 with these, on this XNU pin; 27 on the
-S24 Ultra takes none of the new paths by default.
+S24 Ultra takes none of the new paths by default (since the 0068 fix of 2026-11-21; before it, 0068 broke every iOS 27
+boot: below).
 
-- `0068-hosted-ios16-registered-ports.patch` (`task.defs`, `ipc_tt.c`): the 16.5 Mach user ABI carries the
-  registered ports in one OOL descriptor; compat shims translate to the 3-port kernel RPCs. Additive; 27
-  never takes this path.
+- `0068-hosted-ios16-registered-ports.patch` (`hosted_task_ios16.defs`, `osfmk/mach/Makefile`, `osfmk/conf/files`,
+  `ipc_kobject.c`, `ipc_tt.c`): the 16.5 Mach user ABI carries the registered ports in one OOL descriptor; compat
+  shims translate to the 3-port kernel RPCs. **Opt-in since 2026-11-21: `oneios-legacy-registered-ports=1`**
+  (roottweak writes it for a 20F66 image). As ported it changed `task.defs`' kernel server form, and the 16.5
+  routines are the same mig ids (3403, 3404) as 27's `_kernelrpc_mach_ports_register3`/`lookup3`: iOS 27's launchd
+  got an OOL reply, `mach_ports_lookup() failed: -300` (MIG_TYPE_ERROR), and the boot ended with the panic
+  `initproc exited` (PC boot, 2026-11-21, 184 s in; every kernel built from `main` after the A56 merge `b2fa083`).
+  Now `task.defs` is stock, the 16.5 form is its own MIG file (`hosted_task_ios16_server.c`), and `mig_init` swaps
+  its two stubs into the dispatch table only with the boot argument (it logs `hosted: mig ids 3403-3404 answer in
+  the iOS 16 registered-ports form`).
 - `0077-hosted-ios16-bootstrap-replies.patch` (`ipc_policy.c`): `oneios-legacy-bootstrap-replies=1` accepts
   ordinary MIG reply ports at the bootstrap port; default 0 keeps the 27 defense.
 - `0072-iomfb-ios16-swap-record.patch` (`IOUserClient.cpp`): rewrites 20F66's 0x46c swap record, 1-scalar

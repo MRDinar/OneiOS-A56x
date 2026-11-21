@@ -497,6 +497,7 @@ class Sealed(Case):
         self.assertIn('scale=', conf)
         self.assertIn('oneios-gpu-metal=0', conf)
         self.assertIn('oneios-legacy-bootstrap-replies=1', conf)
+        self.assertIn('oneios-legacy-registered-ports=1', conf)
         self.assertIn('text-fixup=dyld_shared_cache_arm64.03,15e4684,e8279f1a,28008052', conf)
         self.assertNotIn('text-fixup=keybagd', conf)
 

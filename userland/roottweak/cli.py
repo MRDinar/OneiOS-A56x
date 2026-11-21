@@ -88,14 +88,15 @@ def _apply(a):
             # iOS 16.5 (port-a56, docs/a56.md): the 16.5 userland on the 24A446 collection. No Metal accelerator
             # (20F66's stock Metal opens AGXAccelerator as an IOGPU device client, which NativeAdreno does not
             # serve; without it CoreAnimation composites on the CPU), no 3D virtio-gpu, and iOS 16's legacy
-            # bootstrap replies (kernel 0077). The keybagd fixup is scoped by hash to the 20F66 binary; the
+            # bootstrap replies (kernel 0077) and registered ports in one OOL descriptor (kernel 0068: the 16.5 form of
+            # mig ids 3403/3404, which iOS 27's launchd must not get). The keybagd fixup is scoped by hash to the 20F66 binary; the
             # QuartzCore fixup makes its vsync check answer yes (CA_FORCE_TIMER path, docs/a56.md section 1).
             f.write('boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic '
                     'ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 '
                     'armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 '
                     'sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 '
                     'vgpu-3d=1 oneios-gpu-metal=0 ool_port_array_enforced=0 '
-                    'oneios-legacy-bootstrap-replies=1\n')
+                    'oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1\n')
             keybagd = 'usr/libexec/keybagd'
             # Scope the software keystore path to keybagd. The global APFS boot
             # argument also changes usermanagerd's volume selection.
