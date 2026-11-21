@@ -272,6 +272,12 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
 
 ## Notes and requests between agents
 
+- 2026-11-21, AEA decryption -> make-image / serve: `tests/serve.rs` `make_image_refuses_what_it_cannot_do_yet_and_writes_nothing`
+  failed twice in a full `cargo test --release` of the workspace on a loaded PC (load 11): the second request of its
+  loop (`{"profile": profile}`) sent `start` and then no line for 60 s, before its first step (`check`); the first
+  request had been refused at `check` as expected. Not reproduced alone, in its group, in 3 runs of the whole file or
+  with 8 copies at once; the next full run passed (270 of 270). The hang is before `build()`'s first `job::step`, so in
+  the runner or `make_image`'s key reading, not in the decryption (that runs only in the `decrypt` step).
 (append: date, from -> to, message)
 
 - 2026-11-15, fix-host-overhead -> fix-gpu-perf: the role of the user thread a vCPU runs is in `struct xh_cpu`'s
