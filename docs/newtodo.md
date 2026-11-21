@@ -144,7 +144,7 @@ copy them over before the next round, several open items need iOS's log from the
 
 ### Owner decisions waiting
 
-- Port the root tweaks (`userland/roottweak`, Python) to Rust, with a byte-for-byte seed comparison? Without it, plus `scripts/image/build.sh`'s steps and the AEA decryption in the tool, the app's "Make iOS image" cannot run fully on the phone (`serve` answers `tweaks` with `not-ported`).
+- (done 2026-11-21: the root tweaks are Rust, `oneios-tool image tweaks`, and the Python is deleted.) Port the root tweaks (`userland/roottweak`, Python) to Rust, with a byte-for-byte seed comparison? Without it, plus `scripts/image/build.sh`'s steps and the AEA decryption in the tool, the app's "Make iOS image" cannot run fully on the phone (`serve` answers `tweaks` with `not-ported`).
 - The two caps against "no caps of ours on the GPU / all cores": #40's `uclamp.max` 512 for background-hinted threads (it may also slow chronod's widget extensions, #57), and (fixed in #47) the background GPU class.
 - The fork's switch writing `shmem_enabled=advise` (restored at the return) so that #45's 2 MiB pages take effect.
 - An empty `app/` (submodule not initialised): skipped with a note (#46, as now), or a hard stop?
@@ -468,11 +468,9 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
   `runtime/bridges/thermal/README.md`. Keep them, or remove them?
 - OneOS #6 moves the switch's shell into the root cpuset (a cgroup v1 hierarchy of its own; the cpu and memory
   cgroups are unchanged). If the rule "never leave its cgroup" is meant to cover the cpuset too, revert it.
-- `scripts/image/imagetool.py` and `scripts/fetch/remotezip.py` are unused on `main` (the Rust commands replace
-  them): delete them?
-- `userland/roottweak` (Python group 4): port it to Rust? A mistake changes the seed, so only with a byte-for-byte
-  seed comparison.
-- `scripts/ios/{ios-sign,macho-check,make-tbds}.py` are still Python (not ported yet).
+- (answered 2026-11-21: the owner retired all Python of the repository. `imagetool.py`, `remotezip.py` and
+  `userland/roottweak` are deleted (their Rust ports run), `scripts/ios/*.py` are `oneios-tool ios`:
+  tools/oneios-tool/todo_rust.md section 7.)
 - The token for `gh`: rerunning a failed CI job needs **Actions: Read and write**.
 - The WebKit agent of 2026-11-12 ran on Opus 4.8, not 5.5 (PR #5: diagnosis and a test only). Redo it on 5.5? (2026-11-14: done with the crash report: fix-webkit-icache on 5.5 found the cause and fixed it, item 14.)
 
@@ -804,7 +802,7 @@ Actions is on for the fork); rerunning a failed CI job needs the token's Actions
    `tools/oneios-tool/README.md` "The copy that goes on". The one stream by hand (no resume, no sums) is
    `adb exec-out "su -c '/data/adb/ksu/bin/busybox gzip -1 -c /data/local/tmp/oneios/data/data.img'" |
    oneios-tool phone sparse-write data.img --gunzip`. `sparse-write` replaced `gunzip -c | python3 -I
-   sparsewrite.py data.img` (the script of 2026-11-12, kept as `tools/oneios-tool/tests/phone/sparsewrite.py`:
+   sparsewrite.py data.img` (the script of 2026-11-12, kept as `tools/oneios-tool/tests/phone/sparsewrite.py` until 2026-11-21:
    6 min, 2.2 GB of blocks for the 32 GiB store): the same bytes, a quarter of the CPU, and fewer blocks on
    Linux's file systems; its macOS part (APFS) has not run yet
    (`tools/oneios-tool/README.md` "The sparse copy"). The way of 2026-11-12, by hand on the Mac: attach the copy

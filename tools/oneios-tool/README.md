@@ -8,20 +8,23 @@ script before it may replace it; the commands and the results are below. What is
 | `sym` | `scripts/debug/dsc.py` (**retired 2026-11-12**: deleted, its output frozen in `tests/sym/golden/`) | done | yes: byte for byte on 18 of 18 address sets (Linux, 2026-11-12; the Mac's run: 18 of 18) |
 | `sym kernel`, `log panic` | naming a kernel panic's frames by hand (`atos -o xnu.macho` on the Mac, with each segment's move subtracted) | done; **not run on the Mac's log and kernel of the 2026-11-12 panic** (not on the Linux box) | compared with `llvm-symbolizer --inlining` on three Linux-built pairs: the stand-in panic's 19 addresses and 31,605 more per pair (311,605 on one) name the same function, file:line and inlined frames |
 | `log` | nothing (new) | done | not applicable; 33 commands end with status 0, two runs equal |
-| `image`, `remotezip`, `rangeserve` | `scripts/image/imagetool.py`, `scripts/fetch/remotezip.py` (**both left in place, unused: the owner decides**), `scripts/serve/rangeserve.py` (retired) | all 15 subcommands in Rust since 2026-11-13, and the image scripts run them | yes: 138 stand-in cases; on the real set 35 of 36 items and the two full builds, byte for byte (the 36th: the Linux set has no `kernel.kc`); the six last subcommands and `remotezip`: 25 of 25 side by side, the archive byte for byte, the real IPSW over HTTP (the section at the end) |
+| `image`, `remotezip`, `rangeserve` | `scripts/image/imagetool.py`, `scripts/fetch/remotezip.py` (**retired 2026-11-21**: deleted), `scripts/serve/rangeserve.py` (retired) | all 15 subcommands in Rust since 2026-11-13, and the image scripts run them | yes: 138 stand-in cases; on the real set 35 of 36 items and the two full builds, byte for byte (the 36th: the Linux set has no `kernel.kc`); the six last subcommands and `remotezip`: 25 of 25 side by side, the archive byte for byte, the real IPSW over HTTP (the section at the end) |
 | `ioslog` | the manual steps of `docs/newtodo.md` "How to resume" step 2 (mount, copy, `unifiedlog_iterator`) | done; its first run on the phone's Data store (2026-11-13) failed in the APFS reader, fixed ("The APFS reader": checkpoints); not run on that store again yet | yes on 7 archives: CSV byte for byte from a `.logarchive`, from a Data-store image and from a mounted volume; stores with a cut-off newest checkpoint give the checkpoint before's log |
 | `prelink` | the steps of `kernel/prelink/build.sh` | all 12 steps (`PRELINK_IMPL=rust`) | yes: every step's files and stdout byte for byte on two Linux-built kernels, `kernel.kc` `ffbe95f7...` and `cdd98e7e...` |
 | `kernel` | the board archive generators of the kernel build (`build-oneios-*.py`, nine), `kernel/build-record.py`, the two `layout.py` and `port-legacy-display.py` | all ported, and the scripts **retired 2026-11-13** (deleted, their outputs frozen in `tests/kernelgen/golden/`): the kernel builds run the commands | yes: every file of the nine archives byte for byte (261 files, one line of two `objects.json` aside), the build record, the three kernelcache records, and `kernel/build-hosted.sh` gives the same kernel either way but for the build time it carries (2,074 bytes of time stamps and the UUID; Linux, 2026-11-13) |
 | `kernel hosted-fixup`, `kdk-headers`, `iig-fix`, `series-check`, `drivers`; `prelink classes`, `stubs-check`, `unmapped`, `port-fixture`, `lead-between`, `lead-imports` | `kernel/hosted-fixup.py`, `kernel/kdk-headers.py`, `kernel/linux/iig-fix.py`, `kernel/tests/series-check.py`, `drivers/build.py`; `kernel/prelink/{classes,stubs-check,unmapped,port-fixture}.py`, `kernel/prelink/lead/{between,imports}.py` | all ported, and the scripts **retired 2026-11-13** (deleted, their output frozen in `tests/kernelpy/golden` and `tests/prelinkpy/golden`); **`kdk-headers` not run on a real Kernel Debug Kit or a Mac** | yes: 20 of 20 and 18 of 18 frozen cases, 10 of 10 on real inputs, and `kernel/build-hosted.sh` gives the same kernel but for the build time, the UUID and the `N_OSO` times (2,037 bytes; the section at the end) |
+| `kernel hosted-series`, `hosted-archives`, `host-cc`, `display-capture` | the inline Python of `kernel/build-hosted.sh` and `kernel/linux/unixnu-layout.sh`, and `kernel/patches/oneios-hosted/display/display-capture.py` (**retired 2026-11-21**) | done; the kernel scripts run them | yes: the device copy's `board.toml` and defconfig and `host-cc`'s three files byte for byte; a kernel built with the new `build-hosted.sh` is main's but for the build time, the UUID and `N_OSO` (2,060 bytes; "kernel", below). `display-capture` not run beside a real boot |
 | `package` | `runtime/package/pack.py` (the runtime package's Apple-file check, its manifest and archive) | ported, and the script **retired 2026-11-13**; `runtime/package.sh` and CI run the command | yes: 91 of 91 frozen cases (every refusal rule), `runtime/package/test.sh` 19 of 19 with the same output |
-| `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output ("debug", below) |
+| `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`; on 2026-11-21 `tests/ioslog/{mkapfs,filters}.py`, `tests/app/mkapk.py`, `tests/sym/make-log.py` and the old helpers' test's tars: `mkapfs`, `ioslog-filters`, `mkapk`, `sym-make-log`, `sym-cases`, `mktar`, and the new `holes`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output; the 2026-11-21 ones each against its script before it went ("debug", below) |
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | `phone log`, `sums`, `image-check`, `manifest --stage` and `switch` ran on the S24 Ultra on 2026-11-16; the other subcommands are still unproven there | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 257 checks pass (2026-11-21: `tests/phone/run.sh`, the host phone's `status` line and `hw-backend.sh`'s host-device checks among them, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
 | `app` | the app lines of `docs/building.md` section 7 (new) | `app stage-scripts` ran on the S24 Ultra on 2026-11-16; the app was not built or installed with it | not applicable; 103 checks pass with a stand-in checkout (also as the submodule `app/` of a stand-in OneiOS checkout), gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
 | `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.6 MB, and was not run). Since 2026-11-21 in it: the image build (`make-image`), the root tweaks (`tweaks`) and the AEA decryption (`aea`, and `make-image`'s `decrypt`) | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
-| `image tweaks` | `userland/roottweak` and `userland/image-hook` (the root tweaks and the image build's userland hook; **left in place as the frozen original: the owner decides when they go**) | done 2026-11-21 (`apply`, `hook`, `daemons`, `cdhash`, `boot-check`, and `serve`'s `tweaks`); `scripts/image/build.sh` runs it by default (`--python-hook` for the Python); **not run on the phone** | yes: 33 of 33 cases of `tests/tweakspy/compare-python.sh`, and build.sh on 24A446's real inputs with each hook: `data.seed` (`27ec4e10...`) and the six overlay files byte for byte ("image tweaks", below) |
+| `image tweaks` | `userland/roottweak` and `userland/image-hook` (the root tweaks and the image build's userland hook; **retired 2026-11-21**: deleted with their tests, `userland/tweak` and build.sh's `--python-hook`) | done 2026-11-21 (`apply`, `hook`, `daemons`, `cdhash`, `boot-check`, and `serve`'s `tweaks`); `scripts/image/build.sh` runs it; **not run on the phone** | yes: 33 of 33 cases of `tests/tweakspy/compare-python.sh`, and build.sh on 24A446's real inputs with each hook: `data.seed` (`27ec4e10...`) and the six overlay files byte for byte ("image tweaks", below) |
 | `cycle` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run as a whole cycle on the phone or with real builds** (`phone log` itself ran on 2026-11-16) | not applicable; 117 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
+| `ios` | `scripts/ios/{ios-sign,macho-check,make-tbds}.py` (over the `ipsw` program), `userland/metal/shim/codesign` and `userland/metal/build.sh`'s inline Python (**retired 2026-11-21**: deleted) | done; the callers (`scripts/setup/ios-toolchain.sh`, `userland/helpers`, `userland/camera`, `userland/metal`) run it | yes: `sign` 96 of 96 byte for byte, `macho-check` 11 of 11 reports, `tbds` every exported name of 24A446's 4723 stubs (4.5 s; no `ipsw`), the Metal steps' tree, record and sidecar ("ios", below) |
+| `json` | the inline `python3 -c 'import json ...'` lines of the shell scripts (new, 2026-11-21) | done | not applicable; 4 unit tests (the edited file as Python's `json.dump(indent=2)` wrote it) |
 
-**The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`; the root tweaks are Rust since 2026-11-21, "image tweaks"). The image scripts call `oneios-tool image`
+**No Python of this repository is left** (2026-11-21: the owner retired it; the last were `scripts/ios/`, the root tweaks' frozen original and the comparisons' Python halves, which went with it). The Python that still runs is other projects' pinned code inside the kernel and Metal builds (todo_rust.md section 7, "external"). The image scripts call `oneios-tool image`
 (`IMAGETOOL_IMPL` is gone; `scripts/image/imagetool.py` is left in the tree, unused), as do the retired tools' callers (`kernel/prelink/build.sh`
 and, since 2026-11-13, the kernel builds, `runtime/package.sh` and the kernel's and the prelink's hand tools: "kernel",
 "package" and the group 2 section, below). (Before, one script used the Rust tool without being asked:
@@ -33,13 +36,12 @@ not installed, and checks the result against the SHA-256 the kernel profile pins
 ```sh
 cargo build --release --manifest-path tools/oneios-tool/Cargo.toml     # -> tools/oneios-tool/target/release/oneios-tool
 cargo test  --release --manifest-path tools/oneios-tool/Cargo.toml     # unit tests: synthetic data only, no Apple file
-python3 tools/oneios-tool/tests/image/parity.py -v                     # image against imagetool.py on stand-in files
-tools/oneios-tool/tests/compare-python.sh [PART...]                    # every comparison below whose inputs are named (its header)
+tools/oneios-tool/tests/compare-all.sh [PART...]                       # every comparison below whose inputs are named (its header)
 ```
 
 Rust 1.95 or newer (apk-info-zip 1.1.1 needs 1.95, macos-unifiedlogs 1.88; built with 1.98.0, and 1.99.1 on the Mac). Linux x86_64 (2026-11-12): clean build 1 min 20 s
 with two jobs, 51 unit tests pass (`oneios-common` 3, `oneios-image` 29 + 1, `oneios-ioslog` 4, `oneios-log` 7, `oneios-sym` 7),
-`parity.py`: 138 cases, all the same. macOS arm64: the three first tools were built and compared there on 2026-11-12
+`parity.py` (the image tool against the Python `imagetool.py`; both deleted on 2026-11-21): 138 cases, all the same. macOS arm64: the three first tools were built and compared there on 2026-11-12
 (the numbers in [todo_rust.md](todo_rust.md)). On 2026-11-16 the complete release workspace built on macOS arm64,
 `oneios-common` passed 16 tests, `prelink` audited a phone kernel, and `image apfs-copy` read the real SystemOS image there.
 One portability fix was needed: Linux/Android's `sched_getscheduler`/`sched_setscheduler` is guarded out of other hosts;
@@ -630,7 +632,8 @@ exists or where ours is measured to be faster; each such part says why in its mo
 | `simple_asn1`, `lzfse_rust` | `image im4p`: the IM4P container (DER) and its LZFSE payload; the LZFSE and LZVN kinds of compressed APFS files |
 | `aes` 0.8, `ctr` 0.9, `hkdf` 0.12, `hmac` 0.12 (RustCrypto, on `sha2` 0.10 with its `asm`) | `image aea-decrypt`: the AEA archive's key schedule (HKDF-SHA256), its MACs (HMAC-SHA256) and AES-256-CTR |
 | `hpke` 0.12 (rozbb/rust-hpke, features `alloc`, `p256`), `p256` 0.13 (`pkcs8`, `pem`) | `image aea-decrypt`: the archive key out of Apple's key service's answer (RFC 9180 base mode, DHKEM(P-256, HKDF-SHA256), AES-256-GCM), the service's PKCS#8 PEM key. 0.12, not 0.15: the same RustCrypto generation as the crates above (one AES, SHA-2 and HMAC in the binary, not two) |
-| `plist`, `toml` | `prelink roots` and `emit`: the kernelcache's `__PRELINK_INFO` and the kernel profile; `image profile`: the build profile |
+| `plist` | `image tweaks`: every property list the root tweaks read and write, binary and XML (`oneios-tweaks/src/plist.rs`: the crate's reader and writers, since 2026-11-21); `prelink roots` and `emit`: reading the kernelcache's `__PRELINK_INFO` (written back by hand: below) |
+| `toml` | the kernel profile; `image profile`: the build profile |
 | `indexmap`, `md-5`, `hmac`, `rand_mt`, `memchr` | `prelink`: Python's dict order, the matcher's function digests, the collection's FIPS seals, `random.Random`'s generator for `align`, the search for the kexts' inline pools |
 | `tar` 0.4 (`Header`) | `image seed-pack`: every 512-byte ustar block of `data.seed`, field by field (`crates/oneios-image/src/tar.rs`; what stays ours and why: below) |
 | `serde_json` (`ser::Formatter`), `serde` | every JSON file the tools write: Python's `json.dumps` layout is a `Formatter` (`oneios-common/src/pyjson.rs`) |
@@ -682,6 +685,46 @@ An edited file keeps its keys' order and is written as Python's `json.dump(..., 
 non-ASCII as `\uXXXX`, a newline at the end), so a file the scripts edited before reads the same. Tests: 4 unit
 tests (paths, selectors, the written bytes against `json.dumps`' for the same edits).
 
+## ios: the iOS user-space toolchain's steps (2026-11-21)
+
+`oneios-tool ios` (crate `crates/oneios-ios`) is what `scripts/ios/{ios-sign,macho-check,make-tbds}.py`,
+`userland/metal/shim/codesign` and the three inline Python blocks of `userland/metal/build.sh` did, until 2026-11-21
+(the owner retired Python from the repository). The toolchain itself (clang, ld64, the SDK) is docs/building.md
+section 9.
+
+```sh
+oneios-tool ios sign [--identifier ID] [--entitlements PLIST] [--json] FILE...   # ad hoc, in place; CDHASH ARCH pages=4096 ID FILE
+oneios-tool ios macho-check [--tbd DIR | --sdk] [--local DYLIB]... [--arch A] FILE...  # will it load in the guest? exit 1 if not
+oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd)
+oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            # two stub trees, by what the linker reads
+oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
+oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS   # userland/metal/build.sh stage: the staged copy's changes
+oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
+oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2)
+```
+
+| Command | Was | Needs | Compared with the script (Linux PC, 2026-11-21) |
+|---|---|---|---|
+| `sign` | `scripts/ios/ios-sign.py` | cctools' `codesign_allocate` (as before: it makes the room) | 96 of 96 byte for byte: 24 made-up files (an executable, a dylib, a bundle, a 300 KB file; three identifier lengths; with and without entitlements), each signed and signed again, their `--json` records and lines; `userland/helpers/build.sh`'s five helpers byte for byte |
+| `macho-check` | `scripts/ios/macho-check.py` | nothing (the script ran `llvm-nm`, `llvm-objdump` and needed PyYAML) | 11 of 11 reports line for line (with `--local`, `--sdk`, an unsigned file, a missing stub, the Metal bundle's two binaries); the one changed text: an unsigned file's hint names `oneios-tool ios sign`. 0.3 s for all 11 |
+| `tbds` | `scripts/ios/make-tbds.py` over `ipsw dyld tbd` | nothing: the cache with oneios-sym's reader, each image's export trie read here, the cache's folder copied out of `systemos.img` with the APFS reader of `image apfs-copy` when `out/ios27-cache` is missing | 24A446 (4696 images): 4723 stubs in 4.5 s (about 6 minutes before). `tbd-diff --a-listed out/ios27-tbd NEW`: every exported name of every file the same; 4705 files equal in full, 18 differ only in that the documents of re-exported libraries copied into a file now list their own re-exported libraries (as those libraries' own stubs do). Without `--a-listed`: `ipsw` also listed 1,338,142 Objective-C classes and ivars that the images do not export (from their metadata; nothing can bind to them). Versions are `LC_ID_DYLIB`'s (CoreFoundation 5027.0.69; `ipsw` wrote 5027). `hello` and a bundle linked against each set bind the same symbols to the same libraries; `macho-check` gives the same 11 reports with either set |
+| `codesign` | `userland/metal/shim/codesign` (Python) | `sign` | the four forms the base's scripts use; `--display` reads what `image tweaks cdhash` reads (the shim read it with roottweak's `macho.py`) |
+| `metal-stage-edit` | build.sh `stage`'s inline Python | nothing | on copies of the pinned Droid-VM-UniXNU and NativeMetal trees, with and without the clang-23 warning: the same staged tree (`diff -r`) and the same lines; a hooks file of another revision is refused with the same message |
+| `metal-record` | build.sh `finish`'s inline Python | scripts/ios/env.sh's variables | the same record and lines on the bundle in `out/userland`, but for its `check` text (`ios macho-check`) |
+| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream) |
+
+`tbds` writes TBD v4 as the 24A446 stubs were laid out (one item per line); weak definitions and thread-local
+variables in their own lists (the `ipsw` stubs had them in `symbols`), an Objective-C class in `objc-classes` when
+both its class and metaclass are exported. `macho-check` reads TBD v4 with its own reader of the YAML part TBD uses
+(`tbd.rs`: the 705 stubs of the iPhoneOS 26.5 SDK and every stub `tbds` writes); a TBD v5 (JSON) is refused.
+Tests: 13 unit tests (DER integers and lengths as Python wrote them, the entitlements' DER, the TBD reader on an
+SDK-shaped file, the writer's layout, the export trie, the links, versions, the Metal address replacement, a sidecar
+read back) and 3 integration tests: `tests/synthetic.rs` (the signature of a made-up executable, without and with
+entitlements, is the SHA-256 and CDHash `ios-sign.py`'s `signature()` gave for the same file; `macho-check` against
+stubs written by the writer: bound, weak, local, flat, unexported and unstubbed symbols) and `tests/tbds.rs` (a
+made-up split cache: the whole file of an image that re-exports another, the link, the record, an existing stub
+kept, a name that is not there). Not run on a Mac (the Python ran there on 2026-11-12: docs/building.md section 9).
+
 ## debug: the tests' helpers
 
 `oneios-tool debug NAME` (crate `crates/oneios-testkit`): what the comparison scripts under `tests/` need beside
@@ -696,6 +739,12 @@ each module has the script's name and description, takes what it took and prints
 | `debug kernel-diff A.macho B.macho` | `tests/kernelgen/kernel-diff.py` | the check of two kernel builds ("kernel", below) | stdout and status on three pairs (two kernels of other sources, a kernel with itself, two sizes): 3 of 3 |
 | `debug mkstream KIND [MIB DATA]` | `tests/phone/mkstream.py` | `tests/phone/sparse-compare.sh` | the SHA-256 of every stream (`runs`, `tail`, `zero`, `empty`, `lastbyte`, `dense`, `phone 64 8`, `phone 300 40`, `phone 4096 280`) and the status of a wrong kind: 10 of 10; `sparse-compare.sh` before and after: 35 `ok` lines, the same output |
 | `debug stub-kc OUT GOOD BAD [NOTE]` | new | `tests/cycle/run.sh`, `tests/prelinkpy` | a made-up kernel collection for `prelink stubs-check` |
+| `debug mkapfs OUT.img NAME=FOLDER... [--stale-block0]` | `tests/ioslog/mkapfs.py` (2026-11-21) | `tests/ioslog/compare.sh`; the code, `tests/support/mkapfs.rs`, is included by the tests of `oneios-image` (`apfs_files`, `apfs_copy`, `apfs_checkpoints`) and `oneios-tool` (`ioslog_checkpoints`), which ran the script | the image byte for byte, the line and the status: 6 of 6 cases (one volume of 1,003 files, two links and a file in two extents; three volumes with an empty one and `--stale-block0` twice; an empty volume; a non-ASCII name refused, status 1); a wrong command line ends with status 1 and another usage text; apfs-fuse reads the Rust image as its folder (`diff -r`) |
+| `debug mkapk OUT.apk CERT.der [TEXT]` | `tests/app/mkapk.py` (2026-11-21) | `tests/app/run.sh` | 3 of 3 the same bytes but the 8 of the zip's DOS time stamp (the script wrote the time it ran, the command 1980-01-01, so two runs are the same) |
+| `debug ioslog-filters TOOL SOURCE REF.csv WORK` | `tests/ioslog/filters.py` (2026-11-21) | `tests/ioslog/compare.sh` step 8 | stdout and status on a made-up 400-row reference (quoted commas, a message over two lines, text outside ASCII, two boots) with a stand-in tool, twice (with and without a failing `--grep`): 14 of 14 lines and the status the same. Not run on Mandiant's archives (not on this box) |
+| `debug sym-make-log DSC_DIR OUT.log [--slide HEX] [--stacks N] [--seed N]`, `debug sym-cases WORK LOG...` | `tests/sym/make-log.py` and the address-set block of `tests/sym/compare-golden.sh` (2026-11-21) | `tests/sym/compare-golden.sh` | on the 24A446 cache: 4 of 4 logs the same after the version line (which names the command now), the same stdout and status, both errors status 1; the 12 set files the same; `compare-golden.sh` with them: **18 of 18** sets the same as the frozen golden (so the argument hashes, and the addresses drawn, are the script's) |
+| `debug mktar [--format pax\|gnu] OUT < SPEC` | new (2026-11-21): the tar `userland/tests/test_helpers.py`'s `seed()` wrote with Python's tarfile | `userland/tests/host.sh` (the oneios-seed cases) | 16 of 16 archives byte for byte with `seed()` (8 cases, pax and GNU: long names, modes, owners, xattrs, `..`, `/abs`, a file under a link, a hard link, a cut archive) |
+| `debug holes FILE [--map]` | new (2026-11-21): an inline block of `tests/phone/sparse-compare.sh` | `tests/phone/sparse-compare.sh` | the length, the blocks after an fsync, the SEEK_DATA/SEEK_HOLE regions; a unit test |
 
 The sample of `ksym-compare` and the streams of `mkstream` are the ones the Python helpers drew: `pyrandom.rs` is
 CPython's `random.Random` on the `rand_mt` crate's MT19937 (`random`, `getrandbits(32)`, `randrange`, `choice`,
@@ -703,11 +752,14 @@ CPython's `random.Random` on the `rand_mt` crate's MT19937 (`random`, `getrandbi
 commands now (`3. ksym-make-log's list`, `kcmap with the segment's move`, the stand-in log's version line), so a
 stand-in log is not byte for byte the one `make-log.py` wrote; the 24 comparisons above were made before that change.
 
-Python left under `tests/`: `tests/phone/sparsewrite.py` (the frozen original `phone sparse-write` is compared
-against; `sparse-compare.sh` also has three inline `python3` reads of the file system and the clock beside it),
-`tests/image/parity.py`, `tests/ioslog/{filters.py,mkapfs.py}`, `tests/sym/make-log.py`, `tests/app/mkapk.py` (older
-rounds' helpers: not part of this change) and inline `python3` lines in `tests/phone/lib.sh`, `tests/phone/run.sh`
-and `tests/kernelgen/compare-python.sh`.
+No Python is left under `tests/` of the image, phone, app, cycle, ioslog, log and sym areas since 2026-11-21: the
+helpers above, `tests/phone/sparsewrite.py` (the frozen original of `phone sparse-write`; `sparse-compare.sh` now
+checks the copies against the stream itself and GNU `cp --sparse=always`'s copy, and reads the file system with
+`debug holes`), `tests/image/parity.py`, `tests/image/compare-python.sh`, `tests/imagepy/` and
+`tests/tweakspy/compare-python.sh` (the comparisons with the deleted Python tools; their results stay below) are
+gone, and the inline `python3` of `tests/phone/lib.sh`, `run.sh`, `tests/cycle/run.sh` and `tests/log/run.sh` is
+`oneios-tool json` and shell. `tests/compare-python.sh` is `tests/compare-all.sh` (its two Python parts, `parity`
+and `image`, are gone).
 
 ## ioslog: iOS's unified log from the phone's Data store
 
@@ -912,12 +964,13 @@ JSONL=1 tools/oneios-tool/tests/ioslog/compare.sh ARCHIVE.logarchive
 
 `compare.sh` (its header lists the steps) checks, for one archive: (1, 2) `ioslog show ARCHIVE` in CSV and JSON
 lines against `unifiedlog_iterator` on the same archive, with `cmp`; (3) a Data-store image made from the archive's
-files by `tests/ioslog/mkapfs.py` (three volumes, the log in the third as `db/diagnostics` and `db/uuidtext`, block
+files by `oneios-tool debug mkapfs` (`tests/ioslog/mkapfs.py` until 2026-11-21; three volumes, the log in the third as `db/diagnostics` and `db/uuidtext`, block
 0 one transaction behind, files over 8 blocks in two extents), which **apfs-fuse must read as the folder it was made
 from** before the image is trusted; (4) `ioslog save IMAGE` against the manual copy out of apfs-fuse's mount, with
 `diff -r`; (5) `ioslog show IMAGE` against `unifiedlog_iterator` on that manual copy; (6) the same from the mounted
 volume; (7) `--block0` must find no log; (8) ten filter combinations, `--sort`, the text output and `checks`
-against the same selection made in Python from the unfiltered CSV (`tests/ioslog/filters.py`). The JSON lines of
+against the same selection made from the unfiltered CSV by rules written apart from ioslog's (`oneios-tool debug
+ioslog-filters`; `tests/ioslog/filters.py` until 2026-11-21). The JSON lines of
 step 2 are the same to the byte because the archive's files have the same paths for both tools; from an image the
 `evidence` field names `IMAGE:/db/diagnostics/...` instead (the CSV has no such column).
 
@@ -1022,7 +1075,7 @@ oneios-tool image apfs-checkpoints data.img     # every checkpoint: does the con
 ```
 
 **The tests of it** (2026-11-13, Linux x86_64; no Apple file and no owner data in them). The stores:
-`tests/support/apfs_store.rs` (Rust, for `cargo test`) takes two stores of `mkapfs.py`, an older and a newer
+`tests/support/apfs_store.rs` (Rust, for `cargo test`) takes two stores of `mkapfs.rs` (beside it; `mkapfs.py` until 2026-11-21), an older and a newer
 state of the same three volumes (Preboot, xART, Data), and grafts them into one container with two checkpoints:
 the older one stays where it is as transaction 5 (and block 0), the newer one's blocks follow it with every
 address moved (object ids of physical objects, object map values and child addresses, the volumes' object map
@@ -1064,7 +1117,7 @@ apfs-fuse reads the good store as its newer state.
 | 24A446 AppOS image (sealed) | `apfs-read.sh` without and with `NEWEST=1`: 1,155 the same, 0 differ, as before; `apfs-fuse.sh` ok |
 | dfvfs's `apfs.raw` | 8 the same, without and with `NEWEST=1`, as before |
 
-`tests/image/parity.py` (the image tool against imagetool.py on stand-ins): 138 cases, all the same.
+`tests/image/parity.py` (the image tool against imagetool.py on stand-ins; both deleted on 2026-11-21): 138 cases, all the same.
 `cargo test` of the workspace: 92 pass, among them `oneios-image` 31 + 1 (`apfs_files.rs`) + 5
 (`apfs_checkpoints.rs`) and `oneios-tool` 1 (`ioslog_checkpoints.rs`); 4 of `oneios-kernel`'s `tests/golden.rs`
 fail on this box with and without this change (their files under `tests/kernelgen/golden/build/` are not in a
@@ -1164,7 +1217,7 @@ host (the Linux box has no `lzfse` program).
 The OS image and the SystemOS cryptex of the IPSW are Apple Encrypted Archives (`043-69487-662.dmg.aea`,
 `043-70037-715.dmg.aea` in 24A446). `image aea-decrypt` makes the plain image of one, here and on the phone (the
 `aea` request of `serve`); the `ipsw` CLI did this on the PC before (`scripts/fetch/fetch.sh` uses this command
-now; `ipsw` stays for `scripts/ios/make-tbds.py` only).
+now; since 2026-11-21 no script needs `ipsw` at all: `ios tbds` makes the stubs it made).
 
 ```sh
 oneios-tool image aea-decrypt IN OUT [--key-cache DIR] [--key-file PEM | --key base64:..|hex:..]
@@ -1241,10 +1294,9 @@ phone.**
 
 Comparison with the Python tool:
 
-```sh
-python3 tools/oneios-tool/tests/image/parity.py -v                      # stand-in files: 138 cases, all the same
-SET=out/image/24A446 tools/oneios-tool/tests/image/compare-python.sh    # the real set (header: env and options)
-```
+The two comparisons below, `tests/image/parity.py` (stand-in files: 138 cases, all the same) and
+`tests/image/compare-python.sh` (the real set), ran the Python `imagetool.py` beside the tool; both were deleted
+with it on 2026-11-21. Their results stay as they were.
 
 Result on Linux x86_64 (2026-11-12; the set built here from the fetched IPSW with `scripts/image/build.sh --no-kernel
 --no-hook --no-pack`, 13 files, 17,766,460,758 bytes; `FULL_BUILD=1 BUILD_ARGS=--no-hook`, nothing skipped; run
@@ -1415,7 +1467,8 @@ that copy (18.6 s) is byte for byte the index built through an apfs-fuse mount (
 ONEIOS_DSC_DIR=<cache folder> tools/oneios-tool/tests/sym/compare-golden.sh
 ```
 
-The script writes two stand-in logs from the cache (`tests/sym/make-log.py`, fixed seeds), takes its 18 address
+The script writes two stand-in logs from the cache (`oneios-tool debug sym-make-log`, fixed seeds: the addresses
+`tests/sym/make-log.py` drew, which it replaced on 2026-11-21; the run after that: 18 of 18 again), takes its 18 address
 sets from them, and compares `sym`'s stdout and exit status with `tests/sym/golden/24A446.txt`: per set, the
 SHA-256 of the arguments, of `dsc.py`'s stdout, and its status, taken from the last run of both tools. Result
 after `dsc.py` was deleted (2026-11-12, the cache copied out of the image with `apfs-copy`): 18 of 18 the same.
@@ -1608,7 +1661,7 @@ changed or are gone, the collection alone, a plain kernel in place of a collecti
 `oneios-image` 31 + 1, `oneios-ioslog` 4, `oneios-ksym` 4 + 9, `oneios-log` 8, `oneios-phone` 3, `oneios-prelink`
 3, `oneios-sym` 7). Run again after the change, because `sym`'s command line and `log stacks` were touched:
 `tests/sym/compare-golden.sh` (18 of 18 sets the same as `dsc.py`'s frozen output) and `tests/log/run.sh` on the
-two stand-in logs (33 commands, all status 0, two runs equal). `tests/compare-python.sh` has the part `ksym`.
+two stand-in logs (33 commands, all status 0, two runs equal). `tests/compare-all.sh` (`compare-python.sh` until 2026-11-21) has the part `ksym`.
 
 Limits:
 - Kext frames have no function names (above). The pairing records of the prelink are not used for them.
@@ -1737,7 +1790,8 @@ What each does:
   after One UI was stopped. `switch` runs it first and refuses before anything is stopped; `stage image` runs it
   after staging and warns.
 - `manifest DIR` makes the manifest for files staged on their own (a new `kernel.kc` and `kernel.kc.hashes`): the
-  phone's `manifest.json` (read with `pyjson`, so the key order and Python's layout are kept), each entry of DIR's
+  phone's `manifest.json` (read with oneios-common's `json`, so the key order is kept, and written with an indent of 2,
+  the layout the fork's `manifest_rekernel` awk reads line by line), each entry of DIR's
   files set to their SHA-256 and size. Every other entry must already list the staged file, and a file of DIR
   that the manifest does not list is refused. Printed, `--out FILE`, or `--stage`: DIR's files and the manifest
   staged together, then `image-check`. Run on the phone: the manifest it replaced by hand that night (21 entries,
@@ -1812,7 +1866,7 @@ tools/oneios-tool/tests/phone/run.sh          # 258 checks against the stand-in 
 tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 117 checks; ALL OK
 tools/oneios-tool/tests/phone/modes.sh        # phone, app and cycle in each /proc mode this host has (below); ALL OK
 FAKE_PROC=stand-in tools/oneios-tool/tests/phone/run.sh   # one suite with the stand-in's own /proc (macOS's way)
-tools/oneios-tool/tests/phone/sparse-compare.sh   # sparse-write against sparsewrite.py: 35 checks; ALL SAME ("The sparse copy" below)
+tools/oneios-tool/tests/phone/sparse-compare.sh   # sparse-write against the stream and cp --sparse: 28 checks; ALL SAME ("The sparse copy" below)
 ```
 
 The stand-in phone: `fake-adb.sh` runs what the tool sends on this machine, inside a folder that plays the
@@ -2122,8 +2176,9 @@ the 40 MiB test store say nothing about a phone.
 
 ### The sparse copy (`sparse-write`, `pull-data`)
 
-`crates/oneios-phone/src/sparse.rs` replaces the Mac's `sparsewrite.py` (kept unchanged as
-`tests/phone/sparsewrite.py`, the comparison's reference). The stream is read 256 KiB at a time. A block that
+`crates/oneios-phone/src/sparse.rs` replaces the Mac's `sparsewrite.py` (kept as `tests/phone/sparsewrite.py`, the
+comparison's reference, until 2026-11-21; since then `sparse-compare.sh` checks the copies against the stream and
+against GNU `cp --reflink=never --sparse=always`'s copy: 28 of 28, every copy as few blocks as cp's). The stream is read 256 KiB at a time. A block that
 holds only zeros is not written (`memcmp` against zeros: 10 to 25 GB/s here, a byte loop 1.1 to 1.4); the other
 blocks are written as runs, each at its offset; the length is set at the end. A block is the file system's:
 `statvfs`'s `f_frsize` (4096 on tmpfs, btrfs, ext4, f2fs and APFS), on macOS not less than a page (16 KiB on
@@ -2176,7 +2231,7 @@ others measured, and the two tests below must run there.
 ```sh
 cargo test --manifest-path tools/oneios-tool/Cargo.toml -p oneios-phone sparse -- --nocapture   # 4 tests; prints what the file system kept
 ONEIOS_SPARSE_TEST_DIRS=/tmp:$PWD/out/t cargo test ... sparse -- --nocapture                     # in these folders (one per file system) instead of the temporary folder
-tools/oneios-tool/tests/phone/sparse-compare.sh              # against sparsewrite.py: 35 checks; ALL SAME (MAP=1: every file's data regions)
+tools/oneios-tool/tests/phone/sparse-compare.sh              # against the stream and cp --sparse: 28 checks; ALL SAME (MAP=1: every file's data regions)
 SPEED=4096:280 tools/oneios-tool/tests/phone/sparse-compare.sh   # also the times on a 4096 MiB stream with about 280 MiB of data (6 more checks; 32768:2100 is the store's size)
 ```
 
@@ -2424,7 +2479,7 @@ tools/oneios-tool/tests/app/run.sh            # 103 checks; ALL OK
 ```
 
 The stand-ins: a OneOS checkout whose `gradlew` is a script that records its arguments and "builds" an APK; APKs
-made by `tests/app/mkapk.py` (a zip with an APK Signing Block v2 around a certificate made with `openssl`; the
+made by `oneios-tool debug mkapk` (`tests/app/mkapk.py` until 2026-11-21; a zip with an APK Signing Block v2 around a certificate made with `openssl`; the
 signature is filler, the tool reads the certificate and does not verify the APK); a `gh` that serves a release's
 two files; the stand-in phone of `tests/phone/`. Result, Linux x86_64, 2026-11-12: 65 checks, all ok. What they
 cannot show: a real Gradle build, real APKs signed by `apksigner` or Gradle (v2 and v3 blocks as Android writes
@@ -2664,9 +2719,8 @@ What still runs Python, and why:
   script imported it and called `prepare`, the command runs it as a program and reads the `headers.json` it writes,
   the same report) and Droid-VM's `build-droidvm-gpu.py`, cut before its accelerator step (`gen gpu`).
 - (`kernel/prelink/classes.py` ran here until 2026-11-13: `kernel layout` calls `oneios-prelink`'s `classes.rs` now.)
-- `kernel/patches/oneios-hosted/display/display-capture.py` is kept as it is: it is no generator but a viewer for a
-  PC boot ([docs/building.md](../../docs/building.md) section 5), Linux only (a `SOCK_SEQPACKET` socket with the
-  frame's memfd passed over it), and the tool is to build and run on the Mac too.
+- (`kernel/patches/oneios-hosted/display/display-capture.py`, the PC boot's viewer, was kept until 2026-11-21: it is
+  `kernel display-capture` now, below.)
 
 Kept from the scripts on purpose: the generated files still say "Generated by build-oneios-NAME.py" (the bytes are
 the scripts'; the module of that name is `build_oneios_NAME.rs`), and so do the comments in the patch folders'
@@ -2677,8 +2731,12 @@ there (`DroidVMAudio.cpp`, `DroidVMVirtioNet.c`: the upstream file with the edit
 
 ### The comparison
 
-`tests/kernelgen/compare-python.sh WORK ENVFILE [NAME...]` (at commit `a5b2d95`, the last with every script; since
-the retirement it can still run `compile-command`, whose Python side stays): in the tree of a finished hosted build, each generator runs twice in the same place, the Python
+`tests/kernelgen/compare-python.sh WORK ENVFILE [NAME...]` (run at commit `a5b2d95`, the last with every script;
+deleted on 2026-11-21 with the last of the Python): in the tree of a finished hosted build, each generator ran twice in the same place, the Python
+| `kernel hosted-series BOARD SERIES` | the first inline `python3` block of `kernel/build-hosted.sh` | `hosted_device.rs` | **retired 2026-11-21** (below, "The kernel build's last Python"): SERIES as the last entry of the device copy's `[kernel] patch_series` |
+| `kernel hosted-archives BOARD DEFCONFIG ENTRY...` | its second block | `hosted_device.rs` | **retired 2026-11-21**: the ENTRYs in place of the board's own archive entry; the hosted defconfig's six force-loads and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y` |
+| `kernel host-cc SETUP_TOOLCHAIN CLT CLANG` | the inline `python3` block of `kernel/linux/unixnu-layout.sh` (it imported UniXNU's `scripts/linux/setup-toolchain.py`) | `host_cc.rs` | **retired 2026-11-21**: `xnu-host-cc`, `unixnu-host-prefix.h` and `copyfile.h` from that file's text (read, never run) |
+| `kernel display-capture --session DIR [--out PREFIX] [--seconds N] [--every S]` | `kernel/patches/oneios-hosted/display/display-capture.py` | `display_capture.rs` | **retired 2026-11-21**: the PC viewer of xnuhost's `display.sock` (Linux); also reads half-float frames, which the script refused |
 script and then the command, in the environment UniXNU's driver gave the archive step (`tests/kernelgen/save-env.sh`
 saves it from `/proc/PID/environ` while a build runs) and under the same `/usr/bin` shims. Every file either one
 writes is compared (`diff -r`: objects, archives, staged sources, generated sources, logs, JSON records, links), and
@@ -2765,8 +2823,8 @@ with `std::os::unix`), and take the same tools the scripts took (`llvm-ar`, `llv
 `llvm-objdump` from `PATH`, the storage generator's `/opt/homebrew/opt/llvm/bin/llvm-objcopy` when there is none,
 `xcrun` for the SDK's `TargetConditionals.h`). **Checked on Linux only**: the comparison, the kernel builds with the
 commands (`build-hosted.sh` three times, `build-linux.sh` once), `compare-golden.sh`, `cargo test`. Not run on a Mac: the build of this crate, `kernel/build-hosted.sh` with
-the commands (Xcode 27.2), `kernel/build-macos.sh` with `kernel build-record`. `compare-python.sh` and `save-env.sh`
-are Linux scripts (`/proc`, `bwrap`).
+the commands (Xcode 27.2), `kernel/build-macos.sh` with `kernel build-record`. `save-env.sh` is a Linux script
+(`/proc`).
 
 ## The kernel's and the prelink's small scripts (group 2 of the Python retirement, 2026-11-13)
 
@@ -2792,7 +2850,7 @@ output frozen under `tests/kernelpy/golden` and `tests/prelinkpy/golden`), and t
 tools/oneios-tool/tests/kernelpy/compare-golden.sh                       # 20 cases: made-up inputs, no Apple file
 tools/oneios-tool/tests/prelinkpy/compare-golden.sh                      # 10 cases: the kernelcache alone
 tools/oneios-tool/tests/prelinkpy/compare-golden.sh PRELINK_OUT KERNEL   # + 8 cases: the lead tools, on a kernel's collection
-#   UPDATE=1: write the goldens from this run   IMPL=python: run the scripts (only at a commit that has them)
+#   UPDATE=1: write the goldens from this run
 ```
 
 **How the goldens were frozen**: at the last state with both implementations, `IMPL=python UPDATE=1` wrote each
@@ -2802,7 +2860,8 @@ golden from the Python scripts, and the same script then ran the commands agains
 disassembly lines compared too, into a scratch golden). A case is the command's stdout, its stderr, its status and
 the SHA-256 of every file it wrote. `tests/kernelpy/compare-python.sh WORK ENVFILE` ran both side by side on the
 real inputs before the retirement (the drivers in a kernel tree, the fixup on a real kernel, the toolchain's `iig`,
-this checkout's series): **10 of 10** the same; it says "retired" now.
+this checkout's series): **10 of 10** the same. The `IMPL=python` switch of the compare-golden scripts and
+`compare-python.sh` were deleted on 2026-11-21 (no Python is left to run).
 
 What the goldens hold: `kernelpy/golden/cases.txt` is made from made-up inputs only (`oneios-tool debug fixture
 hosted-kernel|kdk-pkg`, `tests/kernelpy/fixtures/`: a made-up `iig`, the drivers' list as it was). The `prelinkpy`
@@ -2850,9 +2909,40 @@ group: it ran none of these scripts). Nothing Linux-only is used: `std`, `flate2
 scripts did. `tests/kernelpy/compare-golden.sh` takes its `kdk-headers` cases from the golden on macOS (hdiutil
 attaches no made-up image there).
 
-Python the kernel build still runs: UniXNU's own driver and scripts (`external/Droid-VM-UniXNU`: another project's),
-and the two inline `python3` blocks of `kernel/build-hosted.sh` that edit its copy of `board.toml` and the
-defconfig (not in this group's list; they change no file of this repository).
+Python the kernel build still runs: other projects' scripts only, run as they are (the list below, "The kernel
+build's last Python"). The two inline `python3` blocks of `kernel/build-hosted.sh` that edited its copy of
+`board.toml` and the defconfig were ported on 2026-11-21 (below).
+
+### The kernel build's last Python (2026-11-21)
+
+Python is retired from this repository (the owner, 2026-11-21). The kernel's and the runtime's scripts had five
+inline `python3` blocks and one script left; each is a command or plain shell now, and the block or script is gone:
+
+| Was | Now | Tests |
+|---|---|---|
+| `kernel/build-hosted.sh`: the block that put the hosted series last in the device copy's `[kernel] patch_series` | `oneios-tool kernel hosted-series BOARD SERIES` (`hosted_device.rs`) | unit tests that pin the edited text (a multi-line list, a one-line list, the first list only, an empty list as Python wrote it) and the refusal `build-hosted: board.toml has no [kernel] patch_series` |
+| its block that put the nine archives in place of the board's own entry and added the defconfig's force-loads and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y` | `oneios-tool kernel hosted-archives BOARD DEFCONFIG ENTRY...` (`hosted_device.rs`) | unit tests of both edits and the three refusals; nothing is written when either file is refused (the block wrote `board.toml` before it read the defconfig); a CRLF file is read as Python's text mode read it. `kernel/tests/host.sh` runs both commands on copies of the committed files |
+| `kernel/linux/unixnu-layout.sh`: the block that imported UniXNU's `scripts/linux/setup-toolchain.py` for `HOST_PREFIX_H`, `COPYFILE_H` and `HOST_CC` | `oneios-tool kernel host-cc SETUP_TOOLCHAIN CLT CLANG` (`host_cc.rs`): the three constants are read from the file's text (Python's string literals, `''' """ ' "`, `r`/`u`, the escapes), `HOST_CC` is filled in as `str.format` did, `{arch_defs}` from uname's machine as `platform.machine()`; a constant that is not one literal, or is assigned twice, is refused | unit tests on a stand-in file (escapes, a line continuation, `{{}}`, the paths as `pathlib` printed them, x86_64 and aarch64) and on what is refused |
+| `kernel/hosted-dev.sh patch`: the block that set the patch's `sha256` in `xnu-inputs.json` | `oneios-tool json set FILE "patches[path=$PATCH].sha256" "\"$sum\""` (the sum: `kernel/lib/host.sh` `sha256`); a patch that is in no record yet is left, as the block left it | - |
+| `kernel/patches/oneios-hosted/display/display-capture.py` | `oneios-tool kernel display-capture` (`display_capture.rs`, Linux): the same lines; also reads half-float frames (`display-format=rgba16f`, written to the PNG as sRGB, clamped), which the script refused | unit tests of the hello and flush messages, the PNG (read back: signature, CRCs, IHDR, the rows), the colour sample, half floats; a session against a stand-in xnuhost (a `SOCK_SEQPACKET` socket, the hello with a memfd, two flushes, the close) |
+| `runtime/package/test.sh`: the manifest check, the stand-in Mach-O, the build record, the kernel's entry | POSIX shell and `oneios-tool json get\|lines\|set` (the Mach-O header with `printf`) | the 24 tests of `test.sh` |
+
+Compared with the Python on the same inputs before the blocks were deleted (each block run once from `git show`):
+the device copy's `board.toml` and `oneios_hosted_defconfig` (the committed files, this checkout's series) **byte for
+byte the same**; `host-cc`'s three files on the pinned UniXNU (`62d0b11`) **the same** (also for a CLT path with
+`//` and `/./`, which `pathlib` normalised) and the same as `out/toolchain/unixnu`'s, which the block made; `json
+set` on a real `xnu-inputs.json` with a stale sum **the same file** as the block's. `display-capture` was not run
+beside a boot (no PC boot in this change).
+
+Python that the kernel build still runs, other projects' and pinned (not ours, so not ported): UniXNU's
+`./unixnu` driver (`kernel/lib/stage.sh` `unixnu()`) and the scripts it runs from the build tree
+(`prepare-xnu-source.py`, which fetches DriverKit headers from GitHub; `build-corecrypto-14.py`,
+`build-libpthread-kernel.py`: `kernel/device/board.toml`'s archives), its seal `scripts/seal-source-crypto-kernel.py`
+(`kernel/build-hosted.sh`), Droid-VM's `build-droidvm-gpu.py` (`kernel gen gpu`), UniXNU's
+`scripts/prepare-storage-headers.py` (`kernel gen storage`), and xnu-linux-toolchain's `iig`. (XnuPrelink's
+`emit_prelink.py`, which the OS profile names for UniXNU's own prelink, does not run: the build stops before the
+prelink, `--skip-prelink`, and `kernel/prelink/build.sh` is `oneios-tool prelink`.) So `python3` stays a host package of the kernel build (`kernel/build-linux.sh`'s
+check, `kernel/linux/setup-toolchain.sh`).
 
 ## package: the runtime package's Apple-file check (group 3 of the Python retirement, 2026-11-13)
 
@@ -2915,9 +3005,11 @@ only; nothing Linux-only is used (`std::os::unix` for modes and links, as macOS 
 The six subcommands that `oneios-tool image` still handed to `scripts/image/imagetool.py` are its own now, and
 `scripts/fetch/remotezip.py` is `oneios-tool remotezip`. **No script calls `imagetool.py` any more**:
 `scripts/image/build.sh`, `verify.sh`, `kernel-inputs.sh`, `seed-apfs-macos.sh` and `scripts/fetch/fetch.sh` run
-the CLI (they find or build the binary, `scripts/lib/oneios-tool.sh`; `IMAGETOOL_IMPL` is gone). **`imagetool.py`
-is left in place, unused, on purpose: the owner decides when it goes**; `remotezip.py` (which it imports) and
-`scripts/image/tests/` (its own tests) stay with it.
+the CLI (they find or build the binary, `scripts/lib/oneios-tool.sh`; `IMAGETOOL_IMPL` is gone). `imagetool.py`,
+`remotezip.py` (which it imported) and `scripts/image/tests/` (its own tests) were left in place, unused, until the
+owner decided: **deleted on 2026-11-21** (no Python of ours in the repository), with the comparisons that ran them
+(`tests/imagepy/compare-python.sh`, `tests/image/parity.py`, `tests/image/compare-python.sh`). The commands and
+results below are the record of that comparison.
 
 | Command | Was | Module (`crates/oneios-image/src`) | Same output |
 |---|---|---|---|
@@ -2929,12 +3021,10 @@ is left in place, unused, on purpose: the owner decides when it goes**; `remotez
 | `image pack SETDIR OUT.tar.zst` | `imagetool.py pack` | `archive.rs` | yes: the archive of a stand-in set is the Python tool's byte for byte (and its `.sha256`) |
 | `image verify SET.tar.zst` | `imagetool.py verify` of an archive | `archive.rs` | yes: the good archive, and 8 refusals with imagetool.py's message each |
 
-```sh
-tools/oneios-tool/tests/imagepy/compare-python.sh     # 25 cases, both tools side by side on one stand-in IPSW
-cargo test -p oneios-image                            # 33 tests; archive_tests.rs runs imagetool.py beside the port
-python3 tools/oneios-tool/tests/image/parity.py       # the nine older subcommands: 138 cases
-scripts/image/tests/run.sh                            # imagetool.py's own tests (23), build.sh among them
-```
+What ran (deleted since): `tests/imagepy/compare-python.sh` (25 cases, both tools side by side on one stand-in
+IPSW), `cargo test -p oneios-image` (33 tests; `archive_tests.rs` ran imagetool.py beside the port where it was
+there), `tests/image/parity.py` (the nine older subcommands: 138 cases), `scripts/image/tests/run.sh`
+(imagetool.py's own tests, 23, build.sh among them).
 
 Result on Linux x86_64, 2026-11-13: `compare-python.sh` **25 of 25** (stdout, the last line of stderr, the status and
 every file left, per case); `cargo test -p oneios-image` 33 pass, where the port's archive and each of `verify`'s
@@ -2969,16 +3059,16 @@ headers that matter and the body's SHA-256 with the script's frozen answers: **3
 compared: the `Server` and `Date` headers and the page of a 404 (Python's own). One difference: a `bytes=-N` range of an
 empty file is 416 (the script answered 206 with no bytes). Not run through a tunnel, and not on a Mac.
 
-**Not ported in this round** (group 3's rest):
-`scripts/ios/{ios-sign,macho-check,make-tbds}.py` (the iOS-side signing, the
-import check and the stub maker, called by `scripts/setup/ios-toolchain.sh` and `userland/*/build.sh`). They are
-unchanged and still Python.
+**Not ported in this round** (group 3's rest): `scripts/ios/{ios-sign,macho-check,make-tbds}.py`. Ported on
+2026-11-21 as `oneios-tool ios` and deleted ("ios", above).
 
 ## image tweaks: the root tweaks and the userland hook (group 4 of the Python retirement, 2026-11-21)
 
 The owner agreed to the port on 2026-11-21 (the phone must make the whole image itself). Crate `crates/oneios-tweaks`,
-the port of `userland/roottweak` (1643 lines) and `userland/image-hook`; the Python stays in place, unchanged, as the
-frozen original (CLAUDE.md "No new Python": the owner decides when it goes).
+the port of `userland/roottweak` (1643 lines) and `userland/image-hook`. The Python stayed in place as the frozen
+original until the comparison below was done; **the owner retired it on 2026-11-21** (no Python of ours in the
+repository): `userland/roottweak`, `userland/tweak`, `userland/image-hook`, `userland/tests/test_roottweak.py` and
+`fakeroot.py`, build.sh's `--python-hook` and `tests/tweakspy/compare-python.sh` are deleted.
 
 ```sh
 oneios-tool image tweaks apply --root OS_TREE --data DATA --out OUT [--layout sealed|rw] [roottweak apply's options]
@@ -2998,8 +3088,8 @@ oneios-tool image tweaks boot-check --data DATA_VOLUME [--root OS_TREE] [--ignor
 `ONEIOS_ROOTTWEAK_ARGS` split as `shlex.split` does), and one more: `ONEIOS_OS_IMAGE`, the OS volume's raw image
 instead of a mount. `--repo DIR` gives image-hook's defaults (`DIR/out/userland/{helpers,NativeAdrenoMetal.bundle,camera}`)
 and `DIR/userland/config`; without it the three config files built into the binary are read (the phone has no
-checkout). `scripts/image/build.sh` runs `hook --repo ROOT` by default since 2026-11-21; `--python-hook` runs
-`userland/image-hook` instead.
+checkout). `scripts/image/build.sh` runs `hook --repo ROOT` by default since 2026-11-21 (`--python-hook`, which ran
+`userland/image-hook` instead, went with it the same day).
 
 The library (`serve`'s `tweaks`, the image build on the phone): `oneios_tweaks::run_hook(&Hook) -> anyhow::Result<HookDone>`
 (`src/hook.rs`: the fields are the hook's variables; `HookDone` has the summary that becomes the manifest's
@@ -3027,11 +3117,7 @@ Only the OS volume is read: the Python never reads SystemOS or App either.
 
 ### The comparison
 
-```sh
-tools/oneios-tool/tests/tweakspy/compare-python.sh     # one line per case, then the counts; KEEP=1 keeps the folder
-```
-
-Both sides on copies of the same stand-in inputs (the Python tests' `fakeroot.py`: a root, signed stand-in Mach-Os,
+`tests/tweakspy/compare-python.sh` (deleted with the Python on 2026-11-21) ran both sides on copies of the same stand-in inputs (the Python tests' `fakeroot.py`: a root, signed stand-in Mach-Os,
 a Metal bundle with its build record, a camera plug-in, an App cryptex, a staged app): the status, standard
 output, standard error's last line without the tool's name, every file of the trees, OUT, the owners and the
 summary (type, mode, link target, SHA-256). **33 of 33 the same** (2026-11-21, Linux): the sealed layout with
@@ -3068,5 +3154,16 @@ Different by design: the messages start with `oneios-tool image tweaks:` instead
 ends with a traceback for (a non-string `CFBundleExecutable`, a dictionary key that is not a string) is refused
 with a message; a wrong command line ends with clap's usage (status 2, as argparse's).
 
-Not done: **a run on the phone** (as root under `serve`); the Mac (nothing was built or run there); retiring the
-Python (the owner decides).
+Not done: **a run on the phone** (as root under `serve`); the Mac (nothing was built or run there).
+**build.sh's record of the hook without Python** (2026-11-21). build.sh wrote the manifest's `tweaks` record
+(`hook`, `hook_sha256`, `commit`, `dirty`, `info`) with an inline Python block; it is `oneios-tool json set` and
+shell now (`relpath` for a `--hook FILE`, `sha256sum` or `shasum`), and `--seed apfs`'s edit of `seed.json` is
+`json set --string ... format apfs-raw`. The two writers on the same inputs: 10 of 10 records the same (the built-in
+hook, a hook in the checkout, one outside it, a path with `..`, each with an empty and a full summary). On 24A446's
+real inputs with one binary (HEAD's, built in a clean worktree): HEAD's build.sh (the Python block) against this
+one: all 21 files the same, `data.seed` `27ec4e10...`, the overlay as in the table, and `manifest.json` the same
+but for `tweaks.commit` (another agent committed between the two runs; each run records `git rev-parse HEAD`).
+The binary of the shared checkout at that time, which had another agent's uncommitted changes of `oneios-image`,
+`oneios-tweaks` and `oneios-common` in it, gave another seed (`5406d527...`, 1,265,063,424 bytes) and another
+`tweaks.manifest.json` (`deacce95...`): those changes (the `tar` and `plist` crates in place of the Python-byte writers, the owner's decision: todo_rust.md section 11), not build.sh's.
+

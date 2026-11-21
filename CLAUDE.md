@@ -30,7 +30,7 @@ command that no longer works, or a status that has moved on. If you are unsure w
 | What the OneOS fork reads or does (session ABI, stage layout, start/stop) | `oneos/interface.md` (and the fork's `docs/oneios.md`) |
 | A new reference repo or pin | `docs/references.md`, `scripts/setup/get-references.sh` |
 | A phone check tool's commands or output | its `README.md` "On the phone" section |
-| The Rust tools (`tools/oneios-tool`: sym, log, image, remotezip, rangeserve, ioslog, prelink, kernel, package, phone, app, cycle, debug), a comparison with the tool they replace | `tools/oneios-tool/README.md` (commands, the comparison and its result, crates), `tools/oneios-tool/todo_rust.md` (what is left), `docs/building.md` section 10 |
+| The Rust tools (`tools/oneios-tool`: sym, log, image, remotezip, rangeserve, ioslog, prelink, kernel, package, phone, app, cycle, serve, ios, json, debug) | `tools/oneios-tool/README.md` (commands, the comparison and its result, crates), `tools/oneios-tool/todo_rust.md` (what is left), `docs/building.md` section 10 |
 | The phone and app workflow (`oneios-tool phone`, `app`, `cycle`: a command, an option, a step, a phone rule) | `tools/oneios-tool/README.md` ("phone", "app", "cycle"), `docs/building.md` sections 6 and 7, and the stand-in phone's tests (`tools/oneios-tool/tests/phone`, `app`, `cycle`) |
 
 Write docs as facts: what it does, the exact commands, what was tested and what was not. Mark guesses as guesses.
@@ -88,9 +88,11 @@ The board (`docs/agents.md`) is for coordination between agents; it is **not** a
   status|wake`, `phone backlight status|set N`; `app`,
   `cycle`). Use adb, the shell scripts or other tools directly only when the CLI fails or lacks the command, then
   say so and fix or extend the CLI.
-- **No new Python.** Use `oneios-tool` (Rust) for every job it covers: `sym`, `sym kernel`, `log`, `ioslog`, `image`,
-  `remotezip`, `rangeserve`, `prelink`, `kernel`, `package`, `phone`, `app`, `cycle`, `debug` (the tests' helpers). A new tool, helper or test tool goes into `oneios-tool` (a command, or a
-  test in its crates) or plain POSIX shell. Python stays only as the frozen original that a Rust port is compared
-  against until it is retired (`tools/oneios-tool/todo_rust.md` section 7 lists what is left), and an existing Python
-  script runs only where no `oneios-tool` command does its job yet: say which one you ran.
+- **No Python. It is retired from this repository (the owner, 2026-11-21): no `.py` file, no `python3` line in a
+  script, CI or a doc's commands.** Every tool, helper and test is `oneios-tool` (Rust: `sym`, `sym kernel`, `log`,
+  `ioslog`, `image`, `remotezip`, `rangeserve`, `prelink`, `kernel`, `package`, `phone`, `app`, `cycle`, `serve`,
+  `ios`, `json`, `debug`: a command, or a test in its crates) or plain POSIX shell; a JSON read in a script is
+  `oneios-tool json`. The one Python left runs inside other projects' pinned code during the kernel and Metal builds
+  (UniXNU's driver and scripts, Droid-VM-UniXNU's build scripts, Mesa's meson build): theirs, not ours, listed in
+  `tools/oneios-tool/todo_rust.md` section 7 ("external"). `git ls-files '*.py'` prints nothing, and CI fails if it does.
 - Do not send the owner's email address to any service.

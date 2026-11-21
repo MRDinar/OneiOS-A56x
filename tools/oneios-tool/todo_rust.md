@@ -542,12 +542,14 @@ section 10 "Rust tools" and section 1 (`kernel-inputs.sh` without `lzfse`), `doc
 inputs' tools), `CLAUDE.md`'s table. Also written: `tests/compare-python.sh`, which runs every tool's comparison whose inputs are named. Not written:
 `kernel/prelink/README.md` (no prelink switch yet).
 
-## 7. Retiring the Python and shell tools (the owner's item 8): the state on 2026-11-13
+## 7. Retiring the Python and shell tools (the owner's item 8): done 2026-11-21
 
-The rule (CLAUDE.md): no new Python; a Python script stays only as the frozen original a port is compared against,
-until it is retired. A retirement is: freeze the Python output as goldens under `tests/` (hashes, sizes and names
-only for anything made from Apple's files), switch every caller, delete the script, one commit per group with its
-docs. README has each group's comparison and result.
+The rule (CLAUDE.md): **no Python in this repository** (the owner's decision of 2026-11-21: the frozen originals the
+ports were compared against are retired too). `git ls-files '*.py'` prints nothing; CI's
+`.github/scripts/check-tracked-files.sh` fails on a tracked `*.py`, `*.pyc` or executable with a python shebang
+(the one python-shebang file left, `tests/kernelpy/fixtures/iig.in`, is a non-executable test input: the text of
+xnu-linux-toolchain's `iig`). Each group below was compared with its Python before the Python went; README has each
+comparison and result.
 
 | Group | Scripts | State |
 |---|---|---|
@@ -556,30 +558,40 @@ docs. README has each group's comparison and result.
 | 1: the kernel generators | `build-oneios-*.py` (nine), `kernel/build-record.py`, the two `layout.py`, `port-legacy-display.py` | **retired** 2026-11-13 (`kernel gen`, `build-record`, `layout`, `port-legacy-display`; section 8) |
 | the tests' helpers | `tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py` | **replaced** 2026-11-13 (`debug`, crate `oneios-testkit`; `drivers-command.py` went with `drivers/build.py`) |
 | 2: the kernel's and the prelink's small scripts | `kernel/hosted-fixup.py`, `kernel/kdk-headers.py`, `kernel/linux/iig-fix.py`, `kernel/tests/series-check.py`, `drivers/build.py`; `kernel/prelink/{classes,stubs-check,unmapped,port-fixture}.py`, `kernel/prelink/lead/{between,imports}.py` | **retired** 2026-11-13 (`kernel hosted-fixup\|kdk-headers\|iig-fix\|series-check\|drivers`, `prelink classes\|stubs-check\|unmapped\|port-fixture\|lead-between\|lead-imports`) |
-| 3: image, package, iOS-side helpers | `runtime/package/pack.py` | **retired** 2026-11-13 (`package`) |
-| 3 | `scripts/image/imagetool.py`: `check-ipsw`, `fetch`, `record-plain`, `aea-info`, `pack`, `verify` of an archive; `scripts/fetch/remotezip.py`; `scripts/serve/rangeserve.py`; `scripts/ios/{ios-sign,macho-check,make-tbds}.py`; `scripts/image/tests/*.py` | **ported 2026-11-13, not deleted**: `image check-ipsw\|fetch\|record-plain\|aea-info\|pack\|verify` and `remotezip` are Rust and the image scripts call them; `imagetool.py`, `remotezip.py` (it imports it) and `scripts/image/tests/` are left in place, unused: **the owner decides**. `scripts/serve/rangeserve.py` is **retired** (`rangeserve`). **Not ported**: `scripts/ios/{ios-sign,macho-check,make-tbds}.py` |
-| 4: the root tweaks | `userland/roottweak`, `userland/tweak`, `userland/image-hook`, `userland/tests/test_roottweak.py` | **ported 2026-11-21, not deleted** (the owner agreed to the port on 2026-11-21): `image tweaks apply\|hook\|daemons\|cdhash\|boot-check` and `serve`'s `tweaks` (section 10); build.sh runs the Rust hook. The Python is the frozen original of `tests/tweakspy/compare-python.sh`: **the owner decides** when it goes. `userland/tests/test_helpers.py` is the helpers' C tests' runner, not a part of the port |
+| 3: image, package, iOS-side helpers | `runtime/package/pack.py`; `scripts/serve/rangeserve.py` | **retired** 2026-11-13 (`package`, `rangeserve`) |
+| 3 | `scripts/image/imagetool.py`, `scripts/fetch/remotezip.py`, `scripts/image/tests/*` | ported 2026-11-13, **retired 2026-11-21** (`image`, `remotezip`) |
+| 3 | `scripts/ios/{ios-sign,macho-check,make-tbds}.py`, `userland/metal/shim/codesign`, `userland/metal/build.sh`'s three inline blocks | **ported and retired 2026-11-21** (`ios sign\|macho-check\|tbds\|tbd-diff\|codesign\|metal-stage-edit\|metal-record\|gpuaddon`, crate `oneios-ios`; README "ios"). `tbds` needs no `ipsw` program (each image's export trie, read here), so `scripts/fetch/get-ipsw-cli.sh` went too |
+| 4: the root tweaks | `userland/roottweak`, `userland/tweak`, `userland/image-hook`, `userland/tests/{test_roottweak,fakeroot}.py` | ported 2026-11-21 (section 10), **retired the same day** with `tests/tweakspy/compare-python.sh` and build.sh's `--python-hook` |
+| 5: the rest (2026-11-21) | `kernel/build-hosted.sh`'s two inline blocks, `kernel/linux/unixnu-layout.sh`'s, `kernel/hosted-dev.sh`'s, `display/display-capture.py` | **retired**: `kernel hosted-series\|hosted-archives\|host-cc\|display-capture`, `json set`; a kernel built with the new `build-hosted.sh` is main's but for the build time, the UUID and `N_OSO` (`debug kernel-diff`) |
+| 5 | `userland/tests/test_helpers.py` | **retired**: `userland/tests/host.sh` (POSIX sh, the same 11 cases, 89 checks; tars from `debug mktar`) |
+| 5 | `tests/ioslog/{mkapfs,filters}.py`, `tests/app/mkapk.py`, `tests/sym/make-log.py`, `tests/phone/sparsewrite.py`, `tests/image/parity.py`, every `compare-python.sh` | **retired**: `debug mkapfs\|ioslog-filters\|mkapk\|sym-make-log\|sym-cases\|holes`; the comparisons' Python halves deleted (`tests/compare-python.sh` is `tests/compare-all.sh`) |
+| 5 | inline `python3` of `runtime/package/test.sh`, `scripts/image/{build,seed-apfs-macos,kernel-inputs,verify}.sh`, `scripts/fetch/fetch.sh`, `scripts/phone/stage.sh`, `tests/{app,cycle,log,phone}`, `userland/helpers/build-dropbear.sh` | **retired**: `oneios-tool json` (README "json"), `sha256sum`, shell; dropbear's text edits are `userland/helpers/dropbear-oneios.patch` (fuzz 0, the same tree) |
 
-Python that is left, and why:
-- `scripts/image/imagetool.py`, `scripts/fetch/remotezip.py` and `scripts/image/tests/`: unused by every script since
-  2026-11-13; **the owner decides** when they go
-  (they are the reference of `tests/image/parity.py`, `tests/image/compare-python.sh`, `tests/imagepy/compare-python.sh`
-  and of two tests of `oneios-image`, which skip their Python half when the script is gone).
-- `scripts/ios/{ios-sign,macho-check,make-tbds}.py`: group 3's rest, **not ported yet**
-  (`ios-sign.py` writes Apple's ad-hoc signature byte for byte and `macho-check.py` reads `.tbd` stubs with PyYAML:
-  each needs its own comparison on a Mac and on Linux).
-- Group 4: `userland/roottweak`, `userland/tweak`, `userland/image-hook` and `test_roottweak.py`, ported and unused
-  by the build since 2026-11-21 (section 10); **the owner decides** when they go. `userland/tests/test_helpers.py`
-  (the guest helpers' host tests) is not ported.
-- `kernel/patches/oneios-hosted/display/display-capture.py`: a viewer for a PC boot, Linux only (section 8).
-- `tests/phone/sparsewrite.py`: the frozen original `phone sparse-write` is compared against.
-- Older rounds' test helpers: `tests/image/parity.py`, `tests/ioslog/{filters,mkapfs}.py`, `tests/sym/make-log.py`,
-  `tests/app/mkapk.py`, and inline `python3` lines in `tests/phone/{lib,run,sparse-compare}.sh`,
-  `tests/kernelgen/compare-python.sh`, `runtime/package/test.sh`, `scripts/image/{build,kernel-inputs}.sh`,
-  `scripts/fetch/fetch.sh` and `kernel/build-hosted.sh` (its two edits of the build's copy of `board.toml` and the
-  defconfig). Not new, and not in any group's list yet: the next round's.
-- Other projects' Python that the builds run as it is: UniXNU's driver and scripts, Droid-VM's
-  `build-droidvm-gpu.py`, xnu-linux-toolchain's `iig`.
+**External Python that the builds still run** (other projects' pinned code, not ours: never deleted, never edited):
+
+| Call site | What runs |
+|---|---|
+| `kernel/lib/stage.sh:60` | UniXNU's `./unixnu` driver, and the scripts it runs from its tree: `scripts/prepare-xnu-source.py`, `build-xnu-4k-baseline.sh`'s Python, the board's `build-corecrypto-14.py` and `build-libpthread-kernel.py` (`kernel/device/board.toml`) |
+| `kernel/build-hosted.sh` (the sealed source corecrypto), `kernel/patches/unixnu/0003-skip-source-seal.patch` | UniXNU's `scripts/seal-source-crypto-kernel.py` |
+| `oneios-tool kernel gen storage` (`build_oneios_hosted_storage.rs`) | UniXNU's `prepare-storage-headers.py` |
+| `oneios-tool kernel gen gpu` (`build_oneios_gpu.rs`) | Droid-VM's `build-droidvm-gpu.py` |
+| the kernel build's `iig` | xnu-linux-toolchain's `iig` (a Python program; `kernel iig-fix` edits a copy) |
+| `userland/metal/build.sh` `turnip`, `plugin` | Droid-VM-UniXNU's `scripts/build-turnip-darwin.py`, `build-adreno-metal-plugin.py` (and `build-adreno-metal-bridge.py`), Mesa's meson build (mako, PyYAML) |
+| `kernel/prelink/build.sh`, `tests/prelink/*.sh` | nothing runs: they check that XnuPrelink's `fileset_match.py` exists (its location marks the checkout) |
+
+So `python3` stays a prerequisite of the kernel build (`kernel/build-linux.sh`'s tool check,
+`kernel/linux/setup-toolchain.sh`) and of the Metal plug-in's build only, each line saying why.
+
+Left:
+- **The Mac**: nothing of `ios`, `json`, the 2026-11-21 `kernel` and `debug` commands or `userland/tests/host.sh`
+  was run on a Mac (`ios sign` was compared with Xcode's codesign there on 2026-11-12, as `ios-sign.py`).
+  `runtime/host-tests.sh`'s container image (`oneios-hosttests:3`, no python3) was not built.
+- `ios sign` still runs cctools' `codesign_allocate` for the room, as the script did.
+- `tests/ioslog/compare.sh` was not run after its helpers became `debug mkapfs` and `debug ioslog-filters`
+  (Mandiant's archives and `unifiedlog_iterator` are not on the Linux PC); the helpers were compared with the
+  scripts on their own.
+- Comments of kernel sources, patches and reviewed records that name a retired script stay (a changed source
+  changes the kernel build's inputs): change them with the next real change of each file.
 
 Open after group 2:
 1. **The Mac**: nothing of the helpers, group 2 or `package` was built or run on a Mac. `kernel/build-hosted.sh` now
@@ -610,7 +622,7 @@ with every script: `tests/kernelgen/compare-python.sh` runs there). The kernel b
 | `kernel/patches/oneios-hosted/{storage,aes,keystore,net,hid,audio,gpu,display}/build-oneios-*.py` | `kernel gen NAME` | **retired**, one commit each (`0026865` storage, `8a6a12d` aes, `052fe44` keystore, `1f41bc1` audio, `00dade7` gpu, `96be67f` display, `f7d9085` net, `e99e649` hid) |
 | `kernel/build-record.py` | `kernel build-record` | **retired** (`4e7b15c`) |
 | `hid/layout.py`, `net/layout.py`, `display/port-legacy-display.py` | `kernel layout hid\|net`, `kernel port-legacy-display` | **retired** (`01abbd2`) |
-| `display/display-capture.py` | none | kept: a viewer for a PC boot, Linux only (README "kernel") |
+| `display/display-capture.py` | `kernel display-capture` | **retired** 2026-11-21 (a viewer for a PC boot, Linux only: README "kernel") |
 
 Open:
 1. **The Mac.** Nothing of this was built or run on a Mac: the crate, `kernel/build-hosted.sh` with the commands
@@ -725,7 +737,7 @@ Open:
 2. `make-image`'s `tweaks` step: `tweaks_port()` in `oneios-imagebuild` (the image-build agent's) calls
    `oneios_tweaks::run_hook` (docs/agents.md, Interfaces, has the call).
 3. The Mac: not built or run there.
-4. Retiring the Python: the owner decides. Until then `compare-python.sh` compares the two.
+4. (closed 2026-11-21: the owner retired the Python; `compare-python.sh` ran 33 of 33 the same before it went with it.)
 5. A binary property list that shares a container between two places is refused when it would be written back
    (the Python writes that container once); Apple's CF writer does not share containers, none was seen.
 

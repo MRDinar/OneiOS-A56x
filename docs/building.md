@@ -13,7 +13,8 @@ and `out/`.
 
 | Tool | For | Notes |
 |---|---|---|
-| python3 3.11+, zstd, tmux, git, curl, patch | everything | `patch`: xnuhost's Makefile applies `runtime/xnuhost/drm2kgsl/patches` to a copy of drm2kgsl |
+| zstd, tmux, git, curl, patch | everything | `patch`: xnuhost's Makefile applies `runtime/xnuhost/drm2kgsl/patches` to a copy of drm2kgsl |
+| python3 | the kernel build only, for other projects' pinned scripts it runs (UniXNU's driver and its scripts, Droid-VM's `build-droidvm-gpu.py`, xnu-linux-toolchain's `iig`), and the Metal plug-in's (section 9). Nothing of this project is Python since 2026-11-21 | the host's |
 | Rust 1.88+ (`cargo`; rustup) | `tools/oneios-tool`: the kernel's board archives and build record (section 2), the kernel collection's build (section 3), the image tools and the phone workflow (section 10) | the build scripts run `cargo build --release --manifest-path tools/oneios-tool/Cargo.toml` when the binary is missing or older than its sources (`scripts/lib/oneios-tool.sh`); `ONEIOS_TOOL=PATH` names a built one. Built with 1.98.0; needs a C compiler (`sha2`'s `asm`). `runtime/package.sh` also builds it for the phone: `rustup target add aarch64-linux-android` (section 4) |
 | clang (stock, recent) | the kernel | the kernel build uses stock clang plus xnu-linux-toolchain's ld64 (set up by the kernel scripts, no root) |
 | libdispatch with BlocksRuntime (Linux only) | the kernel's toolchain (cctools' ld64) | Arch: `libdispatch` (6.2.2 on the PC of 2026-11-12: `/usr/include/dispatch`, `/usr/lib/libdispatch.so`, `libBlocksRuntime.so`); Debian/Ubuntu: `libdispatch-dev libblocksruntime-dev`. Without it `kernel/linux/setup-toolchain.sh` stops and no kernel builds. Also git, cmake, make, flex, bison, autoconf, automake, pkg-config ([kernel/README.md](../kernel/README.md)) |
@@ -22,10 +23,9 @@ and `out/`.
 | Apple's `container` 1.7.1 (Mac only) | the runtime's host tests from a Mac | `brew install container`, then `container system start`; `runtime/host-tests.sh`, section 4 |
 | apfs-fuse (Linux only) | reading the volumes for the Data seed and the hook | github.com/sgan81/apfs-fuse; read-only, no root. On macOS `hdiutil` does it, no root (section 1) |
 | qemu-user (`qemu-aarch64`) | booting xnuhost and the kernel on the PC | |
-| `ipsw` CLI | the iOS 27 stubs (`scripts/ios/make-tbds.py`, section 9). No longer the AEA decryption: `oneios-tool image aea-decrypt` does it since 2026-11-21 | `scripts/fetch/get-ipsw-cli.sh` installs the pinned version to `out/bin/ipsw` |
 | mksh, dash (optional) | testing the phone scripts the way Android runs them | |
 | gh | releases | |
-| macOS: Xcode 27 with the iOS platform. Linux: xtool and an Xcode `.xip`. Both: rustup 1.98.0 with `rust-src`, meson, ninja, glslang, glslc, spirv-val, bison, flex, LLVM's `llvm-as`/`llvm-objcopy`/`llvm-ar`, PyYAML, mako | iOS user-space code: the toolchain and the Metal plug-in | section 9; `scripts/setup/ios-toolchain.sh` says what is missing |
+| macOS: Xcode 27 with the iOS platform. Linux: xtool and an Xcode `.xip`. Both: rustup 1.98.0 with `rust-src`, meson, ninja, glslang, glslc, spirv-val, bison, flex, LLVM's `llvm-as`/`llvm-objcopy`/`llvm-ar`, python3 with PyYAML and mako (the Metal plug-in's external build scripts and Mesa's meson build: their Python, not ours) | iOS user-space code: the toolchain and the Metal plug-in | section 9; `scripts/setup/ios-toolchain.sh` says what is missing |
 
 Source references (shallow clones into `external/`, git-ignored):
 
@@ -66,9 +66,11 @@ scripts/image/verify.sh out/image/OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst
 ```
 
 `--no-kernel` builds a set without one (for work on the images only). The userland hook runs by default: since
-2026-11-21 the Rust one, `oneios-tool image tweaks hook` (the same seed and overlay byte for byte as
-`userland/image-hook`, which `--python-hook` runs instead; `--no-hook` builds without the root tweaks;
-`tools/oneios-tool/README.md` "image tweaks"). Format: [image-format.md](image-format.md).
+2026-11-21 the Rust one, `oneios-tool image tweaks hook` (the same seed and overlay byte for byte as the Python
+`userland/image-hook`, deleted the same day with build.sh's `--python-hook`; `--no-hook` builds without the root
+tweaks; `tools/oneios-tool/README.md` "image tweaks"). build.sh runs no Python since 2026-11-21: the hook's record
+and the `--seed apfs` edit of the seed's record are `oneios-tool json set` (the record's keys and values are the
+Python's: on 24A446 `manifest.json` byte for byte). Format: [image-format.md](image-format.md).
 
 **The same in one process, without bash, apfs-fuse or Python: `oneios-tool image build`** (2026-11-21; it is what
 the OneOS app's Make iOS image runs on the phone, `serve`'s `make-image`). It fetches the members (unless
@@ -239,7 +241,9 @@ the Android xnuhost booting the test kernel), `display` (`make -C runtime/displa
 (`runtime/bridges/camera/tests/host.sh`), `links` (`runtime/package/elf-check-test.sh`: the link rule and the check
 of the next section) and `package` (`runtime/package/test.sh`); the last two when the NDK is there.
 A part that ends with exit 0 but skipped something shows the first "skipped" line. The exit code is 1 when a part
-failed. Other host tests: `scripts/image/tests/run.sh`.
+failed. Other host tests: `userland/tests/host.sh` (the guest helpers' C, built for this machine; CI runs every
+`*/tests/host.sh`). `scripts/image/tests/run.sh` (the Python image tool's tests) was deleted with that tool on
+2026-11-21.
 
 ### Shared objects: the link rule and the NEEDED check
 
@@ -340,7 +344,7 @@ start on macOS and names `runtime/host-tests.sh`. On a Mac that script:
    build/android/testkernel.elf`, `runtime/bridges all`, `runtime/bridges/camera all`, `runtime/display all`), so
    the container needs no NDK;
 2. runs `runtime/host-tests.sh --suite` (with `STRICT=1 PREBUILT=1`) in an arm64 Ubuntu 24.04 container of Apple's `container` tool (each container
-   is its own small VM on Virtualization.framework). The image `oneios-hosttests:2` is built with `container build`
+   is its own small VM on Virtualization.framework). The image `oneios-hosttests:3` (no `python3` since 2026-11-21; `:2` had it) is built with `container build`
    from the Containerfile inside the script the first time (gcc 13, clang 18, OpenJDK 17, zstd, patch, and the kernel
    build's bc, bison, flex, libelf-dev, libssl-dev). The checkout is mounted at its own path (`-v ROOT:ROOT`); nothing
    else of the Mac is. On arm64 the Android xnuhost runs as it is (static, bionic), so `check-arm64` boots the test
@@ -427,8 +431,8 @@ after):
   `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips
   (`docs/booter.md` 2.6d has the numbers). On the phone: the same command line, as the parallel test's (2.6c step 2).
   Not part of `make test`.
-- macOS's `tar` is bsdtar (no `--mtime`): `runtime/package.sh` writes the archive with `pack.py archive` where `tar`
-  is not GNU tar. For the same files it is byte-identical to GNU tar 1.35's `--format=ustar` archive (checked).
+- macOS's `tar` is bsdtar (no `--mtime`): `runtime/package.sh` writes the archive with `oneios-tool package archive`
+  (`pack.py archive` until 2026-11-13), so GNU tar is not needed. For the same files it is byte-identical to GNU tar 1.35's `--format=ustar` archive (checked).
 - macOS's `wc -l` pads its count: `runtime/package/test.sh` strips it.
 
 ## 5. Booting on the PC (qemu-aarch64)
@@ -519,12 +523,12 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
 - What user space did, after the run has stopped: the Data volume is in `--data`'s `data.img` and launchd keeps
   its own log on it (every job spawned or refused, every exit with its reason).
   `apfs-fuse -o ro,vol=2 out/run/data/data.img MNT`, then `MNT/root/log/com.apple.xpc.launchd/launchd.log`, and
-  `python3 -I userland/tweak boot-check --data MNT/root` says whether launchd applied the daemon policy
+  `oneios-tool image tweaks boot-check --data MNT/root` says whether launchd applied the daemon policy
   ([userland.md](userland.md) section 10); `fusermount3 -u MNT` before the next run.
 - The display: the guest's framebuffer driver starts about ten seconds in (`oneios-display:` lines in the log: stage
   10 is a started framebuffer; then who opened it, the first swaps and frames). To see the picture, boot with
   `--display shm` instead of `none` and run, beside it,
-  `kernel/patches/oneios-hosted/display/display-capture.py --session out/run/session --out out/run/frame`: it prints a
+  `oneios-tool kernel display-capture --session out/run/session --out out/run/frame` (Linux): it prints a
   line when the picture changed and writes `out/run/frame-NNN.png`. `out/run/session/ready` appears at the first
   frame of the guest's own that is not all black (never a frame of the boot console; with every frame black, `ready-content-wait` seconds, 120, after the first: [booter.md](booter.md) 2.8, "the ready rule"); the log's `display: the guest's first frame of its own: all black` line is where the rule before 2026-11-15 was ready. Boot argument `oneios-display=0` leaves the display out. The frame is
   1440x3120 at 120 Hz and @3x unless told otherwise: `--width W --height H`, `--hz N`, `--set scale=2`
@@ -532,7 +536,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   for a Galaxy S25 or A56 session); the log's `display: shm, guest frame ...` line and the capture's `hello` say what it is.
   The frame's pixels: `display: the frame's pixels: B,G,R,X 8-bit sRGB, 4 bytes a pixel` (the default);
   `--set display-format=rgba16f` makes them half floats and passes the guest `oneios-display-wide=1`, which
-  `display-capture.py` cannot read (it takes format 1 only). What iOS's render server swapped and what the display
+  `display-capture` writes as sRGB, clamped to 0..1 (its `hello` line then says `(half floats)`). What iOS's render server swapped and what the display
   service publishes: the kernel's `oneios-display: the compositor swaps format ...` and `oneios-display: properties:`
   lines (`kernel/patches/oneios-hosted/display/README.md`, "Colour, depth and the panel"). `--set
   identity=out/kernel-inputs/24A446/devicetree.bin` gives the guest the iPhone's own `/product` ([booter.md](booter.md) 1).
@@ -940,17 +944,21 @@ The same scripts on both hosts (`scripts/ios/env.sh` picks the parts by `uname -
   extracts from Xcode, linked by Apple's ld64 built here, signed ad hoc here.
 
 Either way every link goes against the **guest's own iOS 27 stubs** (`out/ios27-tbd`, made from 24A446's shared
-cache) before the SDK's, and every file is signed by `scripts/ios/ios-sign.py`.
+cache) before the SDK's, and every file is signed by `oneios-tool ios sign`. The toolchain's own steps are
+`oneios-tool ios` (crate `oneios-ios`, [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "ios"); they were
+Python scripts here until 2026-11-21 (`ios-sign.py`, `macho-check.py`, `make-tbds.py` over the `ipsw` program).
 
 ```sh
 scripts/setup/ios-toolchain.sh          # one line: "ios toolchain: ok: SDK ..., <linker>, <clang>, iOS 27 stubs N"
                                         #        or "ios toolchain: missing: A; B" (each with the command that makes it)
 scripts/bg.sh ios-ld scripts/setup/ios-toolchain.sh --ld      # Linux, once: ld64 with .tbd support -> out/ios-toolchain (about 6 min)
-scripts/bg.sh ios-tbds scripts/setup/ios-toolchain.sh --tbd   # once per image set: the iOS 27 stubs -> out/ios27-tbd
+scripts/setup/ios-toolchain.sh --tbd     # once per image set: the iOS 27 stubs -> out/ios27-tbd (about 5 s)
 scripts/setup/ios-toolchain.sh --test   # builds, signs and checks out/ios-test/hello
 ```
 
-`--tbd` reads `out/image/24A446/systemos.img`. Before the image set exists, give it the decrypted SystemOS
+`--tbd` (`oneios-tool ios tbds`) reads the cache from `out/ios27-cache/`; when that copy is not there it first
+copies `/System/Library/Caches/com.apple.dyld` out of `out/image/24A446/systemos.img` into it with the tool's own APFS
+reader (about 7 GB; no mount, no root, no outside program). Before the image set exists, give it the decrypted SystemOS
 image of the fetch: `scripts/setup/ios-toolchain.sh --tbd --image inputs/24A446/043-70037-715.dmg`.
 
 | Part | What | macOS | Linux |
@@ -958,8 +966,8 @@ image of the fetch: `scripts/setup/ios-toolchain.sh --tbd --image inputs/24A446/
 | SDK | headers (and stubs, as a fallback) | Xcode's: `xcrun --sdk iphoneos --show-sdk-path` (iPhoneOS27.2 with Xcode 27.2) | `xtool sdk install <Xcode.xip>` puts it under `~/.config/swiftpm/swift-sdks/darwin.artifactbundle/.../SDKs/`; the newest `iPhoneOS*.sdk` there is used |
 | linker | reads `.tbd` stubs | Xcode's ld (`ld-27106.1` with Xcode 27.2) | Apple's ld64-956.6 with libtapi: `--ld` builds cctools-port at the kernel's pin (`kernel/pins.sh`) with tpoechtrager/apple-libtapi `2a57054` into `out/ios-toolchain`. The kernel's ld64 (`out/toolchain`) cannot read a `.tbd` |
 | clang | arm64e | Xcode's (Apple clang 21 with Xcode 27.2) | the host's, LLVM 19 or newer |
-| iOS 27 stubs | what 24A446 really exports | `--tbd` runs `scripts/ios/make-tbds.py`: one `.tbd` per image of the guest's own shared cache, written by `ipsw dyld tbd`, laid out like an SDK in `out/ios27-tbd/`. The cache is read from `out/ios27-cache/` when that copy exists, otherwise from the SystemOS image, attached with `hdiutil` (macOS) or `apfs-fuse` (Linux). Derived from Apple's binaries: never committed | same |
-| signing | ad hoc, 4 KiB pages | `ios-sign.py` with Xcode's `codesign_allocate` | `ios-sign.py` with cctools' `codesign_allocate` |
+| iOS 27 stubs | what 24A446 really exports | `--tbd` runs `oneios-tool ios tbds`: one `.tbd` per image of the guest's own shared cache, from the image's export trie, laid out like an SDK in `out/ios27-tbd/` (4723 files with the links, 461 MB). The cache is read from `out/ios27-cache/`, copied there out of the SystemOS image by the tool's APFS reader when it is missing. Derived from Apple's binaries: never committed | same |
+| signing | ad hoc, 4 KiB pages | `oneios-tool ios sign` with Xcode's `codesign_allocate` | `oneios-tool ios sign` with cctools' `codesign_allocate` |
 
 `IOS_SDK`, `IOS_LD`, `IOS_CLANG`, `IOS_TBD` and the others in `env.sh` override each part. Every build prints the
 SDK it used and writes it into its build record. The deployment target is 27.0 (`LC_BUILD_VERSION` minos 27.0);
@@ -972,25 +980,30 @@ The helpers in `scripts/ios/` (settings and their overrides are in `env.sh`):
 scripts/ios/ios-clang -O2 x.c -framework CoreFoundation -o x                    # executable (ios-clang++ for C++/ObjC++)
 scripts/ios/ios-clang -dynamiclib -install_name /usr/lib/libx.dylib x.c -o libx.dylib
 scripts/ios/ios-clang++ -bundle -fobjc-arc x.mm -framework Metal -o X           # a bundle's executable
-scripts/ios/ios-sign.py --identifier com.oneios.x [--entitlements e.plist] x    # ad-hoc signature; prints the CDHash
-scripts/ios/macho-check.py x                                                    # every import against the iOS 27 stubs
+oneios-tool ios sign --identifier com.oneios.x [--entitlements e.plist] x  # ad-hoc signature; prints the CDHash
+oneios-tool ios macho-check [--local LIB] [--sdk] x                        # every import against the iOS 27 stubs
+oneios-tool ios tbd-diff A B                                               # two stub trees, by what the linker reads
 ```
 
 - `ios-clang`: `clang -target arm64e-apple-ios27.0 -isysroot $IOS_SDK`, with `ios-ld` as the linker.
 - `ios-ld`: the linker with the iOS 27 stubs as the first `-syslibroot` (so a symbol iOS 27.0.1 does not export
   fails the link) and `-fixup_chains` (Linux's ld64 writes the old `LC_DYLD_INFO` opcodes unless told; Xcode's ld
   writes chained fixups for iOS anyway and takes the flag).
-- `ios-sign.py`: one SHA-256 code directory with 4 KiB pages (this guest's kernel runs 4 KiB pages), an empty
+- `ios sign`: one SHA-256 code directory with 4 KiB pages (this guest's kernel runs 4 KiB pages), an empty
   requirement set, the entitlements as XML and DER when given, an empty CMS blob. It prints
   `<cdhash> <arch> pages=4096 <identifier> <file>`. **Its output is byte for byte what Apple's
   `codesign --force --sign - --pagesize 4096 [--entitlements PLIST] --identifier ID` writes**, so a file has the
   same CDHash whichever of the two signed it: compared with Xcode 27.2's codesign on 2026-11-12 for an executable
   (16 identifier lengths times no entitlements and 8 entitlement sets: 144 of 144 identical) and for Turnip's dylib.
-  It leaves codesign's room for the signature (its length plus 8, rounded up to 16). No bundle seal
+  It leaves codesign's room for the signature (its length plus 8, rounded up to 16). The Rust command gives the retired script's bytes: 96 of 96 files and records on
+  24 made-up cases (an executable, a dylib, a bundle, a 300 KB file; three identifier lengths; with and without
+  entitlements; signed once and again), and the five helpers of `userland/helpers/build.sh` byte for byte. No bundle seal
   (`_CodeSignature/CodeResources`): the kernel checks a mapped library by its CDHash alone.
-- `macho-check.py`: arm64e, platform iOS, signed with 4 KiB pages, every library has a stub, every undefined symbol
+- `ios macho-check`: arm64e, platform iOS, signed with 4 KiB pages, every library has a stub, every undefined symbol
   is exported by the library it is bound to (re-exports followed). `--local FILE` names a dylib that travels with
-  the file; `--sdk` checks against the SDK's stubs instead. On macOS it runs Xcode's `llvm-nm` and `llvm-objdump`.
+  the file; `--sdk` checks against the SDK's stubs instead. It reads the load commands, the symbol table and the
+  stubs itself (the script needed `llvm-nm`, `llvm-objdump` and PyYAML); its reports are the script's, line for line,
+  on 11 of 11 cases (with both sets of stubs and the Metal bundle).
 
 **Trust.** The guest runs a binary whose CDHash is in a trust cache. Ours get there through the image hook: it reads
 the CDHash from each signed Mach-O it places and writes `overlay/userland/owner-trust.json` ([userland.md](userland.md)).
@@ -1007,6 +1020,15 @@ builds the four helpers in 2 seconds; each passes `macho-check.py`.
 Checked on the Linux PC on 2026-11-11 (SDK 26.5, stubs of 24A446): `--test` built `out/ios-test/hello` (50432 bytes:
 ios-sign.py then left more room than codesign), `rcodesign print-signature-info` parsed the signature, and
 `macho-check.py` passed.
+
+Checked on the Linux PC on 2026-11-21 with the Rust commands (SDK 26.5, the 24A446 cache in `out/ios27-cache`):
+`--tbd` made 4723 stubs in 4.5 s (the `ipsw`-made ones took about 6 minutes), and `oneios-tool ios tbd-diff` finds
+every exported name of every file the same as `ipsw dyld tbd`'s; what differs: `ipsw` also listed 1,338,142
+Objective-C classes and ivars the images do not export (read from their metadata: nothing can bind to them), wrote
+no re-exported libraries in the documents it copied into a re-exporting library's file (18 files), and wrote some
+versions shorter (CoreFoundation 5027, where `LC_ID_DYLIB` says 5027.0.69). `hello` and a bundle that uses
+Foundation, UIKit and a dylib of its own link against either set with the same symbols bound to the same
+libraries. `--test` passes; `ios macho-check` with the new stubs gives the same 11 reports. Not run on the Mac.
 
 **Not checked: that the guest runs any of it.** No boot has exec'ed a binary built by either host.
 
@@ -1051,7 +1073,7 @@ helper's restart, the touch IC's wake and the panel's level), `app` (the fork's 
 section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
 `image tweaks` (the root tweaks and the image build's userland hook: the port of `userland/roottweak` and
 `userland/image-hook`, `apply`, `hook`, `daemons`, `cdhash`, `boot-check`; compared with the Python by
-`tools/oneios-tool/tests/tweakspy/compare-python.sh`).
+`tests/tweakspy/compare-python.sh`, 33 of 33 the same, before the Python and that script were deleted on 2026-11-21).
 **None of the three has run on the real phone yet**: sections 6 and 7 show the CLI first and, as the fallback, the
 scripts and adb lines that were run. Commands, crates, and each tool's comparison with the Python tool it replaces:
 [tools/oneios-tool/README.md](../tools/oneios-tool/README.md); what is left:
@@ -1073,17 +1095,17 @@ Rust 1.95 or newer (apk-info-zip 1.1.1 needs 1.95; built with 1.98.0 and 1.99.1)
 (macos-unifiedlogs, pinned by commit in `Cargo.lock`). Linux x86_64 and macOS arm64. `oneios-tool --help` and
 `oneios-tool TOOL --help` list every command and option (one clap layout for all tools).
 
-**The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (still Python: `scripts/ios/`, the root tweaks):
-run the Rust tool only:
+**No script of this repository runs Python** (2026-11-21: the owner retired it; the last were the root tweaks'
+original, the image tool, `scripts/ios/` and the scripts' inline `python3`). They run the Rust tool only:
 
 | Script | Switch | Effect |
 |---|---|---|
-| `scripts/image/build.sh`, `verify.sh`, `kernel-inputs.sh`, `scripts/fetch/fetch.sh` | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary; `IMAGETOOL_IMPL` is gone; `scripts/image/imagetool.py` stays in the tree, unused, until the owner decides) | `oneios-tool image` runs every subcommand, `check-ipsw`, `fetch`, `record-plain`, `aea-info`, `pack` and the archive's `verify` too. Before that day: `oneios-tool image` runs profile, apfs-info, apfs-owners, hashes, tree-copy, seed-pack, manifest and the set folder's verify; pack and the archive's verify stay with the Python tool. Same files, byte for byte (README "image") |
+| `scripts/image/build.sh`, `verify.sh`, `kernel-inputs.sh`, `scripts/fetch/fetch.sh` | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary; `IMAGETOOL_IMPL` is gone; `scripts/image/imagetool.py` and `scripts/fetch/remotezip.py` were deleted on 2026-11-21; since then no inline `python3` either: fetch.sh's `SHA256SUMS` is `sha256sum`, build.sh's records `oneios-tool json set`) | `oneios-tool image` runs every subcommand, `check-ipsw`, `fetch`, `record-plain`, `aea-info`, `pack` and the archive's `verify` too. Before that day: `oneios-tool image` runs profile, apfs-info, apfs-owners, hashes, tree-copy, seed-pack, manifest and the set folder's verify; pack and the archive's verify stay with the Python tool. Same files, byte for byte (README "image") |
 | `scripts/image/kernel-inputs.sh` | none needed; `IM4P_TOOL=PATH` forces it | without the `lzfse` program the kernelcache is decoded by `oneios-tool image im4p`; the result is checked against the pinned SHA-256 either way (section 1) |
-| `kernel/build-hosted.sh`, `kernel/build-linux.sh`, `kernel/build-macos.sh` | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | the board archives (`storage`, `board`, `aes`, `keystore`, `net`, `hid`, `audio`, `gpu`, `display`) are built by `oneios-tool kernel gen NAME`, which UniXNU's driver runs from `board.toml`, and the VM kernel's build record by `oneios-tool kernel build-record`; the Python generators were deleted after every file they write was compared byte for byte, and their outputs are frozen in `tests/kernelgen/golden/` (README "kernel"); since 2026-11-13 `kernel gen gpu` compiles a staged `DroidVMVirtioGpu3D.cpp` with the GPU report's blob and surface-trail hooks (`staged/gpu.rs` `GPU3D`) |
+| `kernel/build-hosted.sh`, `kernel/build-linux.sh`, `kernel/build-macos.sh` | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | the board archives (`storage`, `board`, `aes`, `keystore`, `net`, `hid`, `audio`, `gpu`, `display`) are built by `oneios-tool kernel gen NAME`, which UniXNU's driver runs from `board.toml`, and the VM kernel's build record by `oneios-tool kernel build-record`; the Python generators were deleted after every file they write was compared byte for byte, and their outputs are frozen in `tests/kernelgen/golden/` (README "kernel"); since 2026-11-13 `kernel gen gpu` compiles a staged `DroidVMVirtioGpu3D.cpp` with the GPU report's blob and surface-trail hooks (`staged/gpu.rs` `GPU3D`); since 2026-11-21 `build-hosted.sh`'s two edits of its device copy (the hosted series in `board.toml`, the archives and the defconfig) are `oneios-tool kernel hosted-series` and `kernel hosted-archives`, `kernel/linux/unixnu-layout.sh`'s `xnu-host-cc` is `kernel host-cc` and `kernel/hosted-dev.sh patch` sets the patch's hash with `oneios-tool json set` (inline Python blocks until then; the same bytes: README "kernel"). The kernel build still runs other projects' Python as it is: UniXNU's driver and scripts, Droid-VM's `build-droidvm-gpu.py`, xnu-linux-toolchain's `iig` |
 | `kernel/prelink/build.sh` | none: Rust only since 2026-11-12 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool prelink` runs all twelve steps; the Python steps were deleted after every step's output was compared byte for byte, and their outputs are frozen as hashes (`tests/prelink/compare-golden.sh`). 14 s instead of two minutes |
 | `runtime/package.sh` (and CI) | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool package check\|manifest\|archive`: the Apple-file check, `runtime.json`, the archive without GNU tar; `runtime/package/pack.py` was deleted after 91 frozen cases and the 19 package tests gave the same |
-| `kernel/tests/host.sh`, `drivers/tests/host.sh`, by hand | none | `oneios-tool kernel series-check`, `kernel drivers --check`, `kernel hosted-fixup`, `kernel kdk-headers`, `kernel iig-fix`, `prelink classes\|stubs-check\|unmapped\|port-fixture\|lead-between\|lead-imports`: the scripts of those names were deleted on 2026-11-13 (README, the group 2 section) |
+| `kernel/tests/host.sh`, `drivers/tests/host.sh`, by hand | none | `oneios-tool kernel series-check`, `kernel hosted-series` and `kernel hosted-archives` on copies of the committed `board.toml` and hosted defconfig, `kernel drivers --check`, `kernel hosted-fixup`, `kernel kdk-headers`, `kernel iig-fix`, `prelink classes\|stubs-check\|unmapped\|port-fixture\|lead-between\|lead-imports`: the scripts of those names were deleted on 2026-11-13 (README, the group 2 section) |
 
 `oneios-tool image seed-pack` writes `data.seed`'s members in parallel, each at its own offset (the same bytes as
 `imagetool.py`'s; the SHA-256 is the one the trust list pins). `ONEIOS_IMAGE_TIMING=1` prints each phase's time;

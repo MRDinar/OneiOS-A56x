@@ -73,7 +73,7 @@ userland/camera/build.sh          # -> out/userland/camera/H9ISP.mediacapture, c
 # then the image build (docs/building.md section 1): the image hook takes out/userland/camera (ONEIOS_CAMERA_PLUGIN=DIR for another)
 ```
 
-- The image hook (`roottweak` tweak `camera-plugin`) writes it to
+- The image hook (the root tweaks' `camera-plugin` tweak, `oneios-tool image tweaks`) writes it to
   `/private/var/oneios/addons/MediaCapture/H9ISP.mediacapture` in the Data seed and its CDHash to
   `overlay/userland/owner-trust.json` (library validation in `cameracaptured`). **A new seed starts the phone's Data
   store over** (settings, joined Wi-Fi networks, everything iOS wrote).

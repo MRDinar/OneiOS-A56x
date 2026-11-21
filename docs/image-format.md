@@ -1,6 +1,6 @@
 # The OneiOS image set (format 1)
 
-Owner: image-build. Code: `profiles/`, `scripts/fetch/`, `scripts/image/`. Tests: `scripts/image/tests/run.sh`.
+Owner: image-build. Code: `profiles/`, `scripts/fetch/`, `scripts/image/`. Tests: `cargo test -p oneios-image -p oneios-imagebuild -p oneios-tweaks` (section 9).
 
 The image set is to OneiOS what `system.raw` plus its overlays are to OneOS: the guest system, built on the
 owner's machine from the vendor's firmware, pinned by size and SHA-256, staged in a folder on the phone. For
@@ -137,7 +137,7 @@ iOS 27.0.1 (24A446), iPhone18,2: 13 of the IPSW's 165 members, 10.59 GiB of 11.8
   "data": { "seed": "data.seed", "volume_uuid": "1B7DB2B7-5ECA-4FDA-98AF-55DF8632E355", "volume_name": "Data",
             "case_sensitive": true, "store_gib": 16 },
   "kernel": "kernel.kc",
-  "tweaks": { "hook": "userland/image-hook", "hook_sha256": "<64 hex>", "commit": "<git>", "dirty": false, "info": {} },
+  "tweaks": { "hook": "oneios-tool image tweaks", "hook_sha256": "<64 hex>", "commit": "<git>", "dirty": false, "info": {} },
   "files": [
     { "path": "os.img", "size": 10359930880, "sha256": "<64 hex>", "role": "os", "format": "apfs-raw",
       "read_only": true, "hashes": "os.img.hashes",
@@ -230,9 +230,11 @@ written with their owners). Written, not run: the Mac session of 2026-11-12 had 
 ## 6. The userland hook
 
 `build.sh` runs the userland hook once, after it has copied `/private/var` and before it packs the seed: by
-default (since 2026-11-21) the Rust one, `oneios-tool image tweaks hook --repo ROOT`; `--python-hook` runs
-`userland/image-hook`, its frozen original (the same seed and overlay byte for byte); `--hook FILE` any other
-executable. The read-only images are never changed, so every tweak to the system is a change to the
+default (since 2026-11-21) the Rust one, `oneios-tool image tweaks hook --repo ROOT` (the port of the Python
+`userland/image-hook`, deleted on 2026-11-21 after the two gave the same seed and overlay byte for byte); `--hook
+FILE` any other executable. build.sh records the hook in the manifest's `tweaks` (`hook`, `hook_sha256` of the
+tool's binary or of the hook's file, `commit` and `dirty` from git, `info`: the hook's summary), written with
+`oneios-tool json set` (a Python block until 2026-11-21: the same keys and values). The read-only images are never changed, so every tweak to the system is a change to the
 Data seed, a file in `overlay/`, or kernel policy. Hook API 1:
 
 | Variable | Meaning |
@@ -299,13 +301,13 @@ is build.sh's (Linux, apfs-fuse) byte for byte.
 
 | Step | Linux | macOS |
 | --- | --- | --- |
-| List and fetch IPSW members | python3 3.11+ | same (run on the Mac, 2026-11-12) |
-| AEA decryption | `oneios-tool image aea-decrypt` (since 2026-11-21; both images of 24A446 on the Linux PC, to the pinned `plain_sha256`). Before: `ipsw` 3.1.743 (`scripts/fetch/get-ipsw-cli.sh`, pinned by SHA-256) | the same command (not run on the Mac yet); before, the `ipsw` macOS arm64 release (run on the Mac: both images of 24A446) |
-| Read the volumes (the seed's `/private/var`, the hook's three roots) | `apfs-fuse`, no root: owners as stored | `hdiutil attach -readonly -owners off`, no root: every file shows as the user's and is readable; the owners of `/private/var` come from the OS image's own APFS records (`imagetool.py tree-copy --owners-from`), checked entry by entry against the mount |
+| List and fetch IPSW members | `oneios-tool image check-ipsw`, `fetch` | same (run on the Mac, 2026-11-12, with the Python tool of then) |
+| AEA decryption | `oneios-tool image aea-decrypt` (since 2026-11-21; both images of 24A446 on the Linux PC, to the pinned `plain_sha256`). Before: `ipsw` 3.1.743 (installed by `scripts/fetch/get-ipsw-cli.sh`, pinned by SHA-256; the script went on 2026-11-21, when nothing needed `ipsw` any more) | the same command (not run on the Mac yet); before, the `ipsw` macOS arm64 release (run on the Mac: both images of 24A446) |
+| Read the volumes (the seed's `/private/var`, the hook's three roots) | `apfs-fuse`, no root: owners as stored | `hdiutil attach -readonly -owners off`, no root: every file shows as the user's and is readable; the owners of `/private/var` come from the OS image's own APFS records (`imagetool.py tree-copy --owners-from` then, `oneios-tool image` since), checked entry by entry against the mount |
 | Seed as tar | yes | yes (xattrs read with libc's `listxattr`, which Python lacks on macOS) |
 | Seed as APFS (`--seed apfs`) | **no**: nothing on Linux writes this APFS | `newfs_apfs`, as root (`sudo`). Not run |
-| Hash lists, manifest, archive | python3, `zstd` | same (Homebrew's `zstd`) |
-| Kernel inputs | python3, and `lzfse` or `oneios-tool` (`image im4p`; `scripts/image/kernel-inputs.sh` takes the one that is there) | same |
+| Hash lists, manifest, archive | `oneios-tool image`, `zstd`; `sha256sum` (fetch.sh's `SHA256SUMS`) | the same; `shasum -a 256`, Homebrew's `zstd` |
+| Kernel inputs | `oneios-tool image im4p` (LZFSE in Rust; `scripts/image/kernel-inputs.sh`) | same |
 
 **The owners on macOS.** A volume a user attaches with owners honoured keeps root's folders closed to that user,
 and attaching as root needs `sudo`. So `build.sh` attaches with owners ignored and reads the real owner, group and
@@ -362,9 +364,11 @@ much again for the archive.
 
 ## 9. Tests
 
-`scripts/image/tests/run.sh`: 23 tests on generated stand-in files (a ZIP laid out like an IPSW, minimal
-APFS superblocks and a small APFS file-system tree, hashed and not, fake trust files and kernel). They pass on Linux
-and on macOS. They cover the profile checks, the ZIP member fetch with
-resume and CRC failure, pin checks, the AEA header and IM4P readers, APFS facts, the owner reader of macOS builds, hash lists, the seed's
-owner, mode and time rules and its reproducibility, manifest creation and every way verification refuses a
-set or an archive, and `build.sh` from stand-in inputs to a verified archive with a hook.
+`cargo test --release --manifest-path tools/oneios-tool/Cargo.toml -p oneios-image -p oneios-imagebuild -p oneios-tweaks`:
+the image tool's own tests on generated stand-in files (a ZIP laid out like an IPSW, APFS images made by
+`tools/oneios-tool/tests/support/mkapfs.rs`, the code of `oneios-tool debug mkapfs`, trust files and kernels), the
+image build in one process (`make-image`) and the root tweaks. `scripts/image/tests/run.sh` (23 tests of the
+Python `imagetool.py`, `build.sh` from stand-in inputs among them) went with that script on 2026-11-21; `build.sh`
+itself is checked by a run on the real inputs (24A446 on 2026-11-21, after its Python blocks were replaced:
+`data.seed` `27ec4e10...`, the overlay and `manifest.json` byte for byte as with the Python record writer;
+`tools/oneios-tool/README.md` "image tweaks").

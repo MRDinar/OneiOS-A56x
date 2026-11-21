@@ -199,7 +199,7 @@ of 2026-11-12 (below) has 97 and 10.
 
 ## On a Mac (2026-11-12, mac-kernel)
 
-The same command on macOS (python3 3.11+; Homebrew's keg-only `llvm` for `llvm-nm` and `llvm-mc`, which `build.sh`
+The same command on macOS (Homebrew's keg-only `llvm` for `llvm-nm` and `llvm-mc`, which `build.sh`
 puts on `PATH`; XnuPrelink is `external/XnuPrelink` when it exists, else the kernel base's submodule
 `external/Droid-VM-UniXNU/kits/XnuPrelink` at `b74ed7c`). **Use `external/XnuPrelink` at `9b950f2`**
 (`scripts/setup/get-references.sh XnuPrelink`): `b74ed7c` does not retarget the hosted archives' `<stub>.original`

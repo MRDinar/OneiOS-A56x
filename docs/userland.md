@@ -29,16 +29,17 @@ oneios-tool image tweaks apply --root-image out/image/24A446/os.img --data DATA_
 oneios-tool image tweaks daemons                                           # the daemon policy as text
 oneios-tool image tweaks cdhash FILE...                                    # CDHash of signed Mach-O files
 oneios-tool image tweaks boot-check --data DATA_VOLUME [--root OS_TREE]    # after a boot: section 10
-cargo test --release --manifest-path tools/oneios-tool/Cargo.toml -p oneios-tweaks   # the 38 cases of test_roottweak.py
+cargo test --release --manifest-path tools/oneios-tool/Cargo.toml -p oneios-tweaks   # the root tweaks' 38 cases
+userland/tests/host.sh                                                     # the guest helpers' C, built for this machine
 ```
 
-The Python is left in place, unchanged, as the frozen original the port is compared against
-(`tools/oneios-tool/tests/tweakspy/compare-python.sh`; the owner decides when it goes): `python3 -I userland/tweak
-apply|daemons|cdhash|boot-check ...` (the same options), `scripts/image/build.sh --python-hook` (its hook),
-`python3 -I userland/tests/test_roottweak.py && python3 -I userland/tests/test_helpers.py` (`userland/tweak` is the
-package's command; `python3 -I -m roottweak` does not find the package, because `-I` leaves the current folder out
-of the module path; Python 3.11 or later, standard library only). An edit of the tweaks goes into the Rust (and,
-while the Python is kept, into the Python too, so that the comparison stays at "the same"). The config
+The Python original (`userland/roottweak`, `userland/tweak`, `userland/image-hook` and its tests
+`test_roottweak.py`, `fakeroot.py`) was deleted on 2026-11-21 (the owner's decision: no Python of ours in the
+repository), after the port gave the same seed and overlay byte for byte; `roottweak` in this document now means
+`oneios-tool image tweaks` (its commands and options are roottweak's). The guest helpers' host tests
+(`test_helpers.py`, 11 cases) are `userland/tests/host.sh` since the same day: POSIX shell, the same cases (89
+checks), CI runs it with the other `*/tests/host.sh`; the seed archives it unpacks are written by `oneios-tool debug
+mktar`, the bytes Python's tarfile wrote for the old test. The config
 (`userland/config/*.toml`) is read from the checkout by build.sh (`--repo`), and built into the binary for the
 phone: rebuild the tool after an edit there.
 
@@ -382,7 +383,7 @@ spawns, every job it refuses and why, and every exit with its reason (`exited du
 ```sh
 apfs-fuse -o ro,vol=2 DATA_DIR/data.img MNT        # the Data volume is the third of its container (index 2)
 less MNT/root/log/com.apple.xpc.launchd/launchd.log
-oneios-tool image tweaks boot-check --data MNT/root --root OS_MNT/root   # OS_MNT: apfs-fuse -o ro out/image/24A446/os.img OS_MNT (or python3 -I userland/tweak boot-check ...)
+oneios-tool image tweaks boot-check --data MNT/root --root OS_MNT/root   # OS_MNT: apfs-fuse -o ro out/image/24A446/os.img OS_MNT
 fusermount3 -u MNT
 ```
 
