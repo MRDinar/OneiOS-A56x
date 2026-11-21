@@ -2,9 +2,9 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `53abb04`, 2026-11-21:
-upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, no change to
-session ABI 1).
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `7e34fa4`, 2026-11-21:
+upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, Make iOS image
+with `make-image` on a fresh phone, no change to session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 
@@ -394,8 +394,18 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   it. Optional keys the app need not send: `profile` (default: the runtime's `lib/profiles/` when it holds one),
   `xnu`, `kb`, `kernelcache`, `kc`, `no_kernel`, `fetch`, `source`, `keep_work`, and the tweaks' `helpers`,
   `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args`.
-- Make iOS image's first request is `fetch` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`
-  (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
+- Make iOS image (fork `7e34fa4`, not run on a phone; no PC needed): root's `status`; when the staged runtime has no
+  kernel (or is a placeholder), the latest release's runtime is staged first (as Get the runtime; nothing is
+  downloaded when the latest is the staged version); root's `kbinput` ×12; `begin image`; `tool work`. When `hello`'s
+  `cmds` lack `make-image`, the tool is closed, the latest runtime staged once and the tool opened again. Then one
+  `make-image` with `indir` `<stage>/make/inputs`, `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`,
+  `ids_list` `<stage>/image.new.ids`, `work` `<stage>/make`, `resume` true, and nothing else (the profile, `xnu`, `kb`
+  and `tweaks` are the tool's defaults), then root's `finish image <files> <format> <version> <build>` with those four
+  fields of its `ok`. No `fetch` before it (it would download about 11 GB before `make-image`'s room check) and no
+  `tweaks` after it. The fork relies on: those keys; the `start` step list; one `space` event with `need` and `free`;
+  the refusal codes `space`, `auth`, `mismatch`, `audit`, `not-ported`, `not-found`, `usage`, `exists`; `ok`'s
+  `files`, `format`, `version`, `build`, `bytes`, `manifest_sha256`; and `make/inputs` being kept after a stop. Change
+  these only together with the fork's `OneiosTool.makeImageRequest` and `OneiosMakeImage`.
 - `tweaks` (in the tool since 2026-11-21; `tools/oneios-tool/README.md` "serve" (the commands) and "image
   tweaks"): the root tweaks and the image build's userland hook in the tool, no Python, the OS volume read from its
   image (`os_image`) without a mount. Keys: `data` (the copied Data tree), `overlay`, `os_root` or `os_image`
@@ -405,7 +415,7 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `refused` `input`. It no longer answers `not-ported`. In the Make iOS image flow `make-image` runs the tweaks
   itself (its `tweaks` step), so the app does not need to send `tweaks` on its own: the keyless `tweaks` that
   Make iOS image sends after `make-image` (fork `OneiosToolJob.kt`, "Drop it when make-image comes") is now
-  refused `usage` (`tweaks: "data" is missing`) instead of `not-ported`; drop it from the flow.
+  refused `usage` (`tweaks: "data" is missing`) instead of `not-ported`; the fork no longer sends it (`7e34fa4`).
 - Update the kernel (fork `53abb04`, not run on a phone; no PC needed): root's `status` and `kbinput` ×12, then in one
   `tool work` session, unless `kb/kernelcache.macho` is the pin of the fork's `kb/kb.json`: `fetch` with `profile`
   `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, `indir` `<stage>/make-kernel/inputs`, `only`
