@@ -2159,3 +2159,17 @@ persistent: a reboot costs a manual re-root.
   (agent: host-tests, cargo 199, stand-in 258 green). No phone, no kernel change. S26 default wanted (for the
   host-device table, only after a session where `bridgectl haptic-native-inspect` passes): `haptics-native-impacts=1`
   with `hw-backend-haptics=treble`, `hw-backend-fallback=0`.
+
+- 2026-11-21, host-device-detect merged (delegated agent, c35e281; merge ad2bde0): host phone detection plus one
+  per-device defaults table (`runtime/bridges/hw/host_device.c`; `host-device=auto|none|NAME`; `bridgectl host`;
+  `oneios-tool phone status` host line). Conflicts with 9daf411 and port-sm8850-2 resolved in config.c (image read
+  once first; native-impacts check after both hw-backend merges). Not run on a phone: a first S24 start should log
+  `host: galaxy-s24-ultra ... defaults: none (today's)`.
+
+- 2026-11-21, port-forks-gap merged (delegated agent, 3eef1c5): S25/A56 audit. `panel-fallback=WxH[@HZ]`, the A56
+  clang-wrapper PAC flags (cc1 identical on clang 23), `verify-host.sh` S25/A56 rows + stand-in test; s25.md rows
+  main lacked corrected. In the merge: the table gains `panel-fallback=1080x2340@120` for galaxy-s25 and galaxy-a56
+  (the S25 Ultra keeps 1440x3120 until its panel is read on the phone). Green: xnuhost 14205/0, cargo 202/0,
+  stand-in phone ALL OK. For the OneOS repo: the switch's script-file bind-remount fails on SM8750 (make only the
+  directories read-only), `PROFILE_IDS` S24-only, `OneiosPlain.kt:142` "S24 Ultra only" text, `--logical 1080x2340`
+  for the display helper on the S25/A56. No phone, no kernel build.

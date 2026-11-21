@@ -4,6 +4,10 @@
 # plain arm64 iOS 17 kernel. OneiOS builds arm64e (PAC: the S24 Ultra's cores have it), so this one chooses the
 # triple from -arch and adds what Apple's clang does by itself for an arm64e kernel:
 #   -fptrauth-function-pointer-type-discrimination   on for -mkernel in Apple clang, opt-in upstream
+#   -fptrauth-intrinsics -fptrauth-calls -fptrauth-returns   the arm64e PAC ABI itself. Upstream clang implies them
+#        for an arm64e Darwin triple only in newer releases: clang 23 passes cc1 the same flags with or without them
+#        (kernel/tests/host.sh checks they reach cc1); on an older host clang [I] they are not implied, and its
+#        kernel would have no signed calls or returns. Taken from the Galaxy A56 fork (Musicalista/OneiOS-A56 691eeeb).
 #   -mllvm -disable-atexit-based-global-dtor-lowering  C++ static destructors go to __mod_term_func
 #   -D__ARM_ARCH_8_2__ .. 8_5__                       Apple clang predefines them for its CPUs
 # Dropped: -mno-implicit-sme (Apple-only; upstream emits no SME here).
@@ -39,7 +43,8 @@ if [ "$arch" = arm64e ]; then
   # The BCM2837 machine config passes no -mcpu, and stock clang's default CPU for arm64e is ARMv8.3: the assembler
   # then refuses `msr DIT` (ARMv8.4) in cswitch.s, which Apple's accepts. For the assembler only: ARMv8.5.
   # Compiled code keeps the default CPU. (The S24 Ultra's cores are ARMv9.2.)
-  exec "$real" -target "arm64e-apple-ios$ios" -Wa,-march=armv8.5-a -fptrauth-function-pointer-type-discrimination \
+  exec "$real" -target "arm64e-apple-ios$ios" -Wa,-march=armv8.5-a -fptrauth-intrinsics -fptrauth-calls -fptrauth-returns \
+    -fptrauth-function-pointer-type-discrimination \
     -mllvm -disable-atexit-based-global-dtor-lowering \
     -D__ARM_ARCH_8_2__=1 -D__ARM_ARCH_8_3__=1 -D__ARM_ARCH_8_4__=1 -D__ARM_ARCH_8_5__=1 "${args[@]}"
 fi

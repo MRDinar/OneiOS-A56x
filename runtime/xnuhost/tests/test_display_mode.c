@@ -24,6 +24,7 @@ struct message { char magic[4]; uint32_t a, b, c, d; };
 static struct { char path[300]; uint32_t w, h, stride, format; off_t memfd_size; int ok; } helper;
 
 static uint32_t report_w = 1440, report_h = 3120, report_hz = 120;
+static const char *fallback_setting;   // panel-fallback= for the next case, NULL: none
 
 static void *helper_main(void *arg)
 {
@@ -58,6 +59,7 @@ static int run(const char *dir, const char *mode, unsigned cw, unsigned ch, unsi
   strcpy(c.mode, mode);
   strcpy(c.session, dir);
   c.scale = 3; c.width = cw; c.height = ch; c.hz = chz;
+  if (fallback_setting && xh_config_set(&c, "panel-fallback", fallback_setting)) _exit(8);
   snprintf(helper.path, sizeof helper.path, "%s/display.sock", dir);
   pthread_t thread;
   pthread_create(&thread, NULL, helper_main, NULL);
@@ -168,6 +170,10 @@ int main(void)
   report_w = 1440; report_h = 3120; report_hz = 120;
   CASE("a configured mode wins, without waiting", "takeover", 1080, 2340, 60, 1080, 2340, 60, 1.0);
   CASE("a bench run assumes the S24 Ultra's, without waiting", "bench", 0, 0, 0, 1440, 3120, 120, 1.0);
+  fallback_setting = "1080x2340@120";                                     // the Galaxy S25's and A56's panel
+  CASE("panel-fallback= is what a bench run assumes, without waiting", "bench", 0, 0, 0, 1080, 2340, 120, 1.0);
+  CASE("a helper's report still wins over panel-fallback=", "takeover", 0, 0, 0, 1440, 3120, 120, 5.0);
+  fallback_setting = NULL;
   r = run_direct(dir, 1);
   printf("direct frames: the helper copies from guest RAM and answers: %s (%d)\n", r ? "FAILED" : "ok", r); failures += r != 0;
   r = run_direct(dir, 2);

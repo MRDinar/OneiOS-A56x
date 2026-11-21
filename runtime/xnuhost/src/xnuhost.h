@@ -99,6 +99,9 @@ typedef struct {
   int   gpu_priority;       // gpu-priority=0: KGSL queue priorities as the guest asks, not by the owner's class (-1 unset: 1)
   unsigned width, height;   // guest framebuffer; 0 = the panel's native (largest) mode, 1440x3120 where it cannot be read
   unsigned hz;              // the guest display's refresh rate; 0 = the panel's highest at that mode, 120 where unknown
+  // panel-fallback=WxH[@HZ]: the mode assumed where the panel cannot be read (no helper report, no DRM panel; a bench run)
+  // instead of XH_PANEL_*, for a phone whose panel is not the S24 Ultra's (the Galaxy S25 and A56: 1080x2340@120). 0: unset.
+  unsigned fallback_width, fallback_height, fallback_hz;
   unsigned scale;           // UI scale, pixels per point: 3 (480x1040 points, the default) or 2 (720x1560); 0 = the image set's
   int   scale_fixup;        // the QuartzCore text fixups a scale of 3 needs (xh_scale_fixups): 1, 0, -1 = unset (on)
   char  text_fixups[1024];  // text-fixup=FILE,OFFSET,ORIGINAL,REPLACEMENT entries for /chosen text-fixups, NUL-separated
@@ -237,8 +240,10 @@ bool xh_panel_connector(unsigned type);
 // The display helper's report on display.sock: { "XHDP", width, height, hz, 0 }. false: not a usable one.
 bool xh_panel_report(const void *message, size_t length, xh_panel_mode *panel);
 // The guest's mode: width, height and hz where configured (command line, then the image set's xnuhost.conf), else
-// the mode of the panel (NULL: not known), else 1440x3120 at 120 Hz.
+// the mode of the panel (NULL: not known), else xh_panel_fallback.
 xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel);
+// The mode assumed where the panel cannot be read: panel-fallback= where set, else 1440x3120 at 120 Hz.
+xh_panel_mode xh_panel_fallback(const xh_config *c);
 // Adds the display driver's two switches to the kernel's command line unless it already has them:
 // offline-legacy-unit-scale=SCALE (/chosen display-scale) and sheng-vsync=HZ (the vsync tick and, above 60 Hz,
 // the refresh properties). -1: no room.

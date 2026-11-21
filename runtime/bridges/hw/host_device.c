@@ -18,7 +18,7 @@
 // ---- the table ------------------------------------------------------------------------------------------------------
 // The one place that says what differs per host phone. Rules (docs/hardware.md, "The host device"):
 //   - an entry holds only settings that already exist as options: an xnuhost setting that config.c merges as a device
-//     default (xh_config_finish: gpu, hw-backend*), or an environment variable a bridge reads;
+//     default (xh_config_finish: gpu, panel-fallback, hw-backend*), or an environment variable a bridge reads;
 //   - the home device (the S24 Ultra) has none: its behaviour is today's, byte for byte;
 //   - a value the docs mark unverified on that phone is not set (today's default is the conservative one) and is said
 //     here. Marks as in docs/s25.md: [F] read from the source named, [I] inferred, [U] unknown until a phone shows it.
@@ -36,9 +36,13 @@ static const br_host_device table[] = {
   // node names on One UI 8.5 are [U] (tools/probe/s25-probe.sh answers them), so the backends stay samsung.
   { .name = "galaxy-s25-ultra", .label = "Galaxy S25 Ultra (SM-S938, SM8750)",
     .models = { "SM-S938" }, .devices = { "pa3q" }, .socs = { "SM8750" }, .platforms = { "sun" } },
-  // docs/s25.md: [F] SM-S931B, pa1q, SM8750. No defaults, as for the S25 Ultra (its Bluetooth HAL, HIDL or AIDL, is [U]).
+  // docs/s25.md: [F] SM-S931B, pa1q, SM8750. panel-fallback=1080x2340@120 [F] (xaxaapple/s25ver's device profile and
+  // xnuhost.h: a 1080x2340 panel): only the mode assumed where the panel cannot be read (the display helper's report
+  // still wins); without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush. Its
+  // Bluetooth HAL (HIDL or AIDL) and bridge node names are [U], as for the S25 Ultra.
   { .name = "galaxy-s25", .label = "Galaxy S25 (SM-S931, SM8750)",
-    .models = { "SM-S931" }, .devices = { "pa1q" }, .socs = { "SM8750" }, .platforms = { "sun" } },
+    .models = { "SM-S931" }, .devices = { "pa1q" }, .socs = { "SM8750" }, .platforms = { "sun" },
+    .config = { "panel-fallback=1080x2340@120" } },
   // docs/forks.md (the S26 row), the port-sm8850 commits. [F] SM-S948B, SM8850; codename and platform [U] (not matched).
   // ONEIOS_BRIGHT_MAX=2300 [F]: the fork's phone with One UI in control, screen_brightness 255 (One UI's manual top)
   // wrote 2300 to panel0-backlight, whose max_brightness is 12750 (brightness/test_brightness.c,
@@ -52,10 +56,10 @@ static const br_host_device table[] = {
   // docs/a56.md, profiles/ios-*-a56.toml, docs/a56-oneos-fork.md. [F] SM-A566E, a56x, s5e8855 (the fork's gate:
   // ro.soc.model); platform s5e8855 [I]. gpu=2d [F]: no KGSL (Xclipse 540 on amdgpu, /dev/dri/renderD128) and xnuhost's
   // 3D half is drm2kgsl only, so gpu=auto would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the
-  // fork's A56 session passes --gpu 2d. Touch, haptics, battery and thermal node names on the A56 are [U]: samsung stays.
+  // fork's A56 session passes --gpu 2d. panel-fallback=1080x2340@120 [F] (the fork's docs/a56-guide.md), as for the S25. Touch, haptics, battery and thermal node names on the A56 are [U]: samsung stays.
   { .name = "galaxy-a56", .label = "Galaxy A56 (SM-A566, Exynos 1580)",
     .models = { "SM-A566" }, .devices = { "a56x" }, .socs = { "s5e8855" }, .platforms = { "s5e8855" },
-    .config = { "gpu=2d" } },
+    .config = { "gpu=2d", "panel-fallback=1080x2340@120" } },
 };
 
 const br_host_device *br_host_table(unsigned *count)

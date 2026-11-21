@@ -1498,7 +1498,7 @@ oneios-tool phone sparse-write OUT [--gunzip] [--expect-size N]   # stdin to OUT
 
 **The host phone in `status` (2026-11-21).** After `root: yes`, one line: `host: galaxy-s24-ultra (Galaxy S24 Ultra
 (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; defaults: none (today's)`, or for another known phone its
-defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=2d`), or `host: unknown
+defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=2d, panel-fallback=1080x2340@120`), or `host: unknown
 phone (ro.product.model=... ...): xnuhost keeps today's defaults (host-device=NAME forces one)`. One `adb shell` call as
 the shell user: `getprop` of `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`,
 `ro.soc.manufacturer`, and `/sys/devices/soc0/{machine,soc_id}`, `/proc/device-tree/compatible`; matched in xnuhost's

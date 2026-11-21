@@ -50,7 +50,7 @@ pub const TABLE: &[HostDevice] = &[
         devices: &["pa1q"],
         socs: &["SM8750"],
         platforms: &["sun"],
-        config: &[],
+        config: &["panel-fallback=1080x2340@120"],
         env: &[],
     },
     HostDevice {
@@ -70,7 +70,7 @@ pub const TABLE: &[HostDevice] = &[
         devices: &["a56x"],
         socs: &["s5e8855"],
         platforms: &["s5e8855"],
-        config: &["gpu=2d"],
+        config: &["gpu=2d", "panel-fallback=1080x2340@120"],
         env: &[],
     },
 ];
@@ -220,7 +220,7 @@ mod tests {
         let f = parse("ro.product.model=SM-S928B\nro.product.device=e3q\nro.board.platform=pineapple\nro.soc.model=SM8650\nro.soc.manufacturer=QTI\nsoc0.machine=\nsoc0.soc_id=\ndt=\n");
         assert_eq!(line(&f), "host: galaxy-s24-ultra (Galaxy S24 Ultra (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; defaults: none (today's)");
         let f = parse("ro.product.model=SM-A566E\nro.soc.model=s5e8855\n");
-        assert_eq!(line(&f), "host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; defaults: gpu=2d");
+        assert_eq!(line(&f), "host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; defaults: gpu=2d, panel-fallback=1080x2340@120");
         let f = parse("ro.product.model=SM-S948B\nro.soc.model=SM8850\n");
         assert!(line(&f).ends_with("defaults: ONEIOS_BRIGHT_MAX=2300"));
         let f = parse("ro.product.model=Pixel 11 Pro\nro.soc.model=Tensor G5\nsoc0.soc_id=519\ndt=google,zuma,\n");

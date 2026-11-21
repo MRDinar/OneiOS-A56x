@@ -47,6 +47,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
+| `--set panel-fallback=WxH[@HZ]` (or `panel-fallback=` in `xnuhost.conf`) | 1440x3120@120 | the mode assumed only where the panel cannot be read (no helper report in time, no DRM panel; a bench run): section 2.8 step 4. For a phone whose panel is not the S24 Ultra's: the Galaxy S25 and A56 are 1080x2340@120 (`docs/s25.md`, `docs/a56.md`). A read panel still wins |
 | `--set display-direct=0` (or `display-direct=0` in `xnuhost.conf`) | 1 | 0: xnuhost copies every frame into the memfd, even for a helper that can copy from guest RAM (section 2.8, direct frames) |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
 | `DIR/os.img`, `systemos.img`, `app.img` | as present | read-only disks, in this order |
@@ -1244,11 +1245,14 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   3. The largest mode of the connected built-in panel's connector in `/dev/dri/card0` (LVDS, eDP, DSI or DPI only).
      The Virtual (writeback) connectors report "connected" with modes up to 5120x2560, and DSI-1's list need not hold
      the mode One UI runs, so this is a fallback.
-  4. 1440x3120 at 120 Hz, also what a bench run (whose host display is a monitor) assumes, without waiting.
+  4. `panel-fallback=WxH[@HZ]` where given, else 1440x3120 at 120 Hz (the S24 Ultra's), also what a bench run (whose host
+     display is a monitor) assumes, without waiting. On a phone with another panel (the S25's and A56's 1080x2340) the
+     S24 default made a frame of 1.78 times the panel's pixels, scaled down at every flush for the whole session; the
+     device's own `panel-fallback=` makes it the panel's size. A rate-less report takes the fallback's rate.
 
   The log says which: `display: the mode is the configured one ...`, `display: the display helper reports the panel at
   1440x3120, 120 Hz`, `display: the built-in panel's largest DRM mode is ...`, or `... were not read (...): 1440x3120 at
-  120 Hz assumed`, then `display: shm, guest frame 1440x3120 at 120 Hz, @3x (480x1040 points)`. The stride of the frame
+  120 Hz assumed` (with `(panel-fallback=)` or `(the S24 Ultra's; panel-fallback= sets another phone's)` after it), then `display: shm, guest frame 1440x3120 at 120 Hz, @3x (480x1040 points)`. The stride of the frame
   is the width times 4 (5760 bytes; 8 with `display-format=rgba16f`); the `stride` in the helper's `first frame posted` line is the layer buffer's, in
   pixels, and is whatever gralloc aligned the width to. Tested on the PC against a stand-in helper
   (`tests/test_display_mode.c`); not yet run on the phone.

@@ -481,7 +481,11 @@ int xh_display_init(const xh_config *c, unsigned *width, unsigned *height, unsig
   if (pinned && session) LOGI("display: the mode is the configured one (width, height, hz); the panel's was not asked for");
   else if (reported) LOGI("display: the display helper reports the panel at %ux%u, %u Hz", panel.width, panel.height, panel.hz);
   else if (known) LOGI("display: the built-in panel's largest DRM mode is %ux%u at %u Hz", panel.width, panel.height, panel.hz);
-  else LOGI("display: the panel's modes were not read (%s): %ux%u at %u Hz assumed", session ? "no helper's report and no connected built-in panel in /dev/dri/card0" : "a bench run", XH_PANEL_WIDTH, XH_PANEL_HEIGHT, XH_PANEL_HZ);
+  else {
+    xh_panel_mode fallback = xh_panel_fallback(c);
+    LOGI("display: the panel's modes were not read (%s): %ux%u at %u Hz assumed (%s)", session ? "no helper's report and no connected built-in panel in /dev/dri/card0" : "a bench run",
+         fallback.width, fallback.height, fallback.hz, c->fallback_width ? "panel-fallback=" : "the S24 Ultra's; panel-fallback= sets another phone's");
+  }
   LOGI("display: %s, guest frame %ux%u at %u Hz, @%ux (%ux%u points)", c->display, display.width, display.height, mode.hz, c->scale,
        c->scale ? display.width / c->scale : 0, c->scale ? display.height / c->scale : 0);
   LOGI("display: the frame's pixels: %s, %u bytes a pixel, stride %u (display-format=%s)", xh_pixels_name(display.format), display.bpp,
