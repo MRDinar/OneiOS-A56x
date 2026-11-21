@@ -644,7 +644,7 @@ Done:
 | What a step prints becomes `line` events (the process's own standard output and error are pipes it reads: `capture.rs`), so the tools' commands run as they are | done |
 | The threads: a rayon pool per request (`--jobs`, default the online CPUs, at most 8), nice 10 to 19 and never realtime, the heat and battery limits from the thermal bridge's named files (`oneios-common/src/job.rs`) | done; tested on stand-in files, **not on the phone** |
 | The commands: `download`, `zip-ls`, `zip-get`, `fetch`, `im4p`, `receive`, `sums`, `hashes`, `verify`, `apfs-ls`, `apfs-copy`, `prelink`, `stubs-check`, `package-check`, `ioslog-boots`, `ioslog-show`, `log-list`, `log`, `cpu`, `health`, `ping`, `wait` | done; each on stand-in inputs (`tests/serve.rs`), `sums`, `hashes`, `verify`, `apfs-copy`, `ioslog-*` and `prelink` also on the real set and kernel on the Linux PC |
-| `make-image` (`image build`): the whole image set, build.sh's steps in one process | done 2026-11-21 (the root tweaks through `oneios_tweaks::run_hook`) except its `not-ported` step, the AEA decryption; 3 tests on a stand-in IPSW (`tests/serve.rs` `make_image_*`), and on the PC with 24A446's inputs: the same set as build.sh's (README "image build") |
+| `make-image` (`image build`): the whole image set, build.sh's steps in one process | done 2026-11-21 (the root tweaks through `oneios_tweaks::run_hook`, the AEA decryption through `oneios_image::aea_decrypt`); 3 tests on a stand-in IPSW (`tests/serve.rs` `make_image_*`), and on the PC with 24A446's inputs: the same set as build.sh's (README "image build") |
 | `image apfs-copy` in threads | done: the same tree as before (README "image") |
 | `prelink build`: `build.sh`'s steps in one process, independent steps at the same time; the kexts' scans of `hosted` and `emit` in threads | done: the same `kernel.kc` and work files (README "prelink build") |
 | `oneios-tool --jobs N --nice N TOOL ...` for the commands that run alone | done |
@@ -667,8 +667,8 @@ Open, in the order they matter for "make the iOS image on the phone":
    mount, the prelink of the runtime's `kernel/xnu.macho` with the audit and `stubs-check`, the manifest, `verify`
    and the stage's lists. On the PC the set is build.sh's, every file's SHA-256 and the manifest byte for byte
    (without root tweaks on both sides); with them (`oneios_tweaks::run_hook`) every file but the manifest's hook
-   record is build.sh's with the Python hook. Left: its `not-ported` step (item 4: `aea_decryptor()`
-   in `oneios-imagebuild/src/lib.rs` is where it goes in), a full run with it from Apple's
+   record is build.sh's with the Python hook. The AEA decryption is in since 2026-11-21 (item 4: `aea_decryptor()`
+   in `oneios-imagebuild/src/lib.rs`). Left: a full run with both from Apple's
    URL with nothing but the profile and the runtime, and the run on the phone. The image tool's commands are
    called through `oneios_image::run` with their output read back (`src/cmd.rs`), because oneios-image exposes no
    library call for `profile`, `seed-pack`, `manifest` and `record-plain`; public functions for them would be
@@ -676,8 +676,8 @@ Open, in the order they matter for "make the iOS image on the phone":
 4. ~~**The IPSW's AEA images are decrypted by an outside program** on the PC.~~ Done 2026-11-21: `image
    aea-decrypt` and `serve`'s `aea` (README "aea-decrypt"): both images of 24A446 decrypt to their pinned SHA-256 on the
    PC, the key from Apple's key service, every byte authenticated, at most about 60 MB of RAM; `scripts/fetch/fetch.sh`
-   uses it. Left: the run on the phone (the time, and the heat of the 16.5 GB written), and the `image build` request
-   (item 3) calling `oneios_image::aea_decrypt::aea_decrypt` after its `fetch`.
+   uses it. It is `make-image`'s `decrypt` step too (`aea_decryptor()`, `embedded`). Left: the run on the phone (the time, and
+   the heat of the 16.5 GB written), and one `image build` from Apple's URL with the real AEA images.
 5. **The prelink's time is in the steps' own serial work**, not in what was put into threads. CPU per step on the
    Linux PC: `match` 3.9 s, `emit` 2.0 s, `align` 1.2 s and 0.9 s, `audit` 1.2 s, `record` 0.9 s, `hosted` 0.7 s,
    `kclasses`, `structors`, `vtables` 0.4 to 0.5 s each. Each step reads and parses the two kernels again (they

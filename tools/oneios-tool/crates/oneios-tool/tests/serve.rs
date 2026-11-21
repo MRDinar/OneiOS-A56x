@@ -1601,10 +1601,15 @@ fn the_one_shot_commands_take_jobs_and_nice() {
 /// members are AEA files (`.aea`), as in a real profile. The OS member is noise of `os_len` bytes, so a build gets
 /// past the fetch and stops at the place step's APFS check. Returns (the IPSW's folder, its file name, the profile).
 fn stand_in_ipsw(b: &Box, os_len: usize, aea: bool) -> (PathBuf, String) {
+    stand_in_ipsw_sealed(b, os_len, aea, &|data| data)
+}
+
+/// The same, with `seal` making the OS and SystemOS members' bytes (an AEA archive of them, for a build that decrypts).
+fn stand_in_ipsw_sealed(b: &Box, os_len: usize, aea: bool, seal: &dyn Fn(Vec<u8>) -> Vec<u8>) -> (PathBuf, String) {
     let x = if aea { ".aea" } else { "" };
     let mut members: Vec<(&str, String, Vec<u8>)> = vec![
-        ("os", format!("001-00001-001.dmg{x}"), noise(os_len, 31)),
-        ("systemos", format!("001-00002-001.dmg{x}"), noise(70_000, 32)),
+        ("os", format!("001-00001-001.dmg{x}"), seal(noise(os_len, 31))),
+        ("systemos", format!("001-00002-001.dmg{x}"), seal(noise(70_000, 32))),
         ("app", "001-00003-001.dmg".into(), noise(32_768, 33)),
         ("trust-static", format!("Firmware/001-00001-001.dmg{x}.trustcache"), noise(100, 34)),
         ("trust-system", format!("Firmware/001-00002-001.dmg{x}.trustcache"), noise(100, 35)),
@@ -1676,8 +1681,9 @@ fn make_image_refuses_what_it_cannot_do_yet_and_writes_nothing() {
     begin_image(&b);
     let mut s = Serve::start(&b, &[]);
     for (more, code, words) in [
-        // the app's own request: the AEA images must be decrypted, which the tool cannot do yet
-        (json!({"profile": aea_profile}), "not-ported", "step decrypt"),
+        // the app's own request: the AEA images are decrypted (since 2026-11-21) and the root tweaks run, so an AEA
+        // profile also goes past them to the kernel's inputs
+        (json!({"profile": aea_profile}), "not-found", "the kernel's inputs are missing"),
         // the root tweaks are in the tool: the default request goes past them, to the kernel's inputs (kb/ is empty)
         (json!({"profile": profile}), "not-found", "the kernel's inputs are missing"),
         // with the runtime's profiles/ holding two, the request must name one
@@ -1844,6 +1850,43 @@ fn aea_decrypts_with_the_key_services_key_and_refuses_a_changed_archive() {
         assert!(last["text"].as_str().unwrap().contains(words), "{request}: {last}");
         assert!(!Path::new(&out3).exists() && !Path::new(&format!("{out3}.part")).exists());
     }
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn make_image_decrypts_the_aea_members_with_the_key_services_key() {
+    use oneios_image::aea_decrypt::testkit::{encrypt, service_key, Spec};
+    let b = Box::new("make-aea");
+    let key = [0x24u8; 32];
+    let (pem, response) = service_key(5, &key);
+    b.put("keys/K5=", pem.as_bytes());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/K5=", listener.local_addr().unwrap().port());
+    let root = b.top.join("keys");
+    std::thread::spawn(move || oneios_image::rangeserve::serve_on(listener, root, Default::default()));
+    let fields = vec![("com.apple.wkms.fcs-response".to_string(), response), ("com.apple.wkms.fcs-key-url".to_string(), url.into_bytes())];
+    let seal = |data: Vec<u8>| encrypt(&data, &key, &Spec { compression: b'e', fields: fields.clone(), ..Spec::default() });
+    let (web, profile) = stand_in_ipsw_sealed(&b, 9000, true, &seal);
+    let kc = b.put("stage/kb/kernel.kc", &noise(5000, 42));
+    begin_image(&b);
+    let web = Web::start(&web);
+    let mut s = Serve::start(&b, &[]);
+    s.send(make_image(&b, "m", json!({"profile": profile, "tweaks": false, "kc": kc, "source": format!("http://127.0.0.1:{}/stand-in.ipsw", web.port)})));
+    let events = s.request("m");
+    // decrypted (the stand-in OS image is noise, so the build stops at the place step's APFS check)
+    let last = events.last().unwrap();
+    assert!(last["text"].as_str().unwrap_or("").contains("not a raw APFS image"), "{last}");
+    let steps: Vec<&str> = events.iter().filter(|v| v["ev"] == "step").map(|v| v["step"].as_str().unwrap()).collect();
+    assert!(steps.windows(2).any(|w| w == ["decrypt", "place"]), "the decryption says no steps of its own: {steps:?}");
+    assert_eq!(of(&events, "space").len(), 1, "one space event");
+    assert!(events.iter().any(|v| v["ev"] == "progress" && v["step"] == "decrypt"), "the decrypt step's progress");
+    assert_eq!(std::fs::read(b.stage("make/inputs/001-00001-001.dmg")).unwrap(), noise(9000, 31));
+    assert_eq!(std::fs::read(b.stage("make/inputs/001-00002-001.dmg")).unwrap(), noise(70_000, 32));
+    assert!(Path::new(&b.stage("make/inputs/.aea-keys/K5=.pem")).is_file(), "the key, kept in the inputs' folder");
+    assert!(!Path::new(&b.stage("make/inputs/001-00001-001.dmg.aea")).exists(), "the encrypted member is removed");
+    nothing_left(&b, "make-aea");
     let (status, rest, _) = s.end(true);
     assert_eq!(status, 0);
     clean_bye(&rest, "eof");

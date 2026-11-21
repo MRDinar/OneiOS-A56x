@@ -564,7 +564,7 @@ fn aea(rq: &Rq) -> Result<Done, Fail> {
         Some(pem) => AeaKey::Pem(pem.into()),
         None => AeaKey::Service { cache: key_cache.map(Into::into) },
     };
-    let opts = AeaOptions { key, jobs: rq.jobs, resume, plain_sha256: want, log: &|line| println!("{line}") };
+    let opts = AeaOptions { key, jobs: rq.jobs, resume, plain_sha256: want, log: &|line| println!("{line}"), embedded: false };
     let d = aea_decrypt(&input, &out, &opts).map_err(|e| match oneios_image::transfer::take_failure() {
         Some(code) => Fail::Failed(code, e.to_string()),
         None if e.to_string().ends_with("is there already") => Fail::refused("exists", e.to_string()),

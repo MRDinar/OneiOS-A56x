@@ -64,7 +64,8 @@ PRs are in. Nothing in this section has run on the phone.
 - **This commit**: main's `app/` pin moves to `bb1ef38`.
 
 **Decided 2026-11-16 (the owner: "do those"):**
-- The root tweaks to Rust (`tweaks`), `build.sh`'s order and checks (`make-image`) and the AEA decryption: **started;
+- The root tweaks to Rust (`tweaks`), `build.sh`'s order and checks (`make-image`) and the AEA decryption (the last two
+  done 2026-11-21: `make-image`, `image aea-decrypt`; tools/oneios-tool/todo_rust.md section 9): **started;
   blocked on agents**. The Fable 5.2 agent was launched twice and died both times on the Claude provider's rate limit
   (Opus is on the same limit; it resets 2026-11-21 2:30am IST). It waits for a working agent slot, or the owner says
   the coordinator ports it directly.

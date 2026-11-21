@@ -7,8 +7,8 @@ owner's machine from the vendor's firmware, pinned by size and SHA-256, staged i
 OneOS the firmware is an Android OTA and the builder is MysticGSI. Here it is Apple's restore file (IPSW) for
 iPhone18,2, iOS 27.0.1 (24A446), and the builder is `scripts/image/build.sh`, or the same steps in one process,
 `oneios-tool image build` (`serve`'s `make-image`, which the OneOS app runs on the phone: no PC; since 2026-11-21,
-without the AEA decryption until its Rust port lands; tools/oneios-tool/README.md "image
-build"). Both give the same set from the same inputs, file for file.
+with the root tweaks and the AEA decryption in it; tools/oneios-tool/README.md "image build"). Both give the same
+set from the same inputs, file for file.
 
 Nothing of the set is in git or in a release: it is Apple's software. A release carries the scripts; each
 owner fetches from Apple and builds.

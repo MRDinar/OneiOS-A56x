@@ -6,8 +6,8 @@
 //! what it was compared with):
 //!
 //! 1. `check`: the profile, the inputs that are there, the kernel's inputs, the output folders; and what this
-//!    build cannot do yet is refused here, before anything is written or fetched (`not-ported`: the root tweaks, the
-//!    AEA decryption, until their Rust ports land). Then **one** `space` event for everything the build writes.
+//!    build cannot do yet is refused here, before anything is written or fetched (`not-ported`; since 2026-11-21 nothing
+//!    is: the root tweaks and the AEA decryption are in). Then **one** `space` event for everything the build writes.
 //! 2. `directory`, `download`: `image fetch` of the profile's members (resumable; a member that is there and whole
 //!    is not fetched again, an AEA whose decrypted image is recorded is not fetched at all).
 //! 3. `decrypt`: the AEA images (OS, SystemOS) into their plain images, recorded in inputs.json (`record-plain`).
@@ -381,10 +381,30 @@ fn plain_recorded(m: &Member, indir: &str, record: Option<&oneios_common::pyjson
     rec.is_some_and(|r| r.get("member").and_then(|v| v.as_str()) == Some(m.path.as_str()) && r.get("plain_size").and_then(oneios_common::pyjson::Value::as_int) == Some(size as i128))
 }
 
-/// The AEA decryption: not in this tool yet (agent "AEA decryption" ports it into oneios-image; docs/agents.md,
-/// Interfaces). `None` until then: the build refuses (`not-ported`) when it would need it.
-fn aea_decryptor() -> Option<fn(&str, &str) -> Result<(), String>> {
-    None
+/// The AEA decryption (since 2026-11-21: `oneios_image::aea_decrypt`, README "aea-decrypt"): PROFILE, the encrypted
+/// member, the plain image. `None` would make the build refuse (`not-ported`) when it needs it.
+fn aea_decryptor() -> Option<fn(&str, &str, &str) -> Result<(), String>> {
+    Some(decrypt_aea)
+}
+
+/// One AEA member to its plain image beside it: the key from Apple's key service, kept in INDIR/.aea-keys/ for the
+/// second image (both of 24A446 use one key), every byte authenticated, the plain SHA-256 the profile's
+/// `plain_sha256` when it pins one, resumable. A step of this build: it says no steps or room of its own (the
+/// `check` step asked for all the room), only the `decrypt` step's progress.
+fn decrypt_aea(profile: &str, enc: &str, plain: &str) -> Result<(), String> {
+    use oneios_image::aea_decrypt::{aea_decrypt, profile_pin, AeaKey, AeaOptions};
+    let indir = Path::new(plain).parent().unwrap_or(Path::new("."));
+    let opts = AeaOptions {
+        key: AeaKey::Service { cache: Some(indir.join(".aea-keys")) },
+        jobs: 0,
+        resume: true,
+        plain_sha256: profile_pin(profile, enc).map_err(|e| e.to_string())?,
+        log: &|line| println!("{line}"),
+        embedded: true,
+    };
+    let done = aea_decrypt(enc, plain, &opts).map_err(|e| e.to_string())?;
+    println!("{}: {} bytes, SHA-256 {} (key from {})", plain, done.bytes, done.sha256, done.key_from);
+    Ok(())
 }
 
 /// The device a path is on (its nearest folder that is there).
@@ -574,7 +594,12 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
         let decrypt = aea_decryptor().ok_or_else(|| refused("not-ported", format!("step decrypt: {} must be decrypted; the AEA decryption is not in this tool yet", m.path)))?;
         let enc = format!("{indir}/{}", m.path.rsplit('/').next().unwrap_or(&m.path));
         let plain = format!("{indir}/{}", m.name);
-        decrypt(&enc, &plain).map_err(failed)?;
+        decrypt(&p.path, &enc, &plain).map_err(|e| match job::stop_reason() {
+            Some(stop) => Stop::Stopped(stop),
+            None if e.contains("does not authenticate") || e.contains("does not open") => refused("auth", e),
+            None if e.contains("was expected: nothing was kept") => refused("mismatch", e),
+            None => failed(e),
+        })?;
         image_cmd(&["record-plain", &indir, &m.role, &plain])?;
         let _ = std::fs::remove_file(&enc);
     }

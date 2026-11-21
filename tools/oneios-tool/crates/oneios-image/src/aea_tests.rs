@@ -53,7 +53,7 @@ impl Drop for Dir {
 }
 
 fn opts(key: AeaKey) -> AeaOptions<'static> {
-    AeaOptions { key, jobs: 3, resume: false, plain_sha256: None, log: &quiet }
+    AeaOptions { key, jobs: 3, resume: false, plain_sha256: None, log: &quiet, embedded: false }
 }
 
 fn hex_sha(data: &[u8]) -> String {

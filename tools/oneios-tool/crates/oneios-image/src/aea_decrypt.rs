@@ -36,7 +36,7 @@
 //! read, check, decrypt, decompress and check one segment at a time, and one writer puts them in order, hashes the
 //! plain stream (SHA-256) and writes `OUT.part`. Buffers go round a pool of a fixed count, so memory is bounded
 //! (about 70 MiB with 1 MiB segments and 8 threads), whatever the archive's size. Every loop asks `job::check()` and
-//! the writer counts the bytes (`job::count`). `OUT.part` is renamed to `OUT` last. With `resume`, the part and a
+//! the writer counts the bytes (the step's progress). `OUT.part` is renamed to `OUT` last. With `resume`, the part and a
 //! state file (`OUT.part.state`: which archive, how many plain bytes are in the part, written after an fdatasync)
 //! stay when the work ends early, and the next run hashes the part's bytes again and goes on from there; without it
 //! they are removed.
@@ -99,6 +99,10 @@ pub struct AeaOptions<'a> {
     pub plain_sha256: Option<String>,
     /// Lines for the user (the key's origin, a resume): `println!` for the command line.
     pub log: &'a (dyn Fn(String) + Sync),
+    /// A step of a larger request (`make-image`): no steps of its own are said (only the progress of the caller's
+    /// `decrypt` step, in plain bytes, a resume's hashing in it too) and no room is asked for (the caller asked once
+    /// for all of its work).
+    pub embedded: bool,
 }
 
 /// How a decryption went.
@@ -694,7 +698,9 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
         }
         return Err(err!("{out} is there already"));
     }
-    job::step("key");
+    if !opts.embedded {
+        job::step("key");
+    }
     let (key, key_from) = archive_key(&p, &opts.key, input, opts.log)?;
     let a = Archive::new(&key, &p);
     let root = open_root(&a, &p).ok_or_else(|| err!("{input}: the root header does not authenticate: a wrong key, or the archive's first {} bytes were changed", p.len()))?;
@@ -720,13 +726,16 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
     }
     // Without resume the part is a temporary file (a stop, an error or a panic removes it); with it, it stays.
     let guards: Vec<job::Temp> = if opts.resume { Vec::new() } else { names.iter().map(job::temp).collect() };
-    space(out, root.plain - from)?;
+    if !opts.embedded {
+        space(out, root.plain - from)?;
+    }
+    let begin = |name: &str, total: u64| if opts.embedded { job::Progress::new("decrypt", "bytes", total) } else { job::begin(name, "bytes", total) };
     let mut writer = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&part).map_err(|e| crash!("{part}: {e}"))?;
     writer.set_len(from).map_err(|e| crash!("{part}: {e}"))?;
     let mut hash = Sha256::new();
     if from > 0 {
         (opts.log)(format!("resume: {from} of {} plain bytes are in {part}: hashing them again", root.plain));
-        let progress = job::begin("check", "bytes", from);
+        let progress = begin("check", from);
         let mut buf = vec![0u8; 4 << 20];
         let mut at = 0u64;
         while at < from {
@@ -737,13 +746,16 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
             at += n as u64;
             progress.set(at);
         }
-        job::end();
+        progress.finish();
+        if !opts.embedded {
+            job::end();
+        }
     }
     use std::io::Seek;
     writer.seek(std::io::SeekFrom::Start(from)).map_err(|e| crash!("{part}: {e}"))?;
     done.resumed_from = from;
 
-    let progress = job::begin("decrypt", "bytes", root.plain);
+    let progress = begin("decrypt", root.plain);
     progress.set(from);
     let seg = root.segment as u64;
     let jobs = if opts.jobs == 0 { job::jobs() } else { opts.jobs }.max(1);
@@ -761,6 +773,7 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
     let (res_tx, res_rx) = mpsc::sync_channel::<Result<Seg, Fail>>(in_flight);
     let state_of = |n| state_line(&p, size, &root, n);
     let (part_r, state_r) = (&part, &state);
+    let counter = progress.clone();
     let (walked, wrote) = std::thread::scope(|scope| {
         for w in 0..workers {
             let (res_tx, jobs_rx, file, root) = (res_tx.clone(), &jobs_rx, &file, &root);
@@ -808,7 +821,7 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
                         job::check().map_err(|stop| err!("{stop}"))?;
                         writer.write_all(&buf).map_err(|e| crash!("{part_r}: {e}"))?;
                         written += buf.len() as u64;
-                        job::count(buf.len() as u64);
+                        counter.add(buf.len() as u64);
                         next += 1;
                         hash_tx.send(buf).map_err(|_| crash!("the hash thread ended"))?;
                         if opts.resume && written - saved >= SAVE_EVERY && written < root.plain {
@@ -832,7 +845,10 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
         let hash = hasher.join().expect("the hash thread");
         (walked, wrote.map(|w| (w, hash)))
     });
-    job::end();
+    progress.finish();
+    if !opts.embedded {
+        job::end();
+    }
     let (written, hash) = match (walked, wrote) {
         (Ok(clusters), Ok(w)) => {
             done.clusters = clusters;
@@ -852,7 +868,9 @@ pub fn aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone,
             return Err(err!("{input}: decrypted to SHA-256 {}, {want} was expected: nothing was kept", done.sha256));
         }
     }
-    job::step("place");
+    if !opts.embedded {
+        job::step("place");
+    }
     job::check().map_err(|s| err!("{s}"))?;
     std::fs::rename(&part, out).map_err(|e| crash!("{out}: {e}"))?;
     let _ = std::fs::remove_file(&state);
@@ -874,11 +892,11 @@ pub fn cmd(input: &str, out: &str, key_cache: Option<&str>, key_file: Option<&st
         (Some(_), Some(_)) => return Err(err!("--sha256 and --profile: one of them")),
         (Some(hex), None) if crate::py::is_hex64(hex) => Some(hex.to_ascii_lowercase()),
         (Some(hex), None) => return Err(err!("--sha256 {hex}: not 64 hex digits")),
-        (None, Some(profile)) => pin_of(profile, input)?,
+        (None, Some(profile)) => profile_pin(profile, input)?,
         (None, None) => None,
     };
     let log = |line: String| eprintln!("aea-decrypt: {line}");
-    let opts = AeaOptions { key: how, jobs: jobs.unwrap_or(0), resume, plain_sha256: want.clone(), log: &log };
+    let opts = AeaOptions { key: how, jobs: jobs.unwrap_or(0), resume, plain_sha256: want.clone(), log: &log, embedded: false };
     let started = std::time::Instant::now();
     let d = aea_decrypt(input, out, &opts)?;
     if d.already {
@@ -911,8 +929,8 @@ fn parse_key(text: &str) -> Result<[u8; 32], Fail> {
     bytes.and_then(|b| b.try_into().ok()).ok_or_else(|| err!("--key: not 32 bytes as base64:... or hex:..."))
 }
 
-/// The profile's `plain_sha256` of the member whose file name is `input`'s (none: not pinned).
-fn pin_of(profile: &str, input: &str) -> Result<Option<String>, Fail> {
+/// The profile's `plain_sha256` of the member whose file name is `input`'s (none: not pinned; said on stderr).
+pub fn profile_pin(profile: &str, input: &str) -> Result<Option<String>, Fail> {
     let p = crate::profile::load_profile(profile)?;
     let name = crate::py::basename(input);
     let m = p.members().into_iter().find(|m| m.get("path").and_then(|v| v.as_str()).map(crate::py::basename) == Some(name)).ok_or_else(|| err!("{profile}: no member {name}"))?;
