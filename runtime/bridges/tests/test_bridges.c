@@ -336,7 +336,21 @@ static void test_haptic(void)
   CHECK(impact_motor.stops == 1);            // completed preset: do not interrupt One UI
   br_haptic_close(native);
   CHECK(impact_motor.stops == 1);
+  // xnuhost's haptics-native-impacts (br_haptic_set_native_impacts): 0 wins over the environment's 1, 1 needs no
+  // environment, -1 hands the choice back to the environment.
+  br_haptic_set_native_impacts(0);
+  native = br_haptic_open_backend(&fake_motor_backend, &impact_motor);
+  CHECK(native != NULL && !br_haptic_impacts_available(native) && br_haptic_impact(native, BR_HAPTIC_IMPACT_HEAVY) == -EOPNOTSUPP);
+  br_haptic_close(native);
   unsetenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
+  br_haptic_set_native_impacts(1);
+  native = br_haptic_open_backend(&fake_motor_backend, &impact_motor);
+  CHECK(native != NULL && br_haptic_impacts_available(native));
+  br_haptic_close(native);
+  br_haptic_set_native_impacts(-1);
+  native = br_haptic_open_backend(&fake_motor_backend, &impact_motor);
+  CHECK(native != NULL && !br_haptic_impacts_available(native));
+  br_haptic_close(native);
 }
 
 // ---- network -------------------------------------------------------------------------------------

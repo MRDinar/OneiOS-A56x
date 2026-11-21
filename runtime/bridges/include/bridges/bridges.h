@@ -134,6 +134,9 @@ void br_haptic_stop(br_haptic *h);
 // LIGHT/medium mappings are experimental; only HEAVY has a tactile S26 acceptance.
 enum { BR_HAPTIC_IMPACT_LIGHT = 1, BR_HAPTIC_IMPACT_MEDIUM = 2, BR_HAPTIC_IMPACT_HEAVY = 3 };
 bool br_haptic_impacts_available(br_haptic *h);
+// Whether a bridge opened after this asks for native impacts: 1 or 0 (xnuhost's haptics-native-impacts), or -1 (the
+// default): the environment's ONEIOS_HAPTIC_NATIVE_IMPACTS=1 decides, as for bridgectl.
+void br_haptic_set_native_impacts(int on);
 int  br_haptic_impact(br_haptic *h, unsigned kind);
 // Waits until the worker has carried out everything asked so far (tests, shutdown).
 void br_haptic_flush(br_haptic *h);

@@ -136,6 +136,9 @@ typedef struct {
                             // has no actuator, no Actuator audio device, no /product/haptics) or "sim" (a stand-in
                             // actuator, bridges/haptics/haptic.c, that counts and logs: a boot with no phone; works
                             // with the bridges off)
+  int   haptics_native_impacts; // haptics-native-impacts: 1 the vibrator HAL's presets for iOS's taps, host and guest together
+                            // (docs/hardware.md 5: hw-backend-haptics=treble, no fallback; oneios_native_impacts=1 added to
+                            // the boot arguments); 0 off; -1 unset (ONEIOS_HAPTIC_NATIVE_IMPACTS decides, as before)
   char  wifi[8];            // "auto" (the phone's wlan0 for iOS's en0 when the bridges are on), "off" (no network
                             // device), "tap" (the old route: a tap and bin/oneios-net.sh's NAT), "sim" (a made-up
                             // radio with two networks, for a boot with no phone; works with the bridges off)

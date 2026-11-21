@@ -726,7 +726,11 @@ static int boot(void)
     int hal = 0;
     if (!strcmp(config.bluetooth, "auto")) { hal = br_hci_hidl_probe(); hidl = hal > 0; }
     // Haptics: the phone's force-feedback device (auto), none (off), or the stand-in actuator (sim).
-    haptic = !strcmp(config.haptics, "sim") ? br_haptic_open_sim() : !strcmp(config.haptics, "off") ? NULL : br_haptic_open(NULL);
+    // haptics-native-impacts (config.c checked treble, no fallback, and put oneios_native_impacts=1 in the boot arguments):
+    // the bridge asks the HAL for its presets and offers OB_HAPTIC_IMPACT only when TICK, CLICK and HEAVY_CLICK are there.
+    br_haptic_set_native_impacts(config.haptics_native_impacts);
+    if (config.haptics_native_impacts == 1) LOGI("haptics: native impacts asked for (haptics-native-impacts=1: the vibrator HAL's presets, guest oneios_native_impacts=1)");
+    haptic =!strcmp(config.haptics, "sim") ? br_haptic_open_sim() : !strcmp(config.haptics, "off") ? NULL : br_haptic_open(NULL);
     if (!haptic && !strcmp(config.haptics, "off")) LOGI("haptics: off (haptics=off): iOS gets no actuator");
     if (!config.touch_sleep) setenv("ONEIOS_TSP_OFF", "0", 1);   // touch-sleep=0: the bridge reads this
     brightness = br_bright_open(NULL);

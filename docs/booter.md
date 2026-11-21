@@ -66,6 +66,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--hw-backend samsung\|treble` (`hw-backend=`, also in `xnuhost.conf`) | `samsung` | which form of the phone's hardware every bridge uses: today's Samsung paths, or the vendor-neutral Treble interfaces (AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths). One line per bridge says which and why (`hw: battery: backend treble (hw-backend=treble)`). [hardware.md](hardware.md) 7e has the audit table |
 | `--hw-backend-BRIDGE samsung\|treble` (`hw-backend-backlight=`, `-battery`, `-thermal`, `-haptics`, `-touch`, `-keys`, `-audio`, `-camera`, `-wifi`, `-bluetooth`, `-display`) | unset (`hw-backend`'s) | one bridge's backend, over `hw-backend`; an unknown bridge name is refused |
 | `--hw-backend-fallback 0\|1` (`hw-backend-fallback=`) | 0 | a treble bridge whose interface is missing: 0 the bridge stays off, 1 it uses its samsung form; either way one line says what was missing |
+| `--set haptics-native-impacts=0\|1` (`haptics-native-impacts=`, also in `xnuhost.conf`) | unset | iOS's short taps as the vibrator HAL's own presets (TICK, CLICK, HEAVY_CLICK) instead of 20 ms motor starts, both halves with one setting: 1 asks the haptics bridge for them and adds `oneios_native_impacts=1` after the boot arguments (kept whole); refused (exit 2) without `hw-backend-haptics=treble`, with `hw-backend-fallback=1`, with `haptics=off\|sim` or the bridges off, or when the boot arguments say `oneios_native_impacts=` otherwise. 0: off, whatever the environment says. Unset: `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` in xnuhost's environment decides, as before (the OneOS fork passes none). [hardware.md](hardware.md) 5, "Native impacts". Default off on every phone; host-tested only |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
 | `--set ready-content-wait=SECONDS` | 120 | `session/ready` comes at the guest's first frame of its own that is not all black, or this long after its first frame of its own when all were black; 0 = at its first frame (the rule before 2026-11-15); 0 to 480 (section 2.8, "the ready rule") |
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |
@@ -1130,7 +1131,9 @@ the PC) is a stand-in actuator (`runtime/bridges/haptics/haptic.c`) that takes, 
 (`haptics: on: a stand-in actuator (haptics=sim)`), behind the same bridge channel; with the bridges off xnuhost
 makes a bridge device that serves only the stand-ins (with `bluetooth=sim` one device serves both). Each played
 effect is logged for the first 8, then at 16, 32, ...; `haptics: counters: ...` at those points and at the end
-([hardware.md](hardware.md) section 5).
+([hardware.md](hardware.md) section 5). With `haptics-native-impacts=1` (the table above; ported from the S26 Ultra fork's session opt-in, 2026-11-21) the
+start says `haptics: native impacts asked for (...)` and the bridge `haptics: native impacts enabled ...` once the HAL
+has the three presets; without them the bridge stays on VIB/STOP.
 The network (`wifi=` in `xnuhost.conf`, `--set wifi=...`): `auto`, the default, makes the phone's wlan0 the guest's
 en0 (`br_wlan_prepare`, [hardware.md](hardware.md) section 3): the `net` window's virtio-net device carries wlan0's
 address in its configuration, its frames go to and from wlan0 by AF_PACKET, and the guest driver's station messages

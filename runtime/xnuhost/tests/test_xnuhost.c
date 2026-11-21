@@ -2013,7 +2013,56 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, hw2) == 0 && xh_config_finish(&c) == 0 && br_hw_choose(&c.hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG);
   CHECK(br_hw_choose(&c.hw, BR_HW_KEYS, BR_HW_UNSET, NULL, 0) == BR_HW_SAMSUNG && br_hw_fallback_allowed(&c.hw));
-  char *hw3[] = { "xnuhost", "--image", image, "--hw-backend", "pixel" };
+  // haptics-native-impacts (docs/hardware.md 5): unset by default (the environment decides, no boot argument added);
+  // =1 in the image set's xnuhost.conf, the OneOS fork's command line (which passes no environment) turns on both
+  // halves: the HAL's presets and oneios_native_impacts=1 after the default boot arguments, kept whole.
+  f = fopen(path, "w"); fputs("hw-backend-haptics=treble\n", f); fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0 && c.haptics_native_impacts == -1 &&
+        !strstr(c.boot_args, "oneios_native_impacts"));
+  f = fopen(path, "w"); fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nhw-backend-fallback=0\n", f); fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0 && c.haptics_native_impacts == 1);
+  CHECK(br_hw_choose(&c.hw, BR_HW_HAPTICS, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE && strstr(c.boot_args, "native-source-storage=1 ") &&
+        strstr(c.boot_args, " oneios_native_impacts=1") && strstr(c.boot_args, "oneios_native_impacts=1") == strrchr(c.boot_args, ' ') + 1);
+  // the image set's own boot arguments: kept, and an oneios_native_impacts=1 already there not doubled
+  f = fopen(path, "w"); fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=1 debug=0x8\n", f); fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.boot_args, "-v oneios_native_impacts=1 debug=0x8"));
+  f = fopen(path, "w"); fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v debug=0x8\n", f); fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.boot_args, "-v debug=0x8 oneios_native_impacts=1"));
+  // refused: the guest told otherwise (=0, a longer value, twice), the evdev backend, a fallback to it, no motor bridge
+  static const char *const refused[] = {
+    "haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=0\n",
+    "haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=-v oneios_native_impacts=10\n",
+    "haptics-native-impacts=1\nhw-backend-haptics=treble\nboot-args=oneios_native_impacts=1 oneios_native_impacts=1\n",
+    "haptics-native-impacts=1\nhw-backend-haptics=treble\nhw-backend-fallback=1\n",
+    "haptics-native-impacts=1\nhw-backend-haptics=samsung\n",
+    "haptics-native-impacts=1\n",
+  };
+  for (unsigned i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+    f = fopen(path, "w"); fputs(refused[i], f); fclose(f);
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 13, argv) == 0 && xh_config_finish(&c) == -1);
+  }
+  // no motor bridge: haptics=sim or off (command line), or bench mode (the bridges off unless asked for)
+  f = fopen(path, "w"); fputs("haptics-native-impacts=1\nhw-backend-haptics=treble\n", f); fclose(f);
+  char *nisim[] = { "xnuhost", "--image", image, "--set", "haptics=sim" }, *nioffm[] = { "xnuhost", "--image", image, "--set", "haptics=off" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, nisim) == 0 && xh_config_finish(&c) == -1);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, nioffm) == 0 && xh_config_finish(&c) == -1);
+  char *nibench[] = { "xnuhost", "--image", image, "--mode", "bench" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, nibench) == 0 && xh_config_finish(&c) == -1);
+  // the command line's =0 wins over the image set's =1: off, no boot argument
+  char *nioff[] = { "xnuhost", "--image", image, "--set", "haptics-native-impacts=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, nioff) == 0 && xh_config_finish(&c) == 0 && c.haptics_native_impacts == 0 &&
+        !strstr(c.boot_args, "oneios_native_impacts"));
+  CHECK(xh_config_set(&c, "haptics-native-impacts", "maybe") != 0);
+  char *hw3[] ={ "xnuhost", "--image", image, "--hw-backend", "pixel" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, hw3) == -1);
   char *hw4[] = { "xnuhost", "--image", image, "--set", "hw-backend-toaster=treble" };

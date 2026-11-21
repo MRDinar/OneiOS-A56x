@@ -1331,6 +1331,18 @@ What is built:
   cancels an already-finished preset (its HAL-reported duration bounds `off()`), so One UI's own vibration is not
   interrupted. Longer runs keep VIB/STOP semantics, malformed or unsupported impacts are dropped, never mapped to
   VIB. Host-tested (`test_bridges` native-impacts case, `test_hal_binder` preset case); not run on the phone.
+  **The session's switch** (2026-11-21, from the S26 Ultra fork's bec7efe, adapted): the OneOS fork starts xnuhost
+  with no environment, so the two halves are one xnuhost setting, `haptics-native-impacts=1` in the image set's
+  `xnuhost.conf` (or `--set`; [booter.md](booter.md) section 1): it tells the bridge to ask for the presets
+  (`br_haptic_set_native_impacts`, no `setenv`) and appends `oneios_native_impacts=1` to the boot arguments,
+  keeping them whole. xnuhost refuses it (exit 2) unless `hw-backend-haptics=treble`, `hw-backend-fallback=0`,
+  `haptics=auto` and the bridges are on, and when the boot arguments already say `oneios_native_impacts=` with
+  another value; `=0` turns it off whatever the environment says. Unset (the default on every phone), the
+  environment decides as before. Host-tested (`test_xnuhost` config cases, `test_bridges` override case).
+  On the phone, beside One UI: `ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_BACKEND_HAPTICS=treble ONEIOS_HW_FALLBACK=0
+  bridgectl haptic-native-inspect` checks the same preset preflight without playing anything (runtime/bridges
+  README, "On the phone"). The fork felt one `perform(HEAVY_CLICK, STRONG)` on the S26 Ultra (2026-11-16, its
+  bridges README); no guest-to-motor tap has been felt on any phone.
 - **The closed-loop node**: `oneios_haptic.c` waits (5 s at most) for the audio archive's decision
   (`oneios_haptic_actuator_published`), then publishes `/product/haptics {closed-loop 1, supports-3rd-party-haptics 1}`
   when the device exists (the old rule, an Actuator HAL plug-in in the root, stays as the second way in). Not copied

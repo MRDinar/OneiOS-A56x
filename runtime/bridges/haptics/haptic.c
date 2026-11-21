@@ -52,6 +52,18 @@ void br_haptic_map(unsigned intensity, unsigned frequency_hz, unsigned *period_m
 }
 
 enum { HREQ_VIB = 1, HREQ_STOP = 2, HREQ_IMPACT = 3 };
+// Native impacts (docs/hardware.md 5): -1, ONEIOS_HAPTIC_NATIVE_IMPACTS decides (bridgectl, a manual run); 0 or 1, xnuhost's
+// haptics-native-impacts setting does (br_haptic_set_native_impacts, before the bridge opens: no setenv in xnuhost).
+static int native_impacts_set = -1;
+void br_haptic_set_native_impacts(int on) { __atomic_store_n(&native_impacts_set, on < 0 ? -1 : on ? 1 : 0, __ATOMIC_RELEASE); }
+static bool native_impacts_wanted(void)
+{
+  int set = __atomic_load_n(&native_impacts_set, __ATOMIC_ACQUIRE);
+  if (set >= 0) return set == 1;
+  const char *opt = getenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
+  return opt && !strcmp(opt, "1");
+}
+
 static uint64_t haptic_ms(void)
 {
   struct timespec ts;
@@ -193,8 +205,7 @@ br_haptic *br_haptic_open_backend(const br_haptic_backend *backend, void *ctx)
   h->effect = -1;
   // Custom/fake backends can opt in explicitly. The Treble backend overrides
   // this after querying getSupportedEffects() on the real vendor HAL.
-  const char *opt = getenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
-  h->impact_enabled = backend && backend->impact && opt && !strcmp(opt, "1");
+  h->impact_enabled = backend && backend->impact && native_impacts_wanted();
   snprintf(h->name, sizeof h->name, "the back end");
   pthread_mutex_init(&h->lock, NULL);
   pthread_cond_init(&h->wake, NULL);
@@ -515,8 +526,7 @@ static br_haptic *open_hal(const char *binder, char *why, size_t size)
   int rc = br_hal_call(v->hal, HAL_VIB_GET_CAPABILITIES, &p, take_caps, &v->caps);
   if (rc) { snprintf(why, size, "%s: getCapabilities: %s", HAL_VIBRATOR_INSTANCE, br_hal_error(rc)); br_hal_close(v->hal); free(v); return NULL; }
   int32_t version = br_hal_version(v->hal);
-  const char *opt = getenv("ONEIOS_HAPTIC_NATIVE_IMPACTS");
-  v->native_requested = opt && !strcmp(opt, "1");
+  v->native_requested = native_impacts_wanted();
   if (v->native_requested) {
     uint32_t mask = 0;
     br_hal_parcel(&p, HAL_VIBRATOR);
