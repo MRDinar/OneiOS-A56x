@@ -321,7 +321,7 @@ took 322 s with the download, peak 1,032 MiB, 37.1 GB asked (docs/agents.md, 202
 The pairing files' format (2026-11-22): the fork's `assets/kb/` is format 2 (`kb.json` `"kb": 2`: `match/` holds the
 reviewed fixtures alone; format 1 also carried XnuPrelink's three Python sources, which the matcher signature of the
 tools up to v0.1.13 was over). A runtime's `bin/oneios-tool` reads format 2 when its `serve` hello has `"kb": 2`
-(OneiOS main from the commit that removed those sources; v0.1.13 and older have no `kb` and refuse a `match/`
+(OneiOS main at or after `de6b429`; v0.1.13 and older have no `kb` and refuse a `match/`
 without `fileset_match.py`). So an APK of format 2 goes with a runtime release after v0.1.13: with an older staged
 runtime, Update the kernel stops with "get the latest OneiOS runtime" and Make iOS image stages the newest one.
 
