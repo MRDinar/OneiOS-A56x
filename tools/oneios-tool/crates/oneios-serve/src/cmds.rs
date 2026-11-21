@@ -1092,6 +1092,21 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
     let resume = rq.req.opt_flag("resume")?.unwrap_or(true);
     let tweaks = rq.req.opt_flag("tweaks")?.unwrap_or(true);
     let keep_work = rq.req.flag("keep_work")?;
+    // the root tweaks' optional inputs (hook API 1's); none: the userland config built into the tool
+    let read_opt = |key: &str| -> Result<Option<String>, Fail> {
+        match rq.req.opt_str(key)? {
+            Some(_) => Ok(Some(rq.read_path(key)?)),
+            None => Ok(None),
+        }
+    };
+    let tweak = oneios_imagebuild::Tweak {
+        helpers: read_opt("helpers")?,
+        metal_plugin: read_opt("metal_plugin")?,
+        camera_plugin: read_opt("camera_plugin")?,
+        scale: rq.req.opt_str("scale")?,
+        config: read_opt("tweaks_config")?,
+        args: rq.req.list("tweak_args")?,
+    };
     let no_kernel = rq.req.flag("no_kernel")?;
     let kc = match rq.req.opt_str("kc")? {
         Some(_) => Some(rq.existing("kc")?),
@@ -1138,6 +1153,7 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
         connections,
         resume,
         tweaks,
+        tweak,
         kernel,
         sums_list: lists[0].clone(),
         ids_list: lists[1].clone(),

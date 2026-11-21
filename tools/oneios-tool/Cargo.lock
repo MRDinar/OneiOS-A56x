@@ -1049,6 +1049,7 @@ dependencies = [
  "oneios-common",
  "oneios-image",
  "oneios-prelink",
+ "oneios-tweaks",
  "rayon",
 ]
 

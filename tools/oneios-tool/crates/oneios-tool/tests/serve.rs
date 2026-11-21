@@ -1678,7 +1678,8 @@ fn make_image_refuses_what_it_cannot_do_yet_and_writes_nothing() {
     for (more, code, words) in [
         // the app's own request: the AEA images must be decrypted, which the tool cannot do yet
         (json!({"profile": aea_profile}), "not-ported", "step decrypt"),
-        (json!({"profile": profile}), "not-ported", "step tweaks"),
+        // the root tweaks are in the tool: the default request goes past them, to the kernel's inputs (kb/ is empty)
+        (json!({"profile": profile}), "not-found", "the kernel's inputs are missing"),
         // with the runtime's profiles/ holding two, the request must name one
         (json!({"tweaks": false}), "usage", "give \"profile\""),
         (json!({"profile": profile, "tweaks": false}), "not-found", "the kernel's inputs are missing"),

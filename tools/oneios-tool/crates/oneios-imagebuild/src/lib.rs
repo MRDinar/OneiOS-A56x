@@ -157,6 +157,27 @@ impl Prelink {
     }
 }
 
+/// The root tweaks' optional inputs (hook API 1's `ONEIOS_HELPERS`, `ONEIOS_METAL_PLUGIN`, `ONEIOS_CAMERA_PLUGIN`,
+/// `ONEIOS_SCALE`, `ONEIOS_ROOTTWEAK_ARGS`; `config`: another `userland/config`, else the one built into the tool).
+#[derive(Debug, Clone, Default)]
+pub struct Tweak {
+    pub helpers: Option<String>,
+    pub metal_plugin: Option<String>,
+    pub camera_plugin: Option<String>,
+    pub scale: Option<String>,
+    pub config: Option<String>,
+    pub args: Vec<String>,
+}
+
+impl Tweak {
+    /// image-hook's defaults in a OneiOS checkout: `out/userland/helpers`, `.../NativeAdrenoMetal.bundle`,
+    /// `.../camera` where they are there, and the checkout's `userland/config`.
+    pub fn from_repo(repo: &str) -> Tweak {
+        let at = |rel: &str| Some(format!("{}/{rel}", repo.trim_end_matches('/'))).filter(|p| Path::new(p).is_dir());
+        Tweak { helpers: at("out/userland/helpers"), metal_plugin: at("out/userland/NativeAdrenoMetal.bundle"), camera_plugin: at("out/userland/camera"), scale: None, config: at("userland/config"), args: Vec::new() }
+    }
+}
+
 /// What to build.
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -178,6 +199,8 @@ pub struct Args {
     pub resume: bool,
     /// Apply the root tweaks (false: build.sh's `--no-hook`, the seed is the OS volume's own `/private/var`).
     pub tweaks: bool,
+    /// The root tweaks' inputs.
+    pub tweak: Tweak,
     pub kernel: Kernel,
     /// The stage's lists to write (`image.new.sha256`, `image.new.ids`): the set's files, sorted.
     pub sums_list: Option<String>,
@@ -364,11 +387,6 @@ fn aea_decryptor() -> Option<fn(&str, &str) -> Result<(), String>> {
     None
 }
 
-/// The root tweaks: not in this tool yet (agent "Port root tweaks to Rust"; docs/agents.md, Interfaces).
-fn tweaks_port() -> Option<()> {
-    None
-}
-
 /// The device a path is on (its nearest folder that is there).
 fn device_of(path: &str) -> Option<u64> {
     let mut at = Path::new(path);
@@ -444,12 +462,6 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
                 "step decrypt: the AEA decryption is not in this tool yet ({} must be decrypted; its Rust port is being written: docs/agents.md, Interfaces). Nothing was fetched or written",
                 to_decrypt.iter().map(|m| m.path.as_str()).collect::<Vec<_>>().join(", ")
             ),
-        ));
-    }
-    if args.tweaks && tweaks_port().is_none() {
-        return Err(refused(
-            "not-ported",
-            "step tweaks: the root tweaks are not in this tool yet (their Rust port is being written: docs/agents.md, Interfaces); a set without them is `\"tweaks\": false` (build.sh --no-hook). Nothing was fetched or written",
         ));
     }
     let kernel_cache_member = p.member("kernelcache").cloned();
@@ -608,8 +620,38 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     between()?;
     job::step("tweaks");
     if args.tweaks {
-        // (refused at the check while there is no port; tweaks_port() is the place it goes in)
-        tweaks_port().ok_or_else(|| refused("not-ported", "step tweaks: the root tweaks are not in this tool yet"))?;
+        // hook API 1 as a call (oneios-tweaks): the copied tree changed in place, the overlay, the owner rules, the
+        // summary; the OS volume read from its image, as nothing is mounted
+        println!("running the root tweaks (oneios-tweaks)");
+        let t = &args.tweak;
+        let hook = oneios_tweaks::Hook {
+            os_root: PathBuf::new(),
+            os_image: Some(os.clone()),
+            data: tree.clone(),
+            overlay: overlay.clone(),
+            build: Some(build_id.clone()),
+            helpers: t.helpers.clone().map(PathBuf::from),
+            metal_plugin: t.metal_plugin.clone().map(PathBuf::from),
+            camera_plugin: t.camera_plugin.clone().map(PathBuf::from),
+            scale: t.scale.clone(),
+            config: t.config.clone().map(PathBuf::from),
+            args: t.args.clone(),
+            owners: Some(owners.clone()),
+            info: Some(work.join("hook-info.json")),
+        };
+        let done = oneios_tweaks::run_hook(&hook).map_err(|e| match (job::stop_reason(), e.downcast_ref::<oneios_tweaks::Refused>()) {
+            (Some(stop), _) => Stop::Stopped(stop),
+            (None, Some(why)) => refused("input", format!("step tweaks: {why}")),
+            (None, None) => failed(format!("step tweaks: {e:#}")),
+        })?;
+        // build.sh's record of the hook: what ran, its SHA-256 (the tool's binary), its summary (no git here)
+        let exe = std::env::current_exe().map_err(|e| failed(format!("this tool's own file: {e}")))?;
+        let mut record = oneios_common::pyjson::Value::dict();
+        record.set("hook", "oneios-tool image tweaks");
+        record.set("hook_sha256", oneios_image::sha256_of(&exe.to_string_lossy()).map_err(image)?);
+        record.set("info", done.info.clone());
+        std::fs::write(&tweaks_json, oneios_common::pyjson::dumps(&record, None, false) + "\n").map_err(|e| io(&tweaks_json, e))?;
+        println!("root tweaks: {} launchd jobs off, {} owner cdhashes; off: {}", done.disabled_jobs, done.owner_cdhashes, done.off.len());
     } else {
         println!("no root tweaks: the seed is the OS volume's own /{source}");
     }
@@ -859,6 +901,9 @@ oneios-tool image build: the whole image set in one process (scripts/image/build
   --sums-list FILE     write the set's `SHA256  PATH` list (root's image.sha256)
   --ids-list FILE      write the set's `DEV:INODE:SIZE:MTIME PATH` list (root's image.ids)
   --keep-work          leave DIR/build
+  the root tweaks (oneios-tweaks; image-hook's inputs, all optional; --repo DIR gives image-hook's defaults there):
+  --helpers DIR, --metal-plugin BUNDLE, --camera-plugin DIR, --scale 2|3, --tweaks-config DIR (default: the
+                       userland/config built into the tool), --tweak-arg ARG (repeatable: more `apply` options)
   -j N                 connections of the fetch (default 8)
 ";
 
@@ -931,6 +976,7 @@ fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let (mut indir, mut out, mut work, mut source, mut kc, mut xnu, mut kb, mut repo, mut cache) = (None, None, None, None, None, None, None, None, None);
     let (mut pprofile, mut reviewed, mut pairs, mut stubs, mut xnuprelink, mut sums, mut ids) = (None, None, None, None, None, None, None);
     let mut more: Vec<String> = Vec::new();
+    let (mut t_helpers, mut t_metal, mut t_camera, mut t_scale, mut t_config, mut t_args): (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Vec<String>) = (None, None, None, None, None, Vec::new());
     let (mut fetch, mut resume, mut tweaks, mut no_kernel, mut keep_work, mut connections) = (true, false, true, false, false, 8usize);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -959,6 +1005,12 @@ fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--sums-list" => sums = Some(value(a)?),
             "--ids-list" => ids = Some(value(a)?),
             "--keep-work" => keep_work = true,
+            "--helpers" => t_helpers = Some(value(a)?),
+            "--metal-plugin" => t_metal = Some(value(a)?),
+            "--camera-plugin" => t_camera = Some(value(a)?),
+            "--scale" => t_scale = Some(value(a)?),
+            "--tweaks-config" => t_config = Some(value(a)?),
+            "--tweak-arg" => t_args.push(value(a)?),
             "-j" => connections = value(a)?.parse().map_err(|_| "-j needs a number".to_string())?,
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
             s if profile.is_none() => profile = Some(s.to_string()),
@@ -968,6 +1020,7 @@ fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let profile = profile.ok_or("no PROFILE")?;
     let (indir, out) = (indir.ok_or("--indir DIR is needed")?, out.ok_or("--out SET is needed")?);
     let work = work.unwrap_or_else(|| Path::new(&out).parent().map(|p| p.to_string_lossy().into_owned()).filter(|p| !p.is_empty()).unwrap_or_else(|| ".".into()));
+    let repo_for_tweaks = repo.clone();
     let kernel = match (kc, no_kernel, xnu) {
         (Some(kc), false, None) => Kernel::Kc(kc),
         (None, true, None) => Kernel::None,
@@ -1000,7 +1053,15 @@ fn parse(args: &[String]) -> Result<Option<Args>, String> {
         }
         _ => return Err("one of --kernel-kc FILE, --no-kernel, --xnu FILE".into()),
     };
-    Ok(Some(Args { profile, indir, out, work, fetch, source, connections, resume, tweaks, kernel, sums_list: sums, ids_list: ids, keep_work }))
+    // the root tweaks: image-hook's defaults from --repo, each option over them
+    let mut tweak = repo_for_tweaks.as_deref().map(Tweak::from_repo).unwrap_or_default();
+    for (slot, given) in [(&mut tweak.helpers, t_helpers), (&mut tweak.metal_plugin, t_metal), (&mut tweak.camera_plugin, t_camera), (&mut tweak.scale, t_scale), (&mut tweak.config, t_config)] {
+        if given.is_some() {
+            *slot = given;
+        }
+    }
+    tweak.args.extend(t_args);
+    Ok(Some(Args { profile, indir, out, work, fetch, source, connections, resume, tweaks, tweak, kernel, sums_list: sums, ids_list: ids, keep_work }))
 }
 
 #[cfg(test)]

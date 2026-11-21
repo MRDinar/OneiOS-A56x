@@ -381,14 +381,16 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `make/build/`, keeps `make/inputs/`.
   **What the app has to do for it:** (1) write the pairing files into `kb/` (root's `kbinput` ×12, as Update the
   kernel does) before `make-image`, or it is refused `not-found` naming them; (2) stage a runtime with a kernel
-  (v0.1.12 or newer), or it is refused `not-found` ("the staged runtime has no kernel"). **Until the root tweaks and
-  the AEA decryption are in the tool** the request is refused `not-ported` at `check`, before anything is fetched
-  or written: `step decrypt: the AEA decryption is not in this tool yet ...` (an OS or SystemOS image to decrypt),
-  then `step tweaks: the root tweaks are not in this tool yet ...`. `"tweaks": false` makes a set without the root
-  tweaks (as `build.sh --no-hook`; whether such a set boots was not tried, the tweaks turn off launchd jobs the guest is known to need off): for tests only, the app should not send it. The
-  app's `tweaks` request after `make-image` can go once `make-image` stops refusing. Optional keys the app need not
-  send: `profile` (default: the runtime's `lib/profiles/` when it holds one), `xnu`, `kb`, `kernelcache`, `kc`,
-  `no_kernel`, `fetch`, `source`, `keep_work`.
+  (v0.1.12 or newer), or it is refused `not-found` ("the staged runtime has no kernel"). The root tweaks run in its
+  `tweaks` step (oneios-tweaks, the OS volume read from its image; the manifest's `tweaks` record is
+  `{"hook": "oneios-tool image tweaks", "hook_sha256": <the tool's binary>, "info": ...}`, no `commit`). **Until the
+  AEA decryption is in the tool** the request is refused `not-ported` at `check`, before anything is fetched or
+  written: `step decrypt: the AEA decryption is not in this tool yet ...` (an OS or SystemOS image to decrypt).
+  `"tweaks": false` makes a set without the root tweaks (as `build.sh --no-hook`; whether such a set boots was not
+  tried, the tweaks turn off launchd jobs the guest is known to need off): for tests only, the app should not send
+  it. Optional keys the app need not send: `profile` (default: the runtime's `lib/profiles/` when it holds one),
+  `xnu`, `kb`, `kernelcache`, `kc`, `no_kernel`, `fetch`, `source`, `keep_work`, and the tweaks' `helpers`,
+  `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args`.
 - Make iOS image's first request is `fetch` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`
   (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
 - `tweaks` (in the tool since 2026-11-21; `tools/oneios-tool/README.md` "serve" (the commands) and "image

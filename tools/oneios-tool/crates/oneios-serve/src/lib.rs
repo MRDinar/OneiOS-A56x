@@ -834,18 +834,21 @@ pub fn main(cli: Cli) -> i32 {
         "idle" => "idle",
         _ => "eof",
     };
-    let (dropped, running) = {
+    let (dropped, running, ended) = {
         let mut q = shared.queue.lock().unwrap();
         q.quit = true;
-        if q.running.is_some() {
+        // A request whose last event is out (`finish` closed it) has ended, even when the runner has not cleared
+        // it yet: the app may close the pipe right after that event, and the end did not cut it short.
+        let ended = q.running.as_ref().is_some_and(|id| q.closed.contains(id));
+        if q.running.is_some() && !ended {
             q.stop_by.get_or_insert(by);
             job::cancel_at_the_end();
         }
-        (q.waiting.drain(..).collect::<Vec<Req>>(), q.running.clone())
+        (q.waiting.drain(..).collect::<Vec<Req>>(), q.running.clone(), ended)
     };
     shared.work.notify_all();
     // how many requests this end cut short (the exit status says so)
-    let cut = dropped.len() + usize::from(running.is_some());
+    let cut = dropped.len() + usize::from(running.is_some() && !ended);
     for req in dropped {
         shared.finish(&req.id, cancelled_ev(&req.id, &req.cmd, by, 0, "was waiting; it did not start"));
     }

@@ -73,15 +73,17 @@ the OneOS app's Make iOS image runs on the phone, `serve`'s `make-image`). It fe
 kernelcache (or takes `--kernel-kc FILE`), writes the manifest and checks the set:
 
 ```sh
-oneios-tool image build "$P" --indir inputs/24A446 --out out/image/24A446-rust --no-tweaks \
+oneios-tool image build "$P" --indir inputs/24A446 --out out/image/24A446-rust \
   --xnu RUNTIME/kernel/xnu.macho --repo . --kernelcache -        # RUNTIME: an unpacked runtime package (v0.1.12 has the kernel)
 ```
 
-Not in it yet: the root tweaks (`--no-tweaks` is required until their Rust port lands; without it the build is
-refused `not-ported`) and the AEA decryption (the decrypted images must be in INDIR, as `fetch.sh` leaves them).
-Compared on the Linux PC: the set is build.sh's `--no-hook` set, every file's SHA-256 and `manifest.json` byte for
-byte, `kernel.kc` the prelink's; 19 s from inputs that are there, 30 s with the fetch's check against Apple's IPSW,
-1.07 GB peak memory ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "image build").
+The root tweaks run in it (oneios-tweaks; `--repo` gives image-hook's defaults, `--no-tweaks` leaves them out). Not
+in it yet: the AEA decryption (the decrypted images must be in INDIR, as `fetch.sh` leaves them; else refused
+`not-ported`). Compared on the Linux PC: without tweaks the set is build.sh's `--no-hook` set, every file's SHA-256
+and `manifest.json` byte for byte; with them every file but `manifest.json` is the set of build.sh with the Python
+hook (`data.seed` `27ec4e10...`), the manifest differing only in the hook's own record; `kernel.kc` is the
+prelink's; 19 to 21 s from inputs that are there, 30 s with the fetch's check against Apple's IPSW, 1.07 GB peak
+memory ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "image build").
 
 **On macOS** the commands are the same and need no `sudo`. The fetch decrypts with the macOS `ipsw` release. The
 image build attaches the three images with `hdiutil` (read-only, owners ignored) and reads the owners of

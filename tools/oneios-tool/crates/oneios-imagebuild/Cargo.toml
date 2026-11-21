@@ -12,3 +12,4 @@ rayon.workspace = true
 oneios-common.workspace = true
 oneios-image.workspace = true
 oneios-prelink.workspace = true
+oneios-tweaks.workspace = true
