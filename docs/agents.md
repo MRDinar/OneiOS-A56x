@@ -2136,3 +2136,17 @@ persistent: a reboot costs a manual re-root.
 - 2026-11-21, SM8850 port merged (assistant): brightctl inspect, cpu-hw-trip exclusion, native-touch priority,
   displayctl takeover-refusal + --socket, union-flush packet counts, touch-exclusive grab, frame_perf lib (17
   cherry-picks + 1 adapted hand-port; S26-only reverts/refactors explicitly skipped). Host suites green.
+
+- 2026-11-21, A56 full port merged from `port-a56-full` (assistant): all 17 `Musicalista/OneiOS-A56` commits
+  triaged. In: kernel 0068/0072/0074/0077 (0067->0074, 0069->0077; 0073 was already on main from metal/haptics),
+  0004 amdgpu-probe + 0029 trace deltas (both byte-exact vs the fork
+  after adapt), `ONEIOS_CRYPTO=original` (opt-in, default source), version-gated `RAMDisk1` (20F66 only), roottweak
+  20F66 boot-args + fixups, amdgpu staged-GPU3D + goldens, `emit.rs` no-seal, A56 profiles (reference), `test_a56_gpu.c`,
+  `docs/a56.md` + `docs/a56-oneos-fork.md`, forks.md row. Skipped: virtio_gpu black-frame (superseded by ready.c),
+  clang-wrapper flags, transfer_apfs.py, switch script + Manager app (OneOS-fork proposal, `app/` untouched).
+  Green: loader 170, oneios-kernel 12, oneios-prelink 3, roottweak 38, kernel host.sh 3, xnuhost 14086+37+166,
+  main.c syntax check. After the merge into main: the whole series applies and the hosted kernel builds and links
+  (`HOSTED_OUT=a56`, xnu.macho 24840472 bytes, sha256 720a64f9..., 305 s), series-check clean, cargo tests green,
+  `runtime/host-tests.sh` green but for one xnuhost check (test_xnuhost.c:1160, the GPU two-lane 2 s wait) that failed
+  only while the kernel build loaded every core (3 idle reruns: 14108 checks, 0 failed). NOT done: prelink/kernel.kc
+  audit, `original`-crypto end-to-end, a PC boot, any phone boot. The `series` numbers 0068/0072-0074/0077 are taken.

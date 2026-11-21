@@ -177,6 +177,9 @@ A port of DarwinBoot to plain C with no firmware under it:
 - `boot.c`: `boot_args` (1024-byte command line of Darwin 23+, or the 608-byte one), the sidecar checks
   (trust caches, packed RAM disk `DBRDISK1`, GPU addon, root policies) and the placement in DarwinBoot's
   order: kernel, `boot_args`, tree, RAM disk, trust caches, addon, policies; memory-map entries filled.
+  `RAMDisk1` mirrors `RAMDisk` (same address and size) only when the tree names it: iOS 16 userlands look for the
+  ramdisk under that name too (port-a56, docs/a56.md). xnuhost names it exactly when the image set's build is
+  20F66; a 27 kernel's tree is byte-identical to before.
 
 The difference from a firmware loader is one parameter: `virt_base`. DarwinBoot passes the kernel's link
 base and the kernel maps itself there. xnuhost passes the address where the window **already is**, a

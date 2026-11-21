@@ -41,7 +41,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
 @@ -5873,6 +5903,7 @@
  		ret = client->callExternalMethod( selector, &args );
  #if XNU_HOSTED
- 		hosted_iouc_trace(client, selector, ret);
+ 		hosted_iouc_trace(client, selector, &args, ret);
 +		hosted_display_power(client, selector, scalar_input, scalar_inputCnt, ret);
  #endif
  	}

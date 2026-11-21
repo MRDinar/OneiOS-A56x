@@ -214,6 +214,8 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   static const uint8_t empty[16];
   xl_adt_node *map = xl_adt_add(chosen, "memory-map");
   if (m->ramdisk || m->packed_ramdisk) xl_adt_set(map, m->packed_ramdisk ? "PackedRAMDisk" : "RAMDisk", empty, 16);
+  // iOS 16's kernel reads the ramdisk's address from RAMDisk1 (port-a56, docs/a56.md); 27's never sees this node.
+  if (m->ramdisk1 && (m->ramdisk || m->packed_ramdisk)) xl_adt_set(map, "RAMDisk1", empty, 16);
   if (m->trust_cache) xl_adt_set(map, "TrustCache", empty, 16);
   if (m->gpu_addon) xl_adt_set(map, "GpuAddon", empty, 16);
   if (m->root_policies) xl_adt_set(map, "RootPolicies", empty, 16);

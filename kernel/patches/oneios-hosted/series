@@ -213,6 +213,10 @@
 # and stops giving back for the boot. xnuhost's ram-giveback=0 (prefaulted and locked) is the default since
 # fix-ram-locked (2026-11-15); the patch is unchanged.
 0067-ram-fixed.patch
+# port-a56 (Galaxy A56, iOS 16.5/20F66 userland on the 24A446 collection; docs/a56.md): the 16.5 Mach user ABI carries
+# the registered ports in one OOL descriptor. task.defs exposes mach_ports_register/lookup to KERNEL_SERVER too, and
+# the hosted shims translate to the 3-port kernel RPCs; 27's userland never takes this path. Numbered 0068: free here.
+0068-hosted-ios16-registered-ports.patch
 # fix-brightness-touch (2026-11-14): iOS's display power for the host. backboardd's IOMobileFramebufferRequestPowerChange
 # (IOMobileFramebufferUserClient selector 12, one scalar: the state) is answered as before (unsupported by this family)
 # and then passed to drivers/brightness's oneios_display_power_request (weak), which sends OB_BRIGHT_POWER: the host
@@ -232,13 +236,25 @@
 # and a user CM fault reaches XNU with CM and WnR kept and an access flag fault (XNU's own CM rule makes it a read).
 # The runtime's stub says XH_PROT_READ for it too (runtime/xnuhost/stub/stub_abi.h, xs_fault_access).
 0071-cache-maintenance-fault-read.patch
+# port-a56 (docs/a56.md): iOS 16.5 (20F66) userland on this collection's iOS 27 (24A446) IOMobileGraphicsFamily and
+# IOSurface: the external methods kept their numbers but some structures grew, and the dispatch tables check sizes
+# exactly, so 20F66's calls were refused (0xe00002c2) and the A56's panel stayed black. 0072 rewrites them in
+# is_io_connect_method: IOMobileFramebufferUserClient 5 (the swap record, 0x46c -> 0x6e0) and 74 (1 -> 2 scalars out),
+# IOSurfaceRootUserClient 0/2/4/6/7/34 (the surface info, 24A446's 0xc68 bytes rewritten into 20F66's 0xa68 layout,
+# field by field) and 13 (limits, 0x18 <- 0x28). One line at the first rewrite of each kind: "oneios-iomfb: iOS 16
+# call rewritten for iOS 27: ...". oneios-iomfb-swap16=0: off (size-triggered, so inert for 27 userland either way).
+# Not rewritten (not on the compositor's path): IOSurfaceRootUserClient 27/28 (bulk attachments), 36/38 (accelerator).
+0072-iomfb-ios16-swap-record.patch
 # sandbox-triage, a debugging aid (ported from Musicalista-OneiOS-A56's 0073; applies cleanly to xnu-12377.121.6,
-# kernel not rebuilt here): mac_cred_label_update_execve's refusal says only the hook's error on the console (an
-# xpcproxy exec ending in a security-policy exit, with a daemon then waited on forever). 0073 logs which MAC policy
-# refused whose credential update ("oneios-mac-exec: NAME: policy P refused the credential update (error E)", at most
-# 200 lines) and, with oneios-mac-exec-skip=NAME[,NAME...], ignores a Sandbox refusal for those executables (they run
-# unsandboxed). Off without it; other policies are never skipped. README.md, "0073".
+# kernel rebuilt and linked 2026-11-21, prelink pending): mac_cred_label_update_execve's refusal says only the hook's
+# error on the console (an xpcproxy exec ending in a security-policy exit, with a daemon then waited on forever). 0073
+# logs which MAC policy refused whose credential update ("oneios-mac-exec: NAME: policy P refused the credential
+# update (error E)", at most 200 lines) and, with oneios-mac-exec-skip=NAME[,NAME...], ignores a Sandbox refusal for
+# those executables (they run unsandboxed). Off without it; other policies are never skipped. README.md, "0073".
 0073-mac-exec-label-report.patch
+# port-a56 (docs/a56.md; the fork's 0067, renumbered: 0067 is taken here): the shared-cache volume check when the
+# SystemOS union sits above the verified OS mount. Only widens that check's pass condition; the 27 path is unchanged.
+0074-hosted-shared-cache-volume.patch
 # fix-host-overhead (2026-11-15): the trap path's counters per vCPU (every vCPU wrote the same lines on every user stay:
 # the stats, the audit tick's atomic, the perf report's per-call atomics); the fill's time without the time its thread
 # was switched out (the phone's "filled from the tables 11417628 us" was mostly preemption inside the fill); a kernel
@@ -253,6 +269,9 @@
 # oneios-compress-sweep=SECONDS (off): once, hand every anonymous page to the compressor (vm_pageout_anonymous_pages), for
 # its ratio on a boot that never runs short of file pages. README.md, "0076".
 0076-compressor-jetsam-report.patch
+# port-a56 (docs/a56.md; the fork's 0069, renumbered: 0069 is taken here): iOS 16 bootstrap clients use ordinary MIG
+# reply ports. With oneios-legacy-bootstrap-replies=1 the bootstrap-port defense accepts them; default 0: the 27 rule.
+0077-hosted-ios16-bootstrap-replies.patch
 # fix-hapticd (2026-11-15): Core Haptics' server (audiomxd's com.apple.audio.hapticd) loads its preset from
 # /Library/Audio/Tunings/<hardware model>/Haptics/hapticengineconfig.plist; the guest's model is "oneios,xnuhost", so it
 # found none and gave up ("Haptic Engine & Server Failure"), every client's first call then timed out (Settings at

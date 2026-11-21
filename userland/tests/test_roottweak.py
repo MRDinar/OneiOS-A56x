@@ -485,6 +485,21 @@ class Sealed(Case):
         self.apply(expect=1)
         self.assertIn('not an iOS root', self.log)
 
+    def test_20f66_gets_the_16_userland_boot_args(self):
+        # port-a56: a 20F66 root (applied with --any-version) writes the 16.5 userland's xnuhost.conf: no Metal
+        # accelerator, legacy bootstrap replies, and the QuartzCore vsync fixup. The keybagd fixup is scoped by
+        # hash to the real 20F66 binary, so the fakeroot (whose keybagd differs) must not get it.
+        with open(os.path.join(self.root, 'System/Library/CoreServices/SystemVersion.plist'), 'wb') as f:
+            plistlib.dump({'ProductBuildVersion': '20F66', 'ProductVersion': '16.5', 'ProductName': 'iPhone OS'}, f)
+        self.apply('--any-version')
+        with open(os.path.join(self.out, 'xnuhost.conf')) as f:
+            conf = f.read()
+        self.assertIn('scale=', conf)
+        self.assertIn('oneios-gpu-metal=0', conf)
+        self.assertIn('oneios-legacy-bootstrap-replies=1', conf)
+        self.assertIn('text-fixup=dyld_shared_cache_arm64.03,15e4684,e8279f1a,28008052', conf)
+        self.assertNotIn('text-fixup=keybagd', conf)
+
 
 class Hook(Case):
     def test_the_image_hook_speaks_api_1(self):
