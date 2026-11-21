@@ -49,12 +49,17 @@ else
 fi
 # The arm64e kernel's compiler line (kernel/linux/clang-wrapper): the PAC ABI (signed calls, returns, the intrinsics)
 # and function-pointer type discrimination reach cc1 whatever the host clang implies for the triple by itself.
-if command -v "${CROSS_CLANG:-clang}" > /dev/null && "${CROSS_CLANG:-clang}" -target arm64e-apple-ios27.0 -### -c -x c /dev/null -o /dev/null > /dev/null 2>&1; then
-  cc1=$(kernel/linux/clang-wrapper -arch arm64e -mkernel -### -c -x c /dev/null -o /dev/null 2>&1)
+# A clang that refuses the kernel's own driver flags (CI's Ubuntu clang: an older release) builds no kernel either, and
+# CI never builds one (the release kernel comes from kernel/release-kernel.txt): skipped with its first error. Until
+# 2026-11-21 the wrapper's exit status ended this script under set -e with no line at all (release run 44882714612).
+if command -v "${CROSS_CLANG:-clang}" > /dev/null && "${CROSS_CLANG:-clang}" -target arm64e-apple-ios27.0 -### -c -x c /dev/null -o /dev/null > /dev/null 2>&1 &&
+   cc1=$(kernel/linux/clang-wrapper -arch arm64e -mkernel -### -c -x c /dev/null -o /dev/null 2>&1); then
   for flag in -fptrauth-calls -fptrauth-returns -fptrauth-intrinsics -fptrauth-function-pointer-type-discrimination; do
     grep -q -- "\"$flag\"" <<< "$cc1" || fail "clang-wrapper: arm64e cc1 has no $flag"
   done
   ok "clang-wrapper: arm64e PAC flags reach cc1 ($("${CROSS_CLANG:-clang}" --version | head -1))"
+elif [ -n "${cc1:-}" ]; then
+  echo "skipped: clang-wrapper PAC flags ($("${CROSS_CLANG:-clang}" --version | head -1) refuses the kernel's flags: $(grep -m1 -i error <<< "$cc1" || head -1 <<< "$cc1"))"
 else
   echo "skipped: clang-wrapper PAC flags (no clang with an arm64e-apple-ios target here)"
 fi
