@@ -5,7 +5,8 @@
 //! the lzfse_rust crate: no `lzfse` program) and `verify` of a set folder. The others (`check-ipsw`, `fetch`,
 //! `record-plain`, `aea-info`, `pack`, and `verify` of a `.tar.zst`) are run by the Python tool: this one starts
 //! `python3 -I scripts/image/imagetool.py ...` for them. Only here: `apfs-ls`, `apfs-copy` (apfs/files.rs) and
-//! `apfs-checkpoints` (apfs/check.rs: the checkpoints of a store copied after use, and the checks before a read).
+//! `apfs-checkpoints` (apfs/check.rs: the checkpoints of a store copied after use, and the checks before a read) and
+//! `aea-decrypt` (aea_decrypt.rs: the IPSW's AEA images, the key from Apple's key service).
 //!
 //! What differs from Python, on purpose:
 //! - where Python ends with a traceback (a file that is not there, a damaged image), this prints one line
@@ -27,6 +28,7 @@ mod profile;
 mod py;
 mod seed;
 mod aea;
+pub mod aea_decrypt;
 mod archive;
 mod ipsw;
 pub mod rangeserve;
@@ -101,6 +103,12 @@ The root tweaks and the userland hook (the port of userland/roottweak and userla
     oneios-tool image tweaks apply --root OS --data DATA --out OUT [...]   the tweaks; --help lists the options
     oneios-tool image tweaks hook [--repo DIR]                   the image build's hook (API 1, ONEIOS_* from build.sh)
     oneios-tool image tweaks daemons|cdhash|boot-check ...       the daemon policy, CDHashes, a boot's launchd check
+
+Only in this tool: the IPSW's AEA images decrypted here (no `ipsw` program; the key from Apple's key service)
+    oneios-tool image aea-decrypt IN OUT [--key-cache DIR] [--key-file PEM | --key base64:..|hex:..]
+                                 [--sha256 HEX | --profile PROFILE] [--resume] [-j N]
+                                                                 authenticated: a wrong key or a changed byte fails;
+                                                                 OUT.part is renamed last; --resume goes on from it
 
 Formats: docs/image-format.md. The Rust port of scripts/image/imagetool.py: same output, byte for byte.
 ";
@@ -254,6 +262,32 @@ pub enum Command {
     AeaInfo(Raw),
     /// The archive the OneOS fork imports
     Pack(Raw),
+    /// Only in this tool: decrypt an AEA image of the IPSW (the key from Apple's key service)
+    AeaDecrypt {
+        input: String,
+        out: String,
+        /// A folder where the key service's key is kept for the next archive (the work folder)
+        #[arg(long = "key-cache", value_name = "DIR")]
+        key_cache: Option<String>,
+        /// The key service's P-256 key, a PEM file, instead of fetching it
+        #[arg(long = "key-file", value_name = "PEM")]
+        key_file: Option<String>,
+        /// The archive key itself (base64:... or hex:...)
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
+        /// The plain file's SHA-256 it must have
+        #[arg(long, value_name = "HEX")]
+        sha256: Option<String>,
+        /// Check the plain file against this profile's plain_sha256 of the member named like IN
+        #[arg(long, value_name = "PROFILE")]
+        profile: Option<String>,
+        /// Keep OUT.part and its state when the work ends early, and go on from them
+        #[arg(long)]
+        resume: bool,
+        /// Worker threads (default: the online CPUs, at most 8)
+        #[arg(short = 'j', value_name = "N")]
+        jobs: Option<usize>,
+    },
 }
 
 #[derive(clap::Parser)]
@@ -441,6 +475,7 @@ fn dispatch(command: Command) -> Result<(), Fail> {
         Command::RecordPlain(Raw { args }) => ipsw::record_plain(arg(&args, 0)?, arg(&args, 1)?, arg(&args, 2)?),
         Command::AeaInfo(Raw { args }) => aea::cmd_aea_info(arg(&args, 0)?).map(|_| ()),
         Command::Pack(Raw { args }) => say(&format!("{}  {}", archive::pack(arg(&args, 0)?, arg(&args, 1)?)?, arg(&args, 1)?)),
+        Command::AeaDecrypt { input, out, key_cache, key_file, key, sha256, profile, resume, jobs } => say(&aea_decrypt::cmd(&input, &out, key_cache.as_deref(), key_file.as_deref(), key.as_deref(), sha256.as_deref(), profile.as_deref(), resume, jobs)?),
     }
 }
 
@@ -456,4 +491,41 @@ fn opt<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, Fail> {
         Some(at) => arg(args, at + 1).map(Some),
         None => Ok(None),
     }
+}
+
+// ---------------------------------------------------------------- library entry points of `image build`
+//
+// `oneios-tool image build` and `serve`'s `make-image` (crates/oneios-imagebuild) run scripts/image/build.sh's steps
+// in one process. These are the commands build.sh starts, called in the process: the same work, the text they print
+// returned instead of printed. Added 2026-11-21 (image-build); nothing above changed for them.
+
+/// `image profile PROFILE --shell` (form "shell") or `--members` (form "members"): the text the command prints.
+pub fn profile_text(profile: &str, form: &str) -> Result<String, Fail> {
+    profile::cmd_profile(&[profile.to_string(), format!("--{form}")])
+}
+
+/// `image seed-pack TREE META OUT --epoch N [--owners FILE]`: the JSON line the command prints (build.sh keeps it
+/// as seed.json for `manifest --seed-info`).
+pub fn seed_pack_line(tree: &str, meta: &str, out: &str, epoch: i128, owners: Option<&str>) -> Result<String, Fail> {
+    let (count, added, changed) = seed::seed_pack(tree, meta, out, epoch, owners)?;
+    let mut info = Value::dict();
+    info.set("format", "tar");
+    info.set("root", "/private/var");
+    info.set("entries", count);
+    info.set("added", added);
+    info.set("changed", changed);
+    Ok(pyjson::dumps(&info, None, false))
+}
+
+/// `image manifest PROFILE SETDIR [--inputs FILE] [--seed-info FILE] [--tweaks FILE]`: the line it prints.
+pub fn manifest_line(profile: &str, setdir: &str, inputs: Option<&str>, seed_info: Option<&str>, tweaks: Option<&str>) -> Result<String, Fail> {
+    let profile = profile::load_profile(profile)?;
+    let (files, bytes) = manifest::make_manifest(&profile, setdir, load_json(inputs)?, load_json(seed_info)?, load_json(tweaks)?)?;
+    Ok(format!("manifest.json: {files} files, {bytes} bytes"))
+}
+
+/// `image record-plain INDIR ROLE PLAIN`: after an AEA was decrypted, the plain image's size and SHA-256 in
+/// inputs.json.
+pub fn record_plain_input(indir: &str, role: &str, plain: &str) -> Result<(), Fail> {
+    ipsw::record_plain(indir, role, plain)
 }

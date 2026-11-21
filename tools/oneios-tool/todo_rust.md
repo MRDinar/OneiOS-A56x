@@ -46,7 +46,7 @@ switch.
 | `prelink` | `roots`, `hosted` (2 of 12 steps) | yes for the two, byte for byte on the real kernelcache | **the other ten steps**, the pairing and the emitter first (section 4) |
 | `sym kernel`, `log panic` (2026-11-13, branch `ksym`, crate `oneios-ksym`) | done (new: a kernel panic's caller, pc, lr and frames named in `kernel.kc` and `xnu.macho`; no Python original) | compared with `llvm-symbolizer --inlining` on three Linux-built pairs: 19 of 19 addresses of a stand-in panic and 31,605 of 31,605 more per pair (311,605 on one) name the same function, file:line and inlined frames (README "sym kernel") | **the Mac's log and kernel of the 2026-11-12 panic** (`tests/ksym/compare.sh KC KERNEL LOG`, with `DSYM=`); a real panic log from the phone; names for kext frames (the collection keeps no kext symbols: the prelink's pairing records could give them); a run on a Mac |
 | `image tweaks` (2026-11-21, crate `oneios-tweaks`: the root tweaks, group 4) | done: `apply`, `hook`, `daemons`, `cdhash`, `boot-check`, `serve`'s `tweaks` | yes: 33 of 33 cases of `tests/tweakspy/compare-python.sh`; on 24A446's real inputs `data.seed` and the six overlay files byte for byte with each hook (README "image tweaks") | the run on the phone; the Mac; retiring the Python (the owner) |
-| `serve`, `prelink build`, `--jobs`/`--nice`, `apfs-copy` in threads (2026-11-15, branch `tool-app-progress`, crate `oneios-serve`) | done (new: the one process the OneOS app starts as root for the iOS steps on the phone; no Python original) | `prelink build` and `serve`'s `prelink`: build.sh's `kernel.kc` and 24 of 24 files; the threads' APFS copy: the tree the copy before gave, and apfs-fuse's; 21 tests of the process, 12 checks on the stand-in phone | **a run on the phone** (`tests/phone/serve-on-phone.sh`); the root tweaks, the image build's script and the AEA decryption are not in the tool (section 9) |
+| `serve`, `prelink build`, `--jobs`/`--nice`, `apfs-copy` in threads (2026-11-15, branch `tool-app-progress`, crate `oneios-serve`) | done (new: the one process the OneOS app starts as root for the iOS steps on the phone; no Python original) | `prelink build` and `serve`'s `prelink`: build.sh's `kernel.kc` and 24 of 24 files; the threads' APFS copy: the tree the copy before gave, and apfs-fuse's; 21 tests of the process, 12 checks on the stand-in phone | **a run on the phone** (`tests/phone/serve-on-phone.sh`); the root tweaks and the image build's script are not in the tool (section 9; the AEA decryption is, since 2026-11-21) | |
 
 ## Build and unit tests
 
@@ -673,7 +673,11 @@ Open, in the order they matter for "make the iOS image on the phone":
    called through `oneios_image::run` with their output read back (`src/cmd.rs`), because oneios-image exposes no
    library call for `profile`, `seed-pack`, `manifest` and `record-plain`; public functions for them would be
    cleaner (asked on the board).
-4. **The IPSW's AEA images are decrypted by an outside program** on the PC. Not in the tool.
+4. ~~**The IPSW's AEA images are decrypted by an outside program** on the PC.~~ Done 2026-11-21: `image
+   aea-decrypt` and `serve`'s `aea` (README "aea-decrypt"): both images of 24A446 decrypt to their pinned SHA-256 on the
+   PC, the key from Apple's key service, every byte authenticated, at most about 60 MB of RAM; `scripts/fetch/fetch.sh`
+   uses it. Left: the run on the phone (the time, and the heat of the 16.5 GB written), and the `image build` request
+   (item 3) calling `oneios_image::aea_decrypt::aea_decrypt` after its `fetch`.
 5. **The prelink's time is in the steps' own serial work**, not in what was put into threads. CPU per step on the
    Linux PC: `match` 3.9 s, `emit` 2.0 s, `align` 1.2 s and 0.9 s, `audit` 1.2 s, `record` 0.9 s, `hosted` 0.7 s,
    `kclasses`, `structors`, `vtables` 0.4 to 0.5 s each. Each step reads and parses the two kernels again (they

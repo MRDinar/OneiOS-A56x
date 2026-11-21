@@ -34,3 +34,13 @@ crc32fast = "1"
 regex = "1"
 # check-ipsw, fetch: the BuildManifest.
 plist = { version = "1", default-features = false }
+# image aea-decrypt (aea_decrypt.rs): the AEA profile of the IPSW's images. HKDF-SHA256, HMAC-SHA256 and AES-256-CTR
+# for the archive (on sha2 0.10 above: its asm); the archive key comes out of Apple's key service's answer by HPKE
+# (RFC 9180: DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM) with the P-256 key in PKCS#8 PEM that the
+# archive's key URL serves.
+aes = "0.8"
+ctr = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
+hpke = { version = "0.12", default-features = false, features = ["alloc", "p256"] }
+p256 = { version = "0.13", default-features = false, features = ["pkcs8", "pem", "std"] }

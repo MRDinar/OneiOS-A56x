@@ -39,6 +39,7 @@ pub static ALL: &[Spec] = &[
     Spec { name: "zip-get", heavy: true, pausable: true, steps: &[("directory", "Reading the archive's directory"), ("download", "Downloading and checking the members")], run: zip_get },
     Spec { name: "fetch", heavy: true, pausable: true, steps: &[("directory", "Reading the IPSW's directory"), ("download", "Downloading and checking the members")], run: fetch },
     Spec { name: "im4p", heavy: true, pausable: false, steps: &[("decode", "Decoding")], run: im4p },
+    Spec { name: "aea", heavy: true, pausable: false, steps: &[("key", "Getting the key from Apple"), ("check", "Checking what an earlier run decrypted"), ("decrypt", "Decrypting"), ("place", "Putting the file in place")], run: aea },
     Spec { name: "receive", heavy: true, pausable: false, steps: &[("copy", "Copying the file"), ("check", "Checking the file"), ("place", "Putting the file in place")], run: receive },
     Spec { name: "sums", heavy: true, pausable: false, steps: &[("scan", "Reading the list"), ("hash", "Checking the files")], run: sums },
     Spec { name: "hashes", heavy: true, pausable: false, steps: &[("hash", "Hashing the file")], run: hashes },
@@ -530,6 +531,58 @@ fn im4p(rq: &Rq) -> Result<Done, Fail> {
     let words: Vec<&str> = said.split_whitespace().collect();
     let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
     Ok(Done::new(format!("{out}: {}", size_text(bytes))).f("out", out.as_str()).f("kind", words.first().copied().unwrap_or("")).f("bytes", bytes).f("sha256", words.get(4).copied().unwrap_or("")))
+}
+
+// ---------------------------------------------------------------- AEA
+
+/// `image aea-decrypt`: an AEA image of the IPSW to its plain file, the key from Apple's key service (or
+/// `key_file`), cached in `key_cache` when it is given. The archive is authenticated as it is read; `sha256` is the
+/// plain file's pin.
+fn aea(rq: &Rq) -> Result<Done, Fail> {
+    use oneios_image::aea_decrypt::{aea_decrypt, AeaKey, AeaOptions};
+    let input = rq.existing("in")?;
+    let out = rq.write_path("out")?;
+    let want = rq.req.opt_str("sha256")?;
+    let key_cache = match rq.req.opt_str("key_cache")? {
+        Some(_) => Some(rq.write_path("key_cache")?),
+        None => None,
+    };
+    let key_file = match rq.req.opt_str("key_file")? {
+        Some(_) => Some(rq.existing("key_file")?),
+        None => None,
+    };
+    let resume = rq.req.flag("resume")?;
+    net_keys(rq, false)?;
+    rq.req.done()?;
+    if want.as_deref().is_some_and(|w| !is_sha256(w)) {
+        return Err(Fail::usage("aea: \"sha256\" must be 64 lower-case hex digits"));
+    }
+    if key_cache.is_some() && key_file.is_some() {
+        return Err(Fail::usage("aea: \"key_cache\" or \"key_file\", not both"));
+    }
+    let key = match key_file {
+        Some(pem) => AeaKey::Pem(pem.into()),
+        None => AeaKey::Service { cache: key_cache.map(Into::into) },
+    };
+    let opts = AeaOptions { key, jobs: rq.jobs, resume, plain_sha256: want, log: &|line| println!("{line}") };
+    let d = aea_decrypt(&input, &out, &opts).map_err(|e| match oneios_image::transfer::take_failure() {
+        Some(code) => Fail::Failed(code, e.to_string()),
+        None if e.to_string().ends_with("is there already") => Fail::refused("exists", e.to_string()),
+        None if e.to_string().contains("was expected: nothing was kept") => Fail::refused("mismatch", e.to_string()),
+        None if e.to_string().contains("authenticate") || e.to_string().contains("does not open") => Fail::refused("auth", e.to_string()),
+        None => image_fail(e),
+    })?;
+    let text = if d.already { format!("{out} is there already, with this SHA-256") } else { format!("{out}: {}{}", size_text(d.bytes), if d.resumed_from > 0 { format!(", resumed at {}", size_text(d.resumed_from)) } else { String::new() }) };
+    Ok(Done::new(text)
+        .f("out", out.as_str())
+        .f("bytes", d.bytes)
+        .f("sha256", d.sha256)
+        .f("encrypted", d.encrypted)
+        .f("resumed_from", d.resumed_from)
+        .f("key", d.key_from)
+        .f("compression", d.compression)
+        .f("clusters", d.clusters)
+        .f("already", d.already))
 }
 
 // ---------------------------------------------------------------- the import's receive check

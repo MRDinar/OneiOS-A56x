@@ -229,7 +229,7 @@ fn hello_ping_and_the_end_of_the_pipe() {
     assert_eq!((hello["idle"].as_u64(), hello["battery_min"].as_u64()), (Some(300), Some(10)));
     assert_eq!(hello["thermal"], json!([44.0, 46.0, 45.0, 50.0]));
     let cmds: Vec<&str> = hello["cmds"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
-    for cmd in ["ping", "health", "cancel", "wait", "download", "zip-ls", "zip-get", "fetch", "im4p", "receive", "sums", "hashes", "verify", "apfs-ls", "apfs-copy", "tweaks", "prelink", "make-image", "stubs-check", "package-check", "ioslog-boots", "ioslog-show", "log-list", "log", "cpu"] {
+    for cmd in ["ping", "health", "cancel", "wait", "download", "zip-ls", "zip-get", "fetch", "im4p", "aea", "receive", "sums", "hashes", "verify", "apfs-ls", "apfs-copy", "tweaks", "prelink", "make-image", "stubs-check", "package-check", "ioslog-boots", "ioslog-show", "log-list", "log", "cpu"] {
         assert!(cmds.contains(&cmd), "hello's cmds have no {cmd}: {cmds:?}");
     }
     let ok = s.ask(json!({"id": "p-1", "cmd": "ping"}));
@@ -1791,5 +1791,60 @@ fn make_image_fetches_pauses_resumes_is_cancelled_and_goes_on() {
     assert!(Path::new(&b.stage("make/inputs/inputs.json")).is_file());
     let (status, rest, stderr) = s.end(true);
     assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn aea_decrypts_with_the_key_services_key_and_refuses_a_changed_archive() {
+    use oneios_image::aea_decrypt::testkit::{encrypt, service_key, Spec};
+    let b = Box::new("aea");
+    let key = [0x42u8; 32];
+    let (pem, response) = service_key(3, &key);
+    // the key service: a local server with the key's file
+    b.put("keys/Kid=", pem.as_bytes());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/Kid=", listener.local_addr().unwrap().port());
+    let root = b.top.join("keys");
+    std::thread::spawn(move || oneios_image::rangeserve::serve_on(listener, root, Default::default()));
+    let plain = noise(5 * 4096 * 4 + 333, 21);
+    let fields = vec![("com.apple.wkms.fcs-response".to_string(), response), ("com.apple.wkms.fcs-key-url".to_string(), url.into_bytes())];
+    let archive = encrypt(&plain, &key, &Spec { compression: b'e', fields, ..Spec::default() });
+    let input = b.put("in/os.dmg.aea", &archive);
+    let mut s = Serve::start(&b, &["--jobs", "3"]);
+    let (out, cache) = (b.stage("work/os.img"), b.stage("work/keys"));
+    s.send(json!({"id": "a", "cmd": "aea", "in": input, "out": out, "sha256": sha256(&plain), "key_cache": cache}));
+    let events = s.request("a");
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["bytes"].as_u64(), ok["sha256"].as_str(), ok["key"].as_str()), (Some("ok"), Some(plain.len() as u64), Some(sha256(&plain).as_str()), Some("service")), "{events:#?}");
+    assert_eq!(std::fs::read(&out).unwrap(), plain);
+    let steps: Vec<&str> = events.iter().filter(|v| v["ev"] == "step").map(|v| v["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, ["key", "decrypt", "place"]);
+    let last = events.iter().filter(|v| v["ev"] == "progress" && v["step"] == "decrypt").last().unwrap();
+    assert_eq!((last["done"].as_u64(), last["unit"].as_str()), (Some(plain.len() as u64), Some("bytes")), "{last}");
+    assert!(events.iter().any(|v| v["ev"] == "space"), "a space event");
+    assert!(Path::new(&cache).join("Kid=.pem").is_file());
+    // the second archive: the key from the cache
+    let out2 = b.stage("work/os2.img");
+    let ok = s.ask(json!({"id": "b", "cmd": "aea", "in": input, "out": out2, "key_cache": cache}));
+    assert_eq!((ok["ev"].as_str(), ok["key"].as_str()), (Some("ok"), Some("cache")), "{ok}");
+    // refusals: the output is there, a wrong pin, a changed byte; nothing is left of them
+    let mut bad = archive.clone();
+    let n = bad.len();
+    bad[n / 2] ^= 4;
+    let changed = b.put("in/bad.dmg.aea", &bad);
+    let out3 = b.stage("work/os3.img");
+    for (request, code, words) in [
+        (json!({"id": "c", "cmd": "aea", "in": input, "out": out, "key_cache": cache}), "exists", "is there already"),
+        (json!({"id": "d", "cmd": "aea", "in": input, "out": out3, "key_cache": cache, "sha256": "0".repeat(64)}), "mismatch", "nothing was kept"),
+        (json!({"id": "e", "cmd": "aea", "in": changed, "out": out3, "key_cache": cache}), "auth", "does not authenticate"),
+        (json!({"id": "f", "cmd": "aea", "in": input, "out": out3, "key_cache": cache, "key_file": input}), "usage", "not both"),
+    ] {
+        let last = s.ask(request.clone());
+        assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some(code)), "{request}: {last}");
+        assert!(last["text"].as_str().unwrap().contains(words), "{request}: {last}");
+        assert!(!Path::new(&out3).exists() && !Path::new(&format!("{out3}.part")).exists());
+    }
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
     clean_bye(&rest, "eof");
 }

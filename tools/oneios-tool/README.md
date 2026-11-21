@@ -17,7 +17,7 @@ script before it may replace it; the commands and the results are below. What is
 | `debug` | the Python helpers of the tests (`tests/ksym/{compare,kcmap,make-log}.py`, `tests/kernelgen/{kernel-diff,drivers-command}.py`, `tests/phone/mkstream.py`) | done; the helpers deleted | yes: 24 of 24 comparisons, and each test before and after: the same output ("debug", below) |
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | `phone log`, `sums`, `image-check`, `manifest --stage` and `switch` ran on the S24 Ultra on 2026-11-16; the other subcommands are still unproven there | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 257 checks pass (2026-11-21: `tests/phone/run.sh`, the host phone's `status` line and `hw-backend.sh`'s host-device checks among them, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
 | `app` | the app lines of `docs/building.md` section 7 (new) | `app stage-scripts` ran on the S24 Ultra on 2026-11-16; the app was not built or installed with it | not applicable; 103 checks pass with a stand-in checkout (also as the submodule `app/` of a stand-in OneiOS checkout), gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
-| `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.6 MB, and was not run). Not in it yet: the root tweaks (Python), the image build's own script, the AEA decryption | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
+| `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.6 MB, and was not run). Not in it yet: the root tweaks (Python), the image build's own script (the AEA decryption is in it since 2026-11-21: `aea`) | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
 | `image tweaks` | `userland/roottweak` and `userland/image-hook` (the root tweaks and the image build's userland hook; **left in place as the frozen original: the owner decides when they go**) | done 2026-11-21 (`apply`, `hook`, `daemons`, `cdhash`, `boot-check`, and `serve`'s `tweaks`); `scripts/image/build.sh` runs it by default (`--python-hook` for the Python); **not run on the phone** | yes: 33 of 33 cases of `tests/tweakspy/compare-python.sh`, and build.sh on 24A446's real inputs with each hook: `data.seed` (`27ec4e10...`) and the six overlay files byte for byte ("image tweaks", below) |
 | `cycle` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run as a whole cycle on the phone or with real builds** (`phone log` itself ran on 2026-11-16) | not applicable; 117 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
 
@@ -537,6 +537,7 @@ stage.
 | `zip-get` | H | `source`, `outdir`, `members`: a list of `{"member":"...","name":"..."}` (`name`: the file's name in `outdir`, optional), `resume` | `directory`, `download` | members of a ZIP (an IPSW) without downloading it, in parallel range requests; each member's CRC-32 is checked before it gets its name. `row` `member`: `name`, `out`, `bytes`, `crc32`. `ok`: `members`, `bytes` |
 | `fetch` | H | `profile`, `indir`, `only` (a list of roles, optional), `source` (optional), `resume` | `directory`, `download` | `image fetch`: the members a profile names, checked against its pins (size, CRC-32, SHA-256, SHA-384), and `inputs.json`. `ok`: `indir`, `bytes` |
 | `im4p` | H | `in`, `out` | `decode` | `image im4p`: the payload of an IM4P (the kernelcache). `ok`: `out`, `kind`, `bytes`, `sha256` |
+| `aea` | H | `in` (an AEA image of the IPSW), `out`, and optionally `sha256` (the plain file's pin), `key_cache` (a folder under the stage where the key service's key is kept for the next image), `key_file` (the key service's PEM instead of fetching it; not with `key_cache`), `resume`, `give_up_s` | `key`, `check` (a resume), `decrypt`, `place` | `image aea-decrypt` ("image", "aea-decrypt"): the key from Apple's key service (HTTP as `download`), every byte authenticated, the plain file into `out.part`, renamed last; the `space` refusal before the first byte. A wrong key or a changed byte: `refused`, `auth`; a plain SHA-256 that is not `sha256`: `refused`, `mismatch` (nothing kept); `out` there already: `refused`, `exists` (unless it has `sha256`: then `already` true). `ok`: `out`, `bytes`, `sha256`, `encrypted`, `resumed_from`, `key` (`service`, `cache`, `pem`, `archive`, `none`), `compression`, `clusters`, `already` |
 | `receive` | H | `from` (a file or a FIFO), `to`, `bytes`, `sha256`, `mode` (`"0644"` or `"0755"`), and optionally `name`, `sums_list`, `ids_list` | `copy`, `check`, `place` | the import's receive check: exactly `bytes` bytes of `from` into `to.part`, hashed as they are written (one pass; `oneios_root.sh receive` reads the file a second time); the size and the SHA-256 must be the ones given before the file gets its name and mode. `to` must not exist. With `sums_list`: the line `SHA256  NAME` is added to it, and to `ids_list` the line `DEV:INODE:SIZE:MTIME NAME`, as `oneios_root.sh receive` writes them. A FIFO that no writer opens is waited for 30 s. `ok`: `to`, `bytes`, `sha256` |
 | `sums` | H | `dir`, `list` (default `DIR.sha256`), `strict` (with it a file of `dir` that the list does not name is a mismatch) | `scan`, `hash` | the stage's SHA-256 check: every file of `list` (`SHA256  PATH` lines, as `image.sha256` and `runtime.sha256`) hashed, the files in parallel. `row` `file`: `path`, `bytes`, `sha256`, `ok` (or `missing`). A difference: `refused`, `mismatch`. `ok`: `files`, `bytes` |
 | `hashes` | H | `image`, `out`, `chunk` (default 1,048,576) | `hash` | `image hashes`: the chunk hash list of a file and its whole SHA-256 in one pass. `ok`: `out`, `bytes`, `sha256`, `chunks` |
@@ -558,10 +559,9 @@ Not in `serve`: `phone` (the adb forms), `app`, `cycle` (they start `adb` or gra
 `apfs-fuse`: `serve` reads images with our reader only), `prelink hosted --x18` (it starts `llvm-mc`), and the
 prelink record's `git` (its two commits are the request's `oneios_commit` and `xnuprelink_commit`, or null).
 
-**Not in the tool yet,** so a whole image cannot be made on the phone by `serve` alone today: the decryption of
-the IPSW's AEA images (an outside program on the PC; its Rust port is being written, docs/agents.md, Interfaces).
-`make-image` refuses with `not-ported`, `step decrypt`, until it lands. The steps of `scripts/image/build.sh` and
-the root tweaks are in the tool since 2026-11-21 (`make-image`, "image build"; `tweaks`, "image tweaks").
+**In the tool since 2026-11-21,** so a whole image can be made on the phone by `serve` alone (not run on a phone yet):
+the decryption of the IPSW's AEA images (the `aea` request, "aea-decrypt"; before: an outside program on the PC),
+the steps of `scripts/image/build.sh` (`make-image`, "image build") and the root tweaks (`tweaks`, "image tweaks").
 
 ### An example
 
@@ -628,6 +628,8 @@ exists or where ours is measured to be faster; each such part says why in its mo
 | `csv`, `serde_json`, `chrono`, `uuid`, `regex` | `ioslog`'s CSV and JSON lines (the same crates `unifiedlog_iterator` writes them with), times, `--grep` |
 | `tracing-subscriber` | `ioslog -v`: the decoder's warnings on stderr |
 | `simple_asn1`, `lzfse_rust` | `image im4p`: the IM4P container (DER) and its LZFSE payload; the LZFSE and LZVN kinds of compressed APFS files |
+| `aes` 0.8, `ctr` 0.9, `hkdf` 0.12, `hmac` 0.12 (RustCrypto, on `sha2` 0.10 with its `asm`) | `image aea-decrypt`: the AEA archive's key schedule (HKDF-SHA256), its MACs (HMAC-SHA256) and AES-256-CTR |
+| `hpke` 0.12 (rozbb/rust-hpke, features `alloc`, `p256`), `p256` 0.13 (`pkcs8`, `pem`) | `image aea-decrypt`: the archive key out of Apple's key service's answer (RFC 9180 base mode, DHKEM(P-256, HKDF-SHA256), AES-256-GCM), the service's PKCS#8 PEM key. 0.12, not 0.15: the same RustCrypto generation as the crates above (one AES, SHA-2 and HMAC in the binary, not two) |
 | `plist`, `toml` | `prelink roots` and `emit`: the kernelcache's `__PRELINK_INFO` and the kernel profile; `image profile`: the build profile |
 | `indexmap`, `md-5`, `hmac`, `rand_mt`, `memchr` | `prelink`: Python's dict order, the matcher's function digests, the collection's FIPS seals, `random.Random`'s generator for `align`, the search for the kexts' inline pools |
 | `tar` 0.4 (`Header`) | `image seed-pack`: every 512-byte ustar block of `data.seed`, field by field (`crates/oneios-image/src/tar.rs`; what stays ours and why: below) |
@@ -1108,6 +1110,7 @@ oneios-tool image apfs-copy IMAGE SRC DST [--volume N|NAME] [--newest] [--apfs o
                                                                                                 # compressed files come out plain
 # both: --newest reads the newest checkpoint that passes the checks, --checkpoint XID that one (a used store; said on stderr)
 oneios-tool image apfs-checkpoints IMAGE     # a used store's checkpoints: at each, does the container pass, does each volume ("The APFS reader")
+oneios-tool image aea-decrypt IN OUT [...]   # an AEA image of the IPSW to its plain file, the key from Apple's key service ("aea-decrypt" below)
 ```
 
 **`apfs-copy` in threads (2026-11-15).** Our reader's copy lists the folders and reads the files' sizes in every
@@ -1134,6 +1137,85 @@ and 8 threads, parts of a volume, and a stop) check it.
 `kernelcache.release.v54` of 24A446: 78,135,296 bytes, sha256 `349c4692...0c57e3`, which is the hash the kernel
 profile pins (made with the `lzfse` program on the Mac), in 0.7 s. Not done: the two decoders side by side on one
 host (the Linux box has no `lzfse` program).
+
+### aea-decrypt: the IPSW's AEA images, without an outside program (2026-11-21)
+
+The OS image and the SystemOS cryptex of the IPSW are Apple Encrypted Archives (`043-69487-662.dmg.aea`,
+`043-70037-715.dmg.aea` in 24A446). `image aea-decrypt` makes the plain image of one, here and on the phone (the
+`aea` request of `serve`); the `ipsw` CLI did this on the PC before (`scripts/fetch/fetch.sh` uses this command
+now; `ipsw` stays for `scripts/ios/make-tbds.py` only).
+
+```sh
+oneios-tool image aea-decrypt IN OUT [--key-cache DIR] [--key-file PEM | --key base64:..|hex:..]
+                                     [--sha256 HEX | --profile PROFILE] [--resume] [-j N]
+# e.g. the SystemOS image, checked against the profile's plain_sha256, the key kept for the OS image:
+oneios-tool image aea-decrypt inputs/24A446/043-70037-715.dmg.aea inputs/24A446/043-70037-715.dmg \
+    --profile 'profiles/ios-27.0.1-iPhone18,2.toml' --key-cache inputs/24A446/.aea-keys
+# stdout: SHA256  BYTES  OUT; stderr: the key's origin, the archive's layout and the time
+```
+
+- **The key.** The archive's auth data names Apple's key service: `com.apple.wkms.fcs-key-url` serves a P-256
+  private key (PKCS#8 PEM, 241 bytes), and `com.apple.wkms.fcs-response` holds the archive key sealed to it by HPKE
+  (base mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM, no info, no AAD), as blacktop/ipsw's
+  `pkg/aea` reads it. The key is fetched with the tool's own HTTP client (`transfer`: its tries, waits and give-up
+  time; https only, or 127.0.0.1 for tests), and kept only where `--key-cache DIR` says (file mode 0600, named by
+  the key's id; both images of 24A446 name the same key, so the second one needs no request). A cached key that does
+  not open the archive is fetched again. `--key-file` takes the PEM from a file, `--key` the archive key itself.
+  No key is in git or in the tool.
+- **Authenticated.** Profile 1 only (symmetric, unsigned: the IPSW's). Every byte is checked before it is used: the
+  root header's HMAC (over the auth data, the salt and the profile word through the main key: a wrong key, or any
+  changed byte of the header, fails here), each cluster header's HMAC (chained from the cluster before), each
+  segment's HMAC over its encrypted bytes, the padding's HMAC, then AES-256-CTR, the segment's decompression
+  (LZFSE in 24A446; LZVN, LZBITMAP, zlib and stored too) with its exact length, and its checksum (SHA-256 in 24A446).
+  The archive's size must be the root header's. A refusal names the place (`segment 107 of cluster 9 (at byte
+  999501932) does not authenticate: the file was changed`) and leaves no file.
+- **Bounded memory, in threads.** One reader walks the cluster headers, `-j N` workers (default: the online CPUs,
+  at most 8; `serve`: the request's) each read, check, decrypt and decompress one 1 MiB segment, one writer puts them
+  in order into `OUT.part` and one more thread hashes the plain stream. Buffers go round a fixed pool (at most 64 MiB),
+  whatever the archive's size. Every loop asks `job::check()`; the writer counts the bytes (`job::count`).
+- **The output.** `OUT.part`, renamed to `OUT` last, after the plain SHA-256 matched `--sha256` or the profile's
+  `plain_sha256` (of the member with IN's file name) when one is given (else the part is removed). An `OUT` that is
+  there is refused, unless it has the SHA-256 asked for (then nothing is done). The room (the plain size, less what a
+  resumed part holds) is checked before the first byte (`serve`: the `space` event and refusal).
+- **Resume.** Without `--resume`, a stop, an error or a panic removes the part. With it, the part and
+  `OUT.part.state` (the archive's id, the SHA-256 of its header, and the plain bytes in the part, written after an
+  fdatasync every 512 MiB) stay, and the next run hashes the part's bytes again and goes on from the next segment
+  (the cluster headers before it are still authenticated). A state of another archive starts over.
+
+The library function (for `serve` and the image build in one request): `oneios_image::aea_decrypt::aea_decrypt(input:
+&str, out: &str, opts: &AeaOptions) -> Result<AeaDone, Fail>`, with `AeaOptions { key: AeaKey::Service { cache:
+Option<PathBuf> } | AeaKey::Pem(PathBuf) | AeaKey::Raw([u8; 32]), jobs: usize (0: job::jobs()), resume: bool,
+plain_sha256: Option<String>, log: &dyn Fn(String) + Sync }`; `AeaDone` has `out`, `bytes`, `sha256`, `encrypted`,
+`resumed_from`, `key_from` (`service`, `cache`, `archive`, `pem`, `given`, `none`), `compression`, `checksum`,
+`segment_size`, `segments_per_cluster`, `clusters`, `already`. Steps it says: `key`, `check` (a resume), `decrypt`
+(progress in plain bytes), `place`.
+
+Proof on the Linux PC (2026-11-21; i9-12900H, 20 CPUs with SHA-NI, NVMe with btrfs at 96% full; other agents' jobs
+ran): both members fetched again from Apple (`image fetch --only os,systemos`, 3 minutes, CRC-32 and the SHA-256s of
+inputs.json as before) and decrypted with the key from Apple's key service:
+
+| Image | Plain bytes | Plain SHA-256 (= inputs.json, = the `ipsw`-made file) | Time, CPU | Peak RSS |
+|---|---|---|---|---|
+| SystemOS, onto the disk | 6,157,238,272 | `a41d72a6...ba11a4b` | 17.6 s (the disk) | 56 MB |
+| SystemOS, onto tmpfs, 8 workers | | same | **3.1 s, 515%** (6.7 s with the box busy) | 53 MB |
+| SystemOS, onto tmpfs, `-j 1` | | same | 25.1 s, 101% | 19 MB |
+| OS, onto the disk | 10,359,930,880 | `bba6accc...3522ed4` (and `cmp` with inputs/24A446's file: the same) | 17.8 s, 150% (the disk) | 54 MB |
+| SystemOS by `serve` (`aea` request, key fetched, cached under the stage) | | same | 12.8 s | 57 MB |
+
+Refusals on the real file: a wrong `--key` (the root header), and one byte flipped at offset 1,000,000,000 of the
+SystemOS archive (`segment 107 of cluster 9 ... does not authenticate`; flipped back after, the file's SHA-256 the
+pin again); neither left a file. The profile now pins both members' `sha256` (the fetch checks it) and
+`plain_sha256` (`--profile` and the manifest check it). Tests (`cargo test --release`): 14 in
+`crates/oneios-image/src/aea_tests.rs` on archives made by a small encoder in the crate (`aea_decrypt::testkit`, no
+Apple data): stored and LZFSE segments, three checksums, short and empty files, 1 and 4 workers; a wrong key; a
+changed byte in each part of the archive (the scrypt byte, the auth data, the salt, the root header, the first
+cluster's MAC, a segment header, a segment MAC, a segment, a later cluster, the padding), one byte less and more,
+another profile; the plain pin, an `OUT` that is there; resume from a part, a state of another archive, a part
+changed since; the HPKE unwrap with the right and a wrong P-256 key; the key from a PEM file, from a local HTTP
+server and from the cache (mode 0600); and a failure at the first of many segments with 1, 2 and 8 workers (it
+hung before the fix: the reader waited on a full queue of workers that had ended). `tests/serve.rs` has the `aea`
+request (the key over HTTP, the cache, the `exists`, `mismatch`, `auth` and `usage` refusals). **Not run on the
+phone.**
 
 Comparison with the Python tool:
 
