@@ -2173,3 +2173,18 @@ persistent: a reboot costs a manual re-root.
   stand-in phone ALL OK. For the OneOS repo: the switch's script-file bind-remount fails on SM8750 (make only the
   directories read-only), `PROFILE_IDS` S24-only, `OneiosPlain.kt:142` "S24 Ultra only" text, `--logical 1080x2340`
   for the display helper on the S25/A56. No phone, no kernel build.
+
+- 2026-11-21, app fork: upstream OneOS 0.5.31 merged into `oneios` (728db89), then Update the kernel needs no PC
+  (53abb04: the phone fetches `kernelcache.release.v54` from Apple with `oneios-tool serve fetch only=kernelcache`,
+  decodes it with `im4p`, checks the pin, prelinks). App tests 679/0 (75 skips). `app/` pinned at 53abb04 (34feebd).
+  Not run on a phone.
+
+- 2026-11-21, release-kernel (delegated agent; f75f2dd, 0374a16, 74b6874): hosted build record and
+  `publish.sh --hosted`; 0068 regression fixed (launchd died at `mach_ports_lookup() failed: -300` on every iOS 27
+  boot since the A56 merge b2fa083: that merge was checked to build and link only, not booted). Candidate
+  `kernel-xnu-12377.121.6-ios-27.0.1-24A446-703a6b34e73f` (ONEIOS_CRYPTO=original, releasable, 0 of corecrypto's
+  1191 symbols; archive sha256 4cf558f5...) PC-booted to SpringBoard (+217 s) and session ready (+314 s), no panic in
+  1000 s; prelink audit 0 failures, stubs 666 good. NOT published yet: the GitHub release needs the owner (the lead's
+  upload was refused by the permission check); then `kernel/release-kernel.txt` and a runtime tag. Open: rapportd
+  ServiceDiscovery busy loop on the PC (2.37 M log lines in ~100 s, 104-166 % CPU from ~+500 s, both crypto modes,
+  cause not traced).

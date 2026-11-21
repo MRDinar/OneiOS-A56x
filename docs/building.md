@@ -780,13 +780,15 @@ git -C app switch oneios                   # to work on the fork in app/: a bran
 
 `--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
 `app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
+app`). Recorded now: `53abb04` (upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone,
+2026-11-21). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
 --remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
 `git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
 package takes `runtime/`, `kernel/` and `LICENSE` only, and the runtime job never checks it out.
 
-With `oneios-tool` (first choice; **not used for a real build or install yet**: the Linux PC builds no app and has no
-JDK 21 or Android SDK, by the owner's decision, so the tool was tested there with stand-ins only):
+With `oneios-tool` (first choice; **not used for a real install yet**: no phone was attached; since 2026-11-21 the Linux PC has JDK 21 and
+`/opt/android-sdk` and built and tested the fork itself with `scripts/build-guest-manager.sh --debug` and `./gradlew
+--max-workers=3 test assembleFullDebug`, 679 tests, 0 failures):
 
 ```sh
 T=tools/oneios-tool/target/release/oneios-tool

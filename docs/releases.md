@@ -222,6 +222,11 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
   APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
   `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
+  The commit recorded for `app/` is `53abb04` (2026-11-21): upstream OneOS 0.5.14 to 0.5.31 merged into `oneios`
+  (`2d2f26b`, `728db89`), the on-phone kernel update (`133b64a`) and Update the kernel fetching Apple's kernelcache
+  on the phone (`53abb04`). Tested on the Linux PC: `./gradlew test` 679 tests, 0 failures, 75 skipped (the shell-script
+  suites, which need dash, busybox or mksh, and one test gated on a real tool) and `assembleFullDebug`; not run on the
+  phone.
 - **apk-macos**: the same checkout, token, JDK, SDK and guest app on `macos-15`, then `./gradlew --continue test`
   with Homebrew's folders taken off `PATH`, so that core:root's script tests use the harness's stand-ins over
   macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). Every test's start and end is in the
@@ -293,6 +298,14 @@ package and not in the APK** (as `lib/arm64-v8a/liboneios-tool.so`):
   tool before it is there.
 
 ## The kernel in a release
+
+Apple's kernelcache is in no release, runtime or APK. The fork's Update the kernel downloads each phone's own copy
+from Apple's server with the runtime's `oneios-tool` (`fetch` of the profile's `kernelcache` member, about 23 MB,
+checked against the profile's size, CRC-32 and SHA-384) and decodes it on the phone (`im4p`; the result's SHA-256
+must be the fork's `kb/kb.json` `kernelcache_sha256`), then prelinks the package's `kernel/xnu.macho` into
+`kernel.kc` there (`oneos/interface.md`, "Update the kernel"). So the runtime package must keep shipping
+`lib/profiles/ios-27.0.1-iPhone18-2.toml`, a `bin/oneios-tool` with `fetch`, `im4p` and `prelink`, and a releasable
+kernel. Measured on the Linux PC 2026-11-21: fetch 12.4 s, im4p 0.1 s, prelink 2.8 s and 698 MB; not run on a phone.
 
 The kernel is not built in CI. A build machine builds it (`kernel/README.md`), and:
 
