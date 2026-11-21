@@ -45,7 +45,7 @@ pub static ALL: &[Spec] = &[
     Spec { name: "verify", heavy: true, pausable: false, steps: &[("verify", "Checking the image set")], run: verify },
     Spec { name: "apfs-ls", heavy: false, pausable: false, steps: &[], run: apfs_ls },
     Spec { name: "apfs-copy", heavy: true, pausable: false, steps: &[("scan", "Reading the volume"), ("copy", "Copying the files"), ("place", "Putting the folder in place")], run: apfs_copy },
-    Spec { name: "tweaks", heavy: true, pausable: false, steps: &[], run: tweaks },
+    Spec { name: "tweaks", heavy: true, pausable: false, steps: &[("tweaks", "Changing the Data tree"), ("place", "Writing the boot contract and the trust list")], run: tweaks },
     Spec { name: "prelink", heavy: true, pausable: false, steps: &oneios_prelink::build::STEPS, run: prelink },
     Spec { name: "make-image", heavy: true, pausable: true, steps: &oneios_imagebuild::STEPS, run: make_image },
     Spec { name: "stubs-check", heavy: true, pausable: false, steps: &[("check", "Checking the stubs")], run: stubs_check },
@@ -780,11 +780,85 @@ fn apfs_copy(rq: &Rq) -> Result<Done, Fail> {
 
 // ---------------------------------------------------------------- the root tweaks, the prelink, the package
 
-fn tweaks(_: &Rq) -> Result<Done, Fail> {
-    Err(Fail::refused(
-        "not-ported",
-        "The root tweaks are not in this tool yet: they are Python (userland/roottweak), which the phone does not have. Make the Data seed on a PC or a Mac until they are ported (tools/oneios-tool/todo_rust.md, section 7, group 4)",
-    ))
+/// The root tweaks and the userland hook (oneios-tweaks, README "serve", `tweaks`): build.sh's hook API 1 as fields.
+fn tweaks(rq: &Rq) -> Result<Done, Fail> {
+    let data = rq.write_path("data")?;
+    let overlay = rq.write_path("overlay")?;
+    let (os_root, os_image) = match (rq.req.opt_str("os_root")?, rq.req.opt_str("os_image")?) {
+        (Some(_), None) => (rq.existing("os_root")?, None),
+        (None, Some(_)) => (String::new(), Some(rq.existing("os_image")?)),
+        _ => return Err(Fail::usage("tweaks: give \"os_root\" (the OS volume's files) or \"os_image\" (its image, read without a mount), one of them")),
+    };
+    let os_volume = rq.req.opt_str("os_volume")?;
+    let optional = |key: &str| -> Result<Option<String>, Fail> {
+        match rq.req.opt_str(key)? {
+            Some(_) => Ok(Some(rq.read_path(key)?)),
+            None => Ok(None),
+        }
+    };
+    let (helpers, metal_plugin, camera_plugin, config) = (optional("helpers")?, optional("metal_plugin")?, optional("camera_plugin")?, optional("config")?);
+    let build = rq.req.opt_str("build")?;
+    let scale = rq.req.opt_u64("scale")?;
+    let args = rq.req.list("args")?;
+    let owners = match rq.req.opt_str("owners")? {
+        Some(_) => Some(rq.write_path("owners")?),
+        None => None,
+    };
+    let info = match rq.req.opt_str("info")? {
+        Some(_) => Some(rq.write_path("info")?),
+        None => None,
+    };
+    rq.req.done()?;
+    if !Path::new(&data).is_dir() {
+        return Err(Fail::refused("not-found", format!("{data} is not there: the Data tree is copied first (`apfs-copy` of the OS volume's private/var)")));
+    }
+    if os_volume.is_some() && os_image.is_none() {
+        return Err(Fail::usage("tweaks: \"os_volume\" goes with \"os_image\""));
+    }
+    if scale.is_some_and(|s| !(2..=3).contains(&s)) {
+        return Err(Fail::usage("tweaks: \"scale\" is 2 or 3"));
+    }
+    // the room: what is placed in the Data tree (the plug-ins, the helpers) and the property lists
+    let placed: u64 = [&helpers, &metal_plugin, &camera_plugin].iter().filter_map(|p| p.as_deref()).map(|p| tree_bytes(Path::new(p))).sum();
+    rq.space(Path::new(&data), placed + (16 << 20))?;
+    let mut hook = oneios_tweaks::Hook {
+        os_root: os_root.into(),
+        os_image: os_image.map(Into::into),
+        data: data.clone().into(),
+        overlay: overlay.into(),
+        build,
+        helpers: helpers.map(Into::into),
+        metal_plugin: metal_plugin.map(Into::into),
+        camera_plugin: camera_plugin.map(Into::into),
+        scale: scale.map(|s| s.to_string()),
+        config: config.map(Into::into),
+        args,
+        owners: owners.map(Into::into),
+        info: info.map(Into::into),
+    };
+    if let Some(v) = os_volume {
+        hook.args.extend(["--root-volume".to_string(), v]);
+    }
+    let done = oneios_tweaks::run_hook(&hook).map_err(|e| {
+        if let Some(stop) = e.downcast_ref::<job::Stop>() {
+            stopped(stop.clone())
+        } else if let Some(r) = e.downcast_ref::<oneios_tweaks::Refused>() {
+            Fail::refused("input", r.0.clone())
+        } else {
+            Fail::failed(format!("{e:#}"))
+        }
+    })?;
+    for item in &done.off {
+        rq.row("off", &[("item", json!(item))]);
+    }
+    Ok(Done::new(format!("{}: {} jobs disabled, {} CDHashes of ours, {} items off", done.build, done.disabled_jobs, done.owner_cdhashes, done.off.len()))
+        .f("out", done.out.to_string_lossy())
+        .f("build", done.build.as_str())
+        .f("disabled_jobs", done.disabled_jobs)
+        .f("owner_cdhashes", done.owner_cdhashes)
+        .f("first_start_unpacker", done.first_start_unpacker.clone())
+        .f("off", done.off.len())
+        .f("not_found", done.not_found.len()))
 }
 
 fn prelink(rq: &Rq) -> Result<Done, Fail> {

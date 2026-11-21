@@ -45,6 +45,7 @@ switch.
 | `ioslog` | done; the APFS reader checks every address and object and falls back to an older checkpoint (2026-11-13, after the first run on the phone's store failed) | yes on 7 archives (CSV byte for byte, from an archive, an image and a mounted volume); a used store written by iOS on the PC: every file as apfs-fuse gives it | **the second run on the phone's real Data store** (section 5); the Mac's `ios3-log.csv`; `checks` on a real log |
 | `prelink` | `roots`, `hosted` (2 of 12 steps) | yes for the two, byte for byte on the real kernelcache | **the other ten steps**, the pairing and the emitter first (section 4) |
 | `sym kernel`, `log panic` (2026-11-13, branch `ksym`, crate `oneios-ksym`) | done (new: a kernel panic's caller, pc, lr and frames named in `kernel.kc` and `xnu.macho`; no Python original) | compared with `llvm-symbolizer --inlining` on three Linux-built pairs: 19 of 19 addresses of a stand-in panic and 31,605 of 31,605 more per pair (311,605 on one) name the same function, file:line and inlined frames (README "sym kernel") | **the Mac's log and kernel of the 2026-11-12 panic** (`tests/ksym/compare.sh KC KERNEL LOG`, with `DSYM=`); a real panic log from the phone; names for kext frames (the collection keeps no kext symbols: the prelink's pairing records could give them); a run on a Mac |
+| `image tweaks` (2026-11-21, crate `oneios-tweaks`: the root tweaks, group 4) | done: `apply`, `hook`, `daemons`, `cdhash`, `boot-check`, `serve`'s `tweaks` | yes: 33 of 33 cases of `tests/tweakspy/compare-python.sh`; on 24A446's real inputs `data.seed` and the six overlay files byte for byte with each hook (README "image tweaks") | the run on the phone; the Mac; retiring the Python (the owner) |
 | `serve`, `prelink build`, `--jobs`/`--nice`, `apfs-copy` in threads (2026-11-15, branch `tool-app-progress`, crate `oneios-serve`) | done (new: the one process the OneOS app starts as root for the iOS steps on the phone; no Python original) | `prelink build` and `serve`'s `prelink`: build.sh's `kernel.kc` and 24 of 24 files; the threads' APFS copy: the tree the copy before gave, and apfs-fuse's; 21 tests of the process, 12 checks on the stand-in phone | **a run on the phone** (`tests/phone/serve-on-phone.sh`); the root tweaks, the image build's script and the AEA decryption are not in the tool (section 9) |
 
 ## Build and unit tests
@@ -557,7 +558,7 @@ docs. README has each group's comparison and result.
 | 2: the kernel's and the prelink's small scripts | `kernel/hosted-fixup.py`, `kernel/kdk-headers.py`, `kernel/linux/iig-fix.py`, `kernel/tests/series-check.py`, `drivers/build.py`; `kernel/prelink/{classes,stubs-check,unmapped,port-fixture}.py`, `kernel/prelink/lead/{between,imports}.py` | **retired** 2026-11-13 (`kernel hosted-fixup\|kdk-headers\|iig-fix\|series-check\|drivers`, `prelink classes\|stubs-check\|unmapped\|port-fixture\|lead-between\|lead-imports`) |
 | 3: image, package, iOS-side helpers | `runtime/package/pack.py` | **retired** 2026-11-13 (`package`) |
 | 3 | `scripts/image/imagetool.py`: `check-ipsw`, `fetch`, `record-plain`, `aea-info`, `pack`, `verify` of an archive; `scripts/fetch/remotezip.py`; `scripts/serve/rangeserve.py`; `scripts/ios/{ios-sign,macho-check,make-tbds}.py`; `scripts/image/tests/*.py` | **ported 2026-11-13, not deleted**: `image check-ipsw\|fetch\|record-plain\|aea-info\|pack\|verify` and `remotezip` are Rust and the image scripts call them; `imagetool.py`, `remotezip.py` (it imports it) and `scripts/image/tests/` are left in place, unused: **the owner decides**. `scripts/serve/rangeserve.py` is **retired** (`rangeserve`). **Not ported**: `scripts/ios/{ios-sign,macho-check,make-tbds}.py` |
-| 4: the root tweaks | `userland/roottweak`, `userland/tweak`, `userland/tests/*.py` | **not started: the owner has not agreed** |
+| 4: the root tweaks | `userland/roottweak`, `userland/tweak`, `userland/image-hook`, `userland/tests/test_roottweak.py` | **ported 2026-11-21, not deleted** (the owner agreed to the port on 2026-11-21): `image tweaks apply\|hook\|daemons\|cdhash\|boot-check` and `serve`'s `tweaks` (section 10); build.sh runs the Rust hook. The Python is the frozen original of `tests/tweakspy/compare-python.sh`: **the owner decides** when it goes. `userland/tests/test_helpers.py` is the helpers' C tests' runner, not a part of the port |
 
 Python that is left, and why:
 - `scripts/image/imagetool.py`, `scripts/fetch/remotezip.py` and `scripts/image/tests/`: unused by every script since
@@ -567,7 +568,9 @@ Python that is left, and why:
 - `scripts/ios/{ios-sign,macho-check,make-tbds}.py`: group 3's rest, **not ported yet**
   (`ios-sign.py` writes Apple's ad-hoc signature byte for byte and `macho-check.py` reads `.tbd` stubs with PyYAML:
   each needs its own comparison on a Mac and on Linux).
-- Group 4 (above).
+- Group 4: `userland/roottweak`, `userland/tweak`, `userland/image-hook` and `test_roottweak.py`, ported and unused
+  by the build since 2026-11-21 (section 10); **the owner decides** when they go. `userland/tests/test_helpers.py`
+  (the guest helpers' host tests) is not ported.
 - `kernel/patches/oneios-hosted/display/display-capture.py`: a viewer for a PC boot, Linux only (section 8).
 - `tests/phone/sparsewrite.py`: the frozen original `phone sparse-write` is compared against.
 - Older rounds' test helpers: `tests/image/parity.py`, `tests/ioslog/{filters,mkapfs}.py`, `tests/sym/make-log.py`,
@@ -655,9 +658,10 @@ Open, in the order they matter for "make the iOS image on the phone":
    with all threads against `--jobs 1`; `bye`'s `threads` 1 and `children` 0; that the heat limits do not stop a
    normal run (a `heat` line says so); the SHA-256 speed (ARMv8 SHA-2 instructions: `sums` of `os.img`, 10.4 GB,
    should take a few seconds, not a minute).
-2. **The root tweaks are Python** (`userland/roottweak`, group 4 of section 7; the owner has not agreed to the
-   port). `serve`'s `tweaks` request answers `refused`, `not-ported`. Without them the phone cannot make the Data
-   seed. A port must give the same seed byte for byte (the seed's SHA-256 is pinned in the image's trust list).
+2. **Done 2026-11-21: the root tweaks are Rust** (crate `oneios-tweaks`, section 10): `serve`'s `tweaks` runs them,
+   the OS volume read from its image or a folder, and gives build.sh's seed byte for byte. Left: `make-image`'s
+   `tweaks` step calls `oneios_tweaks::run_hook` (its `tweaks_port()`, the image-build agent's), and the run on
+   the phone.
 3. **Done 2026-11-21: `image build` and `serve`'s `make-image`** (crate `oneios-imagebuild`; README "image build"):
    build.sh's order and checks in one process, the fetch, the Data tree read with our APFS reader instead of a
    mount, the prelink of the runtime's `kernel/xnu.macho` with the audit and `stubs-check`, the manifest, `verify`
@@ -695,6 +699,29 @@ Notes:
   drops the guard, which removes the part.
 - The tests' timing bounds are loose on purpose: the PC they were written on ran other agents' builds at a higher
   priority than the tool's nice 10.
+
+## 10. `image tweaks`: the root tweaks (group 4 of the Python retirement, 2026-11-21)
+
+Crate `crates/oneios-tweaks`; commands, the library, the comparison and its result: [README.md](README.md) "image
+tweaks". The owner agreed to the port on 2026-11-21 (the phone must make the whole image itself).
+
+| Python | Rust | State |
+|---|---|---|
+| `userland/roottweak/{cli,tweaks,tree,config,launchd,macho,bootcheck}.py` | `src/{cli,apply,tweaks,tree,config,launchd,macho,bootcheck}.rs` | ported; 33 of 33 cases the same (`tests/tweakspy/compare-python.sh`) |
+| plistlib (Python's) | `src/plist.rs` | its reader and both writers; plistlib's bytes in the unit tests |
+| `userland/image-hook` | `src/hook.rs`, `image tweaks hook`, `serve` `tweaks` | ported; build.sh's default since 2026-11-21 (`--python-hook` for the Python); on 24A446 the seed and the overlay byte for byte |
+| `userland/tests/test_roottweak.py` (38 cases) | `tests/roottweak.rs` (38) | ported; the Python tests run as before |
+| `userland/tweak` | `oneios-tool image tweaks` | the command |
+
+Open:
+1. **The phone**: nothing of it has run there (as root under `serve`, the OS volume from `os.img`). The owners are
+   set on the files only as root (`lchown`): that path ran in no test (the tests run as a user).
+2. `make-image`'s `tweaks` step: `tweaks_port()` in `oneios-imagebuild` (the image-build agent's) calls
+   `oneios_tweaks::run_hook` (docs/agents.md, Interfaces, has the call).
+3. The Mac: not built or run there.
+4. Retiring the Python: the owner decides. Until then `compare-python.sh` compares the two.
+5. A binary property list that shares a container between two places is refused when it would be written back
+   (the Python writes that container once); Apple's CF writer does not share containers, none was seen.
 
 ## Notes for the next agent
 

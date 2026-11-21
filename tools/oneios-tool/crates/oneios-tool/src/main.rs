@@ -122,6 +122,10 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("sym") && args.get(2).map(String::as_str) == Some("kernel") {
         std::process::exit(oneios_ksym::run(&args[3..]));
     }
+    // `image tweaks` (the root tweaks, oneios-tweaks) has its own command line, beside imagetool.py's commands
+    if args.get(1).map(String::as_str) == Some("image") && args.get(2).map(String::as_str) == Some("tweaks") {
+        std::process::exit(oneios_tweaks::run(&args[3..]));
+    }
     // `image build` (oneios-imagebuild: build.sh's steps in one process) is not one of imagetool.py's commands,
     // whose command line `image` keeps as it was.
     if args.get(1).map(String::as_str) == Some("image") && args.get(2).map(String::as_str) == Some("build") {

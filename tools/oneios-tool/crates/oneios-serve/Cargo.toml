@@ -18,4 +18,6 @@ oneios-prelink.workspace = true
 oneios-ioslog.workspace = true
 oneios-phone.workspace = true
 oneios-package.workspace = true
+# `tweaks`: the root tweaks and the userland hook
+oneios-tweaks.workspace = true
 oneios-imagebuild.workspace = true

@@ -391,6 +391,16 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `no_kernel`, `fetch`, `source`, `keep_work`.
 - Make iOS image's first request is `fetch` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`
   (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
+- `tweaks` (in the tool since 2026-11-21; `tools/oneios-tool/README.md` "serve" (the commands) and "image
+  tweaks"): the root tweaks and the image build's userland hook in the tool, no Python, the OS volume read from its
+  image (`os_image`) without a mount. Keys: `data` (the copied Data tree), `overlay`, `os_root` or `os_image`
+  (`os_volume`), and optionally `build`, `helpers`, `metal_plugin`, `camera_plugin`, `scale` (2 or 3), `config`,
+  `args` (a list of more `apply` options), `owners`, `info`. Steps `tweaks`, `place`; one `space` event. `ok`:
+  `out`, `build`, `disabled_jobs`, `owner_cdhashes`, `first_start_unpacker`, `off`, `not_found`. A wrong input:
+  `refused` `input`. It no longer answers `not-ported`. In the Make iOS image flow `make-image` runs the tweaks
+  itself (its `tweaks` step), so the app does not need to send `tweaks` on its own: the keyless `tweaks` that
+  Make iOS image sends after `make-image` (fork `OneiosToolJob.kt`, "Drop it when make-image comes") is now
+  refused `usage` (`tweaks: "data" is missing`) instead of `not-ported`; drop it from the flow.
 - Update the kernel (fork `53abb04`, not run on a phone; no PC needed): root's `status` and `kbinput` ×12, then in one
   `tool work` session, unless `kb/kernelcache.macho` is the pin of the fork's `kb/kb.json`: `fetch` with `profile`
   `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, `indir` `<stage>/make-kernel/inputs`, `only`

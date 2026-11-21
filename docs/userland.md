@@ -17,22 +17,32 @@ booter must present, where our own programs and the Metal plugin go, and how the
 
 ## 1. How to run it
 
-The image build runs it (`scripts/image/build.sh` calls `userland/image-hook`, hook API 1 of
-`docs/image-format.md` section 6). By hand:
+The image build runs it (`scripts/image/build.sh` calls the userland hook, hook API 1 of
+`docs/image-format.md` section 6). Since 2026-11-21 the tweaks are Rust, `oneios-tool image tweaks` (crate
+`tools/oneios-tool/crates/oneios-tweaks`, the port of `userland/roottweak` and `userland/image-hook`; the same seed
+and overlay byte for byte: `tools/oneios-tool/README.md` "image tweaks"), and build.sh runs that hook by default;
+on the phone the OneOS app runs the same code (`oneios-tool serve`, request `tweaks`). By hand:
 
 ```sh
-python3 -I userland/tweak apply --root OS_TREE --data DATA_TREE --out OUT   # --layout sealed; --scale 2 for the 2x UI
-python3 -I userland/tweak daemons                                           # the daemon policy as text
-python3 -I userland/tweak cdhash FILE...                                    # CDHash of signed Mach-O files
-python3 -I userland/tweak boot-check --data DATA_VOLUME [--root OS_TREE]    # after a boot: section 10
-python3 -I userland/tests/test_roottweak.py && python3 -I userland/tests/test_helpers.py
+oneios-tool image tweaks apply --root OS_TREE --data DATA_TREE --out OUT   # --layout sealed; --scale 2 for the 2x UI
+oneios-tool image tweaks apply --root-image out/image/24A446/os.img --data DATA_TREE --out OUT   # the OS volume without a mount
+oneios-tool image tweaks daemons                                           # the daemon policy as text
+oneios-tool image tweaks cdhash FILE...                                    # CDHash of signed Mach-O files
+oneios-tool image tweaks boot-check --data DATA_VOLUME [--root OS_TREE]    # after a boot: section 10
+cargo test --release --manifest-path tools/oneios-tool/Cargo.toml -p oneios-tweaks   # the 38 cases of test_roottweak.py
 ```
 
-(`userland/tweak` is the package's command; `python3 -I -m roottweak` does not find the package, because `-I`
-leaves the current folder out of the module path.)
+The Python is left in place, unchanged, as the frozen original the port is compared against
+(`tools/oneios-tool/tests/tweakspy/compare-python.sh`; the owner decides when it goes): `python3 -I userland/tweak
+apply|daemons|cdhash|boot-check ...` (the same options), `scripts/image/build.sh --python-hook` (its hook),
+`python3 -I userland/tests/test_roottweak.py && python3 -I userland/tests/test_helpers.py` (`userland/tweak` is the
+package's command; `python3 -I -m roottweak` does not find the package, because `-I` leaves the current folder out
+of the module path; Python 3.11 or later, standard library only). An edit of the tweaks goes into the Rust (and,
+while the Python is kept, into the Python too, so that the comparison stays at "the same"). The config
+(`userland/config/*.toml`) is read from the checkout by build.sh (`--repo`), and built into the binary for the
+phone: rebuild the tool after an edit there.
 
-Python 3.11 or later, standard library only. Output in `OUT` (the hook puts it in the image set's
-`overlay/userland/`):
+Output in `OUT` (the hook puts it in the image set's `overlay/userland/`):
 
 | File | For | Content |
 |---|---|---|
@@ -372,7 +382,7 @@ spawns, every job it refuses and why, and every exit with its reason (`exited du
 ```sh
 apfs-fuse -o ro,vol=2 DATA_DIR/data.img MNT        # the Data volume is the third of its container (index 2)
 less MNT/root/log/com.apple.xpc.launchd/launchd.log
-python3 -I userland/tweak boot-check --data MNT/root --root OS_MNT/root   # OS_MNT: apfs-fuse -o ro out/image/24A446/os.img OS_MNT
+oneios-tool image tweaks boot-check --data MNT/root --root OS_MNT/root   # OS_MNT: apfs-fuse -o ro out/image/24A446/os.img OS_MNT (or python3 -I userland/tweak boot-check ...)
 fusermount3 -u MNT
 ```
 

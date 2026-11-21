@@ -1180,6 +1180,7 @@ dependencies = [
  "oneios-package",
  "oneios-phone",
  "oneios-prelink",
+ "oneios-tweaks",
  "rayon",
  "regex",
  "serde_json",
@@ -1229,9 +1230,26 @@ dependencies = [
  "oneios-serve",
  "oneios-sym",
  "oneios-testkit",
+ "oneios-tweaks",
  "rayon",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "oneios-tweaks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "oneios-common",
+ "oneios-image",
+ "regex",
+ "roxmltree",
+ "sha1",
+ "sha2 0.10.9",
+ "toml",
 ]
 
 [[package]]

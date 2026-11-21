@@ -226,8 +226,10 @@ written with their owners). Written, not run: the Mac session of 2026-11-12 had 
 
 ## 6. The userland hook
 
-`build.sh` runs `userland/image-hook` (or `--hook FILE`) once, after it has copied `/private/var` and before
-it packs the seed. The read-only images are never changed, so every tweak to the system is a change to the
+`build.sh` runs the userland hook once, after it has copied `/private/var` and before it packs the seed: by
+default (since 2026-11-21) the Rust one, `oneios-tool image tweaks hook --repo ROOT`; `--python-hook` runs
+`userland/image-hook`, its frozen original (the same seed and overlay byte for byte); `--hook FILE` any other
+executable. The read-only images are never changed, so every tweak to the system is a change to the
 Data seed, a file in `overlay/`, or kernel policy. Hook API 1:
 
 | Variable | Meaning |
@@ -242,9 +244,15 @@ Data seed, a file in `overlay/`, or kernel policy. Hook API 1:
 | `ONEIOS_INFO` | file to write one JSON value to; it becomes `tweaks.info` in the manifest |
 | `ONEIOS_EPOCH`, `ONEIOS_DATA_UUID` | the profile's `[data]` values |
 
+`oneios-tool image tweaks hook` also reads `ONEIOS_OS_IMAGE`: the OS volume's raw image, read with the tool's own
+APFS reader instead of the mounted `ONEIOS_OS_ROOT` (the phone mounts nothing; the same seed). The hooks read only
+the OS volume.
+
 The hook runs as the build user, not root: it cannot `chown`, which is what `ONEIOS_OWNERS` is for. A
-non-zero exit stops the build and leaves the previous set in place. The manifest records the hook's path,
-SHA-256, the repository commit and whether `userland/` had uncommitted changes.
+non-zero exit stops the build and leaves the previous set in place. The manifest records the hook's path
+(`oneios-tool image tweaks` for the Rust hook), SHA-256 (of the tool's binary for the Rust hook), the repository
+commit and whether `userland/` (for the Rust hook also `tools/oneios-tool/crates/oneios-tweaks`) had uncommitted
+changes.
 
 ## 7. The archive, and how the OneOS fork verifies and stages it
 

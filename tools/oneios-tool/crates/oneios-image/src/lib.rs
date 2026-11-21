@@ -97,6 +97,11 @@ The IPSW, the AEA header and the archive (ported on 2026-11-13; imagetool.py has
     oneios-tool image verify SET.tar.zst                         the archive: its .sha256, the tar rules, every file
     oneios-tool image record-plain INDIR ROLE PLAIN              after an AEA was decrypted: the plain image in inputs.json
 
+The root tweaks and the userland hook (the port of userland/roottweak and userland/image-hook, 2026-11-21):
+    oneios-tool image tweaks apply --root OS --data DATA --out OUT [...]   the tweaks; --help lists the options
+    oneios-tool image tweaks hook [--repo DIR]                   the image build's hook (API 1, ONEIOS_* from build.sh)
+    oneios-tool image tweaks daemons|cdhash|boot-check ...       the daemon policy, CDHashes, a boot's launchd check
+
 Formats: docs/image-format.md. The Rust port of scripts/image/imagetool.py: same output, byte for byte.
 ";
 

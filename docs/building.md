@@ -62,8 +62,10 @@ scripts/bg.sh image scripts/image/build.sh "$P" --kernel out/kernel/24A446/kerne
 scripts/image/verify.sh out/image/OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst
 ```
 
-`--no-kernel` builds a set without one (for work on the images only). The userland hook (`userland/image-hook`)
-runs by default. Format: [image-format.md](image-format.md).
+`--no-kernel` builds a set without one (for work on the images only). The userland hook runs by default: since
+2026-11-21 the Rust one, `oneios-tool image tweaks hook` (the same seed and overlay byte for byte as
+`userland/image-hook`, which `--python-hook` runs instead; `--no-hook` builds without the root tweaks;
+`tools/oneios-tool/README.md` "image tweaks"). Format: [image-format.md](image-format.md).
 
 **The same in one process, without bash, apfs-fuse or Python: `oneios-tool image build`** (2026-11-21; it is what
 the OneOS app's Make iOS image runs on the phone, `serve`'s `make-image`). It fetches the members (unless
@@ -879,7 +881,9 @@ root to OneOS, no iOS session. Save each step's screen (`adb exec-out screencap 
      "Resume: Make iOS image"; tapped, `fetch` says the members already done are "already complete" and the rest go
      on from their parts.
    - At the end of `fetch`: "Not done, as the tool says" with `make-image: unknown: ...` and `tweaks: not-ported:
-     The root tweaks are not in this tool yet ...`. Nothing is staged (`image/` unchanged).
+     The root tweaks are not in this tool yet ...`. Nothing is staged (`image/` unchanged). (That was the tool
+     before 2026-11-21. Since then `tweaks` is in the tool, and the app's `tweaks` without keys is refused `usage`
+     (`"data" is missing`): `make-image` runs the tweaks itself; oneos/interface.md.)
 7. *Stop*: start Check every file, Stop: "Stopped: what it made for this was removed", no `oneios-tool` process.
 8. *No runtime*: Remove the iOS files (Manage), then Tools' rows are gone; Set up iOS 27 → Make iOS image says
    "oneios-tool did not start" with root's reason; the app does not crash.
@@ -1037,7 +1041,10 @@ the drivers' build, the fixup of the linked kernel, the series check and the KDK
 Apple-file check, manifest and archive) and `debug` (the tests' helpers). Since the third Linux round also `phone` (the adb
 workflow of section 6: status, stage, sums, switch, return, log, the Data store's copy, and in a session the display
 helper's restart, the touch IC's wake and the panel's level), `app` (the fork's app of
-section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect).
+section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
+`image tweaks` (the root tweaks and the image build's userland hook: the port of `userland/roottweak` and
+`userland/image-hook`, `apply`, `hook`, `daemons`, `cdhash`, `boot-check`; compared with the Python by
+`tools/oneios-tool/tests/tweakspy/compare-python.sh`).
 **None of the three has run on the real phone yet**: sections 6 and 7 show the CLI first and, as the fallback, the
 scripts and adb lines that were run. Commands, crates, and each tool's comparison with the Python tool it replaces:
 [tools/oneios-tool/README.md](../tools/oneios-tool/README.md); what is left:

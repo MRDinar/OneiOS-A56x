@@ -6,8 +6,11 @@
 #
 # Options: --kernel FILE   the kernel collection to put in the set (default out/kernel/<build>/kernel.kc)
 #          --no-kernel     build a set without one (the runtime cannot start it; for work on the images)
-#          --hook FILE     the userland hook (default userland/image-hook, when it is there and executable)
+#          --hook FILE     another userland hook: an executable file run with hook API 1's ONEIOS_* (docs/image-format.md 6)
+#          --python-hook   the frozen Python hook, userland/image-hook (roottweak), to compare with the default
 #          --no-hook       do not run a hook: the seed is the OS volume's own /private/var
+#          (default: the Rust hook `oneios-tool image tweaks hook --repo ROOT`, the port of userland/image-hook since
+#          2026-11-21: the same seed and overlay byte for byte, tools/oneios-tool/README.md "image tweaks")
 #          --seed tar|apfs the Data seed's format. tar (default) is made anywhere; apfs needs macOS
 #          --no-pack       stop after the set folder; no .tar.zst
 #          --os-root DIR, --systemos-root DIR, --app-root DIR
@@ -32,6 +35,7 @@ while [ $# -gt 0 ]; do
   --kernel) kernel=${2:?--kernel FILE}; shift ;;
   --no-kernel) no_kernel=1 ;;
   --hook) hook=${2:?--hook FILE}; shift ;;
+  --python-hook) hook=$ROOT/userland/image-hook ;;
   --no-hook) no_hook=1 ;;
   --seed) seed=${2:?--seed tar|apfs}; shift ;;
   --no-pack) pack=0 ;;
@@ -43,7 +47,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$profile" ] || die "usage: scripts/image/build.sh [--kernel FILE|--no-kernel] [--hook FILE|--no-hook] [--seed tar|apfs] [--no-pack] PROFILE"
+[ -n "$profile" ] || die "usage: scripts/image/build.sh [--kernel FILE|--no-kernel] [--hook FILE|--python-hook|--no-hook] [--seed tar|apfs] [--no-pack] PROFILE"
 [ -f "$profile" ] || die "no profile $profile"
 case "$seed" in tar|apfs) ;; *) die "--seed is tar or apfs" ;; esac
 OS=$(uname -s)
@@ -91,8 +95,8 @@ fi
 if [ "$no_hook" = 0 ]; then
   if [ -n "$hook" ]; then
     [ -x "$hook" ] || die "the hook $hook is not an executable file"
-  elif [ -x "$ROOT/userland/image-hook" ]; then
-    hook=$ROOT/userland/image-hook
+  else
+    hook=builtin
   fi
 fi
 
@@ -153,7 +157,13 @@ mkdir -p "$WORK/overlay"
 tweaks=$WORK/tweaks.json
 echo null > "$tweaks"
 if [ -n "$hook" ]; then
-  echo "running the userland hook $hook"
+  if [ "$hook" = builtin ]; then
+    echo "running the userland hook: oneios-tool image tweaks hook (Rust)"
+    run_hook=("$ONEIOS_TOOL" image tweaks hook --repo "$ROOT")
+  else
+    echo "running the userland hook $hook"
+    run_hook=("$hook")
+  fi
   if [ -z "$sys_root" ]; then
     mounts+=("$WORK/mnt/systemos")
     sys_root=$(mount_ro "$NEW/$sys_out" "$WORK/mnt/systemos")
@@ -168,14 +178,20 @@ if [ -n "$hook" ]; then
   ONEIOS_INPUTS=$IN ONEIOS_OS_ROOT=$os_root ONEIOS_SYSTEMOS_ROOT=$sys_root ONEIOS_APP_ROOT=$app_root \
   ONEIOS_DATA=$WORK/data ONEIOS_OVERLAY=$WORK/overlay ONEIOS_OWNERS=$WORK/owners.tsv \
   ONEIOS_INFO=$WORK/hook-info.json ONEIOS_EPOCH=$P_EPOCH ONEIOS_DATA_UUID=$P_DATA_UUID \
-    "$hook" || die "the userland hook failed (exit $?); nothing was written to $SET"
-  python3 -I - "$hook" "$WORK/hook-info.json" "$ROOT" > "$tweaks" <<'PY'
+    "${run_hook[@]}" || die "the userland hook failed (exit $?); nothing was written to $SET"
+  # the record: the hook and its SHA-256 (the Rust hook: "oneios-tool image tweaks", the tool's binary), the commit
+  python3 -I - "$hook" "$WORK/hook-info.json" "$ROOT" "$ONEIOS_TOOL" > "$tweaks" <<'PY'
 import hashlib, json, os, subprocess, sys
-hook, info_path, root = sys.argv[1:4]
-out = {"hook": os.path.relpath(os.path.abspath(hook), root), "hook_sha256": hashlib.sha256(open(hook, "rb").read()).hexdigest()}
+hook, info_path, root, tool = sys.argv[1:5]
+if hook == "builtin":
+    out = {"hook": "oneios-tool image tweaks", "hook_sha256": hashlib.sha256(open(tool, "rb").read()).hexdigest()}
+    paths = ["userland", "tools/oneios-tool/crates/oneios-tweaks"]
+else:
+    out = {"hook": os.path.relpath(os.path.abspath(hook), root), "hook_sha256": hashlib.sha256(open(hook, "rb").read()).hexdigest()}
+    paths = ["userland"]
 try:
     out["commit"] = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
-    out["dirty"] = bool(subprocess.check_output(["git", "-C", root, "status", "--porcelain", "--", "userland"], text=True).strip())
+    out["dirty"] = bool(subprocess.check_output(["git", "-C", root, "status", "--porcelain", "--"] + paths, text=True).strip())
 except (OSError, subprocess.CalledProcessError):
     pass
 text = open(info_path).read().strip()

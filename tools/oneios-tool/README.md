@@ -18,9 +18,10 @@ script before it may replace it; the commands and the results are below. What is
 | `phone` | `scripts/phone/stage.sh`, the adb lines of `docs/building.md` section 6, the Mac's `sparsewrite.py` | `phone log`, `sums`, `image-check`, `manifest --stage` and `switch` ran on the S24 Ultra on 2026-11-16; the other subcommands are still unproven there | `stage` and `sums`: the same output and the same stage as `stage.sh` on a stand-in phone; 257 checks pass (2026-11-21: `tests/phone/run.sh`, the host phone's `status` line and `hw-backend.sh`'s host-device checks among them, 30 of them the fork scripts' USB steps, `usb.sh`, with a fork checkout that has them); `sparse-write`: the bytes and length of `sparsewrite.py` on 7 streams and a 32 GiB one, not more blocks, a quarter of the CPU (`tests/phone/sparse-compare.sh`) |
 | `app` | the app lines of `docs/building.md` section 7 (new) | `app stage-scripts` ran on the S24 Ultra on 2026-11-16; the app was not built or installed with it | not applicable; 103 checks pass with a stand-in checkout (also as the submodule `app/` of a stand-in OneiOS checkout), gradlew, gh and phone (`tests/app/run.sh`); `app version` runs on the real clone |
 | `serve` | nothing (new, 2026-11-15): the one process the OneOS app starts as root for every iOS step on the phone (requests in, JSON lines out; "serve", below) | written; **not run on the phone** (the Android arm64 binary builds, 14.6 MB, and was not run). Not in it yet: the root tweaks (Python), the image build's own script, the AEA decryption | not applicable (new). 21 tests of the process on stand-in inputs, 12 checks on the stand-in phone; on the real set and kernel on the Linux PC: `prelink` gives build.sh's `kernel.kc` and work files (24 of 24), `apfs-copy` the tree the copy before gave and apfs-fuse gives, `hashes` the set's list, `sums` `sha256sum`'s sums |
+| `image tweaks` | `userland/roottweak` and `userland/image-hook` (the root tweaks and the image build's userland hook; **left in place as the frozen original: the owner decides when they go**) | done 2026-11-21 (`apply`, `hook`, `daemons`, `cdhash`, `boot-check`, and `serve`'s `tweaks`); `scripts/image/build.sh` runs it by default (`--python-hook` for the Python); **not run on the phone** | yes: 33 of 33 cases of `tests/tweakspy/compare-python.sh`, and build.sh on 24A446's real inputs with each hook: `data.seed` (`27ec4e10...`) and the six overlay files byte for byte ("image tweaks", below) |
 | `cycle` | the test cycle of `docs/building.md` section 6 by hand (new) | written; **not run as a whole cycle on the phone or with real builds** (`phone log` itself ran on 2026-11-16) | not applicable; 117 checks pass with a stand-in checkout and phone (`tests/cycle/run.sh`) |
 
-**The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`, the root tweaks). The image scripts call `oneios-tool image`
+**The image scripts, the kernel builds, the prelink and the runtime package run no Python tool of this repository any more** (2026-11-13; still Python: `scripts/ios/`; the root tweaks are Rust since 2026-11-21, "image tweaks"). The image scripts call `oneios-tool image`
 (`IMAGETOOL_IMPL` is gone; `scripts/image/imagetool.py` is left in the tree, unused), as do the retired tools' callers (`kernel/prelink/build.sh`
 and, since 2026-11-13, the kernel builds, `runtime/package.sh` and the kernel's and the prelink's hand tools: "kernel",
 "package" and the group 2 section, below). (Before, one script used the Rust tool without being asked:
@@ -250,7 +251,7 @@ the request ends with `ok`.
 | `mismatch` | a size, a CRC-32 or a SHA-256 is not the one expected (the text names the file) |
 | `apple-file` | the runtime folder holds a file of Apple's |
 | `audit` | the kernel collection's audit or stub check found a wrong binding |
-| `not-ported` | the step is not in the tool yet (the root tweaks: below) |
+| `not-ported` | the step is not in the tool yet (the AEA decryption, and `make-image`'s `tweaks` step until it calls the root tweaks' library: below) |
 
 **Lines without a request:**
 
@@ -539,7 +540,7 @@ stage.
 | `verify` | H | `set`, `quick` | `verify` | `image verify` of a set folder against its `manifest.json`; a file that is not the listed one: `refused`, `mismatch` |
 | `apfs-ls` | | `image`, `path`, `volume`, `newest`, `checkpoint` | | `row` `entry`: `name`, `mode`, `uid`, `gid`, `bytes`. `ok`: `entries` |
 | `apfs-copy` | H | `image`, `src`, `dst`, `volume`, `newest`, `checkpoint` | `scan`, `copy`, `place` | a file or a folder out of a raw APFS image, without a mount, the files in parallel, into `dst.part`, then renamed. `dst` must not exist. `ok`: `dst`, `files`, `bytes`, `compressed`, `skipped` |
-| `tweaks` | H | | | **refused, `not-ported`:** the root tweaks are Python (`userland/roottweak`) and are not in the tool yet (todo_rust.md section 7, group 4) |
+| `tweaks` | H | `data` (the copied Data tree, changed in place), `overlay` (the files go to `OVERLAY/userland`), `os_root` (the OS volume's files) **or** `os_image` (its raw image, read with our APFS reader, no mount; `os_volume` a number or a name, default the first), and optionally `build`, `helpers`, `metal_plugin`, `camera_plugin` (each used when it is what image-hook wants: a folder, a `.bundle` folder (its `NAME.build.json` beside it is checked), a folder holding `H9ISP.mediacapture`), `scale` (2 or 3), `config` (another `userland/config`; default the one built into the tool), `args` (more `apply` options, a list: `["--group", "fewest"]`), `owners`, `info` (the hook's `ONEIOS_OWNERS`, appended to, and `ONEIOS_INFO`) | `tweaks`, `place` | `image tweaks hook` in this process ("image tweaks", below): the root tweaks on the Data tree and `boot-contract.json`, `owner-trust.json`, `report.json`, `report.txt`, `tweaks.manifest.json`, `xnuhost.conf` (and `bin/oneios-seed` when the helpers have it) in `OVERLAY/userland`: build.sh's hook's bytes. One `space` event (the plug-ins and helpers it places, and 16 MiB). The report as `line`s; `row` `off`: `item`. A wrong input (not an iOS root, a file that is not a property list, a group that is not there, a helper that is not signed, a plug-in that is not its build record's): `refused`, `input`. `ok`: `out`, `build`, `disabled_jobs`, `owner_cdhashes`, `first_start_unpacker`, `off`, `not_found` |
 | `prelink` | H | `kernel` (xnu.macho), `kernelcache`, `profile`, `reviewed`, `more_reviewed` (a list, optional), `pairs`, `stubs`, `xnuprelink` (the folder with XnuPrelink's files), `reference` (optional), `out` (a folder), `keep_work`, `oneios_commit`, `xnuprelink_commit` (for the record, optional) | `check`, `native-input`, `merge-reviewed`, `roots`, `hosted`, `match`, `align`, `kclasses`, `structors`, `vtables`, `emit`, `audit`, `stubs-check`, `record`, `hashes`, `place` | `prelink build`: the steps of `kernel/prelink/build.sh` in this process, in `OUT/work` (removed at the end unless `keep_work`); `kernel.kc`, its hash list and its three records are put into `OUT` only when the audit and the stub check pass (else `refused`, `audit`). A kernelcache that is not the profile's: `refused`, `mismatch`. `ok`: `kc`, `bytes`, `sha256` |
 | `stubs-check` | H | `kc` | `check` | `prelink stubs-check` alone; a bad stub: `refused`, `audit` |
 | `make-image` | H | `indir`, `out` (absent or an empty folder: root's `begin image` makes `image.new`), `work` (the build's own files go to `WORK/build`), `sums_list`, `ids_list` (the stage's lists, written whole; optional), and optionally `profile` (default: the staged runtime's `lib/profiles/` when it holds one, else the one `INDIR/inputs.json` names), `fetch` (default true), `source`, `resume` (default **true**: a stop keeps the fetch's parts), `tweaks` (default true: **refused `not-ported` until the root tweaks are in the tool**; false: the seed is the OS volume's own `/private/var`), `kc` (a `kernel.kc` to put in) or `no_kernel`, else `xnu` (default: the staged runtime's `runtime.json` `kernel.path`), `kb` (default `STAGE/kb`), `kernelcache` (default `KB/kernelcache.macho` when it is there, else the IPSW's member decoded), `keep_work`, `connections`, `give_up_s` | `check`, `directory`, `download`, `decrypt`, `place`, `data`, `tweaks`, `seed`, `kernelcache`, `kernel-check` ... `kernel-place` (`prelink build`'s sixteen), `manifest`, `verify`, `lists` | `image build` ("image build", below): the whole image set, `scripts/image/build.sh`'s steps in this process. **One `space` event** at `check`, for everything it writes (the fetch and the copies inside say none of their own); short: `refused`, `space`, before anything is fetched or written. An AEA image that must be decrypted: `refused`, `not-ported` (`step decrypt`) until the AEA decryption is in the tool. Pausable (`pause` holds the fetch at once and the build between steps). A stop or a failure removes `WORK/build`, the set's files and the lists' lines; INDIR keeps what was fetched. `ok`: `files` (the set's files with `manifest.json`: the lists' lines), `format`, `version`, `build` (root's `finish image <files> <format> <version> <build>`), `out`, `bytes`, `manifest_sha256`, `seed_sha256`, `kernel_sha256` |
@@ -1229,7 +1230,7 @@ this (crate `crates/oneios-imagebuild`). The steps, in build.sh's order and with
 | `decrypt` | the AEA images into their plain images, then `record-plain` and the `.aea` removed. **Not in the tool yet** (agent "AEA decryption", docs/agents.md) | `ipsw fw aea` in fetch.sh |
 | `place` | the images and trust files into the set: hard links where the folder allows, else copies (`put`); each volume must pass `apfs-info` | `put`, `apfs-info` |
 | `data` | the OS volume's `/private/var` copied out with **our APFS reader** (`src/data.rs`), with tree-copy's meta file: the same folders (0700), files (0600, both times the source's whole seconds), links and meta entries, in tree-copy's order; the three xattrs that only say how APFS stores a file are left out, as tree-copy leaves them out | apfs-fuse (hdiutil on a Mac) and `tree-copy` |
-| `tweaks` | the root tweaks into the tree, the overlay and the owner rules. **Not in the tool yet** (agent "Port root tweaks to Rust"); `--no-tweaks` (`"tweaks": false`) builds without them | the userland hook |
+| `tweaks` | the root tweaks into the tree, the overlay and the owner rules. The root tweaks are in the tool since 2026-11-21 (`oneios_tweaks::run_hook`, "image tweaks"); **this step does not call them yet** (`tweaks_port()`): refused `not-ported` until it does. `--no-tweaks` (`"tweaks": false`) builds without them | the userland hook |
 | `seed` | `seed-pack` into `data.seed`; the overlay into `overlay/` | `seed-pack`, `cp -R` |
 | `kernelcache` | Apple's kernelcache member decoded (`im4p`), unless one is given (`--kernelcache`, the stage's `kb/kernelcache.macho`) | `kernel-inputs.sh` |
 | `kernel-check` ... `kernel-place` | `prelink build` of the runtime's `kernel/xnu.macho` with it: its sixteen steps, the audit and `stubs-check` before `kernel.kc` is taken (`audit` refuses); unless a `kernel.kc` is given (`--kernel-kc`) | `kernel/prelink/build.sh`, then `--kernel FILE` |
@@ -2852,3 +2853,100 @@ empty file is 416 (the script answered 206 with no bytes). Not run through a tun
 `scripts/ios/{ios-sign,macho-check,make-tbds}.py` (the iOS-side signing, the
 import check and the stub maker, called by `scripts/setup/ios-toolchain.sh` and `userland/*/build.sh`). They are
 unchanged and still Python.
+
+## image tweaks: the root tweaks and the userland hook (group 4 of the Python retirement, 2026-11-21)
+
+The owner agreed to the port on 2026-11-21 (the phone must make the whole image itself). Crate `crates/oneios-tweaks`,
+the port of `userland/roottweak` (1643 lines) and `userland/image-hook`; the Python stays in place, unchanged, as the
+frozen original (CLAUDE.md "No new Python": the owner decides when it goes).
+
+```sh
+oneios-tool image tweaks apply --root OS_TREE --data DATA --out OUT [--layout sealed|rw] [roottweak apply's options]
+oneios-tool image tweaks apply --root-image os.img [--root-volume N|NAME] --data DATA --out OUT ...   # no mount (sealed only)
+oneios-tool image tweaks hook [--repo DIR] [--config DIR]    # hook API 1 from ONEIOS_* (docs/image-format.md 6)
+oneios-tool image tweaks daemons [--group NAME] [--no-group NAME] [--keep LABEL] [--config DIR]
+oneios-tool image tweaks cdhash FILE...
+oneios-tool image tweaks boot-check --data DATA_VOLUME [--root OS_TREE] [--ignore-owner]
+```
+
+`apply`'s options are `roottweak apply`'s (`--group`, `--no-group`, `--keep`, `--disable`, `--scale 2|3`, `--build`,
+`--any-version`, `--helpers`, `--metal-plugin`, `--metal-plugin-unchecked`, `--metal-client`, `--camera-plugin`,
+`--appos`, `--no-setup|migration|watchdogs|awake|coreanimation`, `--lighter-visuals`, `--plain-keybag`,
+`--keep-recover-on-crash`, `--config`), a later one over an earlier one as argparse has it. `hook` reads what
+`image-hook` reads (`ONEIOS_HOOK_API` 1, `ONEIOS_OS_ROOT`, `ONEIOS_DATA`, `ONEIOS_OVERLAY`, `ONEIOS_OWNERS`,
+`ONEIOS_INFO`, `ONEIOS_BUILD`, `ONEIOS_SCALE`, `ONEIOS_HELPERS`, `ONEIOS_METAL_PLUGIN`, `ONEIOS_CAMERA_PLUGIN`,
+`ONEIOS_ROOTTWEAK_ARGS` split as `shlex.split` does), and one more: `ONEIOS_OS_IMAGE`, the OS volume's raw image
+instead of a mount. `--repo DIR` gives image-hook's defaults (`DIR/out/userland/{helpers,NativeAdrenoMetal.bundle,camera}`)
+and `DIR/userland/config`; without it the three config files built into the binary are read (the phone has no
+checkout). `scripts/image/build.sh` runs `hook --repo ROOT` by default since 2026-11-21; `--python-hook` runs
+`userland/image-hook` instead.
+
+The library (`serve`'s `tweaks`, the image build on the phone): `oneios_tweaks::run_hook(&Hook) -> anyhow::Result<HookDone>`
+(`src/hook.rs`: the fields are the hook's variables; `HookDone` has the summary that becomes the manifest's
+`tweaks.info`), `oneios_tweaks::apply(&Apply)`, `bootcheck::check`, `macho::describe`. An error that is a wrong input
+is `oneios_tweaks::Refused` (roottweak's `TreeError` and `ConfigError`); a stop of the request is `job::Stop`.
+
+**Byte for byte.** The Data seed's SHA-256 is pinned in the image's trust list, so every file is the Python's:
+
+- the property lists as Python 3.14's `plistlib.dumps(..., sort_keys=True)` writes them (`src/plist.rs`): the binary
+  writer's object order (depth first, a dictionary's keys before its values), one object per (type, value) of a
+  str, int, float (0.0 and -0.0 are one), date or bytes, containers never shared, the smallest reference and
+  offset sizes; the XML writer's header, tabs, `repr(float)`, base64 lines (76 columns less the indent); dates as
+  `datetime.timedelta` rounds them (binary) or to the second (XML). The reader keeps the file's key order (the
+  launchd cache's first job of a label wins, as in Python) and is plistlib's on its edge cases (an empty
+  `<plist>`, `int(text)`, binascii's base64). Checked against plistlib's own bytes in the unit tests and on lists of
+  every type in the comparison ("odd plists"). One case is refused instead of written differently: a binary list
+  that refers to one container from two places (plistlib keeps that one object and writes it once; this reader
+  makes two). Apple's CF writer never shares containers.
+- the JSON as `json.dump(indent=2, sort_keys=True)` (oneios-common's `pyjson`), the report's words as tweaks.py's.
+- written as `NAME.part` and renamed (the trees' files too); a stop leaves no part (`job::temp`).
+
+**On the phone.** No program is started (no `git`, no mount: `os_image` reads the OS volume in place), every tree
+write asks `job::check()` and counts its bytes (`job::count`); as root the owners are set on the files as well.
+Only the OS volume is read: the Python never reads SystemOS or App either.
+
+### The comparison
+
+```sh
+tools/oneios-tool/tests/tweakspy/compare-python.sh     # one line per case, then the counts; KEEP=1 keeps the folder
+```
+
+Both sides on copies of the same stand-in inputs (the Python tests' `fakeroot.py`: a root, signed stand-in Mach-Os,
+a Metal bundle with its build record, a camera plug-in, an App cryptex, a staged app): the status, standard
+output, standard error's last line without the tool's name, every file of the trees, OUT, the owners and the
+summary (type, mode, link target, SHA-256). **33 of 33 the same** (2026-11-21, Linux): the sealed layout with
+every option, a second run, property lists of every type already in the Data tree (dates to the microsecond and
+in 1601 and 4001, data, big and negative integers, text outside ASCII, nested and empty containers; binary and
+XML), the rw layout, 20F66's xnuhost.conf, eight refusals, the hook five ways (with oneios-seed, the plug-in and its
+record, a record that does not match, no bundle, API 2), `daemons`, `cdhash`, `boot-check` three ways. The script
+was checked to see a difference (an extra option on one side: 4 lines).
+
+On the real 24A446 inputs (2026-11-21, Linux; inputs/24A446, the Metal bundle of out/userland placed, no helpers,
+no camera): `scripts/image/build.sh --no-pack --python-hook` against `scripts/image/build.sh --no-pack`:
+
+| File | Python hook | Rust hook |
+|---|---|---|
+| `data.seed` (1,267,793,920 bytes) | `27ec4e10d773d4e68ee0007a50e31430dc67b79e84b793a37b48e5f469242ac8` | the same |
+| `overlay/userland/boot-contract.json` | `b1b3b85f0f90ff3447ec7119f7824f9873ed96a79a329e7e0efb866b64da82e5` | the same |
+| `overlay/userland/owner-trust.json` | `2e2823c28531d9675b51ebedb28db7210a0af9b9220803fc5d1ebf7f0a74b986` | the same |
+| `overlay/userland/report.json` | `9cd5fe42acda832a569c67f31a098107b06c9c95e7653239dc7c19fc1dafb74d` | the same |
+| `overlay/userland/report.txt` | `7d0d621c9210f5be7477f1634858bb1cb9c6b1e2c77079d67f0266a5264dcb4a` | the same |
+| `overlay/userland/tweaks.manifest.json` | `a62d5d802a47acb36b260354680086fbcf4132bd38470999c2c699237bab5a90` | the same |
+| `overlay/userland/xnuhost.conf` | `f916ca688219e3240fdf9aee0ab4140b32aa628665a43a3bd30ac90dd99c3200` | the same |
+| `manifest.json` | `b60fa9f8...` | `bdb1cca6...`: differs only in the hook's record, by design: `tweaks.hook` (`oneios-tool image tweaks`), `hook_sha256` (the tool's binary), `dirty`, `info.tool` |
+
+The images, the trust files and `kernel.kc` are the inputs, the same on both sides. 142 jobs disabled, the plug-in
+placed (2 CDHashes). The OS volume read from `os.img` (`ONEIOS_OS_IMAGE`) instead of apfs-fuse's mount: the same
+seed (`27ec4e10...` again), owner rules, summary, report and overlay.
+
+Tests: `cargo test -p oneios-tweaks`: the 38 cases of `userland/tests/test_roottweak.py` (`tests/roottweak.rs`, each
+named after the case it ports, on a Rust port of `fakeroot.py`) and 5 unit tests (plistlib's bytes, dates, base64,
+shlex); `tests/serve.rs` `tweaks_writes_what_the_hook_command_writes` (the request's files are the command's, byte for byte;
+its refusals; `bye`'s children 0).
+
+Different by design: the messages start with `oneios-tool image tweaks:` instead of `roottweak:`; an input Python
+ends with a traceback for (a non-string `CFBundleExecutable`, a dictionary key that is not a string) is refused
+with a message; a wrong command line ends with clap's usage (status 2, as argparse's).
+
+Not done: **a run on the phone** (as root under `serve`); the Mac (nothing was built or run there); retiring the
+Python (the owner decides).

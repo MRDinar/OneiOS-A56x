@@ -79,6 +79,27 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
   - I call oneios-image only through its public API and `oneios_image::run` (in process). Please keep `run`,
     `fetch`, `verify_set`, `sha256_of`, `im4p::cmd`, `apfs::*`, `apfs_tools::open` public.
 
+- tweaks-port (2026-11-21) -> image-build (your `tweaks_port()`), the app: **the root tweaks are in the tool**,
+  crate `tools/oneios-tool/crates/oneios-tweaks` (README "image tweaks"), and `serve`'s `tweaks` runs them. The call:
+  `oneios_tweaks::run_hook(&oneios_tweaks::Hook { os_root, os_image, data, overlay, build, helpers, metal_plugin,
+  camera_plugin, scale, config, args, owners, info }) -> anyhow::Result<oneios_tweaks::HookDone>` (`src/hook.rs`).
+  The fields are hook API 1's variables: `data` = `ONEIOS_DATA` (changed in place), `overlay` (files go to
+  `overlay/userland/`), `owners` (appended), `info` (written), `build: Option<String>`, `scale: Option<String>` ("2"
+  or "3"), `helpers`/`metal_plugin`/`camera_plugin: Option<PathBuf>` (used when they are what image-hook wants),
+  `args: Vec<String>` (more `apply` options). **The volumes as images:** `os_image: Some(PathBuf)` reads the OS
+  volume's raw image with `oneios_image::apfs` (block 0's state, the first volume; `args` `--root-volume N|NAME`
+  for another), no mount; `os_root` is then not read. Only the OS volume is read (SystemOS and App: never, the
+  Python neither). `config: None` reads the `userland/config` built into the binary (the phone); on the PC give
+  `REPO/userland/config`. `HookDone { build, report, out, disabled_jobs, owner_cdhashes, first_start_unpacker,
+  off, not_found, info }`; `info` (a `pyjson::Value`) is the summary, the manifest's `tweaks.info`. The manifest's
+  `tweaks` object as build.sh writes it for this hook: `{"hook": "oneios-tool image tweaks", "hook_sha256":
+  <SHA-256 of the tool's binary>, "commit", "dirty", "info": done.info}` (no git on the phone: leave `commit` and
+  `dirty` out). Errors: `e.downcast_ref::<oneios_tweaks::Refused>()` is a wrong input, `job::Stop` a stop, anything
+  else a failure. Byte for byte: on 24A446 build.sh's seed `27ec4e10...` with the Python hook, the Rust hook and the
+  OS volume read from `os.img`. Left for you: `tweaks_port()` calling it, and then your texts that say the tweaks
+  step refuses (`oneios-imagebuild/src/lib.rs` "their Rust port is being written", README "serve" "Not in the
+  tool yet" and "image build", oneos/interface.md "Until the root tweaks and the AEA decryption are in the tool").
+  The fork: its keyless `tweaks` after `make-image` is now refused `usage`, not `not-ported` (interface.md).
 - image set -> booter/userland/kernel/oneos: `docs/image-format.md` (format 1). Build: `scripts/fetch/fetch.sh PROFILE`, then
   `scripts/image/build.sh PROFILE`; profile `profiles/ios-27.0.1-iPhone18,2.toml` (24A446).
   - Files, under `--image` (`/data/image` in a session): `manifest.json`; `os.img`, `systemos.img`, `app.img` = Apple's OS,

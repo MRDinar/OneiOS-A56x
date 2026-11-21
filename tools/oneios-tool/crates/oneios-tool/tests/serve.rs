@@ -494,7 +494,7 @@ fn refusals_say_why_with_a_code() {
         (json!({"id": "6", "cmd": "wait", "file": "relative.tmp"}), "outside", "absolute"),
         (json!({"id": "7", "cmd": "wait", "file": format!("{}/../x", b.stage("work"))}), "outside", "\"..\""),
         (json!({"id": "8", "cmd": "sums", "dir": b.stage("no-such-folder")}), "not-found", "is not there"),
-        (json!({"id": "9", "cmd": "tweaks"}), "not-ported", "root tweaks"),
+        (json!({"id": "9", "cmd": "tweaks"}), "usage", "\"data\" is missing"),
         (json!({"id": "10", "cmd": "hashes", "image": image, "out": outside}), "outside", "outside the stage"),
         (json!({"id": "11", "cmd": "hashes", "image": image, "out": b.stage("a.hashes"), "chunk": 1000}), "usage", "power of two"),
         (json!({"id": "12", "cmd": "apfs-copy", "image": image, "src": "/", "dst": b.stage("")}), "outside", "outside the stage"),
@@ -694,6 +694,100 @@ fn hashes_writes_the_list_the_image_command_writes() {
     }
     assert!(!Path::new(&format!("{out}.part")).exists());
     s.end(true);
+}
+
+/// A stand-in OS root for `tweaks` (the shape the tweaks read; nothing of Apple's).
+fn stand_in_root(dir: &Path) {
+    use oneios_tweaks::plist::{dumps_binary, dumps_xml, P};
+    let d = |pairs: Vec<(&str, P)>| P::Dict(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    let put = |rel: &str, data: &[u8]| {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), data).unwrap();
+    };
+    put("System/Library/CoreServices/SystemVersion.plist", &dumps_xml(&d(vec![("ProductBuildVersion", P::Str("24A999".into())), ("ProductName", P::Str("iPhone OS".into())), ("ProductVersion", P::Str("27.0.1".into()))])).unwrap());
+    put("sbin/launchd", b"not a real launchd\n");
+    let job = |label: &str| d(vec![("Label", P::Str(label.into())), ("ProgramArguments", P::Array(vec![P::Str("/usr/libexec/x".into())]))]);
+    let daemons = d(["com.apple.nfcd", "com.apple.SpringBoard", "com.apple.OTATaskingAgent"].iter().map(|l| (*l, job(l))).collect());
+    put("System/Library/xpc/launchd.plist", &dumps_binary(&d(vec![("LaunchDaemons", daemons)])).unwrap());
+    let over = d(vec![("com.apple.OTATaskingAgent", d(vec![("DisableAllowed", P::Bool(false))]))]);
+    put("System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist", &dumps_binary(&d(vec![("Version4", d(vec![("Daemon", d(vec![("Override", over)]))]))])).unwrap());
+}
+
+#[test]
+fn tweaks_writes_what_the_hook_command_writes() {
+    let b = Box::new("tweaks");
+    let root = b.top.join("in/root");
+    stand_in_root(&root);
+    for side in ["serve", "cli"] {
+        std::fs::create_dir_all(b.top.join(format!("stage/{side}/data"))).unwrap();
+        std::fs::create_dir_all(b.top.join(format!("stage/{side}/overlay"))).unwrap();
+        b.put(&format!("stage/{side}/owners.tsv"), b"");
+    }
+    let mut s = Serve::start(&b, &[]);
+    // the inputs are checked before anything is written
+    for (request, code, words) in [
+        (json!({"data": b.stage("serve/data"), "overlay": b.stage("serve/overlay")}), "usage", "\"os_root\""),
+        (json!({"data": b.stage("serve/data"), "overlay": b.stage("serve/overlay"), "os_root": b.top.join("in/none").to_string_lossy()}), "not-found", "is not there"),
+        (json!({"data": b.stage("serve/data"), "overlay": b.top.join("elsewhere").to_string_lossy(), "os_root": root.to_string_lossy()}), "outside", "outside the stage"),
+        (json!({"data": b.stage("serve/data"), "overlay": b.stage("serve/overlay"), "os_root": root.to_string_lossy(), "scale": 4}), "usage", "2 or 3"),
+        (json!({"data": b.stage("serve/data"), "overlay": b.stage("serve/overlay"), "os_root": root.to_string_lossy(), "args": ["--group", "nonesuch"]}), "input", "no daemon group"),
+    ] {
+        let mut request = request;
+        request["id"] = json!("r");
+        request["cmd"] = json!("tweaks");
+        let last = s.ask(request.clone());
+        assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some(code)), "{request}: {last}");
+        assert!(last["text"].as_str().unwrap().contains(words), "{request}: {last}");
+    }
+    let request = json!({"id": "t", "cmd": "tweaks", "os_root": root.to_string_lossy(), "data": b.stage("serve/data"), "overlay": b.stage("serve/overlay"),
+        "owners": b.stage("serve/owners.tsv"), "info": b.stage("serve/info.json"), "build": "24A999", "scale": 2, "args": ["--keep", "com.apple.momentsd"]});
+    s.send(request);
+    let events = s.until(is_last);
+    let ok = events.last().unwrap();
+    assert_eq!((ok["ev"].as_str(), ok["build"].as_str(), ok["disabled_jobs"].as_u64(), ok["owner_cdhashes"].as_u64()), (Some("ok"), Some("24A999"), Some(2), Some(0)), "{ok}");
+    // the report's lines are the request's lines; the two steps are said
+    assert!(events.iter().any(|e| e["ev"] == "line" && e["text"].as_str().is_some_and(|t| t.contains("disabled.plist: 2 jobs disabled"))), "{events:?}");
+    assert!(events.iter().any(|e| e["ev"] == "step" && e["step"] == "place"), "{events:?}");
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+    // the command line's hook on the same inputs: the same files, byte for byte
+    let cli = b.top.join("stage/cli");
+    let done = Command::new(tool())
+        .args(["image", "tweaks", "hook"])
+        .env("ONEIOS_HOOK_API", "1")
+        .env("ONEIOS_OS_ROOT", &root)
+        .env("ONEIOS_DATA", cli.join("data"))
+        .env("ONEIOS_OVERLAY", cli.join("overlay"))
+        .env("ONEIOS_OWNERS", cli.join("owners.tsv"))
+        .env("ONEIOS_INFO", cli.join("info.json"))
+        .env("ONEIOS_BUILD", "24A999")
+        .env("ONEIOS_SCALE", "2")
+        .env("ONEIOS_ROOTTWEAK_ARGS", "--keep com.apple.momentsd")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+    fn files(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>) {
+        let mut names: Vec<_> = std::fs::read_dir(dir.join(rel)).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        for n in names {
+            let r = if rel.is_empty() { n } else { format!("{rel}/{n}") };
+            if dir.join(&r).is_dir() {
+                out.push((r.clone(), Vec::new()));
+                files(dir, &r, out);
+            } else {
+                out.push((r.clone(), std::fs::read(dir.join(&r)).unwrap()));
+            }
+        }
+    }
+    let (mut a, mut c) = (Vec::new(), Vec::new());
+    files(&b.top.join("stage/serve"), "", &mut a);
+    files(&cli, "", &mut c);
+    assert!(a.len() > 40, "{}", a.len());
+    assert_eq!(a.iter().map(|(n, _)| n).collect::<Vec<_>>(), c.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    for ((name, x), (_, y)) in a.iter().zip(&c) {
+        assert!(x == y, "{name} differs");
+    }
 }
 
 #[test]
@@ -1473,10 +1567,10 @@ fn the_one_shot_form_and_its_exit_status() {
     assert_eq!(lines.first().unwrap()["ev"], "hello");
     assert_eq!(clean_bye(&lines, "requests")["requests"], 2);
     // the status is the last request's: refused 2, a wrong request 3, failed 4
-    assert_eq!(run(&[json!({"id": "1", "cmd": "tweaks"})], &[]).0, 2);
+    assert_eq!(run(&[json!({"id": "1", "cmd": "sums", "dir": b.stage("no-such-folder")})], &[]).0, 2);
     assert_eq!(run(&[json!({"id": "1", "cmd": "wait", "seconds": -1})], &[]).0, 3);
     assert_eq!(run(&[json!({"id": "1", "cmd": "ioslog-boots", "source": b.put("stage/not-a-store.img", &[0u8; 8192])})], &[]).0, 4);
-    assert_eq!(run(&[json!({"id": "1", "cmd": "tweaks"}), json!({"id": "2", "cmd": "ping"})], &[]).0, 0);
+    assert_eq!(run(&[json!({"id": "1", "cmd": "sums", "dir": b.stage("no-such-folder")}), json!({"id": "2", "cmd": "ping"})], &[]).0, 0);
     // a wrong command line of serve itself: 3, said on stderr before any line
     for options in [&["--request", "nonsense"][..], &["--request", "{\"id\":\"1\",\"cmd\":\"nothing\"}"], &["--nice", "5"], &["--nice", "20"], &["--jobs", "9"], &["--jobs", "0"], &["--thermal", "50,40,45,50"], &["--battery-min", "101"], &["--no-such-option"]] {
         let (status, lines, stderr) = run(&[], options);
