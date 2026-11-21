@@ -2245,3 +2245,11 @@ persistent: a reboot costs a manual re-root.
   upload was refused by the permission check); then `kernel/release-kernel.txt` and a runtime tag. Open: rapportd
   ServiceDiscovery busy loop on the PC (2.37 M log lines in ~100 s, 104-166 % CPU from ~+500 s, both crypto modes,
   cause not traced).
+
+- 2026-11-21, the whole image set from nothing (lead): `oneios-tool image build` with an empty `--indir`, the v0.1.12
+  runtime's `kernel/xnu.macho` and profile, `--repo .` for the pairing files (= the app's `kb/`, same hashes): every
+  member fetched from Apple's URL, both AEA images decrypted in Rust (key from Apple's key service), the Rust root
+  tweaks (142 launchd jobs off), seed-pack, prelink, manifest, verify. 22 files, 17,898,599,364 bytes in 322 s on the
+  Linux PC (download included), peak 1,032 MiB, 37.1 GB asked. data.seed 27ec4e10... (= the Python hook's), kernel.kc
+  276aadac... (audit 0 failures, stubs 666 good), manifest.json 8e9cf3a7...; `image verify` ok. No PC program and no
+  mount in the path. Not run on a phone.
