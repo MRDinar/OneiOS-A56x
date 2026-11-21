@@ -47,4 +47,15 @@ if [ -x "$tool" ]; then
 else
   echo "skipped: patch series and profile, build record (no $tool: cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)"
 fi
+# The arm64e kernel's compiler line (kernel/linux/clang-wrapper): the PAC ABI (signed calls, returns, the intrinsics)
+# and function-pointer type discrimination reach cc1 whatever the host clang implies for the triple by itself.
+if command -v "${CROSS_CLANG:-clang}" > /dev/null && "${CROSS_CLANG:-clang}" -target arm64e-apple-ios27.0 -### -c -x c /dev/null -o /dev/null > /dev/null 2>&1; then
+  cc1=$(kernel/linux/clang-wrapper -arch arm64e -mkernel -### -c -x c /dev/null -o /dev/null 2>&1)
+  for flag in -fptrauth-calls -fptrauth-returns -fptrauth-intrinsics -fptrauth-function-pointer-type-discrimination; do
+    grep -q -- "\"$flag\"" <<< "$cc1" || fail "clang-wrapper: arm64e cc1 has no $flag"
+  done
+  ok "clang-wrapper: arm64e PAC flags reach cc1 ($("${CROSS_CLANG:-clang}" --version | head -1))"
+else
+  echo "skipped: clang-wrapper PAC flags (no clang with an arm64e-apple-ios target here)"
+fi
 echo "all $pass tests passed"

@@ -72,7 +72,10 @@ libdispatch with BlocksRuntime (Arch: `swift` or `libdispatch`; Debian: `libdisp
 - `linux/unixnu-layout.sh` arranges those tools the way UniXNU's Linux kernel step expects its own toolchain
   (`out/toolchain/unixnu`), with the host's clang in place of the clang UniXNU builds from LLVM.
 - `linux/clang-wrapper` is the compiler xnu's makefiles get: the arm64e triple, the ptrauth and destructor flags
-  Apple's clang has by default, ARMv8.5 for the assembler, ld64 for links, warnings off.
+  Apple's clang has by default, ARMv8.5 for the assembler, ld64 for links, warnings off. The PAC ABI flags
+  (`-fptrauth-intrinsics -fptrauth-calls -fptrauth-returns`, from the A56 fork, 2026-11-21) are explicit: clang 23
+  implies them for the arm64e triple (the cc1 line is the same with or without them), an older clang [I] may not;
+  `kernel/tests/host.sh` checks that they reach cc1.
 - xnu's makefiles call `/usr/bin/xcrun`, `/usr/bin/plutil`, `/usr/bin/codesign` and `/bin/csh`. The build runs inside
   bubblewrap with a temporary overlay on `/usr/bin` that has them; nothing on disk changes.
 

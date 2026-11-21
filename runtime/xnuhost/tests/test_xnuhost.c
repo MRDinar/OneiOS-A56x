@@ -2055,6 +2055,41 @@ static void test_config(const char *dir)
   CHECK(mode.width == 1260 && mode.height == 2800 && mode.hz == 144);                                // another panel: its own
   native.hz = 0;
   CHECK(xh_display_mode(&c, &native).hz == 120);                                                     // a mode without a rate
+  // panel-fallback= (the Galaxy S25's and A56's 1080x2340): only where the panel is not read; a read panel still wins
+  CHECK(xh_panel_fallback(&c).width == 1440 && xh_panel_fallback(&c).height == 3120 && xh_panel_fallback(&c).hz == 120);
+  CHECK(xh_config_set(&c, "panel-fallback", "1080x2340@120") == 0 && c.fallback_width == 1080 && c.fallback_height == 2340 && c.fallback_hz == 120);
+  mode = xh_display_mode(&c, NULL);
+  CHECK(mode.width == 1080 && mode.height == 2340 && mode.hz == 120);
+  native = (xh_panel_mode){ 1260, 2800, 144 };
+  mode = xh_display_mode(&c, &native);
+  CHECK(mode.width == 1260 && mode.height == 2800 && mode.hz == 144);
+  CHECK(xh_config_set(&c, "panel-fallback", "1080x2340") == 0 && c.fallback_hz == 0 && xh_display_mode(&c, NULL).hz == 120);
+  CHECK(xh_config_set(&c, "panel-fallback", "1080x2340@60") == 0 && xh_display_mode(&c, NULL).hz == 60);
+  native.hz = 0;
+  CHECK(xh_display_mode(&c, &native).width == 1260 && xh_display_mode(&c, &native).hz == 60);       // a rate-less report: the fallback's
+  {
+    static const char *const bad[] = { "", "1080", "1080x", "x2340", "0x2340", "1080x0", "1080x2340@", "1080x2340@20", "1080x2340@241",
+                                       "1080x2340 ", "20000x2340", "1080x2340@120x", "-1080x2340" };
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) CHECK(xh_config_set(&c, "panel-fallback", bad[i]) == -1);
+    CHECK(c.fallback_width == 1080 && c.fallback_hz == 60);                                           // a refused value changes nothing
+  }
+  {
+    // from the image set's xnuhost.conf; the command line's wins
+    f = fopen(path, "w");
+    fputs("# settings of this image\nboot-args=-v debug=0x8\npanel-fallback=1080x2340@120\n", f);
+    fclose(f);
+    char *fb1[] = { "xnuhost", "--image", image };
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 3, fb1) == 0 && xh_config_finish(&c) == 0 && c.fallback_width == 1080 && c.fallback_height == 2340);
+    char *fb2[] = { "xnuhost", "--image", image, "--set", "panel-fallback=1260x2800@60" };
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 5, fb2) == 0 && xh_config_finish(&c) == 0 && c.fallback_width == 1260 && c.fallback_hz == 60);
+    f = fopen(path, "w");                                                                             // as it was
+    fputs("# settings of this image\nboot-args=-v debug=0x8\n", f);
+    fclose(f);
+  }
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, argv3) == 0 && xh_config_finish(&c) == 0);
   char *mode1[] = { "xnuhost", "--image", image, "--width", "1320", "--height", "2868", "--hz", "60", "--scale", "2", "--set", "scale-fixup=0" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 13, mode1) == 0 && xh_config_finish(&c) == 0 && c.scale == 2 && c.hz == 60 && c.scale_fixup == 0);

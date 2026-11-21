@@ -139,6 +139,16 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "width")) c->width = (unsigned)atoi(value);
   else if (!strcmp(key, "height")) c->height = (unsigned)atoi(value);
   else if (!strcmp(key, "hz")) { c->hz = (unsigned)atoi(value); ok = c->hz == 0 || (c->hz >= 24 && c->hz <= 240); }
+  else if (!strcmp(key, "panel-fallback")) {
+    // WxH or WxH@HZ: the mode a session assumes when the panel cannot be read (xh_panel_fallback)
+    unsigned w = 0, h = 0, hz = 0;
+    int n = 0, end = 0;
+    if ((sscanf(value, "%5ux%5u%n", &w, &h, &end) == 2 && !value[end] && (n = 2)) ||
+        (sscanf(value, "%5ux%5u@%3u%n", &w, &h, &hz, &end) == 3 && !value[end] && (n = 3)))
+      ok = w && h && w <= 16384 && h <= 16384 && (n == 2 || (hz >= 24 && hz <= 240));
+    else ok = false;
+    if (ok) { c->fallback_width = w; c->fallback_height = h; c->fallback_hz = hz; }
+  }
   else if (!strcmp(key, "scale")) { c->scale = (unsigned)atoi(value); ok = c->scale == 2 || c->scale == 3; }
   else if (!strcmp(key, "scale-fixup")) { bool on; if (flag(value, &on)) return -1; c->scale_fixup = on; }
   else if (!strcmp(key, "text-fixup")) {
@@ -315,6 +325,7 @@ int xh_config_finish(xh_config *c)
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;
+  if (!c->fallback_width) { c->fallback_width = from_image.fallback_width; c->fallback_height = from_image.fallback_height; c->fallback_hz = from_image.fallback_hz; }
   if (c->display_direct < 0) c->display_direct = from_image.display_direct < 0 ? 1 : from_image.display_direct;
   if (!c->display_format) c->display_format = from_image.display_format ? from_image.display_format : XH_PIXELS_BGRX8;
   // The KMS back end scans out 32-bit pixels: half floats only go to a display helper (shm) or nowhere.
@@ -571,10 +582,17 @@ bool xh_panel_report(const void *message, size_t length, xh_panel_mode *panel)
   return true;
 }
 
-xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel)
+xh_panel_mode xh_panel_fallback(const xh_config *c)
 {
   xh_panel_mode mode = { XH_PANEL_WIDTH, XH_PANEL_HEIGHT, XH_PANEL_HZ };
-  if (panel && panel->width && panel->height) { mode = *panel; if (mode.hz < 24 || mode.hz > 240) mode.hz = XH_PANEL_HZ; }
+  if (c->fallback_width && c->fallback_height) mode = (xh_panel_mode){ c->fallback_width, c->fallback_height, c->fallback_hz ? c->fallback_hz : XH_PANEL_HZ };
+  return mode;
+}
+
+xh_panel_mode xh_display_mode(const xh_config *c, const xh_panel_mode *panel)
+{
+  xh_panel_mode mode = xh_panel_fallback(c);
+  if (panel && panel->width && panel->height) { mode = *panel; if (mode.hz < 24 || mode.hz > 240) mode.hz = xh_panel_fallback(c).hz; }
   if (c->width) mode.width = c->width;
   if (c->height) mode.height = c->height;
   if (c->hz) mode.hz = c->hz;

@@ -13,6 +13,9 @@ in-repo `oneos_switch.sh`). This repo has no switch script anymore (it lives in 
 base here to diff against — port by cherry-picking the hunks below into the fork's script:
 
 - **Device gate**: `SM-S928*:e3q:SM8650|SM-A566*:a56x:s5e8855` on `ro.product.model:ro.product.device:ro.soc.model`.
+  (At the `app/` pin bdf3db0 the fork already warns instead of refusing on other phones, since 8b27d35; `Profiles.kt` has an
+  `a56` profile. What is left there: `PROFILE_IDS` is the S24 Ultra only, and `OneiosPlain.kt` still says "It runs on the
+  Galaxy S24 Ultra (SM-S928) only".)
   The fork decides whether A56 joins the supported list or stays refused (OneOS #12's warned-not-refused).
 - **20F66 session block** (`--inner`, when `conf /data/image.conf build` is `20F66`): `--display shm --gpu 2d`,
   `--width/--height` from `ONEIOS_FRAME` (default `1080x2340`), `--hz 120 --scale 3`, the full 20F66 boot-args
@@ -55,8 +58,6 @@ contract (`docs/releases.md`, `oneos/interface.md`) has no `image.conf` yet — 
   `adb push` chunks; covered by `oneios-tool phone` pull/push. Left out.
 - Icons, launcher art, `REDDIT_ANNOUNCEMENT.md`, Portuguese UI strings, `test.jks`, the built APKs and
   `bootstrap.tar.gz` binaries: A56 product/marketing, not guest-repo material. No Apple files either way.
-- `kernel/linux/clang-wrapper` ptrauth flags: unexplained codegen change for all kernel builds; needs a
-  kernel build proving a need before anyone takes it.
 - `oneios_switch_a56.sh`'s `renice -20`/governor pinning and the 1125x2436 experiment (`docs/a56.md`): phone
   policy and an open question, respectively — recorded, not proposed.
 

@@ -493,7 +493,8 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   line when the picture changed and writes `out/run/frame-NNN.png`. `out/run/session/ready` appears at the first
   frame of the guest's own that is not all black (never a frame of the boot console; with every frame black, `ready-content-wait` seconds, 120, after the first: [booter.md](booter.md) 2.8, "the ready rule"); the log's `display: the guest's first frame of its own: all black` line is where the rule before 2026-11-15 was ready. Boot argument `oneios-display=0` leaves the display out. The frame is
   1440x3120 at 120 Hz and @3x unless told otherwise: `--width W --height H`, `--hz N`, `--set scale=2`
-  ([booter.md](booter.md) 2.8); the log's `display: shm, guest frame ...` line and the capture's `hello` say what it is.
+  ([booter.md](booter.md) 2.8; `--set panel-fallback=1080x2340@120` changes only the size assumed where no panel is read,
+  for a Galaxy S25 or A56 session); the log's `display: shm, guest frame ...` line and the capture's `hello` say what it is.
   The frame's pixels: `display: the frame's pixels: B,G,R,X 8-bit sRGB, 4 bytes a pixel` (the default);
   `--set display-format=rgba16f` makes them half floats and passes the guest `oneios-display-wide=1`, which
   `display-capture.py` cannot read (it takes format 1 only). What iOS's render server swapped and what the display
@@ -721,9 +722,12 @@ kernel config, KGSL, panel, touch, haptics, battery, Bluetooth HAL kind, SELinux
 tools/probe/s25-probe.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/s25-probe.sh'`; it prints the
 path of `oneios-s25-probe-<time>.tar.gz`. What each file decides: [s25.md](s25.md).
 
-**Galaxy S25 Ultra:** `scripts/port/verify-host.sh` is the read-only gate before any of the above on an
-SM8750 phone (root, One UI running): it accepts only `SM-S928`/`e3q`/`SM8650` (S24 Ultra) or
-`SM-S938`/`pa3q`/`SM8750` (S25 Ultra), prints the KGSL chip id and udmabuf limits, and exits 2 otherwise.
+**Galaxy S25 Ultra, S25, A56:** `scripts/port/verify-host.sh` is the read-only gate before any of the above on a
+phone other than the S24 Ultra (root, One UI running): it accepts `SM-S928`/`e3q`/`SM8650` (S24 Ultra),
+`SM-S938`/`pa3q`/`SM8750` (S25 Ultra), `SM-S931`/`pa1q`/`SM8750` (S25) and `SM-A566`/`a56x`/`s5e8855` (A56), the
+model, codename and SoC as one row (an S24 model on an SM8750 is refused), prints the KGSL chip id (the A56: its amdgpu
+render node, 2D only in this tree) and udmabuf limits, and exits 2 otherwise. Host test against stand-in phones:
+`sh scripts/port/test-verify-host.sh` (10 cases; part `port` of `runtime/host-tests.sh`).
 `adb push scripts/port/verify-host.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/verify-host.sh'`.
 The Ultra's host record is `profiles/host-galaxy-s25-ultra-sm8750.toml`; its bring-up deltas (Adreno 830 fence
 default, `virgl_fence_table_init`) are in [s25.md](s25.md), "Galaxy S25 Ultra". While a session runs, the guest's
