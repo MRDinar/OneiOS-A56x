@@ -1670,6 +1670,29 @@ fn nothing_left(b: &Box, what: &str) {
 }
 
 #[test]
+fn an_id_is_free_as_soon_as_its_last_event_is_sent() {
+    // The runner clears a request up after its last event; ONEIOS_SERVE_TEST_LINGER_MS makes that gap long, which a
+    // loaded PC made long by itself (make_image_refuses_... then waited 60 s for a request refused `duplicate`).
+    let b = Box::new("id-reuse");
+    let mut s = Serve::start_env(&b, &[], &[("ONEIOS_SERVE_TEST_LINGER_MS", "800")]);
+    for _ in 0..3 {
+        let last = s.ask(json!({"id": "w", "cmd": "wait", "seconds": 0.0}));
+        assert_eq!(last["ev"], "ok", "the same id again, in the gap, is a new request: {last}");
+    }
+    assert!(s.seen.iter().all(|v| v["code"] != "duplicate"), "no duplicate: {:#?}", s.seen);
+    // A cancel in the gap reaches the new request that waits, not the one that already ended.
+    assert_eq!(s.ask(json!({"id": "c", "cmd": "wait", "seconds": 0.0}))["ev"], "ok");
+    s.send(json!({"id": "c", "cmd": "wait", "seconds": 30.0}));
+    s.send(json!({"id": "c", "cmd": "cancel"}));
+    let last = s.request("c").pop().unwrap();
+    assert_eq!((last["ev"].as_str(), last["text"].as_str()), (Some("cancelled"), Some("was waiting; it did not start")), "{last}");
+    assert_eq!(s.ask(json!({"id": "z", "cmd": "wait", "seconds": 0.0}))["ev"], "ok");
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+}
+
+#[test]
 fn make_image_refuses_what_it_cannot_do_yet_and_writes_nothing() {
     let b = Box::new("make-refusals");
     let (_, profile) = stand_in_ipsw(&b, 9000, false);

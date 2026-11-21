@@ -331,10 +331,13 @@ struct Shared {
 }
 
 impl Shared {
-    /// A request's last event, once: after it nothing with this id is sent.
-    fn finish(&self, id: &str, ev: Ev) {
+    /// A request's last event, once: after it nothing with this id is sent. `of_running`: the running request's own (its
+    /// end, or the forced end), which `closed` makes once; any other (a waiting one cancelled, ping, a refusal) is said
+    /// as it is, also when an ended request of the same id is still being cleared up (before 2026-11-21 that one's
+    /// `closed` swallowed it: a cancel of a waiting request that reused the id was never answered).
+    fn finish(&self, id: &str, ev: Ev, of_running: bool) {
         let mut q = self.queue.lock().unwrap();
-        if q.running.as_deref() == Some(id) && !q.closed.insert(id.to_string()) {
+        if of_running && q.running.as_deref() == Some(id) && !q.closed.insert(id.to_string()) {
             return;
         }
         q.requests += 1;
@@ -462,7 +465,7 @@ fn run_one(shared: &Shared, req: Req) {
     if dropped > 0 {
         ev = ev.f("lines_dropped", dropped);
     }
-    shared.finish(&req.id, ev);
+    shared.finish(&req.id, ev, true);
 }
 
 fn stop_fail(stop: &Stop) -> Fail {
@@ -503,6 +506,10 @@ fn runner(shared: Arc<Shared>) {
             }
         };
         run_one(&shared, req);
+        // (tests: the gap between a request's last event and the runner's clearing up, made long; see `open`)
+        if let Some(ms) = std::env::var("ONEIOS_SERVE_TEST_LINGER_MS").ok().and_then(|v| v.parse().ok()) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         {
             let mut q = shared.queue.lock().unwrap();
             q.running = None;
@@ -557,16 +564,21 @@ fn take_line(shared: &Shared, line: &str) {
         Err(text) => return error(text),
     };
     let mut q = shared.queue.lock().unwrap();
-    let live = |q: &Queue, id: &str| q.running.as_deref() == Some(id) || q.waiting.iter().any(|r| r.id == id);
+    // The running request until its last event is sent: after `finish` (its id in `closed`) the id is free, though the
+    // runner is still clearing up. Before 2026-11-21 a request that reused an id right after its last event (the
+    // app's retry, a fast test) was refused `duplicate` in that gap and never answered (serve.rs's make-image refusals
+    // test waited its 60 s for it under load), and a `cancel` or `pause` of the new one went to the old.
+    let open = |q: &Queue, id: &str| q.running.as_deref() == Some(id) && !q.closed.contains(id);
+    let live = |q: &Queue, id: &str| open(q, id) || q.waiting.iter().any(|r| r.id == id);
     match req.cmd.as_str() {
         "cancel" => {
-            if q.running.as_deref() == Some(req.id.as_str()) {
+            if open(&q, &req.id) {
                 q.stop_by.get_or_insert("request");
                 job::cancel();
             } else if let Some(at) = q.waiting.iter().position(|r| r.id == req.id) {
                 let gone = q.waiting.remove(at).expect("a waiting request");
                 drop(q);
-                shared.finish(&gone.id, cancelled_ev(&gone.id, &gone.cmd, "request", 0, "was waiting; it did not start"));
+                shared.finish(&gone.id, cancelled_ev(&gone.id, &gone.cmd, "request", 0, "was waiting; it did not start"), false);
             } else {
                 drop(q);
                 cx.out.send(&Ev::new("error").f("id", req.id.as_str()).f("code", "no-such-request").f("text", format!("cancel: no request {} is running or waiting", req.id)));
@@ -585,8 +597,8 @@ fn take_line(shared: &Shared, line: &str) {
                 });
             };
             let refusal = match () {
-                _ if q.running.as_deref() != Some(req.id.as_str()) && q.waiting.iter().any(|r| r.id == req.id) => Some(("not-running", "is waiting in the queue: there is nothing to pause yet")),
-                _ if q.running.as_deref() != Some(req.id.as_str()) => Some(("no-such-request", "is not running or waiting")),
+                _ if !open(&q, &req.id) && q.waiting.iter().any(|r| r.id == req.id) => Some(("not-running", "is waiting in the queue: there is nothing to pause yet")),
+                _ if !open(&q, &req.id) => Some(("no-such-request", "is not running or waiting")),
                 _ if !q.pausable => Some(("not-pausable", "has no transfer to pause (download, zip-get and fetch have one, until their last step is done)")),
                 _ if cmd == "pause" => {
                     job::pause(|now| said("paused", "paused at", now));
@@ -607,25 +619,25 @@ fn take_line(shared: &Shared, line: &str) {
         "ping" => {
             drop(q);
             match req.done() {
-                Ok(()) => shared.finish(&req.id, Ev::of("ok", &req.id).f("cmd", "ping").f("seconds", 0.0).f("text", "here")),
-                Err(fail) => shared.finish(&req.id, fail_ev(&req.id, "ping", &fail)),
+                Ok(()) => shared.finish(&req.id, Ev::of("ok", &req.id).f("cmd", "ping").f("seconds", 0.0).f("text", "here"), false),
+                Err(fail) => shared.finish(&req.id, fail_ev(&req.id, "ping", &fail), false),
             }
         }
         "health" => {
             drop(q);
             match req.done() {
-                Ok(()) => shared.finish(&req.id, health(cx, &req.id)),
-                Err(fail) => shared.finish(&req.id, fail_ev(&req.id, "health", &fail)),
+                Ok(()) => shared.finish(&req.id, health(cx, &req.id), false),
+                Err(fail) => shared.finish(&req.id, fail_ev(&req.id, "health", &fail), false),
             }
         }
         cmd if cmds::find(cmd).is_none() => {
             drop(q);
-            shared.finish(&req.id, Ev::of("refused", &req.id).f("cmd", cmd).f("code", "unknown").f("text", format!("this tool has no command \"{cmd}\" (hello's cmds lists them)")));
+            shared.finish(&req.id, Ev::of("refused", &req.id).f("cmd", cmd).f("code", "unknown").f("text", format!("this tool has no command \"{cmd}\" (hello's cmds lists them)")), false);
         }
         // (32 behind the running one: a request the runner has not taken yet is the one that runs next)
         _ if q.waiting.len() >= QUEUE_MAX + usize::from(q.running.is_none()) => {
             drop(q);
-            shared.finish(&req.id, Ev::of("refused", &req.id).f("cmd", req.cmd.as_str()).f("code", "busy").f("text", format!("{QUEUE_MAX} requests are waiting already")));
+            shared.finish(&req.id, Ev::of("refused", &req.id).f("cmd", req.cmd.as_str()).f("code", "busy").f("text", format!("{QUEUE_MAX} requests are waiting already")), false);
         }
         _ => {
             let ahead = q.waiting.len() + usize::from(q.running.is_some());
@@ -850,7 +862,7 @@ pub fn main(cli: Cli) -> i32 {
     // how many requests this end cut short (the exit status says so)
     let cut = dropped.len() + usize::from(running.is_some() && !ended);
     for req in dropped {
-        shared.finish(&req.id, cancelled_ev(&req.id, &req.cmd, by, 0, "was waiting; it did not start"));
+        shared.finish(&req.id, cancelled_ev(&req.id, &req.cmd, by, 0, "was waiting; it did not start"), false);
     }
     let until = Instant::now() + STOP_GRACE;
     let mut forced = false;
@@ -868,7 +880,7 @@ pub fn main(cli: Cli) -> i32 {
         // "resume" has no temporary files.)
         let removed = if job::held_at_the_end() { 0 } else { job::remove_temps() };
         if let Some(id) = running {
-            shared.finish(&id, cancelled_ev(&id, "", by, removed, "did not stop in time: the process ended it"));
+            shared.finish(&id, cancelled_ev(&id, "", by, removed, "did not stop in time: the process ended it"), true);
         }
     } else {
         let _ = run.join();
