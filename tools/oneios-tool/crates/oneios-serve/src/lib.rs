@@ -768,6 +768,7 @@ pub fn main(cli: Cli) -> i32 {
             .f("thermal", thermal.map(|t| t.to_vec()))
             .f("battery_min", cli.battery_min)
             .f("cmds", cmds)
+            .f("kb", oneios_prelink::build::KB_FORMAT)
             .f("note", niced),
     );
     let shared = Arc::new(Shared { cx, queue: Mutex::new(Queue::default()), work: Condvar::new(), capture: Mutex::new(Some(capture)) });

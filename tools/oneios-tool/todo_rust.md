@@ -566,6 +566,7 @@ comparison and result.
 | 5 | `userland/tests/test_helpers.py` | **retired**: `userland/tests/host.sh` (POSIX sh, the same 11 cases, 89 checks; tars from `debug mktar`) |
 | 5 | `tests/ioslog/{mkapfs,filters}.py`, `tests/app/mkapk.py`, `tests/sym/make-log.py`, `tests/phone/sparsewrite.py`, `tests/image/parity.py`, every `compare-python.sh` | **retired**: `debug mkapfs\|ioslog-filters\|mkapk\|sym-make-log\|sym-cases\|holes`; the comparisons' Python halves deleted (`tests/compare-python.sh` is `tests/compare-all.sh`) |
 | 5 | inline `python3` of `runtime/package/test.sh`, `scripts/image/{build,seed-apfs-macos,kernel-inputs,verify}.sh`, `scripts/fetch/fetch.sh`, `scripts/phone/stage.sh`, `tests/{app,cycle,log,phone}`, `userland/helpers/build-dropbear.sh` | **retired**: `oneios-tool json` (README "json"), `sha256sum`, shell; dropbear's text edits are `userland/helpers/dropbear-oneios.patch` (fuzz 0, the same tree) |
+| 5 | the prelink's matcher signature over XnuPrelink's `fileset_match.py`, `kc_image.py`, `fileset_shape.py` (and the OneOS app's copies of the three in `assets/kb/match/`, shipped for it alone) | **retired 2026-11-22**: the signature is over the Rust matcher's version and the fixtures; only `fixtures/` is read from the matcher folder, and `kernel.kc` is the same (README "prelink") |
 
 **External Python that the builds still run** (other projects' pinned code, not ours: never deleted, never edited):
 
@@ -577,7 +578,6 @@ comparison and result.
 | `oneios-tool kernel gen gpu` (`build_oneios_gpu.rs`) | Droid-VM's `build-droidvm-gpu.py` |
 | the kernel build's `iig` | xnu-linux-toolchain's `iig` (a Python program; `kernel iig-fix` edits a copy) |
 | `userland/metal/build.sh` `turnip`, `plugin` | Droid-VM-UniXNU's `scripts/build-turnip-darwin.py`, `build-adreno-metal-plugin.py` (and `build-adreno-metal-bridge.py`), Mesa's meson build (mako, PyYAML) |
-| `kernel/prelink/build.sh`, `tests/prelink/*.sh` | nothing runs: they check that XnuPrelink's `fileset_match.py` exists (its location marks the checkout) |
 
 So `python3` stays a prerequisite of the kernel build (`kernel/build-linux.sh`'s tool check,
 `kernel/linux/setup-toolchain.sh`) and of the Metal plug-in's build only, each line saying why.

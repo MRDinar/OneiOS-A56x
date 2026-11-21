@@ -10,7 +10,7 @@
 #   log       tests/log/run.sh                    ONEIOS_LOG_DIR or ONEIOS_LOGS
 #   ioslog    tests/ioslog/compare.sh             REF_ITER=<unifiedlog_iterator>, IOSLOG_ARCHIVES="A.logarchive ..."
 #   prelink   tests/prelink/compare-golden.sh     KERNELCACHE (default out/kernel-inputs/24A446/kernelcache.macho);
-#                                                 KERNEL and REFERENCE for the whole chain (a golden exists for two kernels)
+#                                                 KERNEL (and XNUPRELINK) for the whole chain (a golden exists for the released kernel)
 #   phone     tests/phone/run.sh                  none (a stand-in phone; scripts/phone/stage.sh is the reference)
 #   app       tests/app/run.sh                    none (a stand-in OneOS checkout, gradlew, gh and phone)
 #   cycle     tests/cycle/run.sh                  the OneOS fork's checkout (its root script); tmux, zstd

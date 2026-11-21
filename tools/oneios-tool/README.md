@@ -259,7 +259,7 @@ the request ends with `ok`.
 
 | Line | When |
 |---|---|
-| `{"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":[...],"note":"nice 10"}` | the first line, before any request is read. `cmds`: every command this build knows. `thermal` is `null` with `--thermal off`. `note`: what was done about the nice value and the class |
+| `{"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":[...],"kb":2,"note":"nice 10"}` | the first line, before any request is read. `cmds`: every command this build knows. `kb`: the format of the OneOS app's pairing files (`kb.json` `kb`) the prelink reads: 2, the matcher folder with its fixtures alone (2026-11-22; a hello without it is a tool of format 1, which also needs XnuPrelink's Python sources there). `thermal` is `null` with `--thermal off`. `note`: what was done about the nice value and the class |
 | `{"ev":"error","text":"..."}` | a line that is not a request: not JSON, not an object, no usable `id`. With `"id"` and `"code"`: a `cancel`, `pause` or `resume` of an id that is neither running nor waiting (`no-such-request`), a `pause` or `resume` that the request cannot take (`not-running`, `not-pausable`, `not-paused`: "Downloads on a mobile network", below), or a request whose id is one that is still running or waiting (`duplicate`: the line was not taken, the first request goes on). An id is free again as soon as its request's last event is sent: a request, `cancel`, `pause` or `resume` that names it then is the new one's (since 2026-11-21; before, an id reused right after its last event was refused `duplicate` while the runner cleared up, and a `cancel` of the new waiting request was never answered; `ONEIOS_SERVE_TEST_LINGER_MS` widens that gap for `tests/serve.rs` `an_id_is_free_as_soon_as_its_last_event_is_sent`) |
 | `{"ev":"bye","why":"eof","requests":3,"cancelled":0,"threads":1,"children":0}` | the last line. `why`: `eof` (the app closed the pipe), `idle`, `sigterm`, `requests` (the one-shot form is done), `stdout` (never read: the reader is gone). `requests`: how many had their last event; `cancelled`: how many of them were cancelled. `threads` and `children` are what the process still has at that moment: 1 and 0 (`/proc/self/status` on Linux and Android, where there is one; `waitpid` says whether a child exists) |
 
@@ -568,7 +568,7 @@ the steps of `scripts/image/build.sh` (`make-image`, "image build") and the root
 ### An example
 
 ```
-<- {"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":["ping","health","cancel", ...],"note":"nice 10"}
+<- {"ev":"hello","proto":1,"tool":"0.1.0","pid":4711,"jobs":8,"nice":10,"realtime":false,"idle":300,"stage":"/data/local/tmp/oneios","thermal":[44.0,46.0,45.0,50.0],"battery_min":10,"cmds":["ping","health","cancel", ...],"kb":2,"note":"nice 10"}
 -> {"id":"1","cmd":"apfs-copy","image":"/data/local/tmp/oneios/image/os.img","src":"/System/Library/CoreServices","dst":"/data/local/tmp/oneios/work/CoreServices"}
 <- {"ev":"start","id":"1","cmd":"apfs-copy","jobs":8,"steps":[{"step":"scan","text":"Reading the volume"},{"step":"copy","text":"Copying the files"},{"step":"place","text":"Putting the folder in place"}]}
 <- {"ev":"step","id":"1","step":"scan","n":1,"of":3,"text":"Reading the volume"}
@@ -2578,10 +2578,14 @@ builds the binary when it is missing or stale (`scripts/lib/oneios-tool.sh`).
 | `pin PROFILE` | the `tomllib` one-liner of `build.sh` | prints `[kernel.prelink] kernelcache_sha256` |
 | `build --kernel K --kernelcache C --profile P --reviewed F [--more-reviewed F]... --pairs F --stubs F --xnuprelink DIR [--reference K] --out DIR [--repo DIR] [--no-git] [--remove-work]` | the whole of `kernel/prelink/build.sh` (new, 2026-11-15) | `build.rs`: every step in this process, for the phone and `serve` ("prelink build", below) |
 
-What the Rust steps still read from the XnuPrelink checkout (`--xnuprelink`, `external/XnuPrelink`): its reviewed
-fixtures (`fixtures/fileset-*-symbols.json`) and the files its matcher signature is the SHA-256 of
-(`fileset_match.py`, `kc_image.py`, `fileset_shape.py` and the fixtures). The signature is written into
-`match.map.json` and checked by `emit`, as XnuPrelink does: it says which matcher rules a map follows.
+What the Rust steps still read from the matcher folder (`--xnuprelink`: `external/XnuPrelink`, or the OneOS app's
+`kb/match`): its reviewed fixtures (`fixtures/fileset-*-symbols.json`), nothing else; a folder without one is refused
+(`not-found`). The matcher signature is the SHA-256 of `oneios-prelink matcher <MATCHER_VERSION>`, a NUL, then
+each fixture's file name, a NUL and its bytes, in name order. It is written into `match.map.json` and checked by
+`emit`: it says which matcher rules and fixtures a map follows. Until 2026-11-22 it was XnuPrelink's own
+signature, over its Python sources (`fileset_match.py`, `kc_image.py`, `fileset_shape.py`) too, which only kept it
+equal to Python's; the app shipped those three files for that alone. The change moves only the signature: the same
+kernel, kernelcache and fixtures give the same `kernel.kc` (checked 2026-11-22, below).
 `matcher.rs` and `emit.rs` are ports of the pin `9b950f2`; when the pin moves, the port must follow, and the
 comparison below shows a drift.
 
@@ -2595,21 +2599,32 @@ writer (`prelink_xml.rs`: the kernel's `OSUnserializeXML` knows `&lt;`, `&gt;` a
 crate's writer also writes `&quot;` and `&apos;`, which 24A446's strings need; reading is the `plist` crate). Libraries: `indexmap` (Python's dict order), `md-5`, `sha2`, `hmac` (the FIPS seals), `rand_mt`,
 `plist`, `toml`, `base64`, `memchr`, `rayon` (the per-function scan, the audit's per-kext scan).
 
-The comparison today is with the frozen output of the Python chain (`tests/prelink/golden/`: per kernel, the name,
+The comparison today is with a recorded run of the Rust chain (`tests/prelink/golden/`: per kernel, the name,
 size and SHA-256 of every file a step writes and the SHA-256 of every step's stdout; no Apple bytes):
 
 ```sh
 scripts/image/kernel-inputs.sh 'profiles/ios-27.0.1-iPhone18,2.toml'      # out/kernel-inputs/24A446/kernelcache.macho
-KERNEL=out/kernel/current-hosted-pc/xnu.macho REFERENCE=out/kernel/current-hosted-pc/reference.macho \
-  tools/oneios-tool/tests/prelink/compare-golden.sh     # 40 hashes; without KERNEL: roots and hosted only, 10 hashes
+KERNEL=<runtime 0.1.13>/kernel/xnu.macho XNUPRELINK=external/Droid-VM-UniXNU/kits/XnuPrelink \
+  tools/oneios-tool/tests/prelink/compare-golden.sh     # 35 hashes; without KERNEL: roots and hosted only, 10 hashes
 ```
 
-A golden exists for the kernelcache alone and for the two kernels the Python chain was run on (`13ed0b70...` and
-`399f50fa...`, both Linux-built, in the main checkout's `out/kernel/current-hosted-pc` and `-pc2`); for any other
-kernel the script says there is none and exits 3 (`UPDATE=1` records that run instead). In the JSON records and
-the stdout the work folder, the commit of `kernel.kc.build.json` and the folders of absolute input paths are
-taken out before hashing. Result, 2026-11-12, after the Python steps were deleted: 40 of 40 the same for each
-kernel, 10 of 10 for the kernelcache alone.
+A golden exists for the kernelcache alone (`kernelcache.txt`) and for the released kernel (`326e2144...`, the
+`kernel/xnu.macho` of the runtime package v0.1.13, from the release `kernel-xnu-...-703a6b34e73f`, no reference;
+`kernel.kc` `276aadac...`); for any other kernel the script says there is none and exits 3 (`UPDATE=1` records
+that run instead). In the JSON records and the stdout the work folder, the commit of `kernel.kc.build.json` and
+the folders of absolute input paths are taken out before hashing; the matcher folder's commit stays, so the
+golden's `XNUPRELINK` is the kit at `b74ed7c` (another folder changes `kernel.kc.build.json` only). Both were
+recorded on 2026-11-22 with the fixtures-only matcher signature: 35 of 35 and 10 of 10 the same on a second run,
+and the binary before that change gives the same 10 for the kernelcache alone. Until then the goldens were the
+Python chain's frozen output for two Linux-built kernels (`13ed0b70...`, `399f50fa...`; 40 of 40 each on
+2026-11-12, after the Python steps were deleted); those kernels are gone and the goldens held Python's matcher
+signature, so they were removed.
+
+The signature change itself (2026-11-22), checked with `prelink build` on that kernel and the kernelcache, the binary
+before it with the kit (Python sources and fixtures) and the binary after it with a folder of the fixtures alone:
+`kernel.kc` the same (96,206,848 bytes, `276aadac...`), audit 0 failures both times, and every other file the same
+once the out folder is taken out, but for `matcher_signature` (`b4a694e2...` before, `a3552ce4...` after) and
+`match.key` (which also holds the binary's own SHA-256). The binary before refuses the fixtures-only folder.
 
 **The comparison that froze them** (`tests/prelink/compare-python.sh` at commit `306b0a4`, the last with both
 implementations):

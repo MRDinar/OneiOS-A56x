@@ -24,10 +24,11 @@ reference=${REFERENCE:-}
 work=${WORK:-$root/out/rustport-prelink-build}
 xp=${XNUPRELINK:-}
 for d in "$root/external/XnuPrelink" "$root/external/Droid-VM-UniXNU/kits/XnuPrelink" "$main/external/XnuPrelink" "$main/external/Droid-VM-UniXNU/kits/XnuPrelink"; do
-  [ -n "$xp" ] || { [ -f "$d/fileset_match.py" ] && xp=$d; }
+  [ -n "$xp" ] || { [ -d "$d/fixtures" ] && xp=$d; }
 done
 [ -x "$tool" ] || { echo "no tool at $tool: build it or set ONEIOS_TOOL" >&2; exit 2; }
-for f in "$cache" "$kernel" "$xp/fileset_match.py"; do [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }; done
+for f in "$cache" "$kernel"; do [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }; done
+[ -d "$xp/fixtures" ] || { echo "missing: $xp/fixtures" >&2; exit 2; }
 data=$root/kernel/prelink
 build=24A446
 profile=$root/kernel/unixnu/profiles/os/ios-27.0.1-$build/profile.toml

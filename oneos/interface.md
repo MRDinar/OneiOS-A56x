@@ -2,9 +2,9 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `7e34fa4`, 2026-11-21:
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `84b0ba5`, 2026-11-22:
 upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, Make iOS image
-with `make-image` on a fresh phone, no change to session ABI 1).
+with `make-image` on a fresh phone, the pairing files of kb format 2 (no Python; `hello`'s `kb`), no change to session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 
@@ -355,7 +355,11 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `exec`s `nice -n 10 runtime/bin/oneios-tool serve --stage /data/local/tmp/oneios` with `TMPDIR=<stage>/tool`, on
   the app's pipe. From there the lines are the tool's protocol (`tools/oneios-tool/README.md`, "serve": protocol 1,
   one JSON object a line; the fork's `OneiosTool.kt` reads them). The fork reads `hello`'s `proto` and refuses
-  another one.
+  another one. `hello`'s `kb` (2 since 2026-11-22; absent in runtimes up to 0.1.13, which read 1) is the format of
+  the pairing files the tool's prelink reads, the fork's `kb.json` `kb`: format 2 is `match/` with the reviewed
+  fixtures alone, format 1 also had XnuPrelink's three Python sources. With a tool below the app's format, Update
+  the kernel stops before any request ("get the latest OneiOS runtime") and Make iOS image counts the tool as one
+  without `make-image` (the newest runtime is staged once).
 - The app writes requests and `{"cmd":"cancel","id":...}`, and ends the flow by closing the pipe; the tool cancels
   what runs, removes what it wrote, says `bye` and exits. When it has not ended 10 s after the pipe closed, the app
   runs `oneios_root.sh untool`: every process whose command line holds `<stage>/runtime/bin/oneios-tool serve`, and
@@ -379,7 +383,7 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   pausable). `ok`: `files`, `format`, `version`, `build` (root's four), and `out`, `bytes`, `manifest_sha256`,
   `seed_sha256`, `kernel_sha256`. A cancel or a failure leaves `image.new` empty and both lists empty, removes
   `make/build/`, keeps `make/inputs/`.
-  **What the app has to do for it:** (1) write the pairing files into `kb/` (root's `kbinput` ×12, as Update the
+  **What the app has to do for it:** (1) write the pairing files into `kb/` (root's `kbinput` ×9, as Update the
   kernel does) before `make-image`, or it is refused `not-found` naming them; (2) stage a runtime with a kernel
   (v0.1.12 or newer), or it is refused `not-found` ("the staged runtime has no kernel"). The root tweaks run in its
   `tweaks` step (oneios-tweaks, the OS volume read from its image; the manifest's `tweaks` record is
@@ -396,7 +400,7 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args`.
 - Make iOS image (fork `7e34fa4`, not run on a phone; no PC needed): root's `status`; when the staged runtime has no
   kernel (or is a placeholder), the latest release's runtime is staged first (as Get the runtime; nothing is
-  downloaded when the latest is the staged version); root's `kbinput` ×12; `begin image`; `tool work`. When `hello`'s
+  downloaded when the latest is the staged version); root's `kbinput` ×9; `begin image`; `tool work`. When `hello`'s
   `cmds` lack `make-image`, the tool is closed, the latest runtime staged once and the tool opened again. Then one
   `make-image` with `indir` `<stage>/make/inputs`, `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`,
   `ids_list` `<stage>/image.new.ids`, `work` `<stage>/make`, `resume` true, and nothing else (the profile, `xnu`, `kb`
@@ -416,7 +420,7 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   itself (its `tweaks` step), so the app does not need to send `tweaks` on its own: the keyless `tweaks` that
   Make iOS image sends after `make-image` (fork `OneiosToolJob.kt`, "Drop it when make-image comes") is now
   refused `usage` (`tweaks: "data" is missing`) instead of `not-ported`; the fork no longer sends it (`7e34fa4`).
-- Update the kernel (fork `53abb04`, not run on a phone; no PC needed): root's `status` and `kbinput` ×12, then in one
+- Update the kernel (fork `53abb04`, not run on a phone; no PC needed): root's `status` and `kbinput` ×9, then in one
   `tool work` session, unless `kb/kernelcache.macho` is the pin of the fork's `kb/kb.json`: `fetch` with `profile`
   `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, `indir` `<stage>/make-kernel/inputs`, `only`
   `["kernelcache"]`, `resume`; `im4p` with `in` `<stage>/make-kernel/inputs/kernelcache.release.v54`, `out`

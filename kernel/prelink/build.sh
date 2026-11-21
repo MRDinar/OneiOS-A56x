@@ -20,10 +20,10 @@ REVIEWED=$HERE/reviewed-$BUILD-v54.json
 # The known-good pairs and the stub list (the audit step checks the collection against both; README "Known-good pairs").
 PAIRS=$HERE/pairs-$BUILD.json
 STUBS=$HERE/stubs-$BUILD.json
-# XnuPrelink: external/XnuPrelink when there is one, else the kernel base's submodule at the board's pin
+# XnuPrelink (its fixtures/ only): external/XnuPrelink when there is one, else the kernel base's submodule at the board's pin
 # (external/Droid-VM-UniXNU/kits/XnuPrelink, checked out by kernel/build-hosted.sh).
 XNUPRELINK=${XNUPRELINK:-$ROOT/external/XnuPrelink}
-[ -f "$XNUPRELINK/fileset_match.py" ] || [ ! -f "$ROOT/external/Droid-VM-UniXNU/kits/XnuPrelink/fileset_match.py" ] \
+[ -d "$XNUPRELINK/fixtures" ] || [ ! -d "$ROOT/external/Droid-VM-UniXNU/kits/XnuPrelink/fixtures" ] \
   || XNUPRELINK=$ROOT/external/Droid-VM-UniXNU/kits/XnuPrelink
 # The steps are `oneios-tool prelink STEP` (tools/oneios-tool; the Python steps they replaced were retired after
 # every step's output was compared byte for byte: tools/oneios-tool/README.md "prelink"). The binary is built
@@ -48,9 +48,12 @@ step() {
 OUT=${OUT:-$ROOT/out/kernel/$BUILD}
 WORK=$OUT/work
 REFERENCE=${REFERENCE:-}
-for f in "$KERNEL" "$CACHE" "$XNUPRELINK/fileset_match.py"; do
+for f in "$KERNEL" "$CACHE"; do
   [ -f "$f" ] || { echo "prelink: $f is missing" >&2; exit 1; }
 done
+# The matcher folder: only its reviewed fixtures are read (the matcher signature is over them and the matcher version).
+ls "$XNUPRELINK"/fixtures/fileset-*-symbols.json >/dev/null 2>&1 \
+  || { echo "prelink: $XNUPRELINK/fixtures/fileset-*-symbols.json is missing" >&2; exit 1; }
 sha() { sha256 "$1"; }
 want=$("$ONEIOS_TOOL" prelink pin "$PROFILE")
 [ "$(sha "$CACHE")" = "$want" ] || { echo "prelink: $CACHE is not the kernelcache the profile pins ($want)" >&2; exit 1; }

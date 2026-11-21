@@ -135,7 +135,8 @@ impl Prelink {
         // build.sh: external/XnuPrelink, else the kernel base's submodule
         let own = at("external/XnuPrelink");
         let base = at("external/Droid-VM-UniXNU/kits/XnuPrelink");
-        let xnuprelink = if Path::new(&format!("{own}/fileset_match.py")).is_file() || !Path::new(&format!("{base}/fileset_match.py")).is_file() { own } else { base };
+        let matcher = |dir: &str| oneios_prelink::build::is_matcher_dir(Path::new(dir));
+        let xnuprelink = if matcher(&own) || !matcher(&base) { own } else { base };
         let version_dir = std::fs::read_dir(at("kernel/unixnu/profiles/os"))
             .into_iter()
             .flatten()
@@ -490,14 +491,17 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     match &args.kernel {
         Kernel::Kc(kc) if size_of(kc).is_none() => return Err(refused("not-found", format!("missing kernel collection {kc}"))),
         Kernel::Prelink(pl) => {
-            let mut wanted = vec![pl.xnu.clone(), pl.profile.clone(), pl.reviewed.clone(), pl.pairs.clone(), pl.stubs.clone(), format!("{}/fileset_match.py", pl.xnuprelink)];
+            let mut wanted = vec![pl.xnu.clone(), pl.profile.clone(), pl.reviewed.clone(), pl.pairs.clone(), pl.stubs.clone()];
             wanted.extend(pl.more_reviewed.iter().cloned());
             match &pl.kernelcache {
                 Some(cache) => wanted.push(cache.clone()),
                 None if !args.fetch => wanted.push(format!("{indir}/{}", kernel_cache_member.as_ref().map(|m| m.name.as_str()).unwrap_or("kernelcache"))),
                 None => {}
             }
-            let absent: Vec<String> = wanted.into_iter().filter(|f| !Path::new(f).is_file()).collect();
+            let mut absent: Vec<String> = wanted.into_iter().filter(|f| !Path::new(f).is_file()).collect();
+            if !oneios_prelink::build::is_matcher_dir(Path::new(&pl.xnuprelink)) {
+                absent.push(format!("{}/fixtures/fileset-*-symbols.json", pl.xnuprelink));
+            }
             if !absent.is_empty() {
                 return Err(refused("not-found", format!("the kernel's inputs are missing: {}", absent.join(", "))));
             }

@@ -8,9 +8,9 @@
 //! is only counted, intersected or reduced to its one member. Methods fileset_match.py defines but match_images
 //! never calls (align_orders, validate_calls, validate_diversity, diversity_data) are not ported.
 //!
-//! The matcher signature is the SHA-256 XnuPrelink computes over its own matcher sources and reviewed fixtures;
-//! this step reads those files from `--xnuprelink` so that the map says which matcher rules it follows, and the
-//! emitter refuses a map made under other rules, as XnuPrelink's does.
+//! The matcher signature (`matcher_signature`) is a SHA-256 over this matcher's version and the reviewed fixtures
+//! it reads from `--xnuprelink` (`fixtures/`), so that the map says which rules it follows, and the emitter refuses
+//! a map made under others. Only those fixtures are read from that folder.
 
 use crate::image::{checked_shape, hex, scan, unhex, Fixups, Image, Symbols};
 use crate::pyset::PySet;
@@ -49,18 +49,26 @@ pub struct Args {
     xnuprelink: String,
 }
 
-/// XnuPrelink's matcher_signature(): SHA-256 over the matcher's sources and reviewed fixtures.
+/// The matcher signature: SHA-256 over this matcher's rules (`MATCHER_VERSION`) and the reviewed fixtures it reads,
+/// so that a map says which rules and fixtures it was made under and the emitter refuses one made under others.
+/// (Until 2026-11-22 it was XnuPrelink's matcher_signature(), over its Python sources too; nothing here reads those.)
 pub fn matcher_signature(xnuprelink: &Path) -> Result<String> {
     use sha2::Digest;
     let mut digest = sha2::Sha256::new();
-    let mut paths = vec![xnuprelink.join("fileset_match.py"), xnuprelink.join("kc_image.py"), xnuprelink.join("fileset_shape.py")];
-    paths.extend(fixtures(xnuprelink)?);
-    for path in paths {
+    digest.update(format!("oneios-prelink matcher {MATCHER_VERSION}").as_bytes());
+    digest.update([0u8]);
+    for path in fixtures(xnuprelink)? {
         digest.update(path.file_name().unwrap().as_encoded_bytes());
         digest.update([0u8]);
         digest.update(std::fs::read(&path).with_context(|| format!("{}", path.display()))?);
     }
     Ok(oneios_common::hex(&digest.finalize()))
+}
+
+/// Whether DIR is a matcher folder: it has `fixtures/fileset-*-symbols.json` (XnuPrelink's checkout, or the
+/// OneOS app's `kb/match`).
+pub fn is_matcher_dir(dir: &Path) -> bool {
+    fixtures(dir).map(|f| !f.is_empty()).unwrap_or(false)
 }
 
 /// fixtures/fileset-*-symbols.json, sorted.
@@ -1475,4 +1483,40 @@ pub fn run(args: Args) -> Result<()> {
         println!("wrote {out}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("oneios-matcher-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("fixtures")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_signature_is_over_the_matcher_version_and_the_fixtures_alone() {
+        let a = folder("a");
+        assert!(!is_matcher_dir(&a), "a folder without a fixture is not a matcher folder");
+        std::fs::write(a.join("fixtures/fileset-24A446-symbols.json"), b"{\"inputs\": {}}").unwrap();
+        std::fs::write(a.join("fixtures/notes.txt"), b"not a fixture").unwrap();
+        assert!(is_matcher_dir(&a));
+        let before = matcher_signature(&a).unwrap();
+        // what the signature is: the version line, then each fixture's name and bytes
+        use sha2::Digest;
+        let mut d = sha2::Sha256::new();
+        d.update(format!("oneios-prelink matcher {MATCHER_VERSION}\0fileset-24A446-symbols.json\0{{\"inputs\": {{}}}}").as_bytes());
+        assert_eq!(before, oneios_common::hex(&d.finalize()));
+        // other files there (XnuPrelink's Python sources, anything not a fixture) do not count
+        for f in ["fileset_match.py", "kc_image.py", "fileset_shape.py"] {
+            std::fs::write(a.join(f), b"# not read").unwrap();
+        }
+        assert_eq!(matcher_signature(&a).unwrap(), before);
+        // a fixture's bytes do
+        std::fs::write(a.join("fixtures/fileset-24A446-symbols.json"), b"{\"inputs\": {\"x\": 1}}").unwrap();
+        assert_ne!(matcher_signature(&a).unwrap(), before);
+        std::fs::remove_dir_all(&a).unwrap();
+    }
 }

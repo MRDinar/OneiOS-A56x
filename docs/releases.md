@@ -222,8 +222,9 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
   APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
   `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
-  The commit recorded for `app/` is `7e34fa4` (2026-11-21; Make iOS image with `make-image` on a fresh phone, 688 tests, 0
-  failures, 74 skipped, an end-to-end test against the real tool; before it `53abb04`): upstream OneOS 0.5.14 to 0.5.31 merged into `oneios`
+  The commit recorded for `app/` is `84b0ba5` (2026-11-22; the pairing files without XnuPrelink's Python sources, kb
+  format 2, 688 tests, 0 failures, 76 skipped; before it `7e34fa4`, 2026-11-21: Make iOS image with `make-image` on a
+  fresh phone, 688 tests, 0 failures, 74 skipped, an end-to-end test against the real tool; before that `53abb04`): upstream OneOS 0.5.14 to 0.5.31 merged into `oneios`
   (`2d2f26b`, `728db89`), the on-phone kernel update (`133b64a`) and Update the kernel fetching Apple's kernelcache
   on the phone (`53abb04`). Tested on the Linux PC: `./gradlew test` 679 tests, 0 failures, 75 skipped (the shell-script
   suites, which need dash, busybox or mksh, and one test gated on a real tool) and `assembleFullDebug`; not run on the
@@ -316,6 +317,13 @@ make the image yet" (v0.1.13 is the first release with it). The app compares the
 carries only the pairing files in `assets/kb/`, nothing of Apple's; the phone fetches the IPSW members and the AEA keys
 from Apple. On the Linux PC the whole set from nothing (`oneios-tool image build`, empty inputs, the v0.1.12 kernel)
 took 322 s with the download, peak 1,032 MiB, 37.1 GB asked (docs/agents.md, 2026-11-21).
+
+The pairing files' format (2026-11-22): the fork's `assets/kb/` is format 2 (`kb.json` `"kb": 2`: `match/` holds the
+reviewed fixtures alone; format 1 also carried XnuPrelink's three Python sources, which the matcher signature of the
+tools up to v0.1.13 was over). A runtime's `bin/oneios-tool` reads format 2 when its `serve` hello has `"kb": 2`
+(OneiOS main from the commit that removed those sources; v0.1.13 and older have no `kb` and refuse a `match/`
+without `fileset_match.py`). So an APK of format 2 goes with a runtime release after v0.1.13: with an older staged
+runtime, Update the kernel stops with "get the latest OneiOS runtime" and Make iOS image stages the newest one.
 
 The kernel is not built in CI. A build machine builds it (`kernel/README.md`), and:
 

@@ -1,16 +1,17 @@
 #!/bin/bash
-# tools/oneios-tool/tests/prelink/compare-golden.sh   every step of kernel/prelink/build.sh against the frozen
-# output of the Python steps it replaced (kernel/prelink/*.py and XnuPrelink's fileset_match.py, deleted from
-# this repository after the comparison of 2026-11-12: tools/oneios-tool/README.md "prelink").
+# tools/oneios-tool/tests/prelink/compare-golden.sh   every step of kernel/prelink/build.sh against a recorded run
+# of the Rust chain (a regression check: the same inputs give the same files).
 #
 # The chain is run with `oneios-tool prelink STEP` on the real kernelcache and a hosted kernel; every file written
 # and every step's stdout is hashed and compared with golden/KERNEL-SHA256-PREFIX.txt (name, size, SHA-256: no
-# Apple bytes). A golden exists for the two Linux-built kernels the Python chain was run on:
-#   13ed0b70...  (out/kernel/current-hosted-pc/xnu.macho, with its reference.macho ac72f98d...)
-#   399f50fa...  (out/kernel/current-hosted-pc2/xnu.macho, with the pc tree's reference.macho)
+# Apple bytes). The golden there is for the released kernel, the one anyone can download:
+#   326e2144...  kernel/xnu.macho of the runtime package v0.1.13 (the release kernel-xnu-...-703a6b34e73f), no
+#                REFERENCE, XNUPRELINK=external/Droid-VM-UniXNU/kits/XnuPrelink (b74ed7c; its commit is in
+#                kernel.kc.build.json, so another folder changes that one line): kernel.kc 276aadac... (2026-11-22)
+# The two goldens of the Python chain (13ed0b70..., 399f50fa..., 2026-11-12) were removed on 2026-11-22: their
+# kernels are no longer kept, and they held Python's matcher signature (tools/oneios-tool/README.md "prelink").
 # Without KERNEL only roots and hosted are run, against golden/kernelcache.txt. Another kernel has no golden:
-# the script then says so and exits 3 (UPDATE=1 writes one from this run: a record of what the Rust chain gives,
-# not a comparison with Python).
+# the script then says so and exits 3 (UPDATE=1 writes one from this run).
 #
 # Before hashing, in the JSON records and the stdout: the work folder is taken out, the commit of
 # kernel.kc.build.json ("oneios") is replaced, and an absolute "path"/"input" keeps its file name only.
@@ -29,7 +30,7 @@ work=${WORK:-$root/out/rustport-prelink}
 kernel=${KERNEL:-}
 reference=${REFERENCE:-}
 xp=${XNUPRELINK:-$root/external/XnuPrelink}
-[ -f "$xp/fileset_match.py" ] || xp=${ONEIOS_MAIN:-$root}/external/XnuPrelink
+[ -d "$xp/fixtures" ] || xp=${ONEIOS_MAIN:-$root}/external/XnuPrelink
 [ -x "$tool" ] || { echo "no tool at $tool: build it or set ONEIOS_TOOL" >&2; exit 2; }
 [ -f "$cache" ] || { echo "no kernelcache at $cache: run scripts/image/kernel-inputs.sh or set KERNELCACHE" >&2; exit 2; }
 rm -rf "$work"; mkdir -p "$work/rs"
@@ -104,11 +105,11 @@ echo "total: $total s"
 sort -k3 "$work/found.txt" > "$work/found.sorted.txt"
 [ -n "${KEEP:-}" ] || find "$work" \( -name '*.macho' -o -name 'kernel.kc' \) -type f -delete
 if [ -n "${UPDATE:-}" ]; then
-  mkdir -p "$here/golden"; cp "$work/found.sorted.txt" "$golden"; echo "wrote $golden (this run's output, not a comparison)"; exit 0
+  mkdir -p "$here/golden"; cp "$work/found.sorted.txt" "$golden"; echo "wrote $golden (this run's output)"; exit 0
 fi
 [ -f "$golden" ] || { echo "prelink compare: no golden for this kernel ($golden)"; exit 3; }
 if diff <(sort -k3 "$golden") "$work/found.sorted.txt" > "$work/golden.diff"; then
-  echo "prelink compare: $(wc -l < "$golden") hashes the same as the Python chain's ($(basename "$golden"))"
+  echo "prelink compare: $(wc -l < "$golden") hashes the same as the recorded run's ($(basename "$golden"))"
 else
   echo "prelink compare: FAILED against $(basename "$golden")"; sed 's/^/  /' "$work/golden.diff" | head -40; exit 1
 fi

@@ -42,7 +42,7 @@ pub struct Args {
     /// The stub list (kernel/prelink/stubs-BUILD.json)
     #[arg(long)]
     pub stubs: String,
-    /// The XnuPrelink checkout: its reviewed fixtures and the files the matcher signature is made of
+    /// The matcher folder: its reviewed fixtures (`fixtures/fileset-*-symbols.json`; XnuPrelink's checkout, or the app's `kb/match`)
     #[arg(long)]
     pub xnuprelink: String,
     /// The RELEASE kernel of the same source with symbols (build.sh's REFERENCE), optional
@@ -156,14 +156,16 @@ fn pinned(profile: &str) -> Result<String> {
 /// passed.
 pub fn build(args: &Args) -> Result<Built> {
     job::step("check");
-    let fixture = format!("{}/fileset_match.py", args.xnuprelink);
-    let mut needed = vec![&args.kernel, &args.kernelcache, &args.profile, &args.reviewed, &args.pairs, &args.stubs, &fixture];
+    let mut needed = vec![&args.kernel, &args.kernelcache, &args.profile, &args.reviewed, &args.pairs, &args.stubs];
     needed.extend(args.more_reviewed.iter());
     needed.extend(args.reference.iter());
     for file in needed {
         if !Path::new(file).is_file() {
             return Err(Refused::NotFound(format!("{file} is missing")).into());
         }
+    }
+    if !is_matcher_dir(Path::new(&args.xnuprelink)) {
+        return Err(Refused::NotFound(format!("{}/fixtures/fileset-*-symbols.json is missing", args.xnuprelink)).into());
     }
     let want = pinned(&args.profile)?;
     if sha(&args.kernelcache)? != want {
@@ -369,3 +371,14 @@ pub fn run(args: Args) -> Result<()> {
     println!("prelink: {} ({} bytes, sha256 {}...)", built.kc, built.bytes, &built.sha256[..16]);
     Ok(())
 }
+
+/// Whether DIR can be the build's `xnuprelink`: it has the reviewed fixtures (`fixtures/fileset-*-symbols.json`),
+/// the only files the matcher reads there.
+pub fn is_matcher_dir(dir: &Path) -> bool {
+    crate::matcher::is_matcher_dir(dir)
+}
+
+/// The pairing files' format this build reads (the OneOS app's `kb.json` `kb`, `serve`'s hello `kb`): 2, the matcher
+/// folder with its reviewed fixtures alone (2026-11-22; format 1 also had XnuPrelink's three Python sources, which
+/// the matcher signature of the tools up to runtime 0.1.13 was over).
+pub const KB_FORMAT: u32 = 2;

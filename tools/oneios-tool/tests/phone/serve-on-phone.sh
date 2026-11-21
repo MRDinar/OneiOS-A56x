@@ -20,7 +20,7 @@
 #           kernel/unixnu/profiles/os/ios-27.0.1-24A446/profile.toml kernel/prelink/reviewed-24A446-v54.json \
 #           kernel/prelink/pairs-24A446.json kernel/prelink/stubs-24A446.json /data/local/tmp/prelink-in/
 #       adb push kernel/prelink/lead kernel/prelink/user /data/local/tmp/prelink-in/
-#       adb push external/XnuPrelink /data/local/tmp/prelink-in/XnuPrelink     # fileset_match.py, kc_image.py, fileset_shape.py, fixtures/
+#       adb push external/XnuPrelink /data/local/tmp/prelink-in/XnuPrelink     # only its fixtures/ is read
 #       adb shell su -c 'rm -rf /data/local/tmp/oneios/work-prelink && mv /data/local/tmp/prelink-in /data/local/tmp/oneios/work-prelink'
 #     (Apple's kernelcache: remove the folder afterwards; this script does when the prelink is done)
 #   sh serve-on-phone.sh fetch URL  the IPSW's directory and its BuildManifest.plist over the phone's network
@@ -79,7 +79,7 @@ all)
   finish ;;
 prelink)
   I=$S/work-prelink
-  [ -f "$I/kernelcache.macho" ] && [ -f "$I/xnu.macho" ] && [ -f "$I/XnuPrelink/fileset_match.py" ] || { echo "serve-on-phone.sh: the prelink's inputs are not in $I (this script's header has the adb lines)"; exit 2; }
+  [ -f "$I/kernelcache.macho" ] && [ -f "$I/xnu.macho" ] && [ -d "$I/XnuPrelink/fixtures" ] || { echo "serve-on-phone.sh: the prelink's inputs are not in $I (this script's header has the adb lines)"; exit 2; }
   mkdir -p "$W"
   more=; for f in "$I"/lead/reviewed-*-24A446-*.json "$I"/user/reviewed-*-24A446-*.json; do [ -f "$f" ] && more="$more${more:+,}\"$f\""; done
   r='"kernel":"'"$I"'/xnu.macho","kernelcache":"'"$I"'/kernelcache.macho","profile":"'"$I"'/profile.toml","reviewed":"'"$I"'/reviewed-24A446-v54.json","more_reviewed":['"$more"'],"pairs":"'"$I"'/pairs-24A446.json","stubs":"'"$I"'/stubs-24A446.json","xnuprelink":"'"$I"'/XnuPrelink"'

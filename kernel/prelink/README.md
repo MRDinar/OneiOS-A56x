@@ -29,12 +29,14 @@ or older than its sources, `ONEIOS_TOOL=PATH` names another). The steps were Pyt
 XnuPrelink's `fileset_match.py`, `fileset_emit.py`, `fileset_segmented.py` and `fileset_layout.py` until 2026-11-12:
 they were retired after every step's files and stdout were compared byte for byte on two Linux-built kernels
 (`13ed0b70` and `399f50fa`: `kernel.kc` `ffbe95f7` and `cdd98e7e` from both chains; `tools/oneios-tool/README.md`
-"prelink"). Their outputs are frozen as hashes in `tools/oneios-tool/tests/prelink/golden/`, and
-`tools/oneios-tool/tests/prelink/compare-golden.sh` runs the chain against them. Each Rust module carries its
+"prelink"). `tools/oneios-tool/tests/prelink/compare-golden.sh` runs the chain against the hashes of a recorded run
+(`tests/prelink/golden/`: the released kernel `326e2144` and the kernelcache alone, 2026-11-22; the Python chain's
+goldens were removed that day). Each Rust module carries its
 Python original's description. The build takes 14 s (Python: about two minutes) and needs neither `python3` nor
 `llvm-nm`; `llvm-mc` only with `X18=1`. XnuPrelink's checkout (`external/XnuPrelink`, pin `9b950f2`) is still read
-for its reviewed fixtures and for the matcher signature (the SHA-256 over its matcher sources, written into the
-pairing and checked by the emitter); `matcher.rs`, `emit.rs` and `layout.rs` are ports of that pin and must follow
+for its reviewed fixtures (`fixtures/`) only; the matcher signature, written into the pairing and checked by the
+emitter, is over the Rust matcher's version and those fixtures (until 2026-11-22 over XnuPrelink's Python sources
+too; the same `kernel.kc` either way); `matcher.rs`, `emit.rs` and `layout.rs` are ports of that pin and must follow
 it when it moves. The tools run by hand, not part of the build, are commands too since 2026-11-13 (they were
 `classes.py`, `unmapped.py`, `port-fixture.py`, `stubs-check.py`, `lead/imports.py` and `lead/between.py`; their
 output is frozen in `tools/oneios-tool/tests/prelinkpy`): `oneios-tool prelink classes`, `prelink unmapped`,

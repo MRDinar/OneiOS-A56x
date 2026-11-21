@@ -227,6 +227,8 @@ fn hello_ping_and_the_end_of_the_pipe() {
     assert_eq!((hello["proto"].as_u64(), hello["jobs"].as_u64(), hello["nice"].as_i64(), hello["realtime"].as_bool()), (Some(1), Some(3), Some(12), Some(false)), "{hello}");
     assert_eq!(hello["pid"].as_i64(), Some(s.pid() as i64));
     assert_eq!((hello["idle"].as_u64(), hello["battery_min"].as_u64()), (Some(300), Some(10)));
+    // the pairing files' format the prelink reads (the app's kb.json kb: 2, the fixtures alone)
+    assert_eq!(hello["kb"].as_u64(), Some(2));
     assert_eq!(hello["thermal"], json!([44.0, 46.0, 45.0, 50.0]));
     let cmds: Vec<&str> = hello["cmds"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
     for cmd in ["ping", "health", "cancel", "wait", "download", "zip-ls", "zip-get", "fetch", "im4p", "aea", "receive", "sums", "hashes", "verify", "apfs-ls", "apfs-copy", "tweaks", "prelink", "make-image", "stubs-check", "package-check", "ioslog-boots", "ioslog-show", "log-list", "log", "cpu"] {
