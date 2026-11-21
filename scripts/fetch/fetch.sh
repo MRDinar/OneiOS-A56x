@@ -9,16 +9,17 @@
 #          --only R,.. only these roles (os, systemos, app, trust-static, kernelcache, ...)
 #          --keep-aea  keep the encrypted files after they are decrypted
 #          --source S  another copy of the same IPSW: a URL or a local file
-# Env: INPUTS (default inputs/<build>), IPSW (the ipsw CLI; default out/bin/ipsw, then PATH).
+# Env: INPUTS (default inputs/<build>).
 #
 # Only the named ZIP members are read, with HTTP range requests; an interrupted run resumes. Each member is
 # checked against the profile (size, CRC-32, and SHA-384 or SHA-256 where the profile pins one). AEA members
-# (the OS and SystemOS images) are decrypted: `ipsw fw aea --key` reads the key-service fields of the AEA
-# header and gets the key from Apple, and `ipsw fw aea` decrypts with it. The key is not written to disk.
+# (the OS and SystemOS images) are decrypted by `oneios-tool image aea-decrypt` (since 2026-11-21; the `ipsw` CLI
+# before): it reads the key-service fields of the AEA header, gets the key service's key from Apple (kept in
+# INPUTS/.aea-keys/ for the second image, never elsewhere), authenticates every byte as it decrypts, and checks the
+# plain image against the profile's `plain_sha256` where it pins one.
 # Linux and macOS. Tools: oneios-tool (tools/oneios-tool, Rust: `image check-ipsw`, `fetch`, `aea-info`, `record-plain`;
 # built when missing or stale, ONEIOS_TOOL=PATH for another; scripts/image/imagetool.py did this until 2026-11-13 and is
-# still in the tree, unused), python3 (the last check of the decrypted images), and for the decryption ipsw
-# (scripts/fetch/get-ipsw-cli.sh).
+# still in the tree, unused), python3 (the last check of the decrypted images).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$ROOT/scripts/lib/oneios-tool.sh"
@@ -51,18 +52,12 @@ fi
 
 eval "$(tool profile "$profile" --shell)"
 IN=${INPUTS:-$ROOT/inputs/$P_BUILD}
-IPSW=${IPSW:-$ROOT/out/bin/ipsw}
-[ -x "$IPSW" ] || IPSW=$(command -v ipsw || true)
-
-# which AEA members this run decrypts: the ipsw CLI is needed only for those
+# which AEA members this run decrypts (the room check below)
 aea_roles=()
 while IFS=$'\t' read -r role member name aea size out; do
   case ",$only," in ,,|*,"$role",*) ;; *) continue ;; esac
   [ "$aea" = 1 ] && [ ! -f "$IN/$name" ] && aea_roles+=("$role")
 done < <(tool profile "$profile" --members)
-if [ ${#aea_roles[@]} -gt 0 ] && [ -z "$IPSW" ]; then
-  die "missing tool: ipsw (run scripts/fetch/get-ipsw-cli.sh; it decrypts the AEA images)"
-fi
 
 mkdir -p "$IN"
 if [ ${#aea_roles[@]} -gt 0 ] && [ -z "$only" ]; then
@@ -78,15 +73,8 @@ while IFS=$'\t' read -r role member name aea size out; do
   enc=$IN/$(basename "$member")
   [ -f "$enc" ] || continue                    # already decrypted by an earlier run
   tool aea-info "$enc" >/dev/null || die "$enc: no key-service field in its header"
-  echo "$(basename "$enc"): fetching its key from Apple and decrypting"
-  key=$("$IPSW" fw aea --key "$enc" | tail -n 1 | awk '{print $NF}' | sed 's/^base64://')
-  [ -n "$key" ] || die "$enc: no key from Apple's key service"
-  rm -rf "$IN/.aea-out"; mkdir -p "$IN/.aea-out"
-  "$IPSW" fw aea --key-val "$key" -o "$IN/.aea-out" "$enc" >/dev/null || die "$enc: decryption failed"
-  unset key
-  [ -f "$IN/.aea-out/$name" ] || die "$enc: the decrypted image is not where ipsw was told to put it"
-  mv "$IN/.aea-out/$name" "$IN/$name"
-  rmdir "$IN/.aea-out"
+  echo "$(basename "$enc"): decrypting (the key from Apple's key service)"
+  tool aea-decrypt "$enc" "$IN/$name" --profile "$profile" --key-cache "$IN/.aea-keys" --resume || die "$enc: decryption failed"
   tool record-plain "$IN" "$role" "$IN/$name"
   [ "$keep" = 1 ] || rm -f "$enc"
 done < <(tool profile "$profile" --members)

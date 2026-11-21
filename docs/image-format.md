@@ -15,7 +15,6 @@ owner fetches from Apple and builds.
 
 ```sh
 scripts/fetch/fetch.sh --list 'profiles/ios-27.0.1-iPhone18,2.toml'      # compare the profile with Apple's file, about 1 MiB
-scripts/fetch/get-ipsw-cli.sh                                            # the AEA decryption tool, once
 scripts/bg.sh fetch scripts/fetch/fetch.sh 'profiles/ios-27.0.1-iPhone18,2.toml'    # 10.6 GiB -> inputs/24A446/
 scripts/bg.sh image scripts/image/build.sh 'profiles/ios-27.0.1-iPhone18,2.toml'    # -> out/image/24A446/ and the .tar.zst
 scripts/image/verify.sh out/image/OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst
@@ -87,10 +86,14 @@ How a member is pinned:
 - A member that is not AEA carries `sha384`: the `Digest` of its component in BuildManifest.plist, which is
   the SHA-384 of the file as shipped (checked on all nine such members of 24A446). `BuildManifest.plist`
   and `Restore.plist` carry `sha256`.
-- An AEA member (`OS`, `Cryptex1,SystemOS`) has no hash of the profile's own. Its integrity is the archive's
-  own authentication at decryption, with the key Apple's key service gives for that archive, plus size and
-  CRC-32. After the first full fetch, `inputs/<build>/inputs.json` holds the SHA-256 of both the encrypted
-  and the decrypted file; copy them into the profile as `sha256` and `plain_sha256` to pin them for good.
+- An AEA member (`OS`, `Cryptex1,SystemOS`) carries `sha256` (of the encrypted member: the fetch checks it) and
+  `plain_sha256` (of the decrypted image: `oneios-tool image aea-decrypt --profile` and `image manifest` check it),
+  both pinned for 24A446 on 2026-11-21 (two fetches from Apple and two decryptions, `ipsw` and `aea-decrypt`, gave
+  the same). Beside them is the archive's own authentication at decryption, with the key Apple's key service gives
+  for that archive: every byte of the archive is under an HMAC (its header and auth data, each cluster's header,
+  each segment, the padding), so a wrong key or a changed byte stops the decryption with nothing written
+  (`tools/oneios-tool/README.md` "aea-decrypt"). For a new build, `inputs/<build>/inputs.json` holds both
+  SHA-256s after the first full fetch: copy them into the profile.
 
 Roles: `os`, `systemos`, `app`, `trust-static`, `trust-system`, `trust-app`, `roothash-os`,
 `roothash-system`, `roothash-app` (all in the set); `kernelcache`, `devicetree` (inputs of the kernel build
@@ -297,7 +300,7 @@ is build.sh's (Linux, apfs-fuse) byte for byte.
 | Step | Linux | macOS |
 | --- | --- | --- |
 | List and fetch IPSW members | python3 3.11+ | same (run on the Mac, 2026-11-12) |
-| AEA decryption | `ipsw` 3.1.743 (`scripts/fetch/get-ipsw-cli.sh`, pinned by SHA-256) | same, the macOS arm64 release (run on the Mac: both images of 24A446) |
+| AEA decryption | `oneios-tool image aea-decrypt` (since 2026-11-21; both images of 24A446 on the Linux PC, to the pinned `plain_sha256`). Before: `ipsw` 3.1.743 (`scripts/fetch/get-ipsw-cli.sh`, pinned by SHA-256) | the same command (not run on the Mac yet); before, the `ipsw` macOS arm64 release (run on the Mac: both images of 24A446) |
 | Read the volumes (the seed's `/private/var`, the hook's three roots) | `apfs-fuse`, no root: owners as stored | `hdiutil attach -readonly -owners off`, no root: every file shows as the user's and is readable; the owners of `/private/var` come from the OS image's own APFS records (`imagetool.py tree-copy --owners-from`), checked entry by entry against the mount |
 | Seed as tar | yes | yes (xattrs read with libc's `listxattr`, which Python lacks on macOS) |
 | Seed as APFS (`--seed apfs`) | **no**: nothing on Linux writes this APFS | `newfs_apfs`, as root (`sudo`). Not run |

@@ -1,6 +1,7 @@
 #!/bin/sh
-# Get the blacktop `ipsw` CLI (MIT) into out/bin/ipsw: it fetches AEA keys from Apple's key service and
-# decrypts AEA disk images on Linux and macOS. The release archive is pinned by version and SHA-256 and
+# Get the blacktop `ipsw` CLI (MIT) into out/bin/ipsw. scripts/ios/make-tbds.py uses it (`ipsw dyld tbd`). It decrypted
+# the IPSW's AEA images for scripts/fetch/fetch.sh until 2026-11-21; `oneios-tool image aea-decrypt` does that now
+# (it can still be run to compare: `ipsw fw aea`). The release archive is pinned by version and SHA-256 and
 # checked before it is unpacked.
 #   scripts/fetch/get-ipsw-cli.sh
 # Another version: IPSW_VERSION=x.y.z IPSW_SHA256=<of the archive, from the release's checksums.txt>.

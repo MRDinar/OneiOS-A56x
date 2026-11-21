@@ -383,9 +383,12 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   kernel does) before `make-image`, or it is refused `not-found` naming them; (2) stage a runtime with a kernel
   (v0.1.12 or newer), or it is refused `not-found` ("the staged runtime has no kernel"). The root tweaks run in its
   `tweaks` step (oneios-tweaks, the OS volume read from its image; the manifest's `tweaks` record is
-  `{"hook": "oneios-tool image tweaks", "hook_sha256": <the tool's binary>, "info": ...}`, no `commit`). **Until the
-  AEA decryption is in the tool** the request is refused `not-ported` at `check`, before anything is fetched or
-  written: `step decrypt: the AEA decryption is not in this tool yet ...` (an OS or SystemOS image to decrypt).
+  `{"hook": "oneios-tool image tweaks", "hook_sha256": <the tool's binary>, "info": ...}`, no `commit`). The AEA decryption
+  is in it since 2026-11-21 (`decrypt`: the key from Apple's key service, kept in `<indir>/.aea-keys/`, every byte
+  authenticated, the plain image checked against the profile's `plain_sha256`, resumable; a wrong key or a changed
+  byte: `refused` `auth`). The same decryption alone is the request `aea` (`in`, `out`, `sha256`, `key_cache`,
+  `key_file`, `resume`; steps `key`, `check`, `decrypt`, `place`; `ok` with `out`, `bytes`, `sha256`, `key`): the fork
+  need not send it, `make-image` runs it.
   `"tweaks": false` makes a set without the root tweaks (as `build.sh --no-hook`; whether such a set boots was not
   tried, the tweaks turn off launchd jobs the guest is known to need off): for tests only, the app should not send
   it. Optional keys the app need not send: `profile` (default: the runtime's `lib/profiles/` when it holds one),

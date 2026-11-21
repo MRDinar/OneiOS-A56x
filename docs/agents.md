@@ -124,6 +124,15 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
   - image -> kernel/booter inputs: `scripts/fetch/fetch.sh --only kernelcache,devicetree,buildmanifest PROFILE` (23 MB), then
     `scripts/image/kernel-inputs.sh PROFILE` -> `out/kernel-inputs/24A446/kernelcache.macho` (78135296 bytes, sha256
     `349c4692a6a85df0d396681f28d2d48dc04b95c6d60df0f94d84501e3d0c57e3`) and `devicetree.bin`. Both are on this machine now.
+  - image (AEA) -> the `make-image` request (2026-11-21, image tool): the IPSW's AEA images are decrypted in the tool, no
+    `ipsw`. Library: `oneios_image::aea_decrypt::aea_decrypt(input: &str, out: &str, opts: &AeaOptions) -> Result<AeaDone, Fail>`,
+    `AeaOptions { key: AeaKey::Service { cache: Option<PathBuf> } | AeaKey::Pem(PathBuf) | AeaKey::Raw([u8; 32]), jobs: usize
+    (0: job::jobs()), resume: bool, plain_sha256: Option<String>, log: &(dyn Fn(String) + Sync) }`; `AeaDone { out, bytes, sha256,
+    encrypted, resumed_from, key_from, compression, checksum, segment_size, segments_per_cluster, clusters, already }`. It says the
+    steps `key`, `check` (a resume), `decrypt` (progress in plain bytes), `place`, asks `apfs_tools::SPACE_CHECK` for the room,
+    writes `OUT.part` and renames it last. Pass the profile member's `plain_sha256` (pinned for both images) and a key cache in
+    the work folder (both images of 24A446 use one key). CLI `oneios-tool image aea-decrypt IN OUT --profile P --key-cache DIR`;
+    serve request `aea` (`in`, `out`, `sha256`, `key_cache`, `key_file`, `resume`). Tools README "aea-decrypt".
 - kernel -> booter: `kernel/README.md`, "What the booter gets" (the table is the contract; "Not done" is what is missing).
   - Build: `scripts/bg.sh kernel kernel/build-linux.sh` (Linux, 91 s) -> `out/kernel/current/xnu.macho` + `.build.json`.
     Native kernel only: arm64e (PAC), `MH_EXECUTE`, PIE with chained fixups, `__TEXT` at `0xfffffff007004000`,

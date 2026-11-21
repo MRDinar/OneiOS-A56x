@@ -40,6 +40,11 @@ size = 8992587776
 crc32 = "7ceca2a1"
 aea = true
 buildmanifest_digest = "c4061ed7897d2c3d80e9b67f398a1fb745f98bd016c8864f097764b396341dbc13b8853c933ec03e3e5b73d94a46fbfd"
+# sha256: the encrypted member (the fetch checks it); plain_sha256: the decrypted image (`image aea-decrypt --profile`
+# checks it). Both read on 2026-11-21: two fetches from Apple (2026-11-10, 2026-11-21) and two decryptions
+# (`ipsw` 3.1.743, `oneios-tool image aea-decrypt`) gave the same.
+sha256 = "8eb16befa624d85edd5187e9f87b747b408c41a09a2caf945ae0d18f0789a602"
+plain_sha256 = "bba6accc32d9163cac4f6b7562c7955a3af042bfe1b3340d1c2df0b663522ed4"
 
 [[member]]
 role = "systemos"
@@ -49,6 +54,8 @@ size = 2348810240
 crc32 = "4c327239"
 aea = true
 buildmanifest_digest = "d50a364d8335e00bb37c1807bd9f8ef9ce84573eaccdc2ef41cc848526ef12b97ac22554cf78d187750eb160d9fb7109"
+sha256 = "b545bd82958e07ab1ed96e51e3fff886cce42bfd94d9de731c5080834ea79a29"
+plain_sha256 = "a41d72a64d6e671239c72f6fef039a8b3d31cbcc1258b87948de00f23ba11a4b"
 
 [[member]]
 role = "app"

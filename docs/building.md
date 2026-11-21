@@ -22,7 +22,7 @@ and `out/`.
 | Apple's `container` 1.7.1 (Mac only) | the runtime's host tests from a Mac | `brew install container`, then `container system start`; `runtime/host-tests.sh`, section 4 |
 | apfs-fuse (Linux only) | reading the volumes for the Data seed and the hook | github.com/sgan81/apfs-fuse; read-only, no root. On macOS `hdiutil` does it, no root (section 1) |
 | qemu-user (`qemu-aarch64`) | booting xnuhost and the kernel on the PC | |
-| `ipsw` CLI | AEA decryption | `scripts/fetch/get-ipsw-cli.sh` installs the pinned version to `out/bin/ipsw` |
+| `ipsw` CLI | the iOS 27 stubs (`scripts/ios/make-tbds.py`, section 9). No longer the AEA decryption: `oneios-tool image aea-decrypt` does it since 2026-11-21 | `scripts/fetch/get-ipsw-cli.sh` installs the pinned version to `out/bin/ipsw` |
 | mksh, dash (optional) | testing the phone scripts the way Android runs them | |
 | gh | releases | |
 | macOS: Xcode 27 with the iOS platform. Linux: xtool and an Xcode `.xip`. Both: rustup 1.98.0 with `rust-src`, meson, ninja, glslang, glslc, spirv-val, bison, flex, LLVM's `llvm-as`/`llvm-objcopy`/`llvm-ar`, PyYAML, mako | iOS user-space code: the toolchain and the Metal plug-in | section 9; `scripts/setup/ios-toolchain.sh` says what is missing |
@@ -40,6 +40,9 @@ kernel/fetch.sh                        # the kernel's sources at the commits of 
 P='profiles/ios-27.0.1-iPhone18,2.toml'
 scripts/fetch/fetch.sh --list "$P"                  # optional: compare the profile with Apple's IPSW (about 1 MiB)
 scripts/bg.sh fetch scripts/fetch/fetch.sh "$P"     # 10.6 GiB of the IPSW's members from Apple, into inputs/24A446/
+                                                    # (the OS and SystemOS images are decrypted by
+                                                    # `oneios-tool image aea-decrypt`, the key from Apple's
+                                                    # key service: no `ipsw` program since 2026-11-21)
 scripts/image/kernel-inputs.sh "$P"                 # Apple's kernelcache and device tree -> out/kernel-inputs/24A446/
                                                     # (without inputs/24A446/ it fetches only those, 24 MB)
 ```
@@ -77,15 +80,16 @@ oneios-tool image build "$P" --indir inputs/24A446 --out out/image/24A446-rust \
   --xnu RUNTIME/kernel/xnu.macho --repo . --kernelcache -        # RUNTIME: an unpacked runtime package (v0.1.12 has the kernel)
 ```
 
-The root tweaks run in it (oneios-tweaks; `--repo` gives image-hook's defaults, `--no-tweaks` leaves them out). Not
-in it yet: the AEA decryption (the decrypted images must be in INDIR, as `fetch.sh` leaves them; else refused
-`not-ported`). Compared on the Linux PC: without tweaks the set is build.sh's `--no-hook` set, every file's SHA-256
+The root tweaks run in it (oneios-tweaks; `--repo` gives image-hook's defaults, `--no-tweaks` leaves them out). It
+decrypts the AEA images itself since 2026-11-21 (`image aea-decrypt`'s library, the key from Apple's key service
+kept in INDIR/.aea-keys/, the plain SHA-256 the profile's pin), when INDIR does not hold them decrypted already.
+Compared on the Linux PC: without tweaks the set is build.sh's `--no-hook` set, every file's SHA-256
 and `manifest.json` byte for byte; with them every file but `manifest.json` is the set of build.sh with the Python
 hook (`data.seed` `27ec4e10...`), the manifest differing only in the hook's own record; `kernel.kc` is the
 prelink's; 19 to 21 s from inputs that are there, 30 s with the fetch's check against Apple's IPSW, 1.07 GB peak
 memory ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "image build").
 
-**On macOS** the commands are the same and need no `sudo`. The fetch decrypts with the macOS `ipsw` release. The
+**On macOS** the commands are the same and need no `sudo`. The fetch decrypts with `oneios-tool image aea-decrypt` (the macOS `ipsw` release until 2026-11-21). The
 image build attaches the three images with `hdiutil` (read-only, owners ignored) and reads the owners of
 `/private/var` from the OS image's own APFS records (image-format.md section 8). Tools: Homebrew's `zstd`, and
 `uv pip install --python "$(command -v python3)" pyyaml mako meson` for section 9. Run on the Mac on 2026-11-12:
@@ -1040,7 +1044,8 @@ own unified log out of a copy of the phone's Data store, without a mount) and `p
 `kernel/prelink/build.sh`, behind `PRELINK_IMPL=rust`), and `kernel` (the kernel build's own steps: the
 board archive generators `kernel gen NAME`, the build record, the records made from the kernelcache, and since 2026-11-13
 the drivers' build, the fixup of the linked kernel, the series check and the KDK headers), `package` (the runtime package's
-Apple-file check, manifest and archive) and `debug` (the tests' helpers). Since the third Linux round also `phone` (the adb
+Apple-file check, manifest and archive) and `debug` (the tests' helpers). `image aea-decrypt` (2026-11-21) decrypts the IPSW's AEA images
+(the key from Apple's key service, every byte authenticated), on the PC and, as `serve`'s `aea`, on the phone. Since the third Linux round also `phone` (the adb
 workflow of section 6: status, stage, sums, switch, return, log, the Data store's copy, and in a session the display
 helper's restart, the touch IC's wake and the panel's level), `app` (the fork's app of
 section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
@@ -1142,8 +1147,8 @@ bytes, percent and ETA, the room needed, a refusal's reason in plain words). One
 wait; a request is stopped by a `cancel` request, by the end of the app's pipe, by SIGTERM or by the idle timeout,
 and a stop removes what the request wrote. The work runs in a bounded number of threads at nice 10 to 19, never in
 a realtime class, and pauses or stops at the case's and the battery's limits (the thermal bridge's named files).
-The protocol, every command and what is not in it yet (the root tweaks and the AEA decryption; the image build's
-own steps are `make-image` since 2026-11-21): [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "serve". The same requests run from a
+The protocol, every command and what is not in it yet (the root tweaks; the image build's own steps are
+`make-image` and the AEA decryption is `aea` and `make-image`'s `decrypt` step, both since 2026-11-21): [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "serve". The same requests run from a
 command line (a PC, a test, a measurement on the phone):
 
 ```sh
