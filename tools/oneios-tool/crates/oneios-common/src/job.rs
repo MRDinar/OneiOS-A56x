@@ -324,7 +324,35 @@ fn sink() -> Option<Arc<dyn Sink>> {
 /// A step of the running request begins (one of the names its `start` event listed).
 pub fn step(name: &str) {
     if let Some(sink) = sink() {
-        sink.step(name);
+        sink.step(&prefixed(name));
+    }
+}
+
+// The prefix of the step names a command of another command says (`image build` runs `prelink build`, whose
+// `check` is its `kernel-check`): set by the caller around the call, empty otherwise.
+static STEP_PREFIX: RwLock<String> = RwLock::new(String::new());
+
+/// The steps (and their progress) said until the guard is dropped are named `PREFIX` + their own name.
+pub fn step_prefix(prefix: &str) -> StepPrefix {
+    *STEP_PREFIX.write().unwrap() = prefix.to_string();
+    StepPrefix(())
+}
+
+/// Ends `step_prefix`.
+pub struct StepPrefix(());
+
+impl Drop for StepPrefix {
+    fn drop(&mut self) {
+        STEP_PREFIX.write().unwrap().clear();
+    }
+}
+
+fn prefixed(name: &str) -> String {
+    let prefix = STEP_PREFIX.read().unwrap();
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}{name}")
     }
 }
 
@@ -372,7 +400,7 @@ static CURRENT_ON: AtomicBool = AtomicBool::new(false);
 /// Begin a step: its `step` line, and a progress that `count` adds to until `end` (or the next `begin`).
 pub fn begin(step_name: &str, unit: &'static str, total: u64) -> Progress {
     step(step_name);
-    let p = Progress::new(step_name, unit, total);
+    let p = Progress::new(&prefixed(step_name), unit, total);
     *CURRENT.write().unwrap() = Some(p.clone());
     CURRENT_ON.store(true, Ordering::SeqCst);
     p

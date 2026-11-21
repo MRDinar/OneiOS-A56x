@@ -237,6 +237,15 @@ impl Req {
         }
     }
 
+    /// true or false, or `None` when the key is not there (a key whose default is true).
+    pub fn opt_flag(&self, key: &str) -> Result<Option<bool>, Fail> {
+        match self.take(key) {
+            None => Ok(None),
+            Some(Value::Bool(on)) => Ok(Some(*on)),
+            Some(_) => Err(self.wrong(key, "true or false")),
+        }
+    }
+
     /// A list of texts (missing: empty).
     pub fn list(&self, key: &str) -> Result<Vec<String>, Fail> {
         match self.take(key) {

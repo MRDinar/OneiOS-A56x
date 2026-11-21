@@ -65,6 +65,22 @@ scripts/image/verify.sh out/image/OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst
 `--no-kernel` builds a set without one (for work on the images only). The userland hook (`userland/image-hook`)
 runs by default. Format: [image-format.md](image-format.md).
 
+**The same in one process, without bash, apfs-fuse or Python: `oneios-tool image build`** (2026-11-21; it is what
+the OneOS app's Make iOS image runs on the phone, `serve`'s `make-image`). It fetches the members (unless
+`--no-fetch`), reads `/private/var` with the tool's own APFS reader, prelinks a hosted `xnu.macho` with Apple's
+kernelcache (or takes `--kernel-kc FILE`), writes the manifest and checks the set:
+
+```sh
+oneios-tool image build "$P" --indir inputs/24A446 --out out/image/24A446-rust --no-tweaks \
+  --xnu RUNTIME/kernel/xnu.macho --repo . --kernelcache -        # RUNTIME: an unpacked runtime package (v0.1.12 has the kernel)
+```
+
+Not in it yet: the root tweaks (`--no-tweaks` is required until their Rust port lands; without it the build is
+refused `not-ported`) and the AEA decryption (the decrypted images must be in INDIR, as `fetch.sh` leaves them).
+Compared on the Linux PC: the set is build.sh's `--no-hook` set, every file's SHA-256 and `manifest.json` byte for
+byte, `kernel.kc` the prelink's; 19 s from inputs that are there, 30 s with the fetch's check against Apple's IPSW,
+1.07 GB peak memory ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "image build").
+
 **On macOS** the commands are the same and need no `sudo`. The fetch decrypts with the macOS `ipsw` release. The
 image build attaches the three images with `hdiutil` (read-only, owners ignored) and reads the owners of
 `/private/var` from the OS image's own APFS records (image-format.md section 8). Tools: Homebrew's `zstd`, and
@@ -1117,8 +1133,8 @@ bytes, percent and ETA, the room needed, a refusal's reason in plain words). One
 wait; a request is stopped by a `cancel` request, by the end of the app's pipe, by SIGTERM or by the idle timeout,
 and a stop removes what the request wrote. The work runs in a bounded number of threads at nice 10 to 19, never in
 a realtime class, and pauses or stops at the case's and the battery's limits (the thermal bridge's named files).
-The protocol, every command and what is not in it yet (the root tweaks, the image build's own script, the AEA
-decryption): [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "serve". The same requests run from a
+The protocol, every command and what is not in it yet (the root tweaks and the AEA decryption; the image build's
+own steps are `make-image` since 2026-11-21): [tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "serve". The same requests run from a
 command line (a PC, a test, a measurement on the phone):
 
 ```sh
@@ -1128,6 +1144,8 @@ oneios-tool serve --stage DIR --request '{"id":"1","cmd":"cpu"}' --request '{"id
 oneios-tool --jobs 4 --nice 15 image apfs-copy IMAGE SRC DST      # every command that runs alone: its threads and its nice value
 oneios-tool prelink build --kernel K --kernelcache C --profile P --reviewed F --pairs F --stubs F --xnuprelink DIR --out DIR
                                                                   # kernel/prelink/build.sh's steps in one process (the phone has no bash)
+oneios-tool image build PROFILE --indir DIR --out SET --no-tweaks --xnu XNU --repo . --kernelcache -
+                                                                  # scripts/image/build.sh's steps in one process (serve's make-image)
 tools/oneios-tool/tests/prelink/compare-build.sh                  # KERNEL=...: `prelink build` and serve's `prelink` against build.sh
 adb shell su -c 'sh /data/local/tmp/serve-on-phone.sh'            # the measurement on the phone (tests/phone/serve-on-phone.sh; not run yet)
 ```

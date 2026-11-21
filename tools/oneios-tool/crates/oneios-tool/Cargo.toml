@@ -21,6 +21,7 @@ oneios-phone.workspace = true
 oneios-package.workspace = true
 oneios-testkit.workspace = true
 oneios-serve.workspace = true
+oneios-imagebuild.workspace = true
 oneios-common.workspace = true
 rayon.workspace = true
 

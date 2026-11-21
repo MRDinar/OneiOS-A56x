@@ -1042,6 +1042,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oneios-imagebuild"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "oneios-common",
+ "oneios-image",
+ "oneios-prelink",
+ "rayon",
+]
+
+[[package]]
 name = "oneios-ioslog"
 version = "0.1.0"
 dependencies = [
@@ -1164,6 +1175,7 @@ dependencies = [
  "libc",
  "oneios-common",
  "oneios-image",
+ "oneios-imagebuild",
  "oneios-ioslog",
  "oneios-package",
  "oneios-phone",
@@ -1206,6 +1218,7 @@ dependencies = [
  "libc",
  "oneios-common",
  "oneios-image",
+ "oneios-imagebuild",
  "oneios-ioslog",
  "oneios-kernel",
  "oneios-ksym",

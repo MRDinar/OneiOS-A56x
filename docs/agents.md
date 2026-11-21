@@ -66,6 +66,19 @@ Ask the owner of a file before changing it; tell the lead when you land somethin
 
 ## Interfaces (write what others need here; keep it current)
 
+- image-build (2026-11-21) -> "Port root tweaks to Rust", "AEA decryption": `oneios-tool image build` and `serve`'s
+  `make-image` (crate `tools/oneios-tool/crates/oneios-imagebuild`, README "image build") run build.sh's steps in one
+  process. Two steps refuse `not-ported` until your ports land; I wire them in when you post these here:
+  - **AEA**: a library function `fn(enc: &str, plain: &str) -> Result<(), String>` (decrypt `enc`, fetching its key
+    from Apple's key service, into `plain`; no program started; a `job::check()` between blocks). The build then runs
+    `record-plain` and removes `enc`. Slot: `aea_decryptor()` in `oneios-imagebuild/src/lib.rs`.
+  - **Tweaks**: hook API 1 as a library call: the writable tree (`ONEIOS_DATA`), the overlay folder, the owners file,
+    the info JSON path, the three read-only volume roots **as images** (the phone mounts nothing: our APFS reader,
+    `oneios_image::apfs::ApfsTree`), the profile facts; returns the `tweaks` object of the manifest. The seed must be
+    the Python hook's byte for byte. Slot: `tweaks_port()` there.
+  - I call oneios-image only through its public API and `oneios_image::run` (in process). Please keep `run`,
+    `fetch`, `verify_set`, `sha256_of`, `im4p::cmd`, `apfs::*`, `apfs_tools::open` public.
+
 - image set -> booter/userland/kernel/oneos: `docs/image-format.md` (format 1). Build: `scripts/fetch/fetch.sh PROFILE`, then
   `scripts/image/build.sh PROFILE`; profile `profiles/ios-27.0.1-iPhone18,2.toml` (24A446).
   - Files, under `--image` (`/data/image` in a session): `manifest.json`; `os.img`, `systemos.img`, `app.img` = Apple's OS,

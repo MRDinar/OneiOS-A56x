@@ -115,7 +115,7 @@ A tool the package lacks is shown as "Not in this runtime", not as a failure.
 | `tool/` | `TMPDIR` of `runtime/bin/oneios-tool serve` (section 9) | root's `tool` |
 | `kb/` | the kernel update's pairing files and Apple's decoded `kernelcache.macho` with `kernelcache.sha256` (fetched from Apple by the phone itself, kept for later updates; not under `runtime/` or `image/`) | root's `kbinput`, `kbcache` |
 | `make-kernel/` | Update the kernel's work folder: `inputs/` (the fetched IM4P, removed after the decode), `kernelcache.macho` (the decode), `out/` (the built kernel.kc until `finish kernel`); removed by root's `kbclean` after a stop that cannot resume | oneios-tool, root |
-| `make/` | Make iOS image's work folder (the tool's `make-image` `work`): the IPSW members, the volumes, the prelink's `work/`; removed by the tool on a cancel or a failure (its README) | oneios-tool |
+| `make/` | Make iOS image's work folder (the tool's `make-image` `work`): `make/inputs/` the fetched IPSW members and `inputs.json` (kept: a later run resumes or reuses them; the set's images are hard links to them, so they cost no room twice), `make/build/` the build's own files (the copied `/private/var`, the seed, the decoded kernelcache, the prelink's work), removed by the tool at the end, on a cancel and on a failure (since 2026-11-21; before, this row said the whole `make/` went) | oneios-tool |
 
 **What OneiOS's CLI writes there during a session** (`oneios-tool phone display-restart`, from the PC over adb;
 `tools/oneios-tool/README.md`, "The session's own commands"; stand-in tested, not run on the phone): it ends the
@@ -365,13 +365,30 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   (`source` `<stage>/data/data.img`, `boot` `last`), and for Make iOS image root's `begin image`, then
   `make-image` with `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`, `ids_list`
   `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
-  with those four fields of `make-image`'s `ok`. **`make-image` is not in the tool yet**: the fork's request to the
-  Rust side is its step list (`download` of the released `xnu.macho`, `fetch` of the profile's IPSW members from
-  Apple's URL, `im4p`, `apfs-copy`, `tweaks`, `prelink` with the audit and `stubs-check`, the `receive`-style lists),
-  one `space` event before it writes, and those four result fields. Until then the tool answers `refused`
-  `unknown`; the app then also sends `tweaks` (refused `not-ported`: the root tweaks are still Python) and shows both
-  answers in the tool's words, and stages nothing. Not in the tool either: `scripts/image/build.sh`'s order and checks,
-  the AEA decryption.
+  with those four fields of `make-image`'s `ok`.
+  **`make-image` is in the tool since 2026-11-21** (`tools/oneios-tool/README.md`, "serve" (the commands) and
+  "image build"): the request the app sends is taken as it is, no key of it changed. It fetches the profile's
+  members itself (resumable, `resume` defaults to true; the app's `fetch` before it is then only a quicker first
+  pass and may stay), decrypts, copies `/private/var` with the tool's own APFS reader, packs the seed, prelinks the
+  staged runtime's `kernel/xnu.macho` (`runtime.json` `kernel.path`) with Apple's kernelcache and the pairing files
+  in `<stage>/kb/` (the audit and `stubs-check` decide), writes `manifest.json`, checks the set (`verify`) and writes
+  `image.new.sha256` and `image.new.ids` whole (sorted, `manifest.json` included, the lines root's `receive` writes).
+  Events: the steps of `start` (`check`, `directory`, `download`, `decrypt`, `place`, `data`, `tweaks`, `seed`,
+  `kernelcache`, `kernel-check` ... `kernel-place`, `manifest`, `verify`, `lists`), **one `space` event** at `check`
+  (`refused` `space` before anything is fetched or written), `progress` with bytes, `paused`/`resumed` (it is
+  pausable). `ok`: `files`, `format`, `version`, `build` (root's four), and `out`, `bytes`, `manifest_sha256`,
+  `seed_sha256`, `kernel_sha256`. A cancel or a failure leaves `image.new` empty and both lists empty, removes
+  `make/build/`, keeps `make/inputs/`.
+  **What the app has to do for it:** (1) write the pairing files into `kb/` (root's `kbinput` ×12, as Update the
+  kernel does) before `make-image`, or it is refused `not-found` naming them; (2) stage a runtime with a kernel
+  (v0.1.12 or newer), or it is refused `not-found` ("the staged runtime has no kernel"). **Until the root tweaks and
+  the AEA decryption are in the tool** the request is refused `not-ported` at `check`, before anything is fetched
+  or written: `step decrypt: the AEA decryption is not in this tool yet ...` (an OS or SystemOS image to decrypt),
+  then `step tweaks: the root tweaks are not in this tool yet ...`. `"tweaks": false` makes a set without the root
+  tweaks (as `build.sh --no-hook`; whether such a set boots was not tried, the tweaks turn off launchd jobs the guest is known to need off): for tests only, the app should not send it. The
+  app's `tweaks` request after `make-image` can go once `make-image` stops refusing. Optional keys the app need not
+  send: `profile` (default: the runtime's `lib/profiles/` when it holds one), `xnu`, `kb`, `kernelcache`, `kc`,
+  `no_kernel`, `fetch`, `source`, `keep_work`.
 - Make iOS image's first request is `fetch` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`
   (the package carries `profiles/` there; a package path has no comma), `indir` `<stage>/make/inputs` and `resume`.
 - Update the kernel (fork `53abb04`, not run on a phone; no PC needed): root's `status` and `kbinput` ×12, then in one

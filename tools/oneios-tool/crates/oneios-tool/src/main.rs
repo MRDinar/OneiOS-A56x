@@ -122,6 +122,11 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("sym") && args.get(2).map(String::as_str) == Some("kernel") {
         std::process::exit(oneios_ksym::run(&args[3..]));
     }
+    // `image build` (oneios-imagebuild: build.sh's steps in one process) is not one of imagetool.py's commands,
+    // whose command line `image` keeps as it was.
+    if args.get(1).map(String::as_str) == Some("image") && args.get(2).map(String::as_str) == Some("build") {
+        std::process::exit(oneios_imagebuild::main(&args[3..]));
+    }
     let status = match Top::try_parse_from(&args) {
         Ok(top) => match top.tool {
             Tool::Sym(cli) => oneios_sym::main(cli),

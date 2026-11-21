@@ -542,6 +542,7 @@ stage.
 | `tweaks` | H | | | **refused, `not-ported`:** the root tweaks are Python (`userland/roottweak`) and are not in the tool yet (todo_rust.md section 7, group 4) |
 | `prelink` | H | `kernel` (xnu.macho), `kernelcache`, `profile`, `reviewed`, `more_reviewed` (a list, optional), `pairs`, `stubs`, `xnuprelink` (the folder with XnuPrelink's files), `reference` (optional), `out` (a folder), `keep_work`, `oneios_commit`, `xnuprelink_commit` (for the record, optional) | `check`, `native-input`, `merge-reviewed`, `roots`, `hosted`, `match`, `align`, `kclasses`, `structors`, `vtables`, `emit`, `audit`, `stubs-check`, `record`, `hashes`, `place` | `prelink build`: the steps of `kernel/prelink/build.sh` in this process, in `OUT/work` (removed at the end unless `keep_work`); `kernel.kc`, its hash list and its three records are put into `OUT` only when the audit and the stub check pass (else `refused`, `audit`). A kernelcache that is not the profile's: `refused`, `mismatch`. `ok`: `kc`, `bytes`, `sha256` |
 | `stubs-check` | H | `kc` | `check` | `prelink stubs-check` alone; a bad stub: `refused`, `audit` |
+| `make-image` | H | `indir`, `out` (absent or an empty folder: root's `begin image` makes `image.new`), `work` (the build's own files go to `WORK/build`), `sums_list`, `ids_list` (the stage's lists, written whole; optional), and optionally `profile` (default: the staged runtime's `lib/profiles/` when it holds one, else the one `INDIR/inputs.json` names), `fetch` (default true), `source`, `resume` (default **true**: a stop keeps the fetch's parts), `tweaks` (default true: **refused `not-ported` until the root tweaks are in the tool**; false: the seed is the OS volume's own `/private/var`), `kc` (a `kernel.kc` to put in) or `no_kernel`, else `xnu` (default: the staged runtime's `runtime.json` `kernel.path`), `kb` (default `STAGE/kb`), `kernelcache` (default `KB/kernelcache.macho` when it is there, else the IPSW's member decoded), `keep_work`, `connections`, `give_up_s` | `check`, `directory`, `download`, `decrypt`, `place`, `data`, `tweaks`, `seed`, `kernelcache`, `kernel-check` ... `kernel-place` (`prelink build`'s sixteen), `manifest`, `verify`, `lists` | `image build` ("image build", below): the whole image set, `scripts/image/build.sh`'s steps in this process. **One `space` event** at `check`, for everything it writes (the fetch and the copies inside say none of their own); short: `refused`, `space`, before anything is fetched or written. An AEA image that must be decrypted: `refused`, `not-ported` (`step decrypt`) until the AEA decryption is in the tool. Pausable (`pause` holds the fetch at once and the build between steps). A stop or a failure removes `WORK/build`, the set's files and the lists' lines; INDIR keeps what was fetched. `ok`: `files` (the set's files with `manifest.json`: the lists' lines), `format`, `version`, `build` (root's `finish image <files> <format> <version> <build>`), `out`, `bytes`, `manifest_sha256`, `seed_sha256`, `kernel_sha256` |
 | `package-check` | H | `dir` | `check` | `package check`: no Apple file in a runtime folder (else `refused`, `apple-file`) |
 | `ioslog-boots` | H | `source` (the Data store's image, a `.logarchive`, a folder), `volume` | `read` | `ioslog boots`: `row` `boot`: `uuid`, `start`, `first`, `last`, `entries`; and the table as `line`s |
 | `ioslog-show` | H | `source`, `out` (a file; without it the entries come as `line`s), `format` (`text`, `csv`, `jsonl`), `boot`, `since`, `until`, `proc` (a list), `pid`, `subsystem`, `category`, `type`, `grep`, `sort`, `volume` | `read` | `ioslog show`. `row` `shown`: `entries` (written), `of` (read). `ok`: `entries`, and with a file `out`, `bytes` |
@@ -553,10 +554,10 @@ Not in `serve`: `phone` (the adb forms), `app`, `cycle` (they start `adb` or gra
 `apfs-fuse`: `serve` reads images with our reader only), `prelink hosted --x18` (it starts `llvm-mc`), and the
 prelink record's `git` (its two commits are the request's `oneios_commit` and `xnuprelink_commit`, or null).
 
-**Not in the tool at all yet,** so a whole image cannot be made on the phone by `serve` alone: the root tweaks
-(above), the steps of `scripts/image/build.sh` around them (the Data seed: `image tree-copy`, `seed-pack`,
-`manifest` are commands, the script that calls them is bash), and the decryption of the IPSW's AEA images (an
-outside program on the PC).
+**Not in the tool yet,** so a whole image cannot be made on the phone by `serve` alone today: the root tweaks
+(above) and the decryption of the IPSW's AEA images (an outside program on the PC). Their Rust ports are being
+written (docs/agents.md, Interfaces); `make-image` refuses with `not-ported` and the step's name until they land.
+The steps of `scripts/image/build.sh` around them are in the tool since 2026-11-21 (`make-image`, "image build").
 
 ### An example
 
@@ -1214,6 +1215,68 @@ What the numbers say:
   tree: sha256 `d9a7c0ae...` from each and from Python).
 - Not measured: macOS (APFS has no 256 MB hold-back; the Mac's numbers of the first round were 1.4-1.5 s Python
   against 0.56-0.98 s Rust).
+
+### image build: the whole set in one process (2026-11-21)
+
+`oneios-tool image build` is `scripts/image/build.sh` in one process, as `prelink build` is `kernel/prelink/build.sh`:
+the phone has no bash, no apfs-fuse and no Python, and `serve` starts no program. `serve`'s `make-image` request is
+this (crate `crates/oneios-imagebuild`). The steps, in build.sh's order and with its checks:
+
+| Step | What | build.sh's |
+|---|---|---|
+| `check` | the profile (`image profile --shell`, `--members`), the inputs that are there, the kernel's inputs, the set folder (absent or empty), and **one** room check for everything the build writes (`serve`: one `space` event). What the tool cannot do yet is refused here, before anything is fetched or written: `not-ported`, `step decrypt` (an AEA image to decrypt) and `step tweaks` (the root tweaks) | the tool and input checks at its top |
+| `directory`, `download` | `image fetch` of the profile's members into INDIR (resumable; a member that is there and whole is not fetched again; an AEA whose decrypted image `record-plain` recorded is not fetched) | `scripts/fetch/fetch.sh` before it |
+| `decrypt` | the AEA images into their plain images, then `record-plain` and the `.aea` removed. **Not in the tool yet** (agent "AEA decryption", docs/agents.md) | `ipsw fw aea` in fetch.sh |
+| `place` | the images and trust files into the set: hard links where the folder allows, else copies (`put`); each volume must pass `apfs-info` | `put`, `apfs-info` |
+| `data` | the OS volume's `/private/var` copied out with **our APFS reader** (`src/data.rs`), with tree-copy's meta file: the same folders (0700), files (0600, both times the source's whole seconds), links and meta entries, in tree-copy's order; the three xattrs that only say how APFS stores a file are left out, as tree-copy leaves them out | apfs-fuse (hdiutil on a Mac) and `tree-copy` |
+| `tweaks` | the root tweaks into the tree, the overlay and the owner rules. **Not in the tool yet** (agent "Port root tweaks to Rust"); `--no-tweaks` (`"tweaks": false`) builds without them | the userland hook |
+| `seed` | `seed-pack` into `data.seed`; the overlay into `overlay/` | `seed-pack`, `cp -R` |
+| `kernelcache` | Apple's kernelcache member decoded (`im4p`), unless one is given (`--kernelcache`, the stage's `kb/kernelcache.macho`) | `kernel-inputs.sh` |
+| `kernel-check` ... `kernel-place` | `prelink build` of the runtime's `kernel/xnu.macho` with it: its sixteen steps, the audit and `stubs-check` before `kernel.kc` is taken (`audit` refuses); unless a `kernel.kc` is given (`--kernel-kc`) | `kernel/prelink/build.sh`, then `--kernel FILE` |
+| `manifest`, `verify` | `manifest` (the hash lists too) and `verify` of the set, every chunk | the same |
+| `lists` | the stage's lists of the set (`SHA256  PATH` and `DEV:INODE:SIZE:MTIME PATH`, sorted, `manifest.json` included: what root's `receive` writes for an import), then the set into its folder | replacing `out/image/BUILD` |
+
+The image tool's commands run **in the process** (`oneios_image::run`, the standard output and error read back
+through a temporary file for the call: `src/cmd.rs`), so the files are the commands' own. A stop (a cancel, the heat
+and battery limits, the end of `serve`) or a failure removes what the build wrote: `WORK/build`, the set's files and
+the lists' new lines; the fetched members and the fetch's parts in INDIR stay (they are what a later run resumes).
+A `pause` holds the fetch's transfer at once and the build between any two steps.
+
+```sh
+oneios-tool image build PROFILE --indir DIR --out SET [--work DIR] [--no-fetch] [--source URL|FILE] [--resume] [--no-tweaks] \
+  (--kernel-kc FILE | --no-kernel | --xnu XNU (--kb KB | --repo CHECKOUT) [--kernelcache FILE|-]) [--sums-list F] [--ids-list F] [--keep-work] [-j N]
+# the PC: the v0.1.12 runtime's kernel, the pairing files as kernel/prelink/build.sh takes them, Apple's kernelcache decoded here
+oneios-tool image build 'profiles/ios-27.0.1-iPhone18,2.toml' --indir inputs/24A446 --out out/image/24A446-rust \
+  --no-tweaks --xnu RUNTIME/kernel/xnu.macho --repo . --kernelcache -
+```
+
+`--repo DIR` takes the pairing files of a OneiOS checkout (`kernel/unixnu/profiles/os/*-BUILD/profile.toml`,
+`kernel/prelink/reviewed-BUILD-v54.json`, `lead/` and `user/`, `pairs-BUILD.json`, `stubs-BUILD.json`, XnuPrelink as
+build.sh finds it); `--kb DIR` the stage's `kb/` as the OneOS app writes it (`profile.toml`, `reviewed.json`,
+`lead.json`, `user.json`, `pairs.json`, `stubs.json`, `match/`). Exit status: 0 done, 1 failed, 2 refused (the line
+says the code), 3 a wrong command line. The last lines say the set's files, bytes, the SHA-256 of `manifest.json`,
+`kernel.kc` and `data.seed`, the time and the peak memory (getrusage).
+
+**Compared (Linux PC, 2026-11-21; 20 CPUs, 30 GB RAM, NVMe, the images in the page cache).** Inputs: a hard-linked
+copy of `inputs/24A446` (the PC's own decrypted images: AEA is not in the tool yet), the v0.1.12 runtime package's
+`kernel/xnu.macho` (`326e2144...`), no root tweaks on both sides.
+
+| Way | Time | Peak memory | The set |
+|---|---|---|---|
+| `kernel/prelink/build.sh` (KERNEL= that xnu.macho), then `scripts/image/build.sh --kernel ... --no-hook --no-pack` | 15.0 s (the set; the prelink before it ~14 s) | not measured (no `time -v` on the box) | the reference |
+| `image build --no-fetch` (decodes the kernelcache, prelinks, builds) | 19.2 s, 53 s CPU | 1,066 MiB | **all 16 files the same SHA-256, `manifest.json` byte for byte, `kernel.kc` `276aadac...` = the prelink's** |
+| `image build` with the fetch from Apple's URL (the members there: the directory read and every member's CRC checked) | 29.8 s | 1,065 MiB | the same 16 files; `inputs.json` unchanged |
+| `serve` `make-image` with the app's keys and `"tweaks": false`, on a stand-in stage (the v0.1.12 runtime, the APK's `assets/kb/`, the members in `make/inputs`) | 37.6 s | | the same 15 files; `manifest.json` differs in one line, `profile.file`: the runtime package names the profile `ios-27.0.1-iPhone18-2.toml` (a package path has no comma), its SHA-256 is the same. One `space` event (need 3,202,307,260 bytes), the lists as `sums` reads them, `bye`: 1 thread, 0 children |
+
+Disk: the images are hard links (no room); the set's own new files are `data.seed` (1,231,912,960 bytes),
+`kernel.kc` (96,206,848) and the hash lists; the work folder holds the copied tree (1.2 GB, removed after the seed),
+the seed, the decoded kernelcache (78 MB) and the prelink's work while they run. The room asked: 3.2 GB.
+**Not run on the phone. Not run with the root tweaks or the AEA decryption** (not in the tool yet: `not-ported`).
+
+Tests: `tests/serve.rs` `make_image_*` (three, on a stand-in IPSW served by `rangeserve`: every refusal and that it
+writes nothing; one `space` event and the refusal when the room is short; pause, resume and cancel through the
+fetch, the next request going on from the part, and a failed step removing everything it wrote while the fetched
+members stay); `oneios-imagebuild`'s unit tests (the prelink's step names, the shell values, base64, the times).
 
 ## sym
 

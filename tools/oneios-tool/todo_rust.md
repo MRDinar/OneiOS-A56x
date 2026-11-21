@@ -641,6 +641,7 @@ Done:
 | What a step prints becomes `line` events (the process's own standard output and error are pipes it reads: `capture.rs`), so the tools' commands run as they are | done |
 | The threads: a rayon pool per request (`--jobs`, default the online CPUs, at most 8), nice 10 to 19 and never realtime, the heat and battery limits from the thermal bridge's named files (`oneios-common/src/job.rs`) | done; tested on stand-in files, **not on the phone** |
 | The commands: `download`, `zip-ls`, `zip-get`, `fetch`, `im4p`, `receive`, `sums`, `hashes`, `verify`, `apfs-ls`, `apfs-copy`, `prelink`, `stubs-check`, `package-check`, `ioslog-boots`, `ioslog-show`, `log-list`, `log`, `cpu`, `health`, `ping`, `wait` | done; each on stand-in inputs (`tests/serve.rs`), `sums`, `hashes`, `verify`, `apfs-copy`, `ioslog-*` and `prelink` also on the real set and kernel on the Linux PC |
+| `make-image` (`image build`): the whole image set, build.sh's steps in one process | done 2026-11-21 except its two `not-ported` steps (the root tweaks, the AEA decryption); 3 tests on a stand-in IPSW (`tests/serve.rs` `make_image_*`), and on the PC with 24A446's inputs: the same set as build.sh's (README "image build") |
 | `image apfs-copy` in threads | done: the same tree as before (README "image") |
 | `prelink build`: `build.sh`'s steps in one process, independent steps at the same time; the kexts' scans of `hosted` and `emit` in threads | done: the same `kernel.kc` and work files (README "prelink build") |
 | `oneios-tool --jobs N --nice N TOOL ...` for the commands that run alone | done |
@@ -657,9 +658,16 @@ Open, in the order they matter for "make the iOS image on the phone":
 2. **The root tweaks are Python** (`userland/roottweak`, group 4 of section 7; the owner has not agreed to the
    port). `serve`'s `tweaks` request answers `refused`, `not-ported`. Without them the phone cannot make the Data
    seed. A port must give the same seed byte for byte (the seed's SHA-256 is pinned in the image's trust list).
-3. **The image build's own script is bash** (`scripts/image/build.sh`: `tree-copy`, the hook, `seed-pack`,
-   `manifest`, the trust caches). Its steps are commands of the tool; the order and the checks between them are
-   not. They belong in one request (`image build`), as `prelink build` is for `kernel/prelink/build.sh`.
+3. **Done 2026-11-21: `image build` and `serve`'s `make-image`** (crate `oneios-imagebuild`; README "image build"):
+   build.sh's order and checks in one process, the fetch, the Data tree read with our APFS reader instead of a
+   mount, the prelink of the runtime's `kernel/xnu.macho` with the audit and `stubs-check`, the manifest, `verify`
+   and the stage's lists. On the PC the set is build.sh's, every file's SHA-256 and the manifest byte for byte
+   (without root tweaks on both sides). Left: its two `not-ported` steps (items 2 and 4: `tweaks_port()` and
+   `aea_decryptor()` in `oneios-imagebuild/src/lib.rs` are where they go in), a full run with them from Apple's
+   URL with nothing but the profile and the runtime, and the run on the phone. The image tool's commands are
+   called through `oneios_image::run` with their output read back (`src/cmd.rs`), because oneios-image exposes no
+   library call for `profile`, `seed-pack`, `manifest` and `record-plain`; public functions for them would be
+   cleaner (asked on the board).
 4. **The IPSW's AEA images are decrypted by an outside program** on the PC. Not in the tool.
 5. **The prelink's time is in the steps' own serial work**, not in what was put into threads. CPU per step on the
    Linux PC: `match` 3.9 s, `emit` 2.0 s, `align` 1.2 s and 0.9 s, `audit` 1.2 s, `record` 0.9 s, `hosted` 0.7 s,

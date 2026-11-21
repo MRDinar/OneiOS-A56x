@@ -47,6 +47,7 @@ pub static ALL: &[Spec] = &[
     Spec { name: "apfs-copy", heavy: true, pausable: false, steps: &[("scan", "Reading the volume"), ("copy", "Copying the files"), ("place", "Putting the folder in place")], run: apfs_copy },
     Spec { name: "tweaks", heavy: true, pausable: false, steps: &[], run: tweaks },
     Spec { name: "prelink", heavy: true, pausable: false, steps: &oneios_prelink::build::STEPS, run: prelink },
+    Spec { name: "make-image", heavy: true, pausable: true, steps: &oneios_imagebuild::STEPS, run: make_image },
     Spec { name: "stubs-check", heavy: true, pausable: false, steps: &[("check", "Checking the stubs")], run: stubs_check },
     Spec { name: "package-check", heavy: true, pausable: false, steps: &[("check", "Checking the runtime's files")], run: package_check },
     Spec { name: "ioslog-boots", heavy: true, pausable: false, steps: &[("read", "Reading iOS's log")], run: ioslog_boots },
@@ -65,6 +66,10 @@ pub fn find(name: &str) -> Option<&'static Spec> {
 pub fn hooks() {
     let _ = oneios_image::apfs_tools::SPACE_CHECK.set(Box::new(|path, need| {
         let Some(sink) = NOW.lock().unwrap().clone() else { return Ok(()) };
+        // (`make-image` asked for all of its room before it began)
+        if sink.space_asked.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         space_for(&sink, path, need).map_err(|fail| {
             *sink.refusal.lock().unwrap() = Some(fail);
             oneios_image::Fail::Error("not enough free space".into())
@@ -964,4 +969,137 @@ fn cpu(rq: &Rq) -> Result<Done, Fail> {
     rq.req.done()?;
     let cpus = oneios_phone::local::cpu(&rq.cx.sys_root, &rq.cx.stage).map_err(|e| Fail::refused("not-found", format!("{e:#}")))?;
     Ok(Done::new(format!("{cpus} CPUs")).f("cpus", cpus))
+}
+
+// ---------------------------------------------------------------- the whole image set
+
+/// The IPSW profile of a stage's runtime (`runtime/lib/profiles/`): the only one there, else the one the fetch's
+/// `inputs.json` names.
+fn stage_profile(stage: &str, indir: &str) -> Result<String, Fail> {
+    let dir = format!("{stage}/runtime/lib/profiles");
+    let mut found: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".toml")).collect();
+    found.sort();
+    let named = std::fs::read_to_string(format!("{indir}/inputs.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["profile"].as_str().map(|s| s.replace(',', "-")));
+    match (found.len(), named) {
+        (1, _) => Ok(format!("{dir}/{}", found[0])),
+        (_, Some(name)) if found.contains(&name) => Ok(format!("{dir}/{name}")),
+        (0, _) => Err(Fail::refused("not-found", format!("{dir} holds no profile: give \"profile\" (the staged runtime is older than the profiles in it)"))),
+        _ => Err(Fail::usage(format!("make-image: {dir} holds {} profiles: give \"profile\"", found.len()))),
+    }
+}
+
+/// The staged runtime's kernel (`runtime.json`'s `kernel.path`, below the runtime).
+fn stage_kernel(stage: &str) -> Result<String, Fail> {
+    let json = format!("{stage}/runtime/runtime.json");
+    let text = std::fs::read_to_string(&json).map_err(|e| Fail::refused("not-found", format!("{json}: {e}")))?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| Fail::refused("mismatch", format!("{json}: {e}")))?;
+    match v["kernel"]["path"].as_str() {
+        Some(path) if !path.starts_with('/') && !path.split('/').any(|p| p == "..") => Ok(format!("{stage}/runtime/{path}")),
+        _ => Err(Fail::refused("not-found", "the staged runtime has no kernel (runtime.json \"kernel\" is null): stage a runtime with one (v0.1.12 or newer), or give \"kc\"")),
+    }
+}
+
+/// The whole image set (`image build`): scripts/image/build.sh's steps in this process (README "make-image").
+fn make_image(rq: &Rq) -> Result<Done, Fail> {
+    use oneios_imagebuild::{Args, Kernel, Prelink, Stop};
+    let stage = rq.cx.stage.trim_end_matches('/').to_string();
+    let indir = rq.write_path("indir")?;
+    let out = rq.write_path("out")?;
+    let work = rq.write_path("work")?;
+    let profile = match rq.req.opt_str("profile")? {
+        Some(_) => rq.existing("profile")?,
+        None => stage_profile(&stage, &indir)?,
+    };
+    let source = match rq.req.opt_str("source")? {
+        Some(_) => Some(source_of(rq, "source")?),
+        None => None,
+    };
+    let fetch = rq.req.opt_flag("fetch")?.unwrap_or(true);
+    let resume = rq.req.opt_flag("resume")?.unwrap_or(true);
+    let tweaks = rq.req.opt_flag("tweaks")?.unwrap_or(true);
+    let keep_work = rq.req.flag("keep_work")?;
+    let no_kernel = rq.req.flag("no_kernel")?;
+    let kc = match rq.req.opt_str("kc")? {
+        Some(_) => Some(rq.existing("kc")?),
+        None => None,
+    };
+    let xnu = match rq.req.opt_str("xnu")? {
+        Some(_) => Some(rq.existing("xnu")?),
+        None => None,
+    };
+    let kb = match rq.req.opt_str("kb")? {
+        Some(_) => rq.read_path("kb")?,
+        None => format!("{stage}/kb"),
+    };
+    let kernelcache = match rq.req.opt_str("kernelcache")? {
+        Some(_) => Some(rq.existing("kernelcache")?),
+        None => None,
+    };
+    let lists: Vec<Option<String>> = ["sums_list", "ids_list"].into_iter().map(|key| rq.req.opt_str(key).and_then(|given| given.map(|_| rq.write_path(key)).transpose())).collect::<Result<_, _>>()?;
+    let connections = net_keys(rq, true)?;
+    rq.req.done()?;
+    let kernel = match (kc, no_kernel) {
+        (Some(_), true) => return Err(Fail::usage("make-image: \"kc\" or \"no_kernel\", not both")),
+        (Some(kc), false) => Kernel::Kc(kc),
+        (None, true) => Kernel::None,
+        (None, false) => {
+            let xnu = match xnu {
+                Some(xnu) => xnu,
+                None => stage_kernel(&stage)?,
+            };
+            let mut prelink = Prelink::from_kb(&xnu, &kb);
+            if kernelcache.is_some() {
+                prelink.kernelcache = kernelcache;
+            }
+            Kernel::Prelink(prelink)
+        }
+    };
+    let args = Args {
+        profile,
+        indir,
+        out: out.clone(),
+        work,
+        fetch,
+        source,
+        connections,
+        resume,
+        tweaks,
+        kernel,
+        sums_list: lists[0].clone(),
+        ids_list: lists[1].clone(),
+        keep_work,
+    };
+    // the one `space` event: the whole build's room; the fetch and the copies inside say none of their own
+    let refusal: Mutex<Option<Fail>> = Mutex::new(None);
+    let space = |path: &Path, need: u64| -> Result<(), String> {
+        let asked = rq.space(path, need);
+        rq.sink.space_asked.store(true, Ordering::SeqCst);
+        asked.map_err(|fail| {
+            let text = match &fail {
+                Fail::Refused(_, text) | Fail::Failed(_, text) => text.clone(),
+            };
+            *refusal.lock().unwrap() = Some(fail);
+            text
+        })
+    };
+    let built = oneios_imagebuild::build(&args, &space).map_err(|stop| match stop {
+        Stop::Refused("space", text) => refusal.lock().unwrap().take().unwrap_or_else(|| Fail::refused("space", text)),
+        Stop::Refused(code, text) => Fail::refused(code, text),
+        Stop::Failed(text) => Fail::failed(text),
+        Stop::Fetch(text) => net_fail(text),
+        Stop::Stopped(stop) => stopped(stop),
+    })?;
+    let mut done = Done::new(format!("iOS {} ({}): {} files, {}, checked", built.version, built.build, built.files, size_text(built.bytes)))
+        .f("files", built.files)
+        .f("format", built.format)
+        .f("version", built.version.as_str())
+        .f("build", built.build.as_str())
+        .f("out", out.as_str())
+        .f("bytes", built.bytes)
+        .f("manifest_sha256", built.manifest_sha256.as_str())
+        .f("seed_sha256", built.seed_sha256.as_str());
+    if let Some(sha) = &built.kernel_sha256 {
+        done = done.f("kernel_sha256", sha.as_str());
+    }
+    Ok(done)
 }

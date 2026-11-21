@@ -5,7 +5,10 @@ Owner: image-build. Code: `profiles/`, `scripts/fetch/`, `scripts/image/`. Tests
 The image set is to OneiOS what `system.raw` plus its overlays are to OneOS: the guest system, built on the
 owner's machine from the vendor's firmware, pinned by size and SHA-256, staged in a folder on the phone. For
 OneOS the firmware is an Android OTA and the builder is MysticGSI. Here it is Apple's restore file (IPSW) for
-iPhone18,2, iOS 27.0.1 (24A446), and the builder is `scripts/image/build.sh`.
+iPhone18,2, iOS 27.0.1 (24A446), and the builder is `scripts/image/build.sh`, or the same steps in one process,
+`oneios-tool image build` (`serve`'s `make-image`, which the OneOS app runs on the phone: no PC; since 2026-11-21,
+without the root tweaks and the AEA decryption until their Rust ports land; tools/oneios-tool/README.md "image
+build"). Both give the same set from the same inputs, file for file.
 
 Nothing of the set is in git or in a release: it is Apple's software. A release carries the scripts; each
 owner fetches from Apple and builds.
@@ -278,7 +281,10 @@ unpacked set and each image against its hash list; both are tested against tampe
 ## 8. Building: tools, and what needs macOS
 
 The same commands on Linux and on macOS; neither needs root. `build.sh` picks the way to read the images by
-`uname -s`.
+`uname -s`. `oneios-tool image build` mounts nothing on any system: it reads `/private/var` with the tool's own APFS
+reader (the owners, modes, times and xattrs from the volume's records, the files' contents from its extents,
+compressed files decoded) and writes the tree and the meta file `tree-copy` writes from a mount; on 24A446 its seed
+is build.sh's (Linux, apfs-fuse) byte for byte.
 
 | Step | Linux | macOS |
 | --- | --- | --- |

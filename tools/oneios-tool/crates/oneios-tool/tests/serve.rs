@@ -68,7 +68,13 @@ const LONG: Duration = Duration::from_secs(60);
 
 impl Serve {
     fn start(b: &Box, options: &[&str]) -> Serve {
+        Serve::start_env(b, options, &[])
+    }
+
+    /// With more variables in its environment (`ONEIOS_SERVE_TEST_FREE`).
+    fn start_env(b: &Box, options: &[&str], env: &[(&str, &str)]) -> Serve {
         let mut child = Command::new(tool())
+            .envs(env.iter().copied())
             .arg("serve")
             .args(["--stage", &b.stage(""), "--sys-root", &b.top.join("sys").to_string_lossy()])
             .args(options)
@@ -223,7 +229,7 @@ fn hello_ping_and_the_end_of_the_pipe() {
     assert_eq!((hello["idle"].as_u64(), hello["battery_min"].as_u64()), (Some(300), Some(10)));
     assert_eq!(hello["thermal"], json!([44.0, 46.0, 45.0, 50.0]));
     let cmds: Vec<&str> = hello["cmds"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
-    for cmd in ["ping", "health", "cancel", "wait", "download", "zip-ls", "zip-get", "fetch", "im4p", "receive", "sums", "hashes", "verify", "apfs-ls", "apfs-copy", "tweaks", "prelink", "stubs-check", "package-check", "ioslog-boots", "ioslog-show", "log-list", "log", "cpu"] {
+    for cmd in ["ping", "health", "cancel", "wait", "download", "zip-ls", "zip-get", "fetch", "im4p", "receive", "sums", "hashes", "verify", "apfs-ls", "apfs-copy", "tweaks", "prelink", "make-image", "stubs-check", "package-check", "ioslog-boots", "ioslog-show", "log-list", "log", "cpu"] {
         assert!(cmds.contains(&cmd), "hello's cmds have no {cmd}: {cmds:?}");
     }
     let ok = s.ask(json!({"id": "p-1", "cmd": "ping"}));
@@ -1492,4 +1498,203 @@ fn the_one_shot_commands_take_jobs_and_nice() {
         assert_eq!(done.status.code(), Some(2), "{words:?}");
         assert!(String::from_utf8_lossy(&done.stderr).contains(said), "{words:?}: {}", String::from_utf8_lossy(&done.stderr));
     }
+}
+
+// ---------------------------------------------------------------- make-image (the whole image set)
+
+/// A stand-in IPSW for `make-image` (nothing of Apple's): generated members, a BuildManifest with the build identity
+/// the profile asks for, and the profile that pins every member's size and CRC-32. With `aea` the OS and SystemOS
+/// members are AEA files (`.aea`), as in a real profile. The OS member is noise of `os_len` bytes, so a build gets
+/// past the fetch and stops at the place step's APFS check. Returns (the IPSW's folder, its file name, the profile).
+fn stand_in_ipsw(b: &Box, os_len: usize, aea: bool) -> (PathBuf, String) {
+    let x = if aea { ".aea" } else { "" };
+    let mut members: Vec<(&str, String, Vec<u8>)> = vec![
+        ("os", format!("001-00001-001.dmg{x}"), noise(os_len, 31)),
+        ("systemos", format!("001-00002-001.dmg{x}"), noise(70_000, 32)),
+        ("app", "001-00003-001.dmg".into(), noise(32_768, 33)),
+        ("trust-static", format!("Firmware/001-00001-001.dmg{x}.trustcache"), noise(100, 34)),
+        ("trust-system", format!("Firmware/001-00002-001.dmg{x}.trustcache"), noise(100, 35)),
+        ("trust-app", "Firmware/001-00003-001.dmg.trustcache".into(), noise(100, 36)),
+        ("roothash-os", format!("Firmware/001-00001-001.dmg{x}.root_hash"), noise(100, 37)),
+        ("roothash-system", format!("Firmware/001-00002-001.dmg{x}.root_hash"), noise(100, 38)),
+        ("roothash-app", "Firmware/001-00003-001.dmg.root_hash".into(), noise(100, 39)),
+        ("kernelcache", "kernelcache.release.t1".into(), noise(4000, 40)),
+        ("devicetree", "Firmware/all_flash/DeviceTree.t1ap.im4p".into(), noise(200, 41)),
+    ];
+    let components = [("os", "OS"), ("systemos", "Cryptex1,SystemOS"), ("app", "Cryptex1,AppOS"), ("trust-static", "StaticTrustCache"), ("trust-system", "Cryptex1,SystemTrustCache"), ("trust-app", "Cryptex1,AppTrustCache"), ("roothash-os", "SystemVolume"), ("roothash-system", "Cryptex1,SystemVolume"), ("roothash-app", "Cryptex1,AppVolume"), ("kernelcache", "KernelCache"), ("devicetree", "DeviceTree")];
+    let manifest: String = components
+        .iter()
+        .map(|(role, name)| format!("<key>{name}</key><dict><key>Info</key><dict><key>Path</key><string>{}</string></dict></dict>", members.iter().find(|m| m.0 == *role).unwrap().1))
+        .collect();
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>ProductVersion</key><string>0.0.1</string><key>ProductBuildVersion</key><string>0T1</string><key>SupportedProductTypes</key><array><string>iTest1,1</string></array><key>BuildIdentities</key><array><dict><key>ApChipID</key><string>0x1234</string><key>ApBoardID</key><string>0x02</string><key>Info</key><dict><key>DeviceClass</key><string>t1ap</string><key>RestoreBehavior</key><string>Erase</string></dict><key>Manifest</key><dict>{manifest}</dict></dict></array></dict></plist>"
+    );
+    members.push(("buildmanifest", "BuildManifest.plist".into(), plist.into_bytes()));
+    members.push(("restore", "Restore.plist".into(), b"<plist/>".to_vec()));
+    let zip: Vec<(&str, &[u8])> = members.iter().map(|(_, path, data)| (path.as_str(), data.as_slice())).collect();
+    b.put("web/stand-in.ipsw", &zip_of(&zip));
+    let pins: String = members
+        .iter()
+        .map(|(role, path, data)| format!("[[member]]\nrole = \"{role}\"\npath = \"{path}\"\nsize = {}\ncrc32 = \"{:08x}\"\n{}", data.len(), crc32(data), if aea && path.ends_with(".aea") { "aea = true\n" } else { "" }))
+        .collect();
+    let profile = format!(
+        "schema = 1\n[os]\nname = \"ios-0.0.1-0T1-iTest1,1\"\nversion = \"0.0.1\"\nbuild = \"0T1\"\ndevice = \"iTest1,1\"\nboard = \"t1ap\"\nchip_id = 0x1234\nboard_id = 0x02\narch = \"arm64e\"\n[ipsw]\nurl = \"https://example.invalid/iTest.ipsw\"\nsize = 12345\nsha256 = \"{}\"\nneed_gib = 0\n{pins}[image]\nformat = 1\nid = \"ios-0.0.1-0T1-iTest1-1\"\nstage = \"/data/local/tmp/oneios/image\"\narchive = \"OneiOS_test.tar.zst\"\nchunk = 4096\nseed = \"data.seed\"\nkernel = \"kernel.kc\"\n[image.files]\nos = \"os.img\"\nsystemos = \"systemos.img\"\napp = \"app.img\"\ntrust-static = \"trust/static.trustcache\"\ntrust-system = \"trust/system.trustcache\"\ntrust-app = \"trust/app.trustcache\"\nroothash-os = \"trust/os.root_hash\"\nroothash-system = \"trust/system.root_hash\"\nroothash-app = \"trust/app.root_hash\"\n[data]\nvolume_uuid = \"11111111-2222-3333-4444-555555555555\"\nepoch = 1700000000\n",
+        "00".repeat(32)
+    );
+    let path = b.put(&format!("stage/runtime/lib/profiles/test{}.toml", if aea { "-aea" } else { "" }), profile.as_bytes());
+    (b.top.join("web"), path)
+}
+
+/// What root's `begin image` leaves: an empty `image.new` and two empty lists.
+fn begin_image(b: &Box) {
+    let _ = std::fs::remove_dir_all(b.stage("image.new"));
+    std::fs::create_dir_all(b.stage("image.new")).unwrap();
+    std::fs::write(b.stage("image.new.sha256"), b"").unwrap();
+    std::fs::write(b.stage("image.new.ids"), b"").unwrap();
+}
+
+/// The `make-image` request the OneOS app sends (oneos/interface.md section 9), with more keys.
+fn make_image(b: &Box, id: &str, more: Value) -> Value {
+    let mut request = json!({"id": id, "cmd": "make-image", "indir": b.stage("make/inputs"), "out": b.stage("image.new"), "sums_list": b.stage("image.new.sha256"), "ids_list": b.stage("image.new.ids"), "work": b.stage("make")});
+    for (k, v) in more.as_object().unwrap() {
+        request[k] = v.clone();
+    }
+    request
+}
+
+/// Nothing of a build that did not end well is left: the set folder empty, the lists empty, no work folder.
+fn nothing_left(b: &Box, what: &str) {
+    assert_eq!(std::fs::read_dir(b.stage("image.new")).unwrap().count(), 0, "{what}: image.new is empty");
+    assert_eq!(std::fs::read(b.stage("image.new.sha256")).unwrap(), b"", "{what}");
+    assert_eq!(std::fs::read(b.stage("image.new.ids")).unwrap(), b"", "{what}");
+    assert!(!Path::new(&b.stage("make/build")).exists(), "{what}: no work folder");
+}
+
+#[test]
+fn make_image_refuses_what_it_cannot_do_yet_and_writes_nothing() {
+    let b = Box::new("make-refusals");
+    let (_, profile) = stand_in_ipsw(&b, 9000, false);
+    let (_, aea_profile) = stand_in_ipsw(&b, 9000, true);
+    let kc = b.put("stage/kb/kernel.kc", &noise(5000, 42));
+    // a staged runtime with a kernel, as v0.1.12's (no pairing files in kb/: the prelink's inputs are missing)
+    b.put("stage/runtime/runtime.json", br#"{"format": 1, "kernel": {"path": "kernel/xnu.macho"}}"#);
+    b.put("stage/runtime/kernel/xnu.macho", &noise(4096, 43));
+    begin_image(&b);
+    let mut s = Serve::start(&b, &[]);
+    for (more, code, words) in [
+        // the app's own request: the AEA images must be decrypted, which the tool cannot do yet
+        (json!({"profile": aea_profile}), "not-ported", "step decrypt"),
+        (json!({"profile": profile}), "not-ported", "step tweaks"),
+        // with the runtime's profiles/ holding two, the request must name one
+        (json!({"tweaks": false}), "usage", "give \"profile\""),
+        (json!({"profile": profile, "tweaks": false}), "not-found", "the kernel's inputs are missing"),
+        (json!({"profile": profile, "tweaks": false, "kc": kc, "fetch": false}), "not-found", "missing inputs"),
+        (json!({"profile": profile, "tweaks": false, "kc": kc, "no_kernel": true}), "usage", "not both"),
+        (json!({"profile": profile, "tweaks": false, "out": b.top.join("elsewhere").to_string_lossy()}), "outside", "outside the stage"),
+        (json!({"profile": profile, "tweaks": "no"}), "usage", "true or false"),
+    ] {
+        let last = s.ask(make_image(&b, "m", more.clone()));
+        assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some(code)), "{more}: {last}");
+        assert!(last["text"].as_str().unwrap().contains(words), "{more}: {last}");
+        nothing_left(&b, &more.to_string());
+    }
+    // a set folder that is not empty
+    b.put("stage/image.new/old", b"x");
+    let last = s.ask(make_image(&b, "m", json!({"profile": profile, "tweaks": false, "kc": kc, "fetch": false})));
+    assert_eq!(last["code"], "not-found", "the missing inputs are said first: {last}");
+    for m in ["001-00001-001.dmg", "001-00002-001.dmg", "001-00003-001.dmg", "001-00001-001.dmg.trustcache", "001-00002-001.dmg.trustcache", "001-00003-001.dmg.trustcache", "001-00001-001.dmg.root_hash", "001-00002-001.dmg.root_hash", "001-00003-001.dmg.root_hash"] {
+        b.put(&format!("stage/make/inputs/{m}"), b"stand-in");
+    }
+    let last = s.ask(make_image(&b, "m", json!({"profile": profile, "tweaks": false, "kc": kc, "fetch": false})));
+    assert_eq!((last["code"].as_str(), last["text"].as_str().map(|t| t.contains("not empty"))), (Some("exists"), Some(true)), "{last}");
+    assert_eq!(std::fs::read(b.stage("image.new/old")).unwrap(), b"x", "what was there stays");
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn make_image_asks_for_its_room_once_and_is_refused_when_it_is_short() {
+    let b = Box::new("make-space");
+    let (web, profile) = stand_in_ipsw(&b, 9000, false);
+    let kc = b.put("stage/kb/kernel.kc", &noise(5000, 42));
+    begin_image(&b);
+    let web = Web::start(&web);
+    let mut s = Serve::start_env(&b, &[], &[("ONEIOS_SERVE_TEST_FREE", "1000")]);
+    s.send(make_image(&b, "m", json!({"profile": profile, "tweaks": false, "kc": kc, "source": format!("http://127.0.0.1:{}/stand-in.ipsw", web.port)})));
+    let events = s.request("m");
+    let space = of(&events, "space");
+    assert_eq!(space.len(), 1, "one space event: {events:#?}");
+    assert!(space[0]["need"].as_u64().unwrap() > 1000 && space[0]["free"] == 1000 && space[0]["reserve"] == 268_435_456, "{}", space[0]);
+    let last = events.last().unwrap();
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("space")), "{last}");
+    assert!(last["text"].as_str().unwrap().contains("Not enough free space"), "{last}");
+    let steps: Vec<&str> = of(&events, "step").iter().map(|v| v["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, ["check"], "nothing after the check: {events:#?}");
+    nothing_left(&b, "space");
+    assert!(!Path::new(&b.stage("make/inputs")).exists(), "nothing was fetched");
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+}
+
+#[test]
+fn make_image_fetches_pauses_resumes_is_cancelled_and_goes_on() {
+    let b = Box::new("make-fetch");
+    // an OS member of 12 MiB on a slow line: the fetch is long enough to be paused and cancelled
+    let (web, profile) = stand_in_ipsw(&b, 12 << 20, false);
+    let kc = b.put("stage/kb/kernel.kc", &noise(5000, 42));
+    begin_image(&b);
+    let slow = Web::with(&web, None, &["--rate", "2500000"]);
+    let source = format!("http://127.0.0.1:{}/stand-in.ipsw", slow.port);
+    let mut s = Serve::start(&b, &["--jobs", "4"]);
+    let request = make_image(&b, "m1", json!({"profile": profile, "tweaks": false, "kc": kc, "source": source, "connections": 2}));
+    s.send(request);
+    let start = s.until(|v| v["id"] == "m1" && v["ev"] == "start").pop().unwrap();
+    let listed: Vec<&str> = start["steps"].as_array().unwrap().iter().map(|v| v["step"].as_str().unwrap()).collect();
+    assert_eq!(&listed[..4], ["check", "directory", "download", "decrypt"], "{start}");
+    assert!(listed.contains(&"kernel-audit") && listed.contains(&"kernel-stubs-check") && listed.ends_with(&["manifest", "verify", "lists"]), "{start}");
+    // the pause holds the fetch; the resume lets it go on
+    s.until(|v| v["id"] == "m1" && v["ev"] == "progress" && v["step"] == "download" && v["done"].as_u64().unwrap() >= 1_000_000);
+    s.send(json!({"cmd": "pause", "id": "m1"}));
+    let paused = s.until(|v| v["id"] == "m1" && v["ev"] == "paused").pop().unwrap();
+    assert_eq!(paused["step"], "download", "{paused}");
+    let mut quiet = Vec::new();
+    while let Some(line) = s.next_in(Duration::from_millis(1200)) {
+        quiet.push(line);
+    }
+    assert!(quiet.iter().all(|v| v["ev"] != "progress" && !is_last(v)), "nothing moves while it is paused: {quiet:#?}");
+    s.send(json!({"cmd": "resume", "id": "m1"}));
+    s.until(|v| v["id"] == "m1" && v["ev"] == "resumed");
+    // the cancel: what the build wrote goes, the fetched part stays for the next run
+    s.until(|v| v["id"] == "m1" && v["ev"] == "progress" && v["step"] == "download" && v["done"].as_u64().unwrap() >= paused["done"].as_u64().unwrap() + 500_000);
+    s.send(json!({"cmd": "cancel", "id": "m1"}));
+    let events = s.request("m1");
+    let last = events.last().unwrap();
+    assert_eq!((last["ev"].as_str(), last["by"].as_str()), (Some("cancelled"), Some("request")), "{last}");
+    assert_eq!(s.seen.iter().filter(|v| v["id"] == "m1" && v["ev"] == "space").count(), 1, "one space event");
+    nothing_left(&b, "cancel");
+    assert!(Path::new(&b.stage("make/inputs/001-00001-001.dmg.part")).exists(), "the part is kept for the next run");
+
+    // the next run goes on from the part, fetches the rest and stops at the place step: the OS member is no APFS
+    // image. Everything it wrote goes; the fetched members stay.
+    let port = slow.port;
+    drop(slow);
+    let fast = Web::with(&web, Some(port), &[]);
+    let request = make_image(&b, "m2", json!({"profile": profile, "tweaks": false, "kc": kc, "source": format!("http://127.0.0.1:{}/stand-in.ipsw", fast.port)}));
+    s.send(request);
+    let events = s.request("m2");
+    let last = events.last().unwrap();
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("failed"), Some("failed")), "{events:#?}");
+    assert!(last["text"].as_str().unwrap().contains("is not a raw APFS image"), "{last}");
+    assert!(of(&events, "line").iter().any(|v| v["text"].as_str().unwrap().starts_with("001-00001-001.dmg: going on from ")), "{events:#?}");
+    let steps: Vec<&str> = of(&events, "step").iter().map(|v| v["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, ["check", "directory", "download", "decrypt", "place"], "{events:#?}");
+    assert_eq!(of(&events, "space").len(), 1, "one space event, not one more of the fetch: {events:#?}");
+    nothing_left(&b, "failure");
+    assert_eq!(std::fs::metadata(b.stage("make/inputs/001-00001-001.dmg")).unwrap().len(), 12 << 20, "the fetched members stay");
+    assert!(Path::new(&b.stage("make/inputs/inputs.json")).is_file());
+    let (status, rest, stderr) = s.end(true);
+    assert_eq!((status, stderr.as_str()), (0, ""));
+    clean_bye(&rest, "eof");
 }

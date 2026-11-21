@@ -112,6 +112,10 @@ fn free_bytes(path: &Path) -> Option<(PathBuf, u64)> {
     while !at.exists() {
         at = at.parent()?;
     }
+    // (ONEIOS_SERVE_TEST_FREE=BYTES: the free bytes every volume has, for the tests of the `space` refusal)
+    if let Some(free) = std::env::var("ONEIOS_SERVE_TEST_FREE").ok().and_then(|v| v.parse().ok()) {
+        return Some((at.to_path_buf(), free));
+    }
     let c = std::ffi::CString::new(at.as_os_str().as_encoded_bytes()).ok()?;
     // Safety: statvfs fills the zeroed block it is given; the path is a C string.
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -132,6 +136,9 @@ pub struct ReqSink {
     refusal: Mutex<Option<Fail>>,
     /// The numbers of the last `progress` line (step, done, total, items done, items).
     last_progress: Mutex<Option<(String, u64, u64, u64, u64)>>,
+    /// The request asked for the room of all its work at once (`make-image`): the room checks of the commands it
+    /// runs inside (a fetch, a copy) say no `space` event of their own.
+    space_asked: std::sync::atomic::AtomicBool,
 }
 
 impl job::Sink for ReqSink {
@@ -358,7 +365,7 @@ fn run_one(shared: &Shared, req: Req) {
     let started = Instant::now();
     job::take_removed();
     let spec = cmds::find(&req.cmd).expect("only known commands are queued");
-    let sink = ReqSink { id: req.id.clone(), out: cx.out.clone(), steps: spec.steps, rows: Default::default(), refusal: Default::default(), last_progress: Default::default() };
+    let sink = ReqSink { id: req.id.clone(), out: cx.out.clone(), steps: spec.steps, rows: Default::default(), refusal: Default::default(), last_progress: Default::default(), space_asked: Default::default() };
     let sink = Arc::new(sink);
     let own = (|| -> Result<(usize, u64), Fail> {
         let jobs = match req.opt_u64("jobs")? {
