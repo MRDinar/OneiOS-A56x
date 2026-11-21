@@ -1279,6 +1279,7 @@ dependencies = [
  "oneios-tweaks",
  "rayon",
 ]
+
 [[package]]
 name = "oneios-ios"
 version = "0.1.0"
@@ -1298,7 +1299,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
 ]
-
 
 [[package]]
 name = "oneios-ioslog"
@@ -1336,10 +1336,10 @@ dependencies = [
  "anyhow",
  "clap",
  "flate2",
- "libc",
  "indexmap",
- "memmap2",
+ "libc",
  "lzma-rs",
+ "memmap2",
  "object",
  "oneios-common",
  "oneios-prelink",
@@ -1487,13 +1487,13 @@ dependencies = [
  "oneios-common",
  "oneios-image",
  "oneios-imagebuild",
+ "oneios-ios",
  "oneios-ioslog",
  "oneios-json",
  "oneios-kernel",
  "oneios-ksym",
  "oneios-log",
  "oneios-package",
- "oneios-ios",
  "oneios-phone",
  "oneios-prelink",
  "oneios-serve",

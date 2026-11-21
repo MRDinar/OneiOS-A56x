@@ -2737,6 +2737,10 @@ stale (`stage_tool` in `kernel/lib/stage.sh`; `ONEIOS_TOOL=PATH` for another bin
 | `kernel layout hid\|net [--kernelcache KC] [--prelink-report JSON] [--out FILE] [--repo CHECKOUT]` | `.../hid/layout.py`, `.../net/layout.py` | `hid_layout.rs`, `net_layout.rs`, `layout.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel port-legacy-display [--kernelcache KC] [--fixture JSON] [--classes JSON] [--out FILE] [--repo CHECKOUT]` | `.../display/port-legacy-display.py` | `port_legacy_display.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel compile-command RECORD SOURCE OBJECT [--repo CHECKOUT]` | new | `drivers_build.rs` | prints the compile command the archives are built with (it was the check of this crate's copy against `drivers/build.py`, which is retired: `drivers_build.rs` is the port now) |
+| `kernel hosted-series BOARD SERIES` | the first inline `python3` block of `kernel/build-hosted.sh` | `hosted_device.rs` | **retired 2026-11-21** (below, "The kernel build's last Python"): SERIES as the last entry of the device copy's `[kernel] patch_series` |
+| `kernel hosted-archives BOARD DEFCONFIG ENTRY...` | its second block | `hosted_device.rs` | **retired 2026-11-21**: the ENTRYs in place of the board's own archive entry; the hosted defconfig's six force-loads and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y` |
+| `kernel host-cc SETUP_TOOLCHAIN CLT CLANG` | the inline `python3` block of `kernel/linux/unixnu-layout.sh` (it imported UniXNU's `scripts/linux/setup-toolchain.py`) | `host_cc.rs` | **retired 2026-11-21**: `xnu-host-cc`, `unixnu-host-prefix.h` and `copyfile.h` from that file's text (read, never run) |
+| `kernel display-capture --session DIR [--out PREFIX] [--seconds N] [--every S]` | `kernel/patches/oneios-hosted/display/display-capture.py` | `display_capture.rs` | **retired 2026-11-21**: the PC viewer of xnuhost's `display.sock` (Linux); also reads half-float frames, which the script refused |
 
 Shared: `gen.rs` (where a generator runs, Python's file and process calls as the scripts used them, the steps every
 script repeated), `drivers_build.rs` (`drivers/build.py`: `record`, `command`, and since 2026-11-13 the whole script), `macho_object.rs` (a compiled
@@ -2784,10 +2788,6 @@ there (`DroidVMAudio.cpp`, `DroidVMVirtioNet.c`: the upstream file with the edit
 
 `tests/kernelgen/compare-python.sh WORK ENVFILE [NAME...]` (run at commit `a5b2d95`, the last with every script;
 deleted on 2026-11-21 with the last of the Python): in the tree of a finished hosted build, each generator ran twice in the same place, the Python
-| `kernel hosted-series BOARD SERIES` | the first inline `python3` block of `kernel/build-hosted.sh` | `hosted_device.rs` | **retired 2026-11-21** (below, "The kernel build's last Python"): SERIES as the last entry of the device copy's `[kernel] patch_series` |
-| `kernel hosted-archives BOARD DEFCONFIG ENTRY...` | its second block | `hosted_device.rs` | **retired 2026-11-21**: the ENTRYs in place of the board's own archive entry; the hosted defconfig's six force-loads and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y` |
-| `kernel host-cc SETUP_TOOLCHAIN CLT CLANG` | the inline `python3` block of `kernel/linux/unixnu-layout.sh` (it imported UniXNU's `scripts/linux/setup-toolchain.py`) | `host_cc.rs` | **retired 2026-11-21**: `xnu-host-cc`, `unixnu-host-prefix.h` and `copyfile.h` from that file's text (read, never run) |
-| `kernel display-capture --session DIR [--out PREFIX] [--seconds N] [--every S]` | `kernel/patches/oneios-hosted/display/display-capture.py` | `display_capture.rs` | **retired 2026-11-21**: the PC viewer of xnuhost's `display.sock` (Linux); also reads half-float frames, which the script refused |
 script and then the command, in the environment UniXNU's driver gave the archive step (`tests/kernelgen/save-env.sh`
 saves it from `/proc/PID/environ` while a build runs) and under the same `/usr/bin` shims. Every file either one
 writes is compared (`diff -r`: objects, archives, staged sources, generated sources, logs, JSON records, links), and
@@ -3195,16 +3195,6 @@ The images, the trust files and `kernel.kc` are the inputs, the same on both sid
 placed (2 CDHashes). The OS volume read from `os.img` (`ONEIOS_OS_IMAGE`) instead of apfs-fuse's mount: the same
 seed (`27ec4e10...` again), owner rules, summary, report and overlay.
 
-Tests: `cargo test -p oneios-tweaks`: the 38 cases of `userland/tests/test_roottweak.py` (`tests/roottweak.rs`, each
-named after the case it ports, on a Rust port of `fakeroot.py`) and 3 unit tests (property lists written and read back, Apple's binary `.GlobalPreferences.plist` among them;
-shlex); `tests/serve.rs` `tweaks_writes_what_the_hook_command_writes` (the request's files are the command's, byte for byte;
-its refusals; `bye`'s children 0).
-
-Different by design: the messages start with `oneios-tool image tweaks:` instead of `roottweak:`; an input Python
-ends with a traceback for (a non-string `CFBundleExecutable`, a dictionary key that is not a string) is refused
-with a message; a wrong command line ends with clap's usage (status 2, as argparse's).
-
-Not done: **a run on the phone** (as root under `serve`); the Mac (nothing was built or run there).
 **build.sh's record of the hook without Python** (2026-11-21). build.sh wrote the manifest's `tweaks` record
 (`hook`, `hook_sha256`, `commit`, `dirty`, `info`) with an inline Python block; it is `oneios-tool json set` and
 shell now (`relpath` for a `--hook FILE`, `sha256sum` or `shasum`), and `--seed apfs`'s edit of `seed.json` is
@@ -3217,3 +3207,12 @@ The binary of the shared checkout at that time, which had another agent's uncomm
 `oneios-tweaks` and `oneios-common` in it, gave another seed (`5406d527...`, 1,265,063,424 bytes) and another
 `tweaks.manifest.json` (`deacce95...`): those changes (the `tar` and `plist` crates in place of the Python-byte writers, the owner's decision: todo_rust.md section 11), not build.sh's.
 
+Tests: `cargo test -p oneios-tweaks`: the 38 cases of `userland/tests/test_roottweak.py` (deleted 2026-11-21;
+`tests/roottweak.rs`, each named after the case it ports, on a Rust port of `fakeroot.py`) and 3 unit tests (property lists written and read back, Apple's binary `.GlobalPreferences.plist` among them; shlex); `tests/serve.rs` `tweaks_writes_what_the_hook_command_writes` (the request's files are the command's, byte for byte;
+its refusals; `bye`'s children 0).
+
+Different by design: the messages start with `oneios-tool image tweaks:` instead of `roottweak:`; an input Python
+ends with a traceback for (a non-string `CFBundleExecutable`, a dictionary key that is not a string) is refused
+with a message; a wrong command line ends with clap's usage (status 2, as argparse's).
+
+Not done: **a run on the phone** (as root under `serve`); the Mac (nothing was built or run there).
