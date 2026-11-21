@@ -82,6 +82,12 @@ br_virtio_snd_create(base2, spi2, audio, audio_ctx);    // /arm-io/virtio-snd
 ```sh
 adb push build/android/bridgectl build/android/oneios-audio /data/local/tmp/
 adb shell su -c '/data/local/tmp/bridgectl cpu'
+adb shell su -c '/data/local/tmp/bridgectl haptic-inspect'          # read only: the FF devices' name, bits, slots
+adb shell su -c '/data/local/tmp/bridgectl haptic-hal-inspect'      # read only: the vibrator HAL's version, capabilities
+adb shell su -c '/data/local/tmp/bridgectl haptic-hal-primitives'   # read only: composition limits, primitives, presets
+adb shell su -c 'ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_BACKEND_HAPTICS=treble ONEIOS_HW_FALLBACK=0 /data/local/tmp/bridgectl haptic-native-inspect'
+adb shell su -c 'ONEIOS_HAPTIC_ACTIVE_TEST=1 /data/local/tmp/bridgectl haptic-hal-click'        # ONE perform(CLICK, MEDIUM)
+adb shell su -c 'ONEIOS_HAPTIC_ACTIVE_TEST=1 /data/local/tmp/bridgectl haptic-hal-heavy-click'  # ONE perform(HEAVY_CLICK, STRONG)
 adb shell su -c '/data/local/tmp/bridgectl haptic 200 1000'
 adb shell su -c '/data/local/tmp/bridgectl haptic-pattern'
 adb shell su -c '/data/local/tmp/bridgectl bt'            # with Bluetooth off in One UI's settings (see below)
@@ -97,6 +103,21 @@ controller is on (status 0)`, `state 1`, two events `<- type 4, 6 bytes: 0e 04 0
 bridge's own lines (`error: bluetooth: ...`) say which step failed: not registered / find denied, `initialize`
 refused, or no `initializationComplete` in 15 s (then look for `avc: denied` lines with `hal_bluetooth` in dmesg). `haptic`
 and `audio` are harmless beside One UI.
+
+The haptic checks (2026-11-21, from the S26 Ultra fork's a281001, 400de8d, 0930a44, a3c1c34, dc7e4a1 and 6d9decc):
+`haptic` and `haptic-pattern` now wait for the worker and exit 1 with `bridgectl: haptic failed (effects played=N,
+failed=M)` when the device rejected an effect or none played: before, they said `ok` while the S26 Ultra's
+`sec_vibrator_inputff` refused every `FF_SINE` upload (`EINVAL`). `haptic-inspect` opens each `/dev/input/event*`
+`O_RDONLY` for its name, `FF_PERIODIC`/`FF_SINE`/`FF_CUSTOM`/`FF_GAIN` bits and effect slots (no `FF_GAIN`, no upload, no
+play, no grab). `haptic-hal-inspect` and `haptic-hal-primitives` make only the vibrator HAL's getters (version,
+`getCapabilities`, the composition limits, `getSupportedPrimitives`, `getPrimitiveDuration`, `getSupportedEffects`).
+`haptic-native-inspect` opens the real haptics bridge on the treble backend with native impacts asked for and says
+whether TICK, CLICK and HEAVY_CLICK are there; it refuses without `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` or with
+`ONEIOS_HW_FALLBACK=1`, and closes without `off()`. `haptic-hal-click` and `haptic-hal-heavy-click` play exactly one
+preset, only with `ONEIOS_HAPTIC_ACTIVE_TEST=1` and only when the HAL lists it (no `off()` after: One UI's own vibration
+is not cut). Stand-in phone: `tools/oneios-tool/tests/phone/hw-backend.sh` (the fake vibrator HAL logs every motor call;
+the read-only commands must leave the log empty). The fork's results on the S26 Ultra (its README, not repeated here):
+`FF_SINE` upload `EINVAL`, HAL v3 capabilities `0x3c`, one `HEAVY_CLICK STRONG` felt as a clear tick. Not run on the S24.
 
 **Wi-Fi** (`build/android/wifictl`, `bin/wifictl` in the runtime package):
 

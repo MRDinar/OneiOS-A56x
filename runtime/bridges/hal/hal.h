@@ -41,7 +41,12 @@
 #define HAL_VIB_STRENGTH_STRONG 2                 // android.hardware.vibrator.EffectStrength.STRONG
 #define HAL_VIB_SUPPORTED_EFFECTS 5u              // getSupportedEffects(): Effect[] (read only)
 #define HAL_VIB_SET_AMPLITUDE 6u                  // setAmplitude(float 0 < a <= 1)
+#define HAL_VIB_COMPOSE_DELAY_MAX 8u              // getCompositionDelayMax(): int (read only)
+#define HAL_VIB_COMPOSE_SIZE_MAX 9u               // getCompositionSizeMax(): int (read only)
+#define HAL_VIB_SUPPORTED_PRIMITIVES 10u          // getSupportedPrimitives(): CompositePrimitive[] (read only)
+#define HAL_VIB_PRIMITIVE_DURATION 11u            // getPrimitiveDuration(CompositePrimitive): int (read only)
 #define HAL_VIB_CAP_AMPLITUDE 4                   // IVibrator.CAP_AMPLITUDE_CONTROL
+#define HAL_VIB_CAP_COMPOSE 32                    // IVibrator.CAP_COMPOSE_EFFECTS
 
 // ---- the connection -----------------------------------------------------------------------------
 typedef struct br_hal br_hal;

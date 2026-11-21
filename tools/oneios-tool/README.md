@@ -1606,9 +1606,9 @@ What each does:
     in the main checkout, or `ONEIOS_DSC_INDEX`). It is not line by line: the analysis is of the log so far.
 
 ```sh
-tools/oneios-tool/tests/phone/run.sh          # 234 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
+tools/oneios-tool/tests/phone/run.sh          # 258 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
                                               #   30 of them usb.sh: with a fork checkout that has --usb-watch (found as `app dir` finds it);
-                                              #   22 of them hw-backend.sh: the bridges' samsung and treble backends on stand-in
+                                              #   34 of them hw-backend.sh (12 the bridgectl haptic checks, 2026-11-21): the bridges' samsung and treble backends on stand-in
                                               #   phones, their host-built tools; docs/hardware.md 7e;
                                               #   12 of them serve.sh, 2026-11-15: `oneios-tool serve` on the stand-in's stage,
                                               #   its local forms against the adb forms, the refusals in a session); ALL OK
