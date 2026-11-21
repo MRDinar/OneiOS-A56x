@@ -54,7 +54,8 @@ static void test_host_device(void)
   mkdir(empty, 0755);
 
   // The table: the home device first; names unique; every entry matches by a model; its xnuhost settings are only the
-  // keys config.c merges as device defaults (gpu, hw-backend*: test_xnuhost checks each is taken), its environment
+  // keys config.c merges as device defaults (gpu, panel-fallback, hw-backend*: config.c's device_key; test_xnuhost
+  // checks each is taken), its environment
   // ones only variables a bridge reads. The S24 Ultra's entry holds nothing: its behaviour is today's.
   unsigned n = 0;
   const br_host_device *t = br_host_table(&n);
@@ -63,7 +64,8 @@ static void test_host_device(void)
     CHECK(t[i].name && t[i].label && t[i].models[0] && br_host_find(t[i].name) == &t[i]);
     for (unsigned j = 0; j < i; j++) CHECK(strcasecmp(t[i].name, t[j].name) != 0);
     for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].config[k]; k++)
-      CHECK(!strncmp(t[i].config[k], "gpu=", 4) || !strncmp(t[i].config[k], "hw-backend", 10));
+      CHECK(!strncmp(t[i].config[k], "gpu=", 4) || !strncmp(t[i].config[k], "panel-fallback=", 15) ||
+            !strncmp(t[i].config[k], "hw-backend", 10));
     for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].env[k]; k++) CHECK(!strncmp(t[i].env[k], "ONEIOS_BRIGHT_MAX=", 18));
   }
   CHECK(!t[0].config[0] && !t[0].env[0]);
