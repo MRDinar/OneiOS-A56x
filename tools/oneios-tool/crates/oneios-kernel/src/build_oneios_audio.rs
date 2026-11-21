@@ -42,7 +42,7 @@
 use crate::gen::{self, fail, Compile, Ctx};
 use crate::staged::{audio::AUDIO, OUTPUT_LATENCY};
 use anyhow::Result;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::path::{Path, PathBuf};
 
 const REQUIRED: [&str; 4] = ["_oneios_audio_start", "_droidvm_snd_start", "_droidvm_audio_attach", "__GLOBAL__sub_I_DroidVMAudio.cpp"];

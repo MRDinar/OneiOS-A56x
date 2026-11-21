@@ -190,7 +190,7 @@ fn the_manifest_needs_an_executable_xnuhost() {
     assert!(matches!(manifest(&root, "0.1.0", "00", "0", "0.4.80", "0"), Err(Stop::Refused(m)) if m == "bin/xnuhost is missing or not executable"));
     std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o700)).unwrap();
     manifest(&root, "0.1.0", "00", "1", "0.4.80", "0").unwrap();
-    let document = pyjson::load(root.join(MANIFEST)).unwrap();
+    let document = json::load(root.join(MANIFEST)).unwrap();
     let files = document.get("files").and_then(Value::as_list).unwrap();
     let listed: Vec<(&str, &str)> = files.iter().map(|f| (f.get("path").and_then(Value::as_str).unwrap(), f.get("mode").and_then(Value::as_str).unwrap())).collect();
     assert_eq!(listed, [("NOTICE", "0644"), ("bin/xnuhost", "0755")]);

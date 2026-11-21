@@ -11,7 +11,7 @@ use crate::plist::{py_eq, P};
 use crate::tree::{self, Change, Manifest, Owner, Tree, MOBILE, ROOT};
 use crate::Refused;
 use anyhow::{bail, Context as _, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use oneios_common::pyrepr::{repr_str, str_value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
@@ -185,18 +185,15 @@ fn version(cx: &mut Context) -> Result<()> {
 
 // ---- launchd jobs
 
-/// The cache, and whether it shares a container (then it is not written again).
-fn cache(cx: &Context) -> Result<(P, bool)> {
-    match cx.root.read_plist_shared(launchd::CACHE)? {
-        Some((Some(c @ P::Dict(_)), shared)) => Ok((c, shared)),
+/// The launchd job cache.
+fn cache(cx: &Context) -> Result<P> {
+    match cx.root.read_plist(launchd::CACHE, None)? {
+        Some(c @ P::Dict(_)) => Ok(c),
         _ => bail!(Refused(format!("{}: no launchd job cache in this root", launchd::CACHE))),
     }
 }
 
-fn write_root_binary(cx: &mut Context, path: &str, value: &P, shared: bool) -> Result<bool> {
-    if shared {
-        bail!(Refused(format!("root:{path}: a binary property list that refers to one container from two places; Python's plistlib would write it once and this writer twice, so it is not written again")));
-    }
+fn write_root_binary(cx: &mut Context, path: &str, value: &P) -> Result<bool> {
     cx.root.write_plist(&mut cx.m, path, value, ROOT, 0o644, true, None)
 }
 
@@ -223,7 +220,7 @@ fn launchd_jobs(cx: &mut Context) -> Result<()> {
             None => wanted.push((label, "by hand".into())),
         }
     }
-    let (mut cache, shared) = cache(cx)?;
+    let mut cache = cache(cx)?;
     let have = launchd::labels(&cache);
     let mut present: Vec<String> = wanted.iter().map(|(l, _)| l.clone()).filter(|l| have.contains(l)).collect();
     present.sort();
@@ -272,13 +269,13 @@ fn launchd_jobs(cx: &mut Context) -> Result<()> {
     let still: Vec<String> = present.iter().filter(|l| forced.contains(*l)).cloned().collect();
     if cx.rw {
         let gone = launchd::remove_jobs(&mut cache, &present);
-        write_root_binary(cx, launchd::CACHE, &cache, shared)?;
+        write_root_binary(cx, launchd::CACHE, &cache)?;
         cx.say(if gone.is_empty() { "kept" } else { "applied" }, "launchd cache", &format!("{} jobs taken out of {}", gone.len(), launchd::CACHE), None);
         for file in jetsam_files(cx)? {
-            let Some((Some(mut jetsam), shared)) = cx.root.read_plist_shared(&file)? else { continue };
+            let Some(mut jetsam) = cx.root.read_plist(&file, None)? else { continue };
             let labels = launchd::allow_disable(&mut jetsam);
             if !labels.is_empty() {
-                write_root_binary(cx, &file, &jetsam, shared)?;
+                write_root_binary(cx, &file, &jetsam)?;
             }
             let note = if labels.is_empty() { "no DisableAllowed = false".to_string() } else { format!("DisableAllowed = false removed from {} jobs", labels.len()) };
             cx.say(if labels.is_empty() { "kept" } else { "applied" }, tree::basename(&file), &note, None);
@@ -319,7 +316,7 @@ fn launchd_crash_policy(cx: &mut Context) -> Result<()> {
         cx.say("contract", "crash policy", "not editable on a sealed root: launchd restarts the guest after 3 crashes in 60 s of a RecoverOnCrash job", None);
         return Ok(());
     }
-    let (mut cache, shared) = cache(cx)?;
+    let mut cache = cache(cx)?;
     let mut renamed = 0;
     let mut jobs = launchd::jobs(&cache);
     jobs.sort();
@@ -331,7 +328,7 @@ fn launchd_crash_policy(cx: &mut Context) -> Result<()> {
         }
     }
     if renamed > 0 {
-        write_root_binary(cx, launchd::CACHE, &cache, shared)?;
+        write_root_binary(cx, launchd::CACHE, &cache)?;
     }
     cx.say(if renamed > 0 { "applied" } else { "kept" }, "_PanicOnCrash", &if renamed > 0 { format!("renamed in {renamed} jobs") } else { "no job has it".into() }, None);
     if cx.o.keep_recover_on_crash {
@@ -340,10 +337,10 @@ fn launchd_crash_policy(cx: &mut Context) -> Result<()> {
     }
     let mut total = BTreeSet::new();
     for file in jetsam_files(cx)? {
-        let Some((Some(mut jetsam), shared)) = cx.root.read_plist_shared(&file)? else { continue };
+        let Some(mut jetsam) = cx.root.read_plist(&file, None)? else { continue };
         let labels = launchd::drop_recover_on_crash(&mut jetsam, &RECOVER_LABELS);
         if !labels.is_empty() {
-            write_root_binary(cx, &file, &jetsam, shared)?;
+            write_root_binary(cx, &file, &jetsam)?;
             total.extend(labels);
         }
     }
@@ -472,7 +469,7 @@ fn host_services(cx: &mut Context) -> Result<()> {
     }
 
     if cx.rw {
-        let (mut cache, shared) = cache(cx)?;
+        let mut cache = cache(cx)?;
         let env_p = P::Dict(env.iter().map(|(k, v)| (k.to_string(), P::Str(v.clone()))).collect());
         let job = P::Dict(vec![
             ("Label".into(), P::Str(INIT_LABEL.into())),
@@ -492,7 +489,7 @@ fn host_services(cx: &mut Context) -> Result<()> {
             // launchd refuses a job whose program is not on the root file system (iOSPlus10 ios26-first-boot.md)
             install_binary(cx, false, &helpers.as_ref().unwrap().join("oneios-init"), INIT_ROOT_PATH, 0o755)?;
             let changed = launchd::add_daemon(&mut cache, INIT_LABEL, &job);
-            write_root_binary(cx, launchd::CACHE, &cache, shared)?;
+            write_root_binary(cx, launchd::CACHE, &cache)?;
             cx.root.write_plist(&mut cx.m, &format!("{}/{INIT_LABEL}.plist", launchd::DAEMONS_DIR), &job, ROOT, 0o644, false, None)?;
             cx.say(if changed { "applied" } else { "kept" }, "launchd job", &format!("{INIT_LABEL} runs /{INIT_ROOT_PATH}"), None);
         }
@@ -547,7 +544,7 @@ fn metal_plugin(cx: &mut Context) -> Result<()> {
     if !name.ends_with(".bundle") || !tree::is_file(&info_path) {
         bail!(Refused(format!("{source}: not a .bundle with an Info.plist")));
     }
-    let info = crate::plist::loads(&std::fs::read(&info_path)?).map_err(|e| anyhow::anyhow!("{}: {e}", info_path.display()))?.value.unwrap_or(P::Null);
+    let info = crate::plist::loads(&std::fs::read(&info_path)?).map_err(|e| anyhow::anyhow!("{}: {e}", info_path.display()))?;
     let executable = match info.get("CFBundleExecutable") {
         Some(P::Str(e)) if !e.is_empty() && tree::is_file(&src.join(e)) => e.clone(),
         _ => bail!(Refused(format!("{source}: Info.plist names no CFBundleExecutable that is in the bundle"))),

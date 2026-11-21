@@ -4,7 +4,7 @@
 use crate::adb::{last_lines, plain, Adb, BUSYBOX, STAGE};
 use crate::sparse;
 use anyhow::{anyhow, bail, Context, Result};
-use oneios_common::pyjson;
+use oneios_common::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -319,15 +319,15 @@ pub fn parse_image_sums(text: &str) -> BTreeMap<String, String> {
 
 /// The staged set's own record: its manifest.json and image.sha256 (the sums `stage image` and the app write when
 /// they stage a file). Read only, and cheap: nothing is hashed on the phone.
-pub fn phone_image_record(adb: &Adb) -> Result<(pyjson::Value, BTreeMap<String, String>)> {
+pub fn phone_image_record(adb: &Adb) -> Result<(json::Value, BTreeMap<String, String>)> {
     let text = adb.root_ok(&format!("cat {STAGE}/image/manifest.json\n"), "reading image/manifest.json")?;
-    let manifest = pyjson::parse(&text).map_err(|e| anyhow!("the phone's image/manifest.json: {e}"))?;
+    let manifest = json::parse(&text).map_err(|e| anyhow!("the phone's image/manifest.json: {e}"))?;
     let sums = adb.root_ok(&format!("cat {STAGE}/image.sha256\n"), "reading image.sha256")?;
     Ok((manifest, parse_image_sums(&sums)))
 }
 
 /// manifest.json's `files`: (path, sha256, size) of each entry.
-pub fn manifest_entries(manifest: &pyjson::Value) -> Result<Vec<(String, String, u64)>> {
+pub fn manifest_entries(manifest: &json::Value) -> Result<Vec<(String, String, u64)>> {
     let files = manifest.get("files").and_then(|f| f.as_list()).ok_or_else(|| anyhow!("manifest.json has no \"files\" list"))?;
     files
         .iter()
@@ -343,7 +343,7 @@ pub fn manifest_entries(manifest: &pyjson::Value) -> Result<Vec<(String, String,
 /// xnuhost refuses a set whose files are not the ones its manifest lists ("trust caches of /data/image: a file of
 /// the image set is not the one manifest.json lists", phone 2026-11-12 23:04: a manifest of another set was staged,
 /// and the session ended 2 s after One UI was stopped).
-pub fn manifest_problems(manifest: &pyjson::Value, sums: &BTreeMap<String, String>, skip: &[String]) -> Result<Vec<String>> {
+pub fn manifest_problems(manifest: &json::Value, sums: &BTreeMap<String, String>, skip: &[String]) -> Result<Vec<String>> {
     let mut problems = Vec::new();
     for (path, sha, _) in manifest_entries(manifest)? {
         if skip.contains(&path) {
@@ -390,7 +390,7 @@ pub fn manifest_for(adb: &Adb, dir: &str) -> Result<(String, Vec<String>)> {
         bail!("the phone's image set is not consistent apart from DIR's files; a new manifest would not fix it:\n  {}", problems.join("\n  "));
     }
     let mut changed = Vec::new();
-    if let Some(pyjson::Value::List(files)) = manifest.get_mut("files") {
+    if let Some(json::Value::List(files)) = manifest.get_mut("files") {
         for f in files.iter_mut() {
             let Some(path) = f.get("path").and_then(|p| p.as_str()).map(str::to_string) else { continue };
             if !local.contains(&path) {
@@ -401,11 +401,11 @@ pub fn manifest_for(adb: &Adb, dir: &str) -> Result<(String, Vec<String>)> {
             if f.get("sha256").and_then(|s| s.as_str()) != Some(sha.as_str()) {
                 changed.push(format!("{path} {} ({} bytes)", &sha[..16], bytes.len()));
             }
-            f.set("sha256", pyjson::Value::str(sha));
-            f.set("size", pyjson::Value::Int(bytes.len() as i128));
+            f.set("sha256", json::Value::str(sha));
+            f.set("size", json::Value::Int(bytes.len() as i128));
         }
     }
-    Ok((pyjson::dumps(&manifest, Some(2), false) + "\n", changed))
+    Ok((json::dumps(&manifest, Some(2), false) + "\n", changed))
 }
 
 /// `phone manifest DIR`: write the manifest for DIR's files (to --out, or print it); with `stage`, stage DIR's

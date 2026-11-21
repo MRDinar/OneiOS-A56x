@@ -32,7 +32,7 @@
 use crate::gen::{self, fail};
 use crate::layout::{self, Cache};
 use anyhow::{anyhow, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::PathBuf;

@@ -7,7 +7,7 @@ use crate::hashes::{self, HashList};
 use crate::profile::{self, check_set_path, Profile, FORMAT};
 use crate::py;
 use crate::{crash, err, Fail};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -246,7 +246,7 @@ pub fn make_manifest(
     let bytes: i128 = files.iter().map(|f| f.get("size").and_then(py::as_int).unwrap_or(0)).sum();
     m.set("files", Value::List(files));
     let path = py::join(setdir, "manifest.json");
-    fs::write(&path, pyjson::dumps(&m, Some(2), false) + "\n").map_err(|e| crash!("{}", py::os_error(&e, &path)))?;
+    fs::write(&path, json::dumps(&m, Some(2), false) + "\n").map_err(|e| crash!("{}", py::os_error(&e, &path)))?;
     Ok((count, bytes))
 }
 
@@ -258,7 +258,7 @@ fn seed_format(seed_info: &Option<Value>) -> Option<&str> {
 pub fn load_manifest(path: &str) -> Result<Value, Fail> {
     let text = fs::read(path).map_err(|e| err!("{path}: {}", py::os_error(&e, path)))?;
     let text = String::from_utf8(text).map_err(|e| err!("{path}: 'utf-8' codec can't decode the file: {e}"))?;
-    let m = pyjson::parse(&text).map_err(|e| err!("{path}: {e}"))?;
+    let m = json::parse(&text).map_err(|e| err!("{path}: {e}"))?;
     if !matches!(m, Value::Dict(_)) || m.get("name").and_then(Value::as_str) != Some(SET_NAME) {
         return Err(err!("{path}: not a OneiOS image manifest"));
     }
@@ -431,13 +431,13 @@ mod tests {
     use crate::fixtures::{fake_set, Tmp};
 
     fn load(path: &str) -> Value {
-        pyjson::load(path).unwrap()
+        json::load(path).unwrap()
     }
 
     fn manifest(tmp: &Tmp, set: &str) -> Result<(usize, i128), Fail> {
         let profile = profile::load_profile(&tmp.path("test.toml")).unwrap();
-        let seed_info = pyjson::parse("{\"format\": \"tar\", \"root\": \"/private/var\", \"entries\": 1}").unwrap();
-        let tweaks = pyjson::parse("{\"hook\": \"userland/image-hook\"}").unwrap();
+        let seed_info = json::parse("{\"format\": \"tar\", \"root\": \"/private/var\", \"entries\": 1}").unwrap();
+        let tweaks = json::parse("{\"hook\": \"userland/image-hook\"}").unwrap();
         make_manifest(&profile, set, None, Some(seed_info), Some(tweaks))
     }
 
@@ -466,25 +466,25 @@ mod tests {
             assert_eq!(f.get("sha256").unwrap().as_str().unwrap(), oneios_common::sha256_hex(&fs::read(&full).unwrap()));
         }
         let by = |path: &str| files.iter().find(|f| f.get("path").unwrap().as_str() == Some(path)).unwrap();
-        let os = pyjson::dumps(by("os.img"), None, false);
-        assert!(os.contains("\"role\": \"os\", \"source\": {\"component\": \"OS\", \"member\": \"001-00001-001.dmg.aea\", \"decrypted\": true}, \"format\": \"apfs-raw\", \"read_only\": true, \"hashes\": \"os.img.hashes\", \"apfs\": {\"container_offset\": 0, \"block_size\": 4096, \"block_count\": 40, "), "{os}");
-        assert!(os.contains("\"volumes\": [{\"name\": \"FakeOS\", "), "{os}");
-        let app = pyjson::dumps(by("app.img"), None, false);
-        assert!(app.contains("\"decrypted\": false"), "{app}");
+        let os = json::dumps(by("os.img"), None, false);
+        assert!(os.contains("\"role\":\"os\",\"source\":{\"component\":\"OS\",\"member\":\"001-00001-001.dmg.aea\",\"decrypted\":true},\"format\":\"apfs-raw\",\"read_only\":true,\"hashes\":\"os.img.hashes\",\"apfs\":{\"container_offset\":0,\"block_size\":4096,\"block_count\":40,"), "{os}");
+        assert!(os.contains("\"volumes\":[{\"name\":\"FakeOS\","), "{os}");
+        let app = json::dumps(by("app.img"), None, false);
+        assert!(app.contains("\"decrypted\":false"), "{app}");
         assert_eq!(
-            pyjson::dumps(by("os.img.hashes"), None, false).split(", \"role\"").nth(1).unwrap(),
-            ": \"hashes\", \"format\": \"oneios-hash-list-1\"}"
+            json::dumps(by("os.img.hashes"), None, false).split(",\"role\"").nth(1).unwrap(),
+            ":\"hashes\",\"format\":\"oneios-hash-list-1\"}"
         );
-        assert!(pyjson::dumps(by("trust/static.trustcache"), None, false).ends_with("\"format\": \"img4-payload\"}"));
-        assert!(pyjson::dumps(by("trust/os.root_hash"), None, false).ends_with("\"format\": \"root-hash\"}"));
-        assert!(pyjson::dumps(by("data.seed"), None, false).ends_with("\"role\": \"data-seed\", \"format\": \"tar\", \"root\": \"/private/var\", \"entries\": 1}"));
-        assert!(pyjson::dumps(by("kernel.kc"), None, false).ends_with("\"role\": \"kernel\", \"format\": \"kernel-collection\", \"read_only\": true, \"hashes\": \"kernel.kc.hashes\"}"));
-        assert!(pyjson::dumps(by("overlay/trust/owner.bin"), None, false).ends_with("\"role\": \"overlay\"}"));
+        assert!(json::dumps(by("trust/static.trustcache"), None, false).ends_with("\"format\":\"img4-payload\"}"));
+        assert!(json::dumps(by("trust/os.root_hash"), None, false).ends_with("\"format\":\"root-hash\"}"));
+        assert!(json::dumps(by("data.seed"), None, false).ends_with("\"role\":\"data-seed\",\"format\":\"tar\",\"root\":\"/private/var\",\"entries\":1}"));
+        assert!(json::dumps(by("kernel.kc"), None, false).ends_with("\"role\":\"kernel\",\"format\":\"kernel-collection\",\"read_only\":true,\"hashes\":\"kernel.kc.hashes\"}"));
+        assert!(json::dumps(by("overlay/trust/owner.bin"), None, false).ends_with("\"role\":\"overlay\"}"));
         assert_eq!(m.get("kernel").unwrap().as_str(), Some("kernel.kc"));
-        assert_eq!(pyjson::dumps(m.get("tweaks").unwrap(), None, false), "{\"hook\": \"userland/image-hook\"}");
+        assert_eq!(json::dumps(m.get("tweaks").unwrap(), None, false), "{\"hook\":\"userland/image-hook\"}");
         assert_eq!(
-            pyjson::dumps(m.get("data").unwrap(), None, false),
-            "{\"seed\": \"data.seed\", \"volume_uuid\": \"11111111-2222-3333-4444-555555555555\", \"volume_name\": \"Data\", \"case_sensitive\": true, \"store_gib\": 16}"
+            json::dumps(m.get("data").unwrap(), None, false),
+            "{\"seed\":\"data.seed\",\"volume_uuid\":\"11111111-2222-3333-4444-555555555555\",\"volume_name\":\"Data\",\"case_sensitive\":true,\"store_gib\":16}"
         );
         // the hash lists are the ones `hashes` writes
         hashes::check_hashes(&format!("{set}/os.img"), &format!("{set}/os.img.hashes")).unwrap();
@@ -515,7 +515,7 @@ mod tests {
         let m = load(&format!("{set}/manifest.json"));
         assert!(m.get("kernel").unwrap().is_null() && m.get("tweaks").unwrap().is_null());
         let seed = m.get("files").unwrap().as_list().unwrap().iter().find(|f| f.get("path").unwrap().as_str() == Some("data.seed")).unwrap();
-        assert!(pyjson::dumps(seed, None, false).ends_with("\"role\": \"data-seed\", \"format\": \"tar\"}"));
+        assert!(json::dumps(seed, None, false).ends_with("\"role\":\"data-seed\",\"format\":\"tar\"}"));
         fs::remove_file(format!("{set}/trust/app.root_hash")).unwrap();
         assert_eq!(error(make_manifest(&profile, &set, None, None, None)), "the set is missing trust/app.root_hash");
 
@@ -543,7 +543,7 @@ mod tests {
 
         // an image that is not the one the fetch recorded, and one the profile does not pin
         let set = fake_set(&tmp, true, true);
-        let inputs = pyjson::parse(&format!("{{\"members\": {{\"os\": {{\"plain_sha256\": \"{}\"}}}}}}", "0".repeat(64))).unwrap();
+        let inputs = json::parse(&format!("{{\"members\": {{\"os\": {{\"plain_sha256\": \"{}\"}}}}}}", "0".repeat(64))).unwrap();
         assert_eq!(
             error(make_manifest(&profile, &set, Some(inputs), None, None)),
             format!("os.img: differs from the input the fetch recorded ({})", "0".repeat(64))
@@ -578,9 +578,9 @@ mod tests {
         fn edit(change: impl Fn(&mut Value)) -> impl Fn(&str) {
             move |d: &str| {
                 let path = format!("{d}/manifest.json");
-                let mut m = pyjson::load(&path).unwrap();
+                let mut m = json::load(&path).unwrap();
                 change(&mut m);
-                fs::write(&path, pyjson::dumps(&m, None, false)).unwrap();
+                fs::write(&path, json::dumps(&m, None, false)).unwrap();
             }
         }
         fn first(m: &mut Value) -> &mut Value {
@@ -651,10 +651,10 @@ mod tests {
             fs::remove_file(format!("{d}/x")).unwrap();
             let sha = oneios_common::sha256_hex(&fs::read(format!("{d}/os.img.hashes")).unwrap());
             let path = format!("{d}/manifest.json");
-            let mut m = pyjson::load(&path).unwrap();
+            let mut m = json::load(&path).unwrap();
             let Some(Value::List(files)) = m.get_mut("files") else { panic!() };
             files.iter_mut().find(|f| f.get("path").unwrap().as_str() == Some("os.img.hashes")).unwrap().set("sha256", sha);
-            fs::write(&path, pyjson::dumps(&m, None, false)).unwrap();
+            fs::write(&path, json::dumps(&m, None, false)).unwrap();
         };
         assert_eq!(broken(&swap, false), format!("{copy}/os.img: chunk 0 (offset 0) differs from its hash list"));
         // a hash list for another size, with its own SHA-256 right
@@ -664,19 +664,19 @@ mod tests {
             fs::remove_file(format!("{d}/x")).unwrap();
             let data = fs::read(format!("{d}/app.img.hashes")).unwrap();
             let path = format!("{d}/manifest.json");
-            let mut m = pyjson::load(&path).unwrap();
+            let mut m = json::load(&path).unwrap();
             let Some(Value::List(files)) = m.get_mut("files") else { panic!() };
             let f = files.iter_mut().find(|f| f.get("path").unwrap().as_str() == Some("app.img.hashes")).unwrap();
             f.set("sha256", oneios_common::sha256_hex(&data));
             f.set("size", data.len());
-            fs::write(&path, pyjson::dumps(&m, None, false)).unwrap();
+            fs::write(&path, json::dumps(&m, None, false)).unwrap();
         };
         assert_eq!(broken(&other_size, false), "app.img.hashes: is for 5000 bytes in 4096-byte chunks, not for app.img");
         // unknown keys are ignored: a later writer may add them without a new format number
         let path = format!("{set}/manifest.json");
-        let mut m = pyjson::load(&path).unwrap();
-        m.set("future_key", pyjson::parse("{\"a\": 1}").unwrap());
-        fs::write(&path, pyjson::dumps(&m, None, false)).unwrap();
+        let mut m = json::load(&path).unwrap();
+        m.set("future_key", json::parse("{\"a\": 1}").unwrap());
+        fs::write(&path, json::dumps(&m, None, false)).unwrap();
         verify_dir(&set, false).unwrap();
     }
 }

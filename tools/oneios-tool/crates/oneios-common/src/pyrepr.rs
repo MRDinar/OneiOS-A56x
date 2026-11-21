@@ -1,7 +1,7 @@
-//! Python's `repr()`, `str()` and `bool()` of values read from JSON or TOML (a pyjson::Value), for messages that
+//! Python's `repr()`, `str()` and `bool()` of values read from JSON or TOML (a json::Value), for messages that
 //! must read as the Python tools' did. Moved here from oneios-image's py.rs when the prelink and kernel ports needed them.
 
-use crate::pyjson::{float_repr, Value};
+use crate::json::Value;
 use std::fmt::Write as _;
 
 /// `repr(str)`. Printable text stays as it is; the tests of what is printable cover ASCII, the control
@@ -62,7 +62,7 @@ pub fn repr_value(v: &Value) -> String {
             } else if f.is_infinite() {
                 if *f > 0.0 { "inf".into() } else { "-inf".into() }
             } else {
-                float_repr(*f)
+                format!("{f:?}")
             }
         }
         Value::Str(s) => repr_str(s),

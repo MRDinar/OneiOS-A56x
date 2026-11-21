@@ -28,9 +28,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::pyrepr::{repr_str, repr_value, str_value, truthy};
-use oneios_common::pytar;
 
 /// The firmware names (fnmatch patterns over the lower-case file name; `*` is the only wildcard in them).
 const APPLE_NAMES: [&str; 19] = [
@@ -180,7 +179,7 @@ fn own_kernel(path: &Path, relative: &str) -> Result<Value> {
         return refused(format!("{relative}: a Mach-O without a build record ({record_name})"));
     }
     let text = io(std::fs::read(&record_path), Path::new(&record_path))?;
-    let record = match String::from_utf8(text).map_err(|e| e.to_string()).and_then(|text| pyjson::parse(&text)) {
+    let record = match String::from_utf8(text).map_err(|e| e.to_string()).and_then(|text| json::parse(&text)) {
         Ok(record) => record,
         Err(error) => return refused(format!("{relative}: unreadable build record: {error}")),
     };
@@ -294,7 +293,7 @@ pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork
     document.set("kernel", kernel.map(|record| kernel_entry(&record)));
     document.set("files", entries);
     let path = stage.join(MANIFEST);
-    io(std::fs::write(&path, pyjson::dumps(&document, Some(2), false) + "\n"), &path)?;
+    io(std::fs::write(&path, json::dumps(&document, Some(2), false) + "\n"), &path)?;
     io(std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)), &path)
 }
 
@@ -312,14 +311,14 @@ fn kernel_entry(record: &Value) -> Value {
     entry
 }
 
-/// OUT.tar: the files MEMBERS lists, in that order, as Python's tarfile writes them in USTAR_FORMAT with owner
-/// 0:0, no owner names and the time MTIME.
+/// OUT.tar: the files MEMBERS lists, in that order, as the `tar` crate writes them (ustar; a name too long for
+/// ustar as a GNU long name) with owner 0:0, no owner names and the time MTIME.
 pub fn archive(stage: &Path, members: &Path, mtime: &str, out: &Path) -> Result<()> {
     let mtime: u64 = mtime.trim().parse().map_err(|_| Stop::Failed(format!("the time {mtime} is not a number")))?;
     let list = io(std::fs::read_to_string(members), members)?;
     let names = list.split_inclusive('\n').filter(|line| !line.trim().is_empty()).map(|line| line.strip_suffix('\n').unwrap_or(line));
-    let mut tar = std::io::BufWriter::new(io(File::create(out), out)?);
-    let (mut offset, mut seen) = (0u64, std::collections::HashMap::new());
+    let mut tar = ::tar::Builder::new(std::io::BufWriter::new(io(File::create(out), out)?));
+    let mut seen = std::collections::HashMap::new();
     for name in names {
         let path = stage.join(name);
         let meta = io(std::fs::symlink_metadata(&path), &path)?;
@@ -330,19 +329,35 @@ pub fn archive(stage: &Path, members: &Path, mtime: &str, out: &Path) -> Result<
             return refused(format!("{name}: not a regular file"));
         }
         seen.insert((meta.dev(), meta.ino()), stored.to_string());
-        let (prefix, short) = if stored.len() <= 100 { ("", stored) } else { pytar::posix_split_name(stored).ok_or_else(|| Stop::Failed(format!("{name}: name is too long")))? };
-        let block = pytar::ustar_prefixed(short, prefix, meta.mode() & 0o7777, 0, 0, meta.len(), mtime, pytar::REG, "");
-        io(tar.write_all(&block), out)?;
-        let copied = io(std::io::copy(&mut io(File::open(&path), &path)?.take(meta.len()), &mut tar), out)?;
-        if copied != meta.len() {
+        let mut h = ::tar::Header::new_ustar();
+        h.set_entry_type(::tar::EntryType::Regular);
+        h.set_mode(meta.mode() & 0o7777);
+        h.set_size(meta.len());
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_mtime(mtime);
+        let mut body = Counted { inner: io(File::open(&path), &path)?.take(meta.len()), n: 0 };
+        tar.append_data(&mut h, stored, &mut body).map_err(|e| Stop::Failed(format!("{name}: {e}")))?;
+        if body.n != meta.len() {
             return Err(Stop::Failed(format!("{name}: the file changed while it was read")));
         }
-        let padded = meta.len().next_multiple_of(pytar::BLOCK as u64);
-        io(tar.write_all(&vec![0u8; (padded - meta.len()) as usize]), out)?;
-        offset += pytar::BLOCK as u64 + padded;
     }
-    io(tar.write_all(&vec![0u8; (pytar::end(offset) - offset) as usize]), out)?;
-    io(tar.flush(), out)
+    let mut file = io(tar.into_inner(), out)?;
+    io(file.flush(), out)
+}
+
+/// A reader that counts what it gave.
+struct Counted<R> {
+    inner: R,
+    n: u64,
+}
+
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let got = self.inner.read(buf)?;
+        self.n += got as u64;
+        Ok(got)
+    }
 }
 
 #[cfg(test)]

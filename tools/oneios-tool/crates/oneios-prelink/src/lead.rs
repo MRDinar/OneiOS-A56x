@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 
 pub struct Lead {
     pub reviewed: Value,
@@ -31,18 +31,18 @@ impl Lead {
         let kc = root.join("out/kernel/24A446"); // kernel/prelink/build.sh's output
         let lead_path = root.join("kernel/prelink/lead/lead-reviewed.json");
         let lead = if lead_path.exists() {
-            pyjson::load(&lead_path)?
+            json::load(&lead_path)?
         } else {
             let mut none = Value::dict();
             none.set("functions", Value::list());
             none
         };
         Ok(Lead {
-            reviewed: pyjson::load(root.join("kernel/prelink/reviewed-24A446-v54.json"))?,
+            reviewed: json::load(root.join("kernel/prelink/reviewed-24A446-v54.json"))?,
             lead,
             lead_path,
-            map: pyjson::load(kc.join("work/match.map.json"))?,
-            report: pyjson::load(kc.join("kernel.kc.prelink.json"))?,
+            map: json::load(kc.join("work/match.map.json"))?,
+            report: json::load(kc.join("kernel.kc.prelink.json"))?,
             kernelcache: root.join("out/kernel-inputs/24A446/kernelcache.macho"),
             native: root.join("out/kernel/current-hosted/xnu.macho"),
         })
@@ -77,7 +77,7 @@ impl Lead {
     }
 
     pub fn save(&self) -> Result<()> {
-        std::fs::write(&self.lead_path, pyjson::dumps(&self.lead, Some(1), false) + "\n").with_context(|| self.lead_path.display().to_string())
+        std::fs::write(&self.lead_path, json::dumps(&self.lead, Some(1), false) + "\n").with_context(|| self.lead_path.display().to_string())
     }
 }
 

@@ -47,7 +47,7 @@ fn refusal(path: &str) -> String {
 }
 
 #[test]
-fn a_packed_set_verifies_and_is_pythons_archive() {
+fn a_packed_set_verifies() {
     if need_zstd().is_err() {
         eprintln!("skipped: no zstd");
         return;
@@ -60,12 +60,15 @@ fn a_packed_set_verifies_and_is_pythons_archive() {
     assert!(!std::path::Path::new(&format!("{out}.part")).exists());
     let line = manifest::ok_line(&verify_archive(&out).unwrap());
     assert_eq!(line, manifest::ok_line(&manifest::verify_dir(&setdir, false).unwrap()));
-    if let Some((said, _, status)) = python(&["pack", &setdir, &tmp.path("py.tar.zst")]) {
-        assert_eq!(status, 0);
-        assert_eq!(said, format!("{digest}  {}", tmp.path("py.tar.zst")), "the two archives' SHA-256");
-        assert_eq!(std::fs::read(&out).unwrap(), std::fs::read(tmp.path("py.tar.zst")).unwrap());
-        assert_eq!(python(&["verify", &out]).unwrap(), (line, String::new(), 0));
-    }
+    // the same set packs to the same bytes
+    let again = tmp.path("again.tar.zst");
+    assert_eq!(pack(&setdir, &again).unwrap(), digest);
+    // what the fork's reader and oneios-seed read: ustar members, a folder before its files, two zero blocks at the end
+    let tar = std::process::Command::new("zstd").args(["-dc", &out]).output().unwrap().stdout;
+    let mut archive = ::tar::Archive::new(&tar[..]);
+    let names: Vec<String> = archive.entries().unwrap().map(|e| e.unwrap().path().unwrap().display().to_string()).collect();
+    assert_eq!(names.first().map(String::as_str), Some("manifest.json"));
+    assert!(tar[tar.len() - 1024..].iter().all(|b| *b == 0) && tar.len() % 512 == 0);
 }
 
 #[test]

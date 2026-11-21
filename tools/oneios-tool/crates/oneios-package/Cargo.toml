@@ -10,5 +10,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 sha2.workspace = true
-# Python's json layout (runtime.json), repr() in the refusals, tarfile's ustar block (the archive).
+# runtime.json (json), repr() in the refusals
 oneios-common.workspace = true
+# the package's tar
+tar = { version = "0.4", default-features = false }

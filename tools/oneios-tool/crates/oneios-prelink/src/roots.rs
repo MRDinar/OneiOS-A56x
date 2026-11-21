@@ -21,7 +21,7 @@
 //! ```
 
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use plist::{Dictionary, Value as Plist};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -271,8 +271,8 @@ pub fn run(cache_path: &str, out_path: &str, profile: Option<&str>) -> Result<()
     record.set("left_out", left_out);
     record.set("left_out_but_linked", strings(back.iter().map(|s| s.to_string())));
     record.set("closure", strings(closure.iter().cloned()));
-    // json.dump(record, f, indent=1): no line end after the last brace
-    std::fs::write(out_path, pyjson::dumps(&record, Some(1), false)).with_context(|| out_path.to_string())?;
+    // an indent of 1 and no line end after the last brace
+    std::fs::write(out_path, json::dumps(&record, Some(1), false)).with_context(|| out_path.to_string())?;
     let missing_text = if missing.is_empty() {
         "none".to_string()
     } else {

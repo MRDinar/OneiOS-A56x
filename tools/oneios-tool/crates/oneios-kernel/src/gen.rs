@@ -9,7 +9,7 @@
 
 use crate::drivers_build::{self, Record};
 use anyhow::{anyhow, bail, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -119,12 +119,12 @@ pub fn read_bytes(path: &Path) -> Result<Vec<u8>> {
 
 /// `json.loads(path.read_text())`.
 pub fn read_json(path: &Path) -> Result<Value> {
-    pyjson::parse(&read_text(path)?).map_err(|e| anyhow!("{}: {e}", path.display()))
+    json::parse(&read_text(path)?).map_err(|e| anyhow!("{}: {e}", path.display()))
 }
 
-/// `path.write_text(json.dumps(value, indent=indent) + '\n')`.
+/// The value as JSON with an indent of `indent`, and a line end.
 pub fn write_json(path: &Path, value: &Value, indent: usize) -> Result<()> {
-    write_text(path, &(pyjson::dumps(value, Some(indent), false) + "\n"))
+    write_text(path, &(json::dumps(value, Some(indent), false) + "\n"))
 }
 
 /// `hashlib.sha256(path.read_bytes()).hexdigest()`.

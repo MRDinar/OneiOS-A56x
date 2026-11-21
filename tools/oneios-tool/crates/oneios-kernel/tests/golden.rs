@@ -177,8 +177,8 @@ fn made_up_build(root: &Path) -> PathBuf {
 }
 
 #[test]
-fn the_build_record_is_build_record_pys() {
-    use oneios_common::pyjson::{self, Value};
+fn the_build_record_is_the_frozen_one() {
+    use oneios_common::json::{self, Value};
     let root = std::env::temp_dir().join(format!("oneios-kernel-golden-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -188,10 +188,10 @@ fn the_build_record_is_build_record_pys() {
     build_record::finish(&root, "linux", &work, "oneios_test_defconfig", build_record::Place::Out(&out)).unwrap();
     let target = out.join("current").canonicalize().unwrap();
     // the machine's part (the compiler's and the linker's versions) and the checkouts' commits are not frozen
-    let record = pyjson::load(target.join("xnu.macho.build.json")).unwrap();
+    let record = json::load(target.join("xnu.macho.build.json")).unwrap();
     let Value::Dict(items) = record else { panic!("the record is no object") };
     let kept = Value::Dict(items.into_iter().filter(|(key, _)| key != "host" && key != "sources").collect());
-    assert_eq!(pyjson::dumps(&kept, Some(2), false) + "\n", golden("synthetic/build-record.json"));
+    assert_eq!(json::dumps(&kept, Some(2), false) + "\n", golden("synthetic/build-record.json"));
     assert_eq!(std::fs::read_to_string(target.join("series.txt")).unwrap(), golden("synthetic/build-record.series.txt"));
     assert_eq!(std::fs::read(target.join("xnu.macho")).unwrap(), build_record::fake_kernel());
     let _ = std::fs::remove_dir_all(&root);
@@ -201,7 +201,7 @@ fn the_build_record_is_build_record_pys() {
 /// corecrypto archive defines symbols the kernel does not hold (ONEIOS_CRYPTO=original), so it is releasable.
 #[test]
 fn the_hosted_record_is_of_the_final_file() {
-    use oneios_common::pyjson::{self, Value};
+    use oneios_common::json::{self, Value};
     use sha2::Digest;
     let root = std::env::temp_dir().join(format!("oneios-kernel-hosted-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -218,7 +218,7 @@ fn the_hosted_record_is_of_the_final_file() {
     std::fs::write(&shipped, build_record::fake_kernel_with(&["_kernel_bootstrap"])).unwrap();
     let steps = ["hosted-fixup".to_string()];
     build_record::finish(&root, "linux", &work, "oneios_hosted_defconfig", build_record::Place::Hosted { kernel: &shipped, post_link: &steps }).unwrap();
-    let record = pyjson::load(folder.join("xnu.macho.build.json")).unwrap();
+    let record = json::load(folder.join("xnu.macho.build.json")).unwrap();
     let bytes = std::fs::read(&shipped).unwrap();
     assert_eq!(record.get("bytes").and_then(Value::as_int), Some(bytes.len() as i128));
     assert_eq!(record.get("sha256").and_then(Value::as_str), Some(oneios_common::hex(&sha2::Sha256::digest(&bytes)).as_str()));

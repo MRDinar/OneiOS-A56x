@@ -26,7 +26,7 @@
 use crate::image::{hex, Image};
 use crate::records;
 use anyhow::{Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::collections::{BTreeMap, HashMap};
 
 #[derive(clap::Args, Debug)]
@@ -58,7 +58,7 @@ pub struct Args {
 pub fn named_vtables(pairing: &Value, classes: Option<&str>, reviewed: &Value) -> Result<BTreeMap<u64, String>> {
     let mut vtables: BTreeMap<u64, String> = records::named(pairing, "data")?.into_iter().filter(|(_, n)| n.starts_with("__ZTV")).collect();
     if let Some(path) = classes {
-        vtables.extend(records::pairs(&pyjson::load(path)?, "data")?.into_iter().filter(|(_, n)| n.starts_with("__ZTV")));
+        vtables.extend(records::pairs(&json::load(path)?, "data")?.into_iter().filter(|(_, n)| n.starts_with("__ZTV")));
     }
     vtables.extend(records::pairs(reviewed, "data")?.into_iter().filter(|(_, n)| n.starts_with("__ZTV")));
     Ok(vtables)
@@ -67,8 +67,8 @@ pub fn named_vtables(pairing: &Value, classes: Option<&str>, reviewed: &Value) -
 pub fn run(args: Args) -> Result<()> {
     let _ = &args.xnuprelink;
     let raw = oneios_common::Map::open(&args.kernelcache)?;
-    let pairing = pyjson::load(&args.map)?;
-    let reviewed = pyjson::load(&args.reviewed)?;
+    let pairing = json::load(&args.map)?;
+    let reviewed = json::load(&args.reviewed)?;
     let cache = Image::new(&raw, 0)?;
     let kernel = cache.entry("com.apple.kernel")?;
     let code: Vec<(u64, u64)> = kernel.segments.iter().filter(|s| s.name.contains("EXEC")).map(|s| (s.va, s.va + s.size)).collect();
@@ -86,13 +86,13 @@ pub fn run(args: Args) -> Result<()> {
     }
     let mut name_of: HashMap<u64, String> = records::named(&pairing, "functions")?.into_iter().collect();
     for path in &args.also {
-        for (original, symbol) in records::pairs(&pyjson::load(path)?, "pairs")? {
+        for (original, symbol) in records::pairs(&json::load(path)?, "pairs")? {
             name_of.entry(original).or_insert(symbol);
         }
     }
     let mut weak: HashMap<u64, String> = HashMap::new();
     for path in &args.weak {
-        for (original, symbol) in records::pairs(&pyjson::load(path)?, "pairs")? {
+        for (original, symbol) in records::pairs(&json::load(path)?, "pairs")? {
             if !name_of.contains_key(&original) {
                 weak.insert(original, symbol);
             }
@@ -169,7 +169,7 @@ pub fn run(args: Args) -> Result<()> {
     let (count, disagree) = (pairs.len(), conflicts.len());
     record.set("pairs", Value::List(pairs));
     record.set("conflicts", Value::List(conflicts));
-    std::fs::write(&args.out, pyjson::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
+    std::fs::write(&args.out, json::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
     println!("vtables: {count} methods paired by slot in {used} of {} named vtables; {disagree} slots disagree with an earlier pair", vtables.len());
     Ok(())
 }

@@ -1,9 +1,8 @@
 //! `oneios-tool image tweaks`: OneiOS's root tweaks and the image build's userland hook, in Rust (the port of
 //! userland/roottweak and userland/image-hook; tools/oneios-tool/README.md "image tweaks").
 //!
-//! The same files as the Python, byte for byte (the Data seed's SHA-256 is pinned in the image's trust list): the
-//! property lists as plistlib writes them (plist.rs), the JSON as json.dump does (oneios-common's pyjson), the
-//! report's words as tweaks.py has them. No program is started and no file of Apple's is needed in git: the tweaks
+//! The property lists are read and written by the `plist` crate (plist.rs), the JSON by serde_json (oneios-common's
+//! json); the report's words are tweaks.py's. No program is started and no file of Apple's is needed in git: the tweaks
 //! read the extracted volumes they are given, and the three config files are built in (config.rs).
 //!
 //! Entry points: `hook::run_hook` (what build.sh's hook does; `serve`'s `tweaks` request, the image build on the
@@ -27,7 +26,7 @@ pub use hook::{run_hook, Hook, HookDone};
 pub use tweaks::Options;
 
 use oneios_common::job;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::path::Path;
 
 /// roottweak's SCHEMA

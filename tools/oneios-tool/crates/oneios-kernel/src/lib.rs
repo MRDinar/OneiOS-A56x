@@ -148,7 +148,7 @@ pub enum Command {
 }
 
 fn compile_command(record: PathBuf, source: PathBuf, object: PathBuf, repo: Option<PathBuf>) -> anyhow::Result<()> {
-    use oneios_common::pyjson::{dumps, Value};
+    use oneios_common::json::{dumps, Value};
     let name = record.file_name().map(PathBuf::from).unwrap_or_default();
     let rec = drivers_build::record(record.parent().unwrap_or(std::path::Path::new(".")), &name.to_string_lossy())?;
     let here = drivers_build::here(&repo.unwrap_or_else(|| PathBuf::from(".")))?;

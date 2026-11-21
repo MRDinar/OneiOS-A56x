@@ -19,7 +19,7 @@
 
 use crate::image::{cstr_at, hex, put32, put64, u16_at, u32_at, u64_at, LC_DYLD_CHAINED_FIXUPS, LC_SEGMENT_64, LC_SYMTAB};
 use anyhow::{anyhow, bail, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::collections::{HashMap, HashSet};
 
 const PTR_ARM64E_KERNEL: u16 = 7;
@@ -141,7 +141,7 @@ pub fn run(src: &str, dst: &str, record: &str) -> Result<()> {
     report.set("input", src);
     report.set("output", dst);
     report.set("weak_binds_resolved", Value::List(rewritten));
-    std::fs::write(record, pyjson::dumps(&report, Some(1), false)).with_context(|| record.to_string())?;
+    std::fs::write(record, json::dumps(&report, Some(1), false)).with_context(|| record.to_string())?;
     println!("native-input: {count} weak bind(s) resolved to the kernel's own definitions");
     Ok(())
 }

@@ -16,7 +16,7 @@
 
 use crate::gen::{self, fail, Ctx};
 use anyhow::Result;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::path::{Path, PathBuf};
 
 /// The pin of the OS profile's IOStorageFamily source (IOStorageFamily-337.100.1), as UniXNU-droidvm's board.

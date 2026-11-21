@@ -30,7 +30,7 @@ use indexmap::IndexMap;
 use object::macho::{MachHeader64, LC_DYLD_CHAINED_FIXUPS, LC_UNIXTHREAD};
 use object::read::macho::{MachHeader, Segment};
 use object::LittleEndian as LE;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -255,7 +255,7 @@ fn build_id(xnu_version: &str, profile: &str, inputs: &Inputs) -> String {
     if !inputs.post_link.is_empty() {
         named.set("post_link", list(inputs.post_link.iter().map(String::as_str)));
     }
-    let digest = oneios_common::hex(&Sha256::digest(pyjson::dumps(&named, None, true).as_bytes()));
+    let digest = oneios_common::hex(&Sha256::digest(json::dumps(&named, None, true).as_bytes()));
     format!("xnu-{xnu_version}-{profile}-{}", &digest[..12])
 }
 

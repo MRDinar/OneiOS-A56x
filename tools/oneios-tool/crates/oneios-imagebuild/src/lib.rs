@@ -369,16 +369,16 @@ fn size_of(path: &str) -> Option<u64> {
 }
 
 /// The record `fetch` keeps in INDIR (`inputs.json`), when it is there.
-fn inputs_record(indir: &str) -> Option<oneios_common::pyjson::Value> {
-    oneios_common::pyjson::load(&format!("{indir}/inputs.json")).ok()
+fn inputs_record(indir: &str) -> Option<oneios_common::json::Value> {
+    oneios_common::json::load(&format!("{indir}/inputs.json")).ok()
 }
 
 /// An AEA member's decrypted image is in INDIR and is the one `record-plain` recorded (fetch's
 /// `decrypted_is_there`, without its look at the .aea).
-fn plain_recorded(m: &Member, indir: &str, record: Option<&oneios_common::pyjson::Value>) -> bool {
+fn plain_recorded(m: &Member, indir: &str, record: Option<&oneios_common::json::Value>) -> bool {
     let Some(size) = size_of(&format!("{indir}/{}", m.name)) else { return false };
     let rec = record.and_then(|r| r.get("members")).and_then(|ms| ms.get(&m.role));
-    rec.is_some_and(|r| r.get("member").and_then(|v| v.as_str()) == Some(m.path.as_str()) && r.get("plain_size").and_then(oneios_common::pyjson::Value::as_int) == Some(size as i128))
+    rec.is_some_and(|r| r.get("member").and_then(|v| v.as_str()) == Some(m.path.as_str()) && r.get("plain_size").and_then(oneios_common::json::Value::as_int) == Some(size as i128))
 }
 
 /// The AEA decryption (since 2026-11-21: `oneios_image::aea_decrypt`, README "aea-decrypt"): PROFILE, the encrypted
@@ -673,11 +673,11 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
         })?;
         // build.sh's record of the hook: what ran, its SHA-256 (the tool's binary), its summary (no git here)
         let exe = std::env::current_exe().map_err(|e| failed(format!("this tool's own file: {e}")))?;
-        let mut record = oneios_common::pyjson::Value::dict();
+        let mut record = oneios_common::json::Value::dict();
         record.set("hook", "oneios-tool image tweaks");
         record.set("hook_sha256", oneios_image::sha256_of(&exe.to_string_lossy()).map_err(image)?);
         record.set("info", done.info.clone());
-        std::fs::write(&tweaks_json, oneios_common::pyjson::dumps(&record, None, false) + "\n").map_err(|e| io(&tweaks_json, e))?;
+        std::fs::write(&tweaks_json, oneios_common::json::dumps(&record, None, false) + "\n").map_err(|e| io(&tweaks_json, e))?;
         println!("root tweaks: {} launchd jobs off, {} owner cdhashes; off: {}", done.disabled_jobs, done.owner_cdhashes, done.off.len());
     } else {
         println!("no root tweaks: the seed is the OS volume's own /{source}");
@@ -786,7 +786,7 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     // ---- 11. the lists, the set in place
     between()?;
     job::step("lists");
-    let manifest = oneios_common::pyjson::load(&format!("{set_s}/manifest.json")).map_err(|e| failed(format!("{set_s}/manifest.json: {e:#}")))?;
+    let manifest = oneios_common::json::load(&format!("{set_s}/manifest.json")).map_err(|e| failed(format!("{set_s}/manifest.json: {e:#}")))?;
     let mut sums: Vec<(String, String)> = Vec::new();
     for f in manifest.get("files").and_then(|f| f.as_list()).unwrap_or(&[]) {
         let (Some(path), Some(sha)) = (f.get("path").and_then(|v| v.as_str()), f.get("sha256").and_then(|v| v.as_str())) else {

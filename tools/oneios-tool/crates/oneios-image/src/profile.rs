@@ -2,11 +2,11 @@
 //! checks and messages, and `image profile PROFILE [--shell | --members]`.
 //!
 //! The profile is kept as the value Python's `tomllib` gives (tables in the file's key order), with `_sha256` and
-//! `_file` added at the end, so `image profile PROFILE` prints what `json.dumps(p, indent=2)` prints.
+//! `_file` added at the end; `image profile PROFILE` prints it as JSON with an indent of 2.
 
 use crate::py;
 use crate::{crash, err, Fail};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 
 pub const FORMAT: i128 = 1;
 pub const PROFILE_SCHEMA: i128 = 1;
@@ -333,7 +333,7 @@ pub fn cmd_profile(args: &[String]) -> Result<String, Fail> {
         if profile.datetime {
             return Err(Fail::Usage); // json.dumps of a date: a TypeError
         }
-        out.push_str(&pyjson::dumps(p, Some(2), false));
+        out.push_str(&json::dumps(p, Some(2), false));
         out.push('\n');
     }
     Ok(out)

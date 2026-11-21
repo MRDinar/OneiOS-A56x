@@ -349,11 +349,9 @@ pub fn fake_set(tmp: &Tmp, kernel: bool, overlay: bool) -> String {
     set
 }
 
-/// SHA-256 of the seed `seed::tests::build` packs with the rule `oneios<tab>501<tab>501<tab>-<tab>R`, as
-/// scripts/image/imagetool.py seed-pack (Python 3.15.2's tarfile) wrote it from the same tree on 2026-11-12.
-/// To make it again: run the test `pack_same_bytes_every_time_and_as_python` with ONEIOS_IMAGE_KEEP_TMP=1, then
-/// `python3 -I scripts/image/imagetool.py seed-pack TMP/data TMP/meta.json OUT --epoch 1700000000 --owners TMP/owners.tsv`
-/// and `shasum -a 256 OUT`.
-pub fn python_seed_sha256() -> &'static str {
-    "2c67844caea44de295b23058889e95c116f030ec20d5e5bd39952d1a02c3ae3c"
+/// SHA-256 of the seed `seed::tests::build` packs with the rule `oneios<tab>501<tab>501<tab>-<tab>R` (the `tar`
+/// crate's headers since 2026-11-21; before, Python tarfile's bytes `2c67844c...`). A change of the seed's format
+/// changes it: say so in docs/image-format.md section 5.
+pub fn seed_sha256() -> &'static str {
+    "20ed9bd623c988b9e5084d5a34f4bcd142a21579d4760de2fd711eeb8943da81"
 }

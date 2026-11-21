@@ -1234,7 +1234,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tar",
 ]
 
 [[package]]
@@ -1390,6 +1389,7 @@ dependencies = [
  "clap",
  "oneios-common",
  "sha2 0.10.9",
+ "tar",
 ]
 
 [[package]]
@@ -1514,8 +1514,8 @@ dependencies = [
  "libc",
  "oneios-common",
  "oneios-image",
+ "plist",
  "regex",
- "roxmltree",
  "sha1",
  "sha2 0.10.9",
  "toml",

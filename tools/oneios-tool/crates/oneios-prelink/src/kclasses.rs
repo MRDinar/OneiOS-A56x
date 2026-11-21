@@ -28,7 +28,7 @@ use crate::image::{hex, scan, u32_at, Image, RefKind};
 use crate::records::{self, repr_counts};
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::collections::{BTreeMap, HashMap};
 
 const RET: u32 = 0xd65f_03c0;
@@ -69,8 +69,8 @@ fn identifier(name: &str) -> bool {
 pub fn run(args: Args) -> Result<()> {
     let _ = &args.xnuprelink;
     let raw = oneios_common::Map::open(&args.kernelcache)?;
-    let pairing = pyjson::load(&args.map)?;
-    let reviewed = pyjson::load(&args.reviewed)?;
+    let pairing = json::load(&args.map)?;
+    let reviewed = json::load(&args.reviewed)?;
     let cache = Image::new(&raw, 0)?;
     let kernel = cache.entry("com.apple.kernel")?;
     let fixups = cache.fixups()?;
@@ -209,7 +209,7 @@ pub fn run(args: Args) -> Result<()> {
     let (count, disagree) = (pairs.len(), conflicts.len());
     record.set("data", Value::List(pairs));
     record.set("conflicts", Value::List(conflicts));
-    std::fs::write(&args.out, pyjson::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
+    std::fs::write(&args.out, json::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
     println!(
         "kclasses: {} kernel classes; {count} class objects newly named {}; {disagree} disagree with an earlier pair",
         classes.len(),

@@ -51,7 +51,7 @@ use crate::drivers_build::Record;
 use crate::gen::{self, fail, Compile, Ctx};
 use crate::staged::gpu::{GPU, GPU3D};
 use anyhow::{Context, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

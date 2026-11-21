@@ -6,7 +6,7 @@
 use crate::gen::{self, fail};
 use crate::layout::{self, Args, Cache, BTI_C, PACIBSP};
 use anyhow::Result;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 
 const CLASSES: [&str; 2] = ["IOEthernetController", "IOEthernetInterface"];
 const BUNDLE: &str = "com.apple.iokit.IONetworkingFamily";

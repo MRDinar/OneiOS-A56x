@@ -1,15 +1,15 @@
 //! The Data seed: `tree-copy` (copy the OS volume's /private/var as the calling user and record what a non-root
-//! copy loses) and `seed-pack` (the deterministic pax tar, byte for byte what Python's `tarfile` writes).
+//! copy loses) and `seed-pack` (the deterministic tar: the `tar` crate's ustar headers, with a pax extended header
+//! for an entry's xattrs and GNU long names for what ustar cannot hold).
 //!
-//! Both keep Python's order where it shows (the meta file's entries, the tar's members) and do the work that has
+//! Both keep a fixed order where it shows (the meta file's entries, the tar's members) and do the work that has
 //! no order in parallel: reading xattrs and copying files, reading the image's records, reading the files of the
 //! tar.
 
 use crate::apfs::{self, ApfsTree, Rec};
 use crate::py;
-use crate::tar::{self, TarInfo};
 use crate::{crash, err, Fail};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -480,7 +480,7 @@ pub fn tree_copy(
             ("entries".into(), Value::Dict(entries)),
             ("skipped".into(), Value::List(skipped.iter().map(Value::str).collect())),
         ]);
-        fs::write(meta_path, pyjson::dumps(&meta, None, false)).map_err(|e| os_fail(e, meta_path))?;
+        fs::write(meta_path, json::dumps(&meta, None, false)).map_err(|e| os_fail(e, meta_path))?;
         Ok((items.len(), skipped))
     })
 }
@@ -641,12 +641,15 @@ struct Member {
 
 impl Member {
     fn padded(&self) -> u64 {
-        self.file.map_or(0, |size| size.next_multiple_of(tar::BLOCK as u64))
+        self.file.map_or(0, |size| size.next_multiple_of(BLOCK))
     }
     fn end(&self) -> u64 {
         self.at + self.head_len as u64 + self.padded()
     }
 }
+
+/// A tar block.
+const BLOCK: u64 = 512;
 
 /// A file from this size up is copied on its own, straight into its place in the tar; smaller ones are gathered
 /// with the headers around them.
@@ -842,7 +845,8 @@ fn kernel_copy(_from: &File, _to: &File, _at: u64, _size: u64) -> std::io::Resul
 /// Write the members to `out`: every piece at its own offset, in parallel, then the length (the padding of big
 /// files and the end of the archive are zeros that are never written).
 fn write_members(tree: &str, paths: &[String], members: &[Member], heads: &[u8], out: &str, sink: Sink) -> Result<(), Fail> {
-    let total = tar::end(members.last().map_or(0, Member::end));
+    // the end of the archive: two zero blocks
+    let total = members.last().map_or(0, Member::end) + 2 * BLOCK;
     let mut work = Vec::new();
     let (mut from, mut bytes) = (0, 0u64);
     for (i, m) in members.iter().enumerate() {
@@ -926,7 +930,7 @@ fn seed_pack_into(tree: &str, meta_path: &str, out: &str, epoch: i128, owners: O
     };
     type Stat = Result<(fs::Metadata, Option<String>), Fail>;
     let (meta, listed) = rayon::join(
-        || pyjson::load(meta_path).map_err(|e| crash!("{e:#}")),
+        || json::load(meta_path).map_err(|e| crash!("{e:#}")),
         || -> Result<(Vec<String>, Vec<Stat>), Fail> {
             let paths = walk_paths(tree)?;
             // What the file system says about each path (in parallel); the members are made in order below: an
@@ -972,7 +976,7 @@ fn seed_pack_into(tree: &str, meta_path: &str, out: &str, epoch: i128, owners: O
     let (mut added, mut changed) = (0u64, 0u64);
     let mut members: Vec<Member> = Vec::with_capacity(paths.len());
     // every header, one after the other; a member knows its place
-    let mut heads: Vec<u8> = Vec::with_capacity(paths.len() * 640);
+    let mut heads = ::tar::Builder::new(Vec::<u8>::with_capacity(paths.len() * 640));
     let mut offset = 0u64;
     for (rel, stat) in paths.iter().zip(stats) {
         let (st, target) = stat?;
@@ -1039,29 +1043,42 @@ fn seed_pack_into(tree: &str, meta_path: &str, out: &str, epoch: i128, owners: O
         }
         owner.insert(rel.as_str(), (uid, gid));
         let target = target.unwrap_or_default();
-        let mut info = TarInfo::new(rel);
-        (info.uid, info.gid, info.mtime) = (uid, gid, mtime);
-        info.mode = if kind == 'l' { 0o777 } else { mode };
-        info.pax = xattrs.iter().map(|(k, v)| (format!("LIBARCHIVE.xattr.{}", py::url_quote(k)), v.clone())).collect();
-        let mut file = None;
+        let head = heads.get_ref().len();
+        let file = (kind == 'f').then(|| st.size());
+        let number = |what: &str, n: i128| u64::try_from(n).map_err(|_| crash!("{rel}: its {what} {n} is below 0"));
+        let mut h = ::tar::Header::new_ustar();
+        h.set_uid(number("owner", uid)?);
+        h.set_gid(number("group", gid)?);
+        h.set_mtime(number("time", mtime)?);
+        h.set_mode(if kind == 'l' { 0o777 } else { (mode & 0o7777) as u32 });
+        h.set_size(file.unwrap_or(0));
+        let tar_fail = |e: std::io::Error| crash!("{rel}: {e}");
+        if !xattrs.is_empty() {
+            let records: Vec<(String, &str)> = xattrs.iter().map(|(k, v)| (format!("LIBARCHIVE.xattr.{}", py::url_quote(k)), v.as_str())).collect();
+            heads.append_pax_extensions(records.iter().map(|(k, v)| (k.as_str(), v.as_bytes()))).map_err(tar_fail)?;
+        }
         match kind {
-            'd' => info.kind = tar::DIR,
+            'd' => {
+                h.set_entry_type(::tar::EntryType::Directory);
+                heads.append_data(&mut h, rel, std::io::empty()).map_err(tar_fail)?;
+            }
             'l' => {
-                info.kind = tar::SYM;
-                info.linkname = &target;
+                h.set_entry_type(::tar::EntryType::Symlink);
+                heads.append_link(&mut h, rel, &target).map_err(tar_fail)?;
             }
             _ => {
-                info.size = st.size() as i128;
-                file = Some(st.size());
+                h.set_entry_type(::tar::EntryType::Regular);
+                // the header only: the file's content is written at its place below
+                heads.append_data(&mut h, rel, std::io::empty()).map_err(tar_fail)?;
             }
         }
-        let head = heads.len();
-        info.write_header(&mut heads);
-        let m = Member { head, head_len: heads.len() - head, at: offset, file };
+        let m = Member { head, head_len: heads.get_ref().len() - head, at: offset, file };
         offset = m.end();
         members.push(m);
     }
 
+    // (the two zero blocks the builder ends with are past every member: the file's length gives them)
+    let heads = heads.into_inner().map_err(|e| crash!("{out}: {e}"))?;
     laps.lap("seed-pack: the headers");
     write_members(tree, &paths, &members, &heads, out, sink)?;
     laps.lap("seed-pack: read the files, write the tar");
@@ -1071,7 +1088,7 @@ fn seed_pack_into(tree: &str, meta_path: &str, out: &str, epoch: i128, owners: O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::{fake_apfs_tree, python_seed_sha256, Tmp};
+    use crate::fixtures::{fake_apfs_tree, seed_sha256, Tmp};
     use std::os::unix::fs::symlink;
 
     fn set_mtime(path: &str, sec: i64) {
@@ -1131,7 +1148,7 @@ mod tests {
         let (count, skipped) = tree_copy(&var, &tmp.path("data"), &tmp.path("meta.json"), None, "").unwrap();
         assert_eq!((count, skipped.len()), (9, 0));
         let text = fs::read_to_string(tmp.path("meta.json")).unwrap();
-        let meta = pyjson::parse(&text).unwrap();
+        let meta = json::parse(&text).unwrap();
         // Python's order: a folder's entries sorted, then the folders below it, the last one first
         assert_eq!(
             entries(&meta),
@@ -1152,17 +1169,17 @@ mod tests {
         let me = unsafe { (libc::getuid(), libc::getgid()) };
         let top_gid = fs::metadata(&var).unwrap().gid();
         assert_eq!(
-            pyjson::dumps(e.get(".").unwrap(), None, false),
-            format!("{{\"t\": \"d\", \"m\": 493, \"u\": {}, \"g\": {top_gid}, \"s\": {}}}", me.0, fs::metadata(&var).unwrap().mtime())
+            json::dumps(e.get(".").unwrap(), None, false),
+            format!("{{\"t\":\"d\",\"m\":493,\"u\":{},\"g\":{top_gid},\"s\":{}}}", me.0, fs::metadata(&var).unwrap().mtime())
         );
         let kept = e.get("mobile/Library/Preferences/com.example.kept.plist").unwrap();
         let gid = fs::metadata(format!("{var}/mobile/Library/Preferences/com.example.kept.plist")).unwrap().gid();
         assert_eq!(
-            pyjson::dumps(&plain(kept), None, false),
-            format!("{{\"m\": 420, \"u\": {}, \"g\": {gid}, \"s\": 1600000000, \"t\": \"f\"}}", me.0)
+            json::dumps(&plain(kept), None, false),
+            format!("{{\"m\":420,\"u\":{},\"g\":{gid},\"s\":1600000000,\"t\":\"f\"}}", me.0)
         );
         assert_eq!(e.get("link").unwrap().get("t").unwrap().as_str(), Some("l"));
-        assert!(text.ends_with(", \"skipped\": []}"));
+        assert!(text.ends_with(",\"skipped\":[]}"));
         // the copy: the content, mode 600 and the source's time for files, mode 700 for folders, the link itself
         let copied = tmp.path("data/mobile/Library/Preferences/com.example.kept.plist");
         assert_eq!(fs::read(&copied).unwrap(), b"kept: true\n");
@@ -1205,11 +1222,11 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         let (count, skipped) = tree_copy(&var, &tmp.path("data"), &tmp.path("meta.json"), None, "").unwrap();
         assert_eq!((count, skipped), (9, vec!["root/pipe".to_string()]));
-        let meta = pyjson::load(tmp.path("meta.json")).unwrap();
+        let meta = json::load(tmp.path("meta.json")).unwrap();
         let profile = plain(meta.get("entries").unwrap().get("root/.profile").unwrap());
-        assert_eq!(pyjson::dumps(profile.get("x").unwrap(), None, false), format!("{{\"{name}\": \"AAEC\"}}"));
+        assert_eq!(json::dumps(profile.get("x").unwrap(), None, false), format!("{{\"{name}\":\"AAEC\"}}"));
         assert!(!fs::exists(tmp.path("data/root/pipe")).unwrap());
-        assert_eq!(pyjson::dumps(meta.get("skipped").unwrap(), None, false), "[\"root/pipe\"]");
+        assert_eq!(json::dumps(meta.get("skipped").unwrap(), None, false), "[\"root/pipe\"]");
     }
 
     #[test]
@@ -1253,7 +1270,7 @@ mod tests {
         let image = tree(0o600, false);
         let (count, _) = tree_copy(&var, &tmp.path("data"), &tmp.path("meta.json"), Some(&image), "private/var").unwrap();
         assert_eq!(count, 4);
-        let meta = pyjson::load(tmp.path("meta.json")).unwrap();
+        let meta = json::load(tmp.path("meta.json")).unwrap();
         let e = meta.get("entries").unwrap();
         let owner = |rel: &str| (e.get(rel).unwrap().get("u").unwrap().as_int().unwrap(), e.get(rel).unwrap().get("g").unwrap().as_int().unwrap());
         assert_eq!((owner("mobile"), owner("mobile/a.plist"), owner("db/l"), owner("db")), ((501, 501), (501, 501), (0, 80), (0, 0)));
@@ -1280,7 +1297,7 @@ mod tests {
     fn build(tmp: &Tmp, owners: &str) -> ((usize, u64, u64), Vec<u8>) {
         let var = fake_var(tmp);
         tree_copy(&var, &tmp.path("data"), &tmp.path("meta.json"), None, "").unwrap();
-        let mut meta = pyjson::load(tmp.path("meta.json")).unwrap();
+        let mut meta = json::load(tmp.path("meta.json")).unwrap();
         let Some(Value::Dict(entries)) = meta.get_mut("entries") else { panic!() };
         for (rel, e) in entries.iter_mut() {
             *e = plain(e);
@@ -1295,7 +1312,7 @@ mod tests {
                 e.set("x", x);
             }
         }
-        fs::write(tmp.path("meta.json"), pyjson::dumps(&meta, None, false)).unwrap();
+        fs::write(tmp.path("meta.json"), json::dumps(&meta, None, false)).unwrap();
         let prefs = tmp.path("data/mobile/Library/Preferences");
         fs::write(format!("{prefs}/com.example.setup.plist"), "setup: true\n").unwrap();
         fs::write(format!("{prefs}/com.example.new.plist"), "new: 1\n").unwrap();
@@ -1319,27 +1336,32 @@ mod tests {
         (stats, fs::read(out).unwrap())
     }
 
-    /// (name, mode, uid, gid, size, mtime, type, linkname) of each ustar header, and the pax records before it.
+    /// (name, mode, uid, gid, size, mtime, type, link target, the pax records) of each member, as the `tar` crate
+    /// reads them (a long name from its GNU entry, a folder's name with its `/`).
     #[allow(clippy::type_complexity)]
     fn members(tar: &[u8]) -> Vec<(String, u32, u32, u32, u64, u64, u8, String, String)> {
-        let oct = |b: &[u8]| u64::from_str_radix(std::str::from_utf8(b).unwrap().trim_end_matches('\0'), 8).unwrap();
-        let text = |b: &[u8]| String::from_utf8(b.iter().copied().take_while(|c| *c != 0).collect()).unwrap();
         let mut out = Vec::new();
-        let mut at = 0;
-        let mut pax = String::new();
-        while at + 512 <= tar.len() && tar[at] != 0 {
-            let h = &tar[at..at + 512];
-            let size = oct(&h[124..136]);
-            let body = &tar[at + 512..at + 512 + size as usize];
-            at += 512 + (size as usize).next_multiple_of(512);
-            if h[156] == b'x' {
-                pax = String::from_utf8(body.to_vec()).unwrap();
-                continue;
+        let mut archive = ::tar::Archive::new(tar);
+        for entry in archive.entries().unwrap() {
+            let mut e = entry.unwrap();
+            let mut pax = String::new();
+            if let Some(records) = e.pax_extensions().unwrap() {
+                for r in records {
+                    let r = r.unwrap();
+                    pax.push_str(&format!("{}={}\n", r.key().unwrap(), r.value().unwrap()));
+                }
             }
-            out.push((text(&h[..100]), oct(&h[100..108]) as u32, oct(&h[108..116]) as u32, oct(&h[116..124]) as u32, size, oct(&h[136..148]), h[156], text(&h[157..257]), std::mem::take(&mut pax)));
+            let h = e.header().clone();
+            let kind = h.entry_type().as_byte();
+            let mut name = String::from_utf8(e.path_bytes().into_owned()).unwrap();
+            if kind == b'5' && !name.ends_with('/') {
+                name.push('/');
+            }
+            let link = e.link_name_bytes().map(|l| String::from_utf8(l.into_owned()).unwrap()).unwrap_or_default();
+            out.push((name, h.mode().unwrap(), h.uid().unwrap() as u32, h.gid().unwrap() as u32, h.size().unwrap(), h.mtime().unwrap(), kind, link, pax));
         }
-        assert!(tar[at..].iter().all(|b| *b == 0));
-        assert_eq!(tar.len() % 10240, 0);
+        // the end: two zero blocks after the last member
+        assert!(tar.len() >= 1024 && tar[tar.len() - 1024..].iter().all(|b| *b == 0));
         out
     }
 
@@ -1363,8 +1385,8 @@ mod tests {
                 "mobile/Library/Preferences/com.example.new.plist",
                 "mobile/Library/Preferences/com.example.setup.plist",
                 "oneios/",
-                "oneios/caf?.txt",
-                &format!("oneios/{}", &long[..93]),
+                &format!("oneios/caf{}.txt", '\u{e9}'),
+                &format!("oneios/{long}"),
                 "oneios/tools/",
                 "oneios/tools/probe",
                 "root/"
@@ -1373,7 +1395,7 @@ mod tests {
         let by = |name: &str| m.iter().find(|x| x.0 == name).unwrap();
         let kept = by("mobile/Library/Preferences/com.example.kept.plist");
         assert_eq!((kept.1, kept.2, kept.3, kept.4, kept.5, kept.6), (0o644, 501, 501, 11, 1600000000, b'0'));
-        assert_eq!(kept.8, "45 LIBARCHIVE.xattr.com.apple.a%20b%2Fc=dg==\n41 LIBARCHIVE.xattr.com.example.tag=AAEC\n");
+        assert_eq!(kept.8, "LIBARCHIVE.xattr.com.apple.a%20b%2Fc=dg==\nLIBARCHIVE.xattr.com.example.tag=AAEC\n");
         let changed = by("mobile/Library/Preferences/com.example.setup.plist");
         assert_eq!((changed.2, changed.5), (501, 1700000000));
         let new = by("mobile/Library/Preferences/com.example.new.plist");
@@ -1383,8 +1405,9 @@ mod tests {
         let link = by("link");
         assert_eq!((link.1, link.6, link.7.as_str()), (0o777, b'2', "mobile/Library"));
         assert_eq!((by("empty/").6, by("empty/").4), (b'5', 0));
-        assert_eq!(by("oneios/caf?.txt").8, format!("25 path=oneios/caf{}.txt\n", '\u{e9}'));
-        assert_eq!(by(&format!("oneios/{}", &long[..93])).8, format!("137 path=oneios/{long}\n"));
+        // a name that is not ASCII is its UTF-8 bytes in the header, a long one a GNU long name: no pax records
+        assert_eq!(by(&format!("oneios/caf{}.txt", '\u{e9}')).8, "");
+        assert_eq!((by(&format!("oneios/{long}")).4, by(&format!("oneios/{long}")).8.as_str()), (1500, ""));
         assert!(!names.contains(&"root/.profile"));
     }
 
@@ -1409,13 +1432,13 @@ mod tests {
     }
 
     #[test]
-    fn pack_same_bytes_every_time_and_as_python() {
+    fn pack_same_bytes_every_time() {
         let first = build(&Tmp::new("seed-same-1"), "oneios\t501\t501\t-\tR\n").1;
         let second = build(&Tmp::new("seed-same-2"), "oneios\t501\t501\t-\tR\n").1;
         assert_eq!(first.len(), second.len());
         assert!(first == second, "two packs of the same tree differ");
-        // The same tree packed by scripts/image/imagetool.py (Python 3.15.2 tarfile) on 2026-11-12.
-        assert_eq!(oneios_common::sha256_hex(&first), python_seed_sha256());
+        // pinned: a change of the seed's format shows here (and starts every phone's Data store over)
+        assert_eq!(oneios_common::sha256_hex(&first), seed_sha256());
     }
 
     #[test]
@@ -1444,7 +1467,6 @@ mod tests {
             packs.push(fs::read(&out).unwrap());
         }
         assert!(packs[0] == packs[1] && packs[0] == packs[2], "the sinks wrote different archives");
-        assert_eq!(packs[0].len() % 10240, 0);
         fs::write(&out, &packs[0]).unwrap();
         let tar = fs::read(&out).unwrap();
         let m = members(&tar);

@@ -23,7 +23,7 @@
 
 use crate::image::{hex, unhex, Image};
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::collections::{HashMap, HashSet};
 
 #[derive(clap::Args, Debug)]
@@ -42,7 +42,7 @@ fn text<'v>(record: &'v Value, key: &str) -> Result<&'v str> {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let mut merged = pyjson::load(&args.reviewed)?;
+    let mut merged = json::load(&args.reviewed)?;
     let native = oneios_common::Map::open(&args.native)?;
     let defined: HashSet<String> = Image::new(&native, 0)?.symtab()?.into_iter().map(|row| row.0).collect();
     let mut have: HashMap<String, String> = HashMap::new();
@@ -53,7 +53,7 @@ pub fn run(args: Args) -> Result<()> {
     for path in &args.extra {
         let source = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let mut count = 0;
-        let extra = pyjson::load(path)?;
+        let extra = json::load(path)?;
         for record in extra.get("functions").and_then(Value::as_list).unwrap_or(&[]) {
             let original = hex(unhex(text(record, "original")?)?);
             let symbol = text(record, "native_symbol")?;
@@ -104,6 +104,6 @@ pub fn run(args: Args) -> Result<()> {
     merge.set("disagreements", Value::List(disagreements));
     merge.set("no_symbol", Value::List(missing));
     merged.set("merge", merge);
-    std::fs::write(&args.out, pyjson::dumps(&merged, Some(1), false) + "\n").with_context(|| args.out.clone())?;
+    std::fs::write(&args.out, json::dumps(&merged, Some(1), false) + "\n").with_context(|| args.out.clone())?;
     Ok(())
 }

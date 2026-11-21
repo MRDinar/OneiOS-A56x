@@ -2253,3 +2253,11 @@ persistent: a reboot costs a manual re-root.
   Linux PC (download included), peak 1,032 MiB, 37.1 GB asked. data.seed 27ec4e10... (= the Python hook's), kernel.kc
   276aadac... (audit 0 failures, stubs 666 good), manifest.json 8e9cf3a7...; `image verify` ok. No PC program and no
   mount in the path. Not run on a phone.
+
+- 2026-11-21, Python's bytes let go (crates' internals; the owner's decision): `oneios-common::pyjson` is now
+  `oneios_common::json` (same `Value`, `dumps`, `parse`, `load`; serde_json's pretty or compact text, its parser),
+  `pytar` and `oneios-image/src/tar.rs` are gone (the `tar` crate's `Builder` in seed.rs, archive.rs, pack.rs),
+  `oneios_tweaks::plist` is the `plist` crate's (`loads` returns `P`, no `Loaded`/`shared`), prelink's `plistpy.rs`
+  is `prelink_xml.rs` (kept: the kernel's XML parser has no `&quot;`). On 24A446: data.seed 5406d527... (same
+  entries), kernel.kc 276aadac... unchanged, manifest.json a4c8bbd1...; old sets still verify; PC boot to SpringBoard
+  and `guest ready`. tools/oneios-tool/todo_rust.md section 11.

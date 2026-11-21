@@ -13,7 +13,7 @@
 //! xattr would be recorded here with its value, as tree-copy records it on a Mac.
 
 use oneios_common::job;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_image::apfs::{ApfsTree, Pick, DT_DIR, DT_REG};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -279,7 +279,7 @@ pub fn copy(image: &str, subdir: &str, dst: &str, meta_path: &str) -> Result<Cop
     entries.push((".".into(), top.value(true)));
     entries.extend(items.iter().map(|item| (item.rel.clone(), item.value(false))));
     let meta = Value::Dict(vec![("entries".into(), Value::Dict(entries)), ("skipped".into(), Value::List(skipped.iter().map(Value::str).collect()))]);
-    std::fs::write(meta_path, pyjson::dumps(&meta, None, false)).map_err(|e| format!("{meta_path}: {e}"))?;
+    std::fs::write(meta_path, json::dumps(&meta, None, false)).map_err(|e| format!("{meta_path}: {e}"))?;
     Ok(Copied { entries: items.len(), files: files.len() as u64, bytes, skipped: skipped.len() })
 }
 

@@ -33,7 +33,7 @@ use crate::image::{hex, scan, u32_at, unhex, Image, Symbols};
 use crate::pyset::{PyRandom, PySet};
 use crate::records::{self, Counter};
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::sha256_hex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -313,7 +313,7 @@ impl Aligner<'_> {
                     0 => {
                         let mut row = orig(self, x);
                         row.extend(refr(self, y));
-                        row.push(pyjson::float_repr(round2(scores[x][y].0)));
+                        row.push(format!("{:?}", round2(scores[x][y].0)));
                         rows.push(row);
                         (x, y) = (x - 1, y - 1);
                     }
@@ -380,7 +380,7 @@ impl Aligner<'_> {
 pub fn run(args: Args) -> Result<()> {
     let _ = &args.xnuprelink; // Python imports kc_image from it; the reader is image.rs here
     let raw = oneios_common::Map::open(&args.kernelcache)?;
-    let pairing = pyjson::load(&args.map)?;
+    let pairing = json::load(&args.map)?;
     let cache = Image::new(&raw, 0)?;
     let kernel = cache.entry("com.apple.kernel")?;
     let kernel_ranges = kernel.mapped();
@@ -393,7 +393,7 @@ pub fn run(args: Args) -> Result<()> {
     // `matched = set(name_of)`: the set's own order decides the holdout sample.
     let matched = PySet::from_dict_keys(named.iter().map(|n| n.0));
     for path in &args.also {
-        let record = pyjson::load(path)?; // align's own output, or a reviewed file
+        let record = json::load(path)?; // align's own output, or a reviewed file
         if record.get("pairs").is_some() {
             for (original, symbol) in records::pairs(&record, "pairs")? {
                 name_of.entry(original).or_insert(symbol);
@@ -543,7 +543,7 @@ pub fn run(args: Args) -> Result<()> {
     record.set("refused", refused.to_value());
     let total = pairs.len();
     record.set("pairs", Value::List(pairs.into_iter().map(|p| p.2).collect()));
-    std::fs::write(&args.out, pyjson::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
+    std::fs::write(&args.out, json::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
     println!(
         "align: {total} of {} unpaired kext-facing functions paired by the order of {reference_name} in {rounds} round(s) (holdout: features {} wrong of {}, position {} wrong of {}); refused: {}",
         targets.len(),

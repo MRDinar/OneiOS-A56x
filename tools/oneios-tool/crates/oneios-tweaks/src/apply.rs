@@ -8,7 +8,7 @@ use crate::tweaks::{self, Context, Options, ONEIOS};
 use crate::{write_file, Refused, SCHEMA};
 use anyhow::{bail, Result};
 use oneios_common::job;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
@@ -66,7 +66,7 @@ pub fn apply(a: &Apply) -> Result<Applied> {
     // build needs every owner: what the earlier manifest says of paths that still exist is carried over.
     let earlier = a.out.join("tweaks.manifest.json");
     if crate::tree::is_file(&earlier) {
-        let old = pyjson::load(&earlier)?;
+        let old = json::load(&earlier)?;
         let num_is = |v: Option<&Value>, n: i128| matches!(v, Some(Value::Int(i)) if *i == n) || matches!(v, Some(Value::Bool(b)) if *b as i128 == n) || matches!(v, Some(Value::Float(f)) if *f == n as f64);
         if num_is(old.get("schema"), SCHEMA as i128) && old.get("layout").and_then(Value::as_str) == Some(layout) {
             for e in old.get("entries").and_then(Value::as_list).unwrap_or(&[]) {
@@ -130,7 +130,7 @@ pub fn apply(a: &Apply) -> Result<Applied> {
     report_json.set("build", cx.build.as_str());
     report_json.set("results", Value::List(cx.results.clone()));
     for (name, value) in [("tweaks.manifest.json", &manifest), ("boot-contract.json", &contract), ("owner-trust.json", &trust), ("report.json", &report_json)] {
-        write_file(&a.out.join(name), (pyjson::dumps(value, Some(2), true) + "\n").as_bytes())?;
+        write_file(&a.out.join(name), (json::dumps(value, Some(2), true) + "\n").as_bytes())?;
     }
     // xnuhost's part of the display: it reads this file from the image set's overlay/userland (docs/booter.md).
     let scale = oneios_common::pyrepr::str_value(cx.device.get("display").and_then(|d| d.get("scale")).unwrap_or(&Value::Null));

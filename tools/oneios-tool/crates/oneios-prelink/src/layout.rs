@@ -7,7 +7,7 @@ use crate::image::{hex, put32, signed, u32_at, Fix, Fixups, Image, Section, Segm
 use crate::records::Counter;
 use anyhow::{anyhow, bail, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const PAGE: u64 = 0x4000;

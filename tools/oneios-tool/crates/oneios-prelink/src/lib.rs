@@ -22,7 +22,7 @@ pub mod image;
 mod matcher;
 mod merge_reviewed;
 mod native_input;
-mod plistpy;
+mod prelink_xml;
 mod port_fixture;
 mod pyset;
 mod record;

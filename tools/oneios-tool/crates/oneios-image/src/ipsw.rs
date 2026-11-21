@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use sha2::{Digest, Sha256, Sha384};
 
 use crate::profile::{self, Profile};
@@ -180,7 +180,7 @@ fn digest_file(path: &str) -> Result<(String, String), Fail> {
 /// inputs.json, written beside itself and renamed: a reader never sees half of it.
 fn write_record(path: &str, record: &Value) -> Result<(), Fail> {
     let tmp = format!("{path}.tmp");
-    std::fs::write(&tmp, pyjson::dumps(record, Some(2), false) + "\n").map_err(|e| crash!("{}", py::os_error(&e, &tmp)))?;
+    std::fs::write(&tmp, json::dumps(record, Some(2), false) + "\n").map_err(|e| crash!("{}", py::os_error(&e, &tmp)))?;
     std::fs::rename(&tmp, path).map_err(|e| crash!("{}", py::os_error(&e, path)))
 }
 
@@ -192,7 +192,7 @@ fn load_record(path: &str, profile: &Profile) -> Result<Value, Fail> {
     record.set("profile", profile.p.get("_file").cloned().unwrap_or(Value::Null));
     record.set("members", Value::dict());
     if std::path::Path::new(path).is_file() {
-        let old = pyjson::load(path).map_err(|e| crash!("{path}: {e}"))?;
+        let old = json::load(path).map_err(|e| crash!("{path}: {e}"))?;
         if old.get("build") == Some(&build) {
             record.set("members", old.get("members").cloned().unwrap_or_else(Value::dict));
         }
@@ -297,7 +297,7 @@ fn decrypted_is_there(m: &Value, record: &Value, indir: &str, out: &str) -> bool
 /// `record-plain INDIR ROLE PLAIN`.
 pub fn record_plain(indir: &str, role: &str, plain: &str) -> Result<(), Fail> {
     let record_path = py::join(indir, "inputs.json");
-    let mut record = pyjson::load(&record_path).map_err(|e| crash!("{record_path}: {e}"))?;
+    let mut record = json::load(&record_path).map_err(|e| crash!("{record_path}: {e}"))?;
     let size = std::fs::metadata(plain).map_err(|e| crash!("{}", py::os_error(&e, plain)))?.len();
     let digest = crate::hashes::sha256_file(plain)?;
     let entry = record.get_mut("members").and_then(|members| members.get_mut(role)).ok_or_else(|| crash!("{record_path} has no member {role}"))?;

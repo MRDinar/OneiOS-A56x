@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 
 use crate::image::Image;
 use crate::lead::{function_record, list, original, stop, text, Lead};

@@ -11,7 +11,7 @@ use crate::macho;
 use crate::tree::{is_dir, is_file};
 use crate::{write_file, Refused};
 use anyhow::{bail, Context as _, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::pyrepr::str_value;
 use std::path::{Path, PathBuf};
 
@@ -149,7 +149,7 @@ pub fn run_hook(h: &Hook) -> Result<HookDone> {
         let dest = out.join("bin").join("oneios-seed");
         write_file(&dest, &binary)?;
         std::fs::set_permissions(&dest, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
-        let mut trust = pyjson::load(&trust_path)?;
+        let mut trust = json::load(&trust_path)?;
         let mut files: Vec<Value> = trust.get("files").and_then(Value::as_list).map(<[Value]>::to_vec).unwrap_or_default();
         for s in &slices {
             files.push(crate::trust_entry("overlay/userland/bin/oneios-seed", s, &[]));
@@ -159,7 +159,7 @@ pub fn run_hook(h: &Hook) -> Result<HookDone> {
         cdhashes.dedup();
         trust.set("files", Value::List(files));
         trust.set("cdhashes", Value::List(cdhashes.into_iter().map(Value::Str).collect()));
-        write_file(&trust_path, (pyjson::dumps(&trust, Some(2), true) + "\n").as_bytes())?;
+        write_file(&trust_path, (json::dumps(&trust, Some(2), true) + "\n").as_bytes())?;
         first_start = Some("overlay/userland/bin/oneios-seed".to_string());
     }
 
@@ -173,9 +173,9 @@ pub fn run_hook(h: &Hook) -> Result<HookDone> {
         if let Some(stem) = text.strip_suffix(".bundle") {
             let record = PathBuf::from(format!("{stem}.build.json"));
             if is_file(&record) {
-                let built = pyjson::load(&record)?;
-                let trust = pyjson::load(&trust_path)?;
-                let contract = pyjson::load(out.join("boot-contract.json"))?;
+                let built = json::load(&record)?;
+                let trust = json::load(&trust_path)?;
+                let contract = json::load(out.join("boot-contract.json"))?;
                 let placed = contract.get("metal").is_some();
                 let built_hashes = built.get("cdhashes").cloned().ok_or_else(|| Refused(format!("{}: no \"cdhashes\"", record.display())))?;
                 if placed {
@@ -206,7 +206,7 @@ pub fn run_hook(h: &Hook) -> Result<HookDone> {
         }
     }
 
-    let manifest = pyjson::load(out.join("tweaks.manifest.json"))?;
+    let manifest = json::load(out.join("tweaks.manifest.json"))?;
     if let Some(owners) = &h.owners {
         let mut text = std::fs::read(owners).unwrap_or_default();
         for e in manifest.get("entries").and_then(Value::as_list).unwrap_or(&[]) {
@@ -218,9 +218,9 @@ pub fn run_hook(h: &Hook) -> Result<HookDone> {
         }
         write_file(owners, &text)?;
     }
-    let report_json = pyjson::load(out.join("report.json"))?;
-    let contract = pyjson::load(out.join("boot-contract.json"))?;
-    let trust = pyjson::load(&trust_path)?;
+    let report_json = json::load(out.join("report.json"))?;
+    let contract = json::load(out.join("boot-contract.json"))?;
+    let trust = json::load(&trust_path)?;
     let results = report_json.get("results").and_then(Value::as_list).unwrap_or(&[]).to_vec();
     let field = |r: &Value, k: &str| r.get(k).map(str_value).unwrap_or_default();
     let off: Vec<String> = results.iter().filter(|r| field(r, "state") == "off").map(|r| format!("{}: {}", field(r, "item"), field(r, "note"))).collect();
@@ -241,7 +241,7 @@ pub fn run_hook(h: &Hook) -> Result<HookDone> {
     info.set("off", Value::List(off.iter().map(Value::str).collect()));
     info.set("not_found", Value::List(not_found.iter().map(Value::str).collect()));
     if let Some(path) = &h.info {
-        write_file(path, pyjson::dumps(&info, Some(2), false).as_bytes())?;
+        write_file(path, json::dumps(&info, Some(2), false).as_bytes())?;
     }
     Ok(HookDone { build, report, out, disabled_jobs, owner_cdhashes, first_start_unpacker: first_start, off, not_found, info })
 }

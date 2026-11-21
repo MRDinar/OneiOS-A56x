@@ -1,7 +1,7 @@
 //! userland/tests/test_roottweak.py's 38 cases, on the Rust port, on a generated stand-in root (fakeroot.py's,
 //! ported below). No file of Apple's is used. Each test names the Python case it ports.
 
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_tweaks::plist::{self, P};
 use oneios_tweaks::tree::{Manifest, Tree};
 use oneios_tweaks::{bootcheck, cli, config, hook, launchd, macho};
@@ -228,7 +228,7 @@ impl Case {
         assert_eq!(self.apply_in("sealed", args), 1, "apply {args:?} did not fail");
     }
     fn read(&self, name: &str) -> Value {
-        pyjson::load(self.out.join(name)).unwrap()
+        json::load(self.out.join(name)).unwrap()
     }
     fn states(&self) -> HashMap<String, String> {
         let r = self.read("report.json");
@@ -256,7 +256,7 @@ fn strs(v: &Value) -> Vec<String> {
 }
 
 fn read_plist(base: &Path, path: &str) -> P {
-    plist::loads(&fs::read(base.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))).unwrap().value.unwrap()
+    plist::loads(&fs::read(base.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))).unwrap()
 }
 
 fn keys(p: &P) -> Vec<String> {
@@ -805,7 +805,7 @@ fn hook_the_image_hook_speaks_api_1() {
     names.sort();
     assert_eq!(names, ["boot-contract.json", "owner-trust.json", "report.json", "report.txt", "tweaks.manifest.json", "xnuhost.conf"]);
     assert!(fs::read_to_string(overlay.join("userland/xnuhost.conf")).unwrap().contains("scale=2\n"));
-    let summary = pyjson::load(&info).unwrap();
+    let summary = json::load(&info).unwrap();
     assert!(summary.get("first_start_unpacker").unwrap().is_null());
     let rules: HashMap<String, String> = fs::read_to_string(&owners).unwrap().lines().map(|l| l.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string())).unwrap()).collect();
     assert_eq!(rules["db/com.apple.xpc.launchd/disabled.plist"], "0\t0\t0644");
@@ -823,8 +823,8 @@ fn hook_the_image_hook_speaks_api_1() {
     assert!(!c.data.join("oneios/bin/oneios-seed").exists());
     let mut want: Vec<String> = hashes.values().cloned().collect();
     want.sort();
-    assert_eq!(strs(pyjson::load(overlay.join("userland/owner-trust.json")).unwrap().get("cdhashes").unwrap()), want);
-    assert_eq!(str_of(&pyjson::load(&info).unwrap(), "first_start_unpacker"), "overlay/userland/bin/oneios-seed");
+    assert_eq!(strs(json::load(overlay.join("userland/owner-trust.json")).unwrap().get("cdhashes").unwrap()), want);
+    assert_eq!(str_of(&json::load(&info).unwrap(), "first_start_unpacker"), "overlay/userland/bin/oneios-seed");
     env.insert("ONEIOS_HOOK_API", "2".into());
     assert!(hook::Hook::from_env(&env_of(&env), None).is_err());
 }
@@ -846,7 +846,7 @@ fn hook_the_hook_checks_the_plug_ins_build_record() {
         let mut sdk = Value::dict();
         sdk.set("version", "26.5");
         v.set("sdk", sdk);
-        fs::write(&record, pyjson::dumps(&v, None, false)).unwrap();
+        fs::write(&record, json::dumps(&v, None, false)).unwrap();
     };
     let none = c.top.join("none").to_string_lossy().into_owned();
     let env: HashMap<&str, String> = [
@@ -866,8 +866,8 @@ fn hook_the_hook_checks_the_plug_ins_build_record() {
     sorted.sort();
     write(&sorted);
     hook::run_hook(&hook::Hook::from_env(&env_of(&env), None).unwrap()).unwrap();
-    assert_eq!(strs(pyjson::load(overlay.join("userland/owner-trust.json")).unwrap().get("cdhashes").unwrap()), sorted);
-    let metal = pyjson::load(&info_file).unwrap().get("metal_plugin").cloned().unwrap();
+    assert_eq!(strs(json::load(overlay.join("userland/owner-trust.json")).unwrap().get("cdhashes").unwrap()), sorted);
+    let metal = json::load(&info_file).unwrap().get("metal_plugin").cloned().unwrap();
     assert_eq!(metal.get("placed").cloned(), Some(Value::Bool(true)));
     assert_eq!((str_of(&metal, "target"), str_of(&metal, "sdk"), str_of(&metal, "record")), (format!("iPhone18,2 {BUILD}"), "26.5".into(), "NativeAdrenoMetal.build.json".into()));
     assert_eq!(strs(metal.get("cdhashes").unwrap()), sorted);

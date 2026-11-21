@@ -13,7 +13,7 @@
 use crate::image::{cstr_at, hex, u32_at, u64_at};
 use crate::records::truthy;
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::sha256_hex;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -73,9 +73,9 @@ fn inner_keys(value: &Value) -> usize {
 
 pub fn run(args: Args) -> Result<()> {
     let work = Path::new(&args.work);
-    let load = |name: &str| pyjson::load(work.join(name));
+    let load = |name: &str| json::load(work.join(name));
     let (select, hosted, prelink, pairing) = (load("select.json")?, load("hosted.json")?, load("kernel.kc.prelink.json")?, load("match.map.json")?);
-    let reviewed = pyjson::load(&args.reviewed)?;
+    let reviewed = json::load(&args.reviewed)?;
     let image = oneios_common::Map::open(work.join("kernel.kc"))?;
     let mut entries = Vec::new();
     let mut off = 32usize;
@@ -186,7 +186,7 @@ pub fn run(args: Args) -> Result<()> {
     record.set("pairing", pairs);
     record.set("mapping_complete", key(&prelink, "mapping_complete")?.clone());
     record.set("runtime_qualified", false);
-    std::fs::write(&args.output, pyjson::dumps(&record, Some(1), false) + "\n").with_context(|| args.output.clone())?;
+    std::fs::write(&args.output, json::dumps(&record, Some(1), false) + "\n").with_context(|| args.output.clone())?;
     println!(
         "record: {count} fileset entries ({} roots, {} in the closure, {absent_count} kexts absent), {stubbed} original functions on the stub, {missing} data targets unpaired",
         key(&select, "roots")?.as_list().map_or(0, <[Value]>::len),

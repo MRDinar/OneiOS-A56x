@@ -34,9 +34,8 @@ mod ipsw;
 pub mod rangeserve;
 pub mod remotezip;
 pub mod transfer;
-mod tar;
 
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::io::Write;
 
 /// How a command ends when it does not end well.
@@ -383,7 +382,7 @@ fn load_json(path: Option<&str>) -> Result<Option<Value>, Fail> {
         None => Ok(None),
         Some(path) => {
             let text = std::fs::read_to_string(path).map_err(|e| crash!("{}", py::os_error(&e, path)))?;
-            pyjson::parse(&text).map(Some).map_err(|e| crash!("{path}: {e}"))
+            json::parse(&text).map(Some).map_err(|e| crash!("{path}: {e}"))
         }
     }
 }
@@ -407,11 +406,11 @@ fn dispatch(command: Command) -> Result<(), Fail> {
             let mut out = std::io::stdout().lock();
             out.write_all(text.as_bytes()).and_then(|_| out.flush()).map_err(|e| crash!("stdout: {e}"))
         }
-        Command::ApfsInfo { image, .. } => say(&pyjson::dumps(&apfs::apfs_info(&image)?.to_value(), Some(2), false)),
+        Command::ApfsInfo { image, .. } => say(&json::dumps(&apfs::apfs_info(&image)?.to_value(), Some(2), false)),
         Command::ApfsOwners { image, dir, .. } => {
             let tree = apfs::ApfsTree::open(&image)?;
             let walked = tree.walk(dir.as_deref().unwrap_or(""))?;
-            say(&pyjson::dumps(&apfs::owners_value(walked), None, true))
+            say(&json::dumps(&apfs::owners_value(walked), None, true))
         }
         Command::Hashes { image, out, chunk, .. } => {
             let chunk = match first(&chunk) {
@@ -441,7 +440,7 @@ fn dispatch(command: Command) -> Result<(), Fail> {
             info.set("entries", count);
             info.set("added", added);
             info.set("changed", changed);
-            say(&pyjson::dumps(&info, None, false))
+            say(&json::dumps(&info, None, false))
         }
         Command::Manifest { profile, setdir, inputs, seed_info, tweaks, .. } => {
             let profile = profile::load_profile(&profile)?;
@@ -514,7 +513,7 @@ pub fn seed_pack_line(tree: &str, meta: &str, out: &str, epoch: i128, owners: Op
     info.set("entries", count);
     info.set("added", added);
     info.set("changed", changed);
-    Ok(pyjson::dumps(&info, None, false))
+    Ok(json::dumps(&info, None, false))
 }
 
 /// `image manifest PROFILE SETDIR [--inputs FILE] [--seed-info FILE] [--tweaks FILE]`: the line it prints.

@@ -166,6 +166,12 @@ Rules:
 - `kernel` is `null` in a set built with `--no-kernel`; the runtime cannot start such a set.
 - `tweaks` is `null` when no userland hook ran.
 - The manifest has no build time in it: the same inputs, hook and kernel give the same manifest bytes.
+- It is written by serde_json with an indent of 2 (`oneios-tool image manifest`, `image build`): the layout
+  Python's `json.dump(indent=2)` had for this file, so the fork's `manifest_rekernel` (an awk that reads the
+  `"path"`, `"size"` and `"sha256"` lines of `kernel.kc`'s entry) reads both. Readers parse it and compare values
+  (`image verify`, `phone image-check`, the fork's verifier, xnuhost); none compares its bytes with a manifest made
+  again, so a set built before 2026-11-21 verifies with the new tool (checked: `image verify out/image/24A446`, the
+  set of 2026-11-11, 20 files, ok).
 
 ### Version rules
 
@@ -202,7 +208,7 @@ chunk read later. `scripts/image/verify.sh` checks each image against its list.
 The guest's Data volume has to be APFS, made by Apple's own APFS code: iOS 27 uses case-sensitive volumes
 with expanded records, and no Linux tool writes those. So there are two forms, named by the entry's `format`:
 
-**`tar` (the default, built on Linux and macOS).** A pax tar of what goes into the new Data volume's root,
+**`tar` (the default, built on Linux and macOS).** A tar (ustar headers, pax records where needed) of what goes into the new Data volume's root,
 which iOS sees as `/private/var`. It starts as the OS volume's own `/private/var`; then the userland hook
 changes it (section 6).
 
@@ -215,12 +221,23 @@ changes it (section 6).
   them). `com.apple.decmpfs`, `com.apple.ResourceFork` and `com.apple.fs.symlink` are not carried: the tar
   holds the plain content.
 - The same inputs and hook give the same bytes.
+- The headers are the `tar` crate's (`oneios-tool image seed-pack`, since 2026-11-21): ustar, a name that is not
+  ASCII as its UTF-8 bytes, a name or link target too long for ustar as a GNU long name (`././@LongLink`, types
+  `L` and `K`), a pax extended header only for an entry's xattrs, two zero blocks at the end. `oneios-seed`
+  (`userland/helpers/oneios-seed.c`) reads all of these, and so do GNU tar and bsdtar. Before 2026-11-21 the seed
+  was Python tarfile's pax format byte for byte (a `path` record for such names, a checksum of six digits, the
+  file padded to 10240 bytes). Both forms unpack to the same tree: on 24A446 the two seeds of the same inputs
+  (`27ec4e10...`, 1,267,793,920 bytes, and `5406d527...`, 1,265,063,424 bytes) list the same 20,851 entries with the
+  same names, modes, owners, times, sizes and link targets; three property lists the root tweaks write differ in
+  their bytes (now the `plist` crate's binary writer), not in their values.
 
   The guest turns it into a volume on its first start (booter and userland): make an APFS container in the
   Data store (`data/` on the stage, `store_gib` GiB, sparse) with one case-sensitive volume named
   `volume_name` with UUID `volume_uuid` (`newfs_apfs -e -x -U`, from the OS volume), unpack the seed into it
   as root with numeric owners, and record the seed's SHA-256 beside the store. A store whose recorded seed
   hash differs from the manifest's belongs to another seed and is started over, as UniXNU's Data store does.
+  So a set built with a new seed starts the phone's Data store over on its first boot; a set already staged keeps
+  its own seed and manifest, and nothing re-derives them.
 
 **`apfs-raw` (`build.sh --seed apfs`, macOS only).** The same content already unpacked into an APFS volume
 image with that UUID (`scripts/image/seed-apfs-macos.sh`: `newfs_apfs -e -x`, as UniXNU-droidvm's
@@ -266,7 +283,8 @@ changes.
 uploaded.
 
 - zstd, window 2^27 (`--long=27`; the fork accepts up to 2^31).
-- pax tar: `manifest.json` first, then the files in manifest order, folders before their files. Regular
+- tar (the `tar` crate's ustar headers; a size past 8 GiB in the base-256 form, which the fork's reader takes):
+  `manifest.json` first, then the files in manifest order, folders before their files. Regular
   files and folders only, mode 0644/0755, owner 0, time 0.
 
 How it maps to OneOS (`app-android/core/model/.../Images.kt`):

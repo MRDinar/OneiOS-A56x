@@ -5,21 +5,21 @@ edition.workspace = true
 license.workspace = true
 
 # `oneios-tool image tweaks`: the root tweaks and the image build's userland hook (the port of userland/roottweak and
-# userland/image-hook, byte for byte: the Data seed's SHA-256 is pinned in the image's trust list). A library for
+# userland/image-hook). A library for
 # `serve`'s `tweaks` request and the image build on the phone; it starts no program.
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 sha2.workspace = true
 libc.workspace = true
-# pyjson: the JSON outputs as Python's json.dump writes them; job: the request's stop and its byte count
+# json: the JSON records and reports; job: the request's stop and its byte count
 oneios-common.workspace = true
 # the OS volume read from its image (the phone mounts nothing): its APFS reader
 oneios-image.workspace = true
 # sha1: a code directory of hash type 1 (macho.rs; roottweak/macho.py uses hashlib)
 sha1 = "0.11"
-# The XML property lists, read as plistlib's expat parser reads them (plist.rs)
-roxmltree = "0.20"
+# the property lists, binary and XML, read and written (plist.rs)
+plist = { version = "1", default-features = false }
 # userland/config/*.toml as tomllib reads them (the tables' order kept)
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse", "preserve_order"] }
 # boot-check's launchd.log lines (roottweak/bootcheck.py)

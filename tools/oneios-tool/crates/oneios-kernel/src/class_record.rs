@@ -4,7 +4,7 @@
 
 use crate::gen::{self, fail, Stubs};
 use anyhow::{anyhow, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

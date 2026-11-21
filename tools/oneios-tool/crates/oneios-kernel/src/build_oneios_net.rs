@@ -38,7 +38,7 @@ use crate::macho_object::{Entry, Object};
 use crate::staged::net_transport::NET_TRANSPORT;
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

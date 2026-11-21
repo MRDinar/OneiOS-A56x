@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-# Python's json.dumps layout and dict order (objects.json, the reports, the build record): pyjson.
+# the JSON outputs (objects.json, the reports, the build record) and their key order: json.
 oneios-common.workspace = true
 # The kernelcache reader (XnuPrelink's kc_image.py) for the layout tools.
 oneios-prelink.workspace = true

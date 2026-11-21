@@ -1,17 +1,17 @@
 //! imagetool.py's archive commands: `pack SETDIR OUT.tar.zst` (the archive of a verified set: manifest.json
 //! first, then the files in manifest order, nothing else) and `verify SET.tar.zst` (as the OneOS fork checks one:
 //! its .sha256 if present, the tar rules, then every file while it streams). zstd is the `zstd` program, as in the
-//! script (the archive's bytes are its bytes); the tar stream is written with tar.rs (Python's tarfile headers) and
-//! read with the `tar` crate.
+//! script (the archive's bytes are its bytes); the tar stream is written and read with the `tar` crate (ustar
+//! headers; a size past 8 GiB in the base-256 form, which the fork's reader takes).
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{crash, err, hashes, manifest, profile, py, tar, Fail};
+use crate::{crash, err, hashes, manifest, profile, py, Fail};
 
 fn need_zstd() -> Result<(), Fail> {
     let found = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("zstd").is_file()));
@@ -30,29 +30,32 @@ fn parents(rel: &str) -> Vec<&str> {
 /// The tar stream of the set, into `out`: a folder entry before the first file below it, then each file.
 fn write_set(setdir: &str, files: &[String], out: &mut impl Write) -> Result<(), Fail> {
     let io = |e: std::io::Error| crash!("{e}");
-    let (mut dirs, mut offset, mut header) = (HashSet::new(), 0u64, Vec::new());
+    let header = |kind, mode, size| {
+        let mut h = ::tar::Header::new_ustar();
+        h.set_entry_type(kind);
+        h.set_mode(mode);
+        h.set_size(size);
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_mtime(0);
+        h
+    };
+    let mut tar = ::tar::Builder::new(out);
+    let mut dirs = HashSet::new();
     for rel in files {
         for dir in parents(rel) {
             if dirs.insert(dir.to_string()) {
-                header.clear();
-                tar::TarInfo { kind: tar::DIR, mode: 0o755, ..tar::TarInfo::new(dir) }.write_header(&mut header);
-                out.write_all(&header).map_err(io)?;
-                offset += header.len() as u64;
+                tar.append_data(&mut header(::tar::EntryType::Directory, 0o755, 0), dir, std::io::empty()).map_err(io)?;
             }
         }
         let full = py::join(setdir, rel);
         let size = std::fs::metadata(&full).map_err(|e| crash!("{}", py::os_error(&e, &full)))?.len();
-        header.clear();
-        tar::TarInfo { size: size as i128, ..tar::TarInfo::new(rel) }.write_header(&mut header);
-        out.write_all(&header).map_err(io)?;
-        let mut file = std::fs::File::open(&full).map_err(|e| crash!("{}", py::os_error(&e, &full)))?.take(size);
-        let copied = std::io::copy(&mut file, out).map_err(io)?;
-        let padded = size.next_multiple_of(tar::BLOCK as u64);
-        // (a file that shrank since its size was read is filled with zeros, as tarfile's copy would stop short)
-        out.write_all(&vec![0u8; (padded - copied) as usize]).map_err(io)?;
-        offset += header.len() as u64 + padded;
+        let file = std::fs::File::open(&full).map_err(|e| crash!("{}", py::os_error(&e, &full)))?;
+        // a file that shrank since its size was read is filled with zeros up to its size
+        let body = file.take(size).chain(std::io::repeat(0)).take(size);
+        tar.append_data(&mut header(::tar::EntryType::Regular, 0o644, size), rel, body).map_err(io)?;
     }
-    out.write_all(&vec![0u8; (tar::end(offset) - offset) as usize]).map_err(io)
+    tar.finish().map_err(io)
 }
 
 /// `pack(setdir, out)`: the archive and its `.sha256`; returns the archive's SHA-256.

@@ -6,7 +6,7 @@
 use crate::gen::{self, fail};
 use crate::layout::{self, Args, Cache, BRK_1, BTI_C, PACIBSP};
 use anyhow::Result;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 
 const CLASS: &str = "IOHIDDevice";
 const BUNDLE: &str = "com.apple.iokit.IOHIDFamily";

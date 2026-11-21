@@ -14,7 +14,7 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::pyrepr::{repr_strs, repr_value, truthy};
 
 use crate::image::{hex, scan, signed, u32_at, unhex, Fixups, Image};
@@ -166,11 +166,11 @@ impl Cache<'_> {
 
 pub fn run(args: Args) -> Result<()> {
     let raw = oneios_common::Map::open(&args.kernelcache)?;
-    let report = pyjson::load(&args.report)?;
+    let report = json::load(&args.report)?;
     let number = |key: &str| report.get(key).and_then(Value::as_str).ok_or_else(|| anyhow!("{}: no {key}", args.report)).and_then(unhex);
     let (slide, link) = (number("collection_slide")?, number("native_link_address")?);
     let functions = match &args.map {
-        Some(map) => pyjson::load(map)?.get("functions").cloned().ok_or_else(|| anyhow!("{map}: no functions"))?,
+        Some(map) => json::load(map)?.get("functions").cloned().ok_or_else(|| anyhow!("{map}: no functions"))?,
         None => Value::dict(),
     };
     let cache = Image::new(&raw, 0)?;

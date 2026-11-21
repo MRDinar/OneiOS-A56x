@@ -3,7 +3,7 @@
 //! Layouts: Apple's "Apple File System Reference". The checks and the messages are imagetool.py's.
 
 use crate::{crash, err, Fail};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use oneios_common::Map;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(info.volumes.len(), 1);
         let v = &info.volumes[0];
         assert_eq!((v.name.as_str(), v.uuid.as_str(), v.role.as_str(), v.case_sensitive, v.sealed), ("FakeOS", want.as_str(), "system", true, true));
-        let text = oneios_common::pyjson::dumps(&info.to_value(), Some(2), false);
+        let text = oneios_common::json::dumps(&info.to_value(), Some(2), false);
         assert!(text.starts_with("{\n  \"container_offset\": 0,\n  \"block_size\": 4096,\n  \"block_count\": 64,\n  \"container_uuid\": \""), "{text}");
         assert!(text.ends_with("\"role\": \"system\",\n      \"case_sensitive\": true,\n      \"sealed\": true\n    }\n  ]\n}"), "{text}");
 
@@ -728,12 +728,12 @@ mod tests {
                 &Rec { u: 501, g: 501, m: 0o100600, x: vec!["com.apple.decmpfs".into(), "com.example.tag".into()] }
             );
             assert_eq!((by["db/l"].g, by["mobile"].m), (80, 0o40750));
-            let text = oneios_common::pyjson::dumps(&owners_value(got), None, true);
+            let text = oneios_common::json::dumps(&owners_value(got), None, true);
             assert_eq!(
                 text,
-                "{\".\": {\"g\": 0, \"m\": 16877, \"u\": 0, \"x\": []}, \"db\": {\"g\": 0, \"m\": 16832, \"u\": 0, \"x\": []}, \
-                 \"db/l\": {\"g\": 80, \"m\": 41453, \"u\": 0, \"x\": []}, \"mobile\": {\"g\": 501, \"m\": 16872, \"u\": 501, \"x\": []}, \
-                 \"mobile/a.plist\": {\"g\": 501, \"m\": 33152, \"u\": 501, \"x\": [\"com.apple.decmpfs\", \"com.example.tag\"]}}"
+                "{\".\":{\"g\":0,\"m\":16877,\"u\":0,\"x\":[]},\"db\":{\"g\":0,\"m\":16832,\"u\":0,\"x\":[]},\
+                 \"db/l\":{\"g\":80,\"m\":41453,\"u\":0,\"x\":[]},\"mobile\":{\"g\":501,\"m\":16872,\"u\":501,\"x\":[]},\
+                 \"mobile/a.plist\":{\"g\":501,\"m\":33152,\"u\":501,\"x\":[\"com.apple.decmpfs\",\"com.example.tag\"]}}"
             );
             assert_eq!(tree.walk("").unwrap().len(), 7);
             match tree.walk("private/nothing") {

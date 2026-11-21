@@ -42,7 +42,7 @@ use crate::gen::{self, fail, Compile, Ctx, Stubs};
 use crate::macho_object::Object;
 use crate::staged::{display::{DISPLAY, SCANOUT}, display_header};
 use anyhow::{anyhow, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use siphasher::sip::SipHasher24;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -128,7 +128,7 @@ fn shown(value: &Value) -> String {
     match value {
         Value::Str(text) => text.clone(),
         Value::Int(number) => number.to_string(),
-        other => oneios_common::pyjson::dumps(other, None, false),
+        other => oneios_common::json::dumps(other, None, false),
     }
 }
 

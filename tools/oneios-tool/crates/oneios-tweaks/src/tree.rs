@@ -16,7 +16,7 @@ use crate::plist::{self, P};
 use crate::Refused;
 use anyhow::{bail, Context as _, Result};
 use oneios_common::job;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -309,23 +309,16 @@ impl Tree {
         fs::read(&host).with_context(|| host.display().to_string())
     }
 
-    /// The property list at `path`; `None` where there is no file (`default`). A file that is no plist is an
-    /// error: it is never written over as if it were empty. The flag: it shares a container (plist.rs).
-    pub fn read_plist_shared(&self, path: &str) -> Result<Option<(Option<P>, bool)>> {
+    /// The property list at `path`; `default` where there is no file. A file that is no plist is an error: it is
+    /// never written over as if it were empty.
+    pub fn read_plist(&self, path: &str, default: Option<P>) -> Result<Option<P>> {
         if !self.exists(path)? {
-            return Ok(None);
+            return Ok(default);
         }
         match plist::loads(&self.read(path)?) {
-            Ok(l) => Ok(Some((l.value, l.shared))),
+            Ok(v) => Ok(Some(v)),
             Err(e) => bail!(Refused(format!("{}:{path}: not a property list ({e})", self.volume))),
         }
-    }
-    /// `read_plist(path, default)`: `default` where there is no file; plistlib's None of an empty XML list as None.
-    pub fn read_plist(&self, path: &str, default: Option<P>) -> Result<Option<P>> {
-        Ok(match self.read_plist_shared(path)? {
-            None => default,
-            Some((v, _)) => v,
-        })
     }
 
     // ---- writing
@@ -415,19 +408,10 @@ impl Tree {
 
     /// Sets `values` in the dictionary at `path`, keeping its other keys. The keys that changed.
     pub fn merge_plist(&self, m: &mut Manifest, path: &str, values: &[(String, P)], owner: Owner, mode: u32, binary: bool, parent_owner: Option<Owner>) -> Result<Vec<String>> {
-        let (have, shared) = match self.read_plist_shared(path)? {
-            None => (Some(P::dict()), false),
-            Some(v) => v,
-        };
+        let have = self.read_plist(path, Some(P::dict()))?;
         let Some(mut have) = have.filter(P::is_dict) else {
             bail!(Refused(format!("{}:{path}: not a dictionary", self.volume)));
         };
-        if shared {
-            bail!(Refused(format!(
-                "{}:{path}: a binary property list that refers to one container from two places; Python's plistlib would write it once and this writer twice, so it is not written again (tools/oneios-tool/README.md \"image tweaks\")",
-                self.volume
-            )));
-        }
         let mut changed: Vec<String> = values
             .iter()
             .filter(|(k, v)| match have.get(k) {

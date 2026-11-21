@@ -30,7 +30,7 @@
 //! ```
 
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::collections::{HashMap, HashSet};
 
 const LC_SEGMENT_64: u32 = 0x19;
@@ -269,7 +269,7 @@ pub fn run(args: Args) -> Result<()> {
     let closure: Option<HashSet<String>> = match &args.closure {
         None => None,
         Some(path) => {
-            let record = pyjson::load(path)?;
+            let record = json::load(path)?;
             let list = record.get("closure").and_then(Value::as_list).ok_or_else(|| anyhow!("{path}: no closure"))?;
             Some(list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         }
@@ -403,7 +403,7 @@ pub fn run(args: Args) -> Result<()> {
     report.set("x18_checked", args.x18);
     let x18_kexts = x18.len();
     report.set("x18_instructions_by_kext", Value::Dict(x18));
-    std::fs::write(&args.report, pyjson::dumps(&report, Some(1), false)).with_context(|| args.report.clone())?;
+    std::fs::write(&args.report, json::dumps(&report, Some(1), false)).with_context(|| args.report.clone())?;
     println!(
         "hosted: {n_rewrites} TPIDR_EL1, {n_mpidr} MPIDR_EL1 and {n_pointers} kernel pointer rewrite(s) in {scanned} bytes of kext code; \
          {total} other privileged system-register instruction(s) in {} kext(s){}",

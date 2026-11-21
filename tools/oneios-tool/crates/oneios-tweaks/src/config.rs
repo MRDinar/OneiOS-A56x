@@ -6,7 +6,7 @@
 use crate::plist::P;
 use crate::Refused;
 use anyhow::{bail, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 

@@ -89,7 +89,9 @@ Compared on the Linux PC: without tweaks the set is build.sh's `--no-hook` set, 
 and `manifest.json` byte for byte; with them every file but `manifest.json` is the set of build.sh with the Python
 hook (`data.seed` `27ec4e10...`), the manifest differing only in the hook's own record; `kernel.kc` is the
 prelink's; 19 to 21 s from inputs that are there, 30 s with the fetch's check against Apple's IPSW, 1.07 GB peak
-memory ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "image build").
+memory ([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "image build"). Since 2026-11-21 the tools no
+longer write Python's bytes (serde_json, the `tar` and `plist` crates): the same inputs now give `data.seed`
+`5406d527...` (the same entries; [image-format.md](image-format.md) section 5), `kernel.kc` `276aadac...` as before.
 
 **On macOS** the commands are the same and need no `sudo`. The fetch decrypts with `oneios-tool image aea-decrypt` (the macOS `ipsw` release until 2026-11-21). The
 image build attaches the three images with `hdiutil` (read-only, owners ignored) and reads the owners of

@@ -1,7 +1,12 @@
-//! The kernelcache's prelink information as Python's plistlib reads and writes it. Reading is the `plist` crate;
-//! the tree keeps the dictionaries' order, and the writer is plistlib's XML writer byte for byte (tabs, `%d`
-//! integers, base64 lines of 76 columns less the indentation), because the rewritten property list is part of
-//! kernel.kc, whose hash is recorded. The `plist` crate's own writer lays the text out differently.
+//! The kernelcache's prelink information (`__PRELINK_INFO`): read by the `plist` crate into a tree that keeps the
+//! dictionaries' order, and written back here as XML that XNU's own parser reads.
+//!
+//! The writer is not the `plist` crate's because the kernel reads this text with `OSUnserializeXML`
+//! (libkern/c++/OSUnserializeXML.y), which knows three entities only: `&lt;`, `&gt;` and `&amp;`. The crate
+//! writes text through quick-xml's `escape`, which also turns `"` and `'` into `&quot;` and `&apos;`, and the
+//! kernelcache's own prelink information has such strings (24A446: `<string>"Copyright ...`): the kernel would
+//! refuse the whole list. So text is escaped here as the kernel reads it; the layout is a tab a level, decimal
+//! integers and base64 lines of at most 76 columns, the layout kernel.kc has had since the first prelink.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
@@ -83,7 +88,7 @@ impl Plist {
         }
     }
 
-    /// `plistlib.dumps(value, sort_keys=False)`.
+    /// The XML text of the value, keys in their order.
     pub fn dumps(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         out.extend_from_slice(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n");
@@ -109,7 +114,7 @@ impl Plist {
                 }
                 line(out, level, &format!("<integer>{n}</integer>"));
             }
-            Plist::Real(f) => line(out, level, &format!("<real>{}</real>", oneios_common::pyjson::float_repr(*f))),
+            Plist::Real(f) => line(out, level, &format!("<real>{}</real>", format!("{f:?}"))),
             Plist::Date(d) => line(out, level, &format!("<date>{d}</date>")),
             Plist::Data(data) => {
                 line(out, level, "<data>");
@@ -164,7 +169,7 @@ fn convert(value: plist::Value) -> Result<Plist> {
         plist::Value::Date(d) => Plist::Date(d.to_xml_format()),
         plist::Value::Array(items) => Plist::Array(items.into_iter().map(convert).collect::<Result<_>>()?),
         plist::Value::Dictionary(items) => Plist::Dict(items.into_iter().map(|(k, v)| Ok((k, convert(v)?))).collect::<Result<_>>()?),
-        other => bail!("the property list holds a value plistlib's XML has no element for: {other:?}"),
+        other => bail!("the prelink information holds a value this writer has no element for: {other:?}"),
     })
 }
 
@@ -173,14 +178,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn writes_what_plistlib_writes() {
-        // plistlib.dumps of this value, Python 3.14
+    fn writes_what_the_kernel_reads() {
+        // the layout of kernel.kc since the first prelink
         let value = Plist::Dict(vec![
             ("b".into(), Plist::Int(-5)),
             ("a".into(), Plist::Array(vec![Plist::Str("x<y&z".into()), Plist::Bool(true), Plist::Real(1.5), Plist::Dict(vec![]), Plist::Array(vec![])])),
             ("d".into(), Plist::Dict(vec![("data".into(), Plist::Data((0u8..100).collect()))])),
             ("big".into(), Plist::Int(18446744005107531776)),
         ]);
-        assert_eq!(String::from_utf8(value.dumps().unwrap()).unwrap(), include_str!("plistpy_expect.in"));
+        assert_eq!(String::from_utf8(value.dumps().unwrap()).unwrap(), include_str!("prelink_xml_expect.in"));
+        // quotes stay as they are: the kernel's parser has no `&quot;` or `&apos;`
+        let quoted = Plist::Dict(vec![("c".into(), Plist::Str("\"Copyright\" Apple's & <x>".into()))]);
+        assert!(String::from_utf8(quoted.dumps().unwrap()).unwrap().contains("<string>\"Copyright\" Apple's &amp; &lt;x&gt;</string>"));
     }
 }

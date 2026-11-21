@@ -43,7 +43,7 @@ use crate::macho_object::{Entry, Object};
 use crate::staged::{hid::HID, hid_pen::{HID_PEN, HID_PEN_ALLOCATE}, hid_transport::HID_TRANSPORT};
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

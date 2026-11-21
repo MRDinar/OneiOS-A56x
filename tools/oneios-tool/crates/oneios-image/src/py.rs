@@ -1,7 +1,7 @@
 //! Small pieces of Python that imagetool.py's output depends on: `repr()` and `str()` of values in messages,
 //! `int()`, `os.path` on strings, `shlex.quote`, `urllib.parse.quote`, base64, and the text of an `OSError`.
 
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 pub use oneios_common::pyrepr::{repr_str, repr_strs, repr_value, str_value, truthy};
 
 /// The value as a Python `int`: an integer, or a bool (`isinstance(True, int)` holds in Python).

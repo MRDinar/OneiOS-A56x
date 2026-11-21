@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::pyrepr::truthy;
 
 use crate::image::Image;
@@ -77,11 +77,11 @@ fn find(kernel: &Image, wanted: &IndexMap<Key, &Value>) -> Result<HashMap<Key, V
 
 pub fn run(args: Args) -> Result<()> {
     let raw = oneios_common::Map::open(&args.kernelcache)?;
-    let mut reviewed = pyjson::load(&args.reviewed)?;
+    let mut reviewed = json::load(&args.reviewed)?;
     if oneios_common::sha256_hex(&raw) != text(&reviewed, "kernelcache_sha256")? {
         bail!("port-fixture: the reviewed file is for another kernelcache");
     }
-    let fixture = pyjson::load(&args.fixture)?;
+    let fixture = json::load(&args.fixture)?;
     let kernel = Image::new(&raw, 0)?.entry(text(&reviewed, "entry")?)?;
     let wanted = wanted(&fixture)?;
     let mut found: Vec<(Key, Vec<u64>)> = find(&kernel, &wanted)?.into_iter().collect();
@@ -124,7 +124,7 @@ pub fn run(args: Args) -> Result<()> {
     }
     let count = ported.len();
     reviewed.set("functions", kept.into_iter().chain(ported).collect::<Vec<Value>>());
-    std::fs::write(&args.reviewed, pyjson::dumps(&reviewed, Some(1), false) + "\n").with_context(|| args.reviewed.clone())?;
+    std::fs::write(&args.reviewed, json::dumps(&reviewed, Some(1), false) + "\n").with_context(|| args.reviewed.clone())?;
     println!("port-fixture: {count} of {} reviewed functions carried over ({ambiguous} with more than one identical function here, left out)", wanted.len());
     Ok(())
 }

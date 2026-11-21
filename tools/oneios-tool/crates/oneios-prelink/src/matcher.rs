@@ -16,7 +16,7 @@ use crate::image::{checked_shape, hex, scan, unhex, Fixups, Image, Symbols};
 use crate::pyset::PySet;
 use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::sha256_hex;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -83,7 +83,7 @@ pub fn fixtures(xnuprelink: &Path) -> Result<Vec<std::path::PathBuf>> {
 pub fn reviewed_records(xnuprelink: &Path, kernelcache_sha256: &str, entry: &str) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     for path in fixtures(xnuprelink)? {
-        let record = pyjson::load(&path)?;
+        let record = json::load(&path)?;
         let pinned = record.get("inputs").ok_or_else(|| anyhow!("{}: no inputs", path.display()))?;
         if pinned.get("kernelcache_sha256").and_then(Value::as_str) == Some(kernelcache_sha256) && pinned.get("entry").and_then(Value::as_str) == Some(entry) {
             out.push(record);
@@ -1471,7 +1471,7 @@ pub fn run(args: Args) -> Result<()> {
     let inputs = Inputs { raw: &raw, raw_sha256: &raw_sha256, entry_name: &args.entry, max_rounds: args.max_rounds, xnuprelink, signature: &signature };
     let pairing = match_images(&inputs, &original, &native, reference.as_deref(), true)?;
     if let Some(out) = &args.out {
-        std::fs::write(out, pyjson::dumps(&pairing.json, Some(1), false)).with_context(|| out.clone())?;
+        std::fs::write(out, json::dumps(&pairing.json, Some(1), false)).with_context(|| out.clone())?;
         println!("wrote {out}");
     }
     Ok(())

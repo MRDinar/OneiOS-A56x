@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 
 use crate::image::{hex, scan, u32_at, Fixups, Image, Ref, RefKind, Segment};
 
@@ -294,7 +294,7 @@ pub fn record(raw: &[u8], prelink_report: Option<&str>, classes: &[String]) -> R
     let cache = Image::new(raw, 0)?;
     let slide = match prelink_report {
         Some(path) => {
-            let report = pyjson::load(path)?;
+            let report = json::load(path)?;
             Some(crate::image::unhex(report.get("collection_slide").and_then(Value::as_str).with_context(|| format!("{path}: no collection_slide"))?)?)
         }
         None => None,
@@ -320,14 +320,14 @@ fn shown(record: &Value, key: &str) -> String {
         None | Some(Value::Null) => "None".to_string(),
         Some(Value::Str(s)) => s.clone(),
         Some(Value::Int(n)) => n.to_string(),
-        Some(other) => pyjson::dumps(other, None, false),
+        Some(other) => json::dumps(other, None, false),
     }
 }
 
 pub fn run(args: Args) -> Result<()> {
     let raw = oneios_common::Map::open(&args.kernelcache)?;
     let output = record(&raw, args.prelink_report.as_deref(), &args.classes)?;
-    std::fs::write(&args.out, pyjson::dumps(&output, Some(1), false) + "\n").with_context(|| args.out.clone())?;
+    std::fs::write(&args.out, json::dumps(&output, Some(1), false) + "\n").with_context(|| args.out.clone())?;
     for (name, record) in output.get("classes").and_then(Value::as_dict).unwrap_or(&[]) {
         if record.get("error").is_some() {
             println!("classes: {name}: {}", shown(record, "error"));

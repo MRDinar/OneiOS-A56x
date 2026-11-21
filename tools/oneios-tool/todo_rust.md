@@ -726,7 +726,7 @@ tweaks". The owner agreed to the port on 2026-11-21 (the phone must make the who
 | Python | Rust | State |
 |---|---|---|
 | `userland/roottweak/{cli,tweaks,tree,config,launchd,macho,bootcheck}.py` | `src/{cli,apply,tweaks,tree,config,launchd,macho,bootcheck}.rs` | ported; 33 of 33 cases the same (`tests/tweakspy/compare-python.sh`) |
-| plistlib (Python's) | `src/plist.rs` | its reader and both writers; plistlib's bytes in the unit tests |
+| plistlib (Python's) | `src/plist.rs` | the `plist` crate since 2026-11-21 (section 11); before, plistlib's reader and both writers by hand |
 | `userland/image-hook` | `src/hook.rs`, `image tweaks hook`, `serve` `tweaks` | ported; build.sh's default since 2026-11-21 (`--python-hook` for the Python); on 24A446 the seed and the overlay byte for byte |
 | `userland/tests/test_roottweak.py` (38 cases) | `tests/roottweak.rs` (38) | ported; the Python tests run as before |
 | `userland/tweak` | `oneios-tool image tweaks` | the command |
@@ -738,8 +738,37 @@ Open:
    `oneios_tweaks::run_hook` (docs/agents.md, Interfaces, has the call).
 3. The Mac: not built or run there.
 4. (closed 2026-11-21: the owner retired the Python; `compare-python.sh` ran 33 of 33 the same before it went with it.)
-5. A binary property list that shares a container between two places is refused when it would be written back
-   (the Python writes that container once); Apple's CF writer does not share containers, none was seen.
+5. (closed 2026-11-21: the `plist` crate writes the property lists; a binary list that shares a container is
+   read and written again like any other.)
+
+## 11. Python's bytes let go: serde_json, `tar`, `plist` (the owner's decision, 2026-11-21)
+
+Byte parity with the retired Python is no longer wanted. The code that existed only to give Python's bytes is
+replaced by the crates; every check that is not about Python stays. README "Hand-written, and why" and "Crates" have
+the result; docs/image-format.md sections 3, 5 and 7 the formats.
+
+| Was | Now | What changed in the outputs |
+|---|---|---|
+| `oneios-common/src/pyjson.rs` (Python's `json.dumps` layout as a serde `Formatter`: `", "`, `\uXXXX`, `repr(float)`, `NaN`; its own parser) | `oneios-common/src/json.rs`: serde_json's pretty writer (an indent of N) or compact writer, serde_json's parser; the ordered object tree stays (no `preserve_order`) | JSON with an indent: the same bytes for ASCII text (manifest.json, runtime.json, the reports, boot-contract.json: unchanged on 24A446). JSON without an indent: no spaces (`{"a":1}`; the seed's meta file, `seed-pack`'s line, `tweaks.json`, `apfs-owners`). Text outside ASCII as UTF-8, floats as ryu writes them (`1e20`), NaN as `null`. The kernel build id's digest is of serde_json's compact text: the next kernel build gets a new id for the same inputs (the golden `build-record.json`: `...-0702162a660f`, was `...-2943666e6a69`) |
+| `oneios-common/src/pytar.rs`, `oneios-image/src/tar.rs` (Python tarfile's pax headers by hand) | the `tar` crate's `Builder`: `seed.rs` (headers into a buffer, contents still written at offsets in parallel), `archive.rs` (`image pack`), `oneios-package` (`package archive`) | `data.seed`: `5406d527...` (was `27ec4e10...` on 24A446; the same entries, docs/image-format.md 5). The archive and the runtime package's tar: other bytes, the same members |
+| `oneios-tweaks/src/plist.rs`'s plistlib clone (binary and XML writers and readers, 900 lines) | the `plist` crate, converted to and from the tweaks' `P` tree | the three binary property lists the tweaks write on 24A446 (`.GlobalPreferences.plist`, `com.apple.springboard.plist`, `com.apple.migration.plist`): other bytes, the same values; `tweaks.manifest.json` records their new SHA-256 |
+| `oneios-prelink/src/plistpy.rs` (plistlib's XML writer) | kept, as `prelink_xml.rs`: the kernel's `OSUnserializeXML` reads `&lt;`, `&gt;`, `&amp;` only, and the crate writes `&quot;`/`&apos;` | none: `kernel.kc` `276aadac...` as before |
+
+Checked on the Linux PC (2026-11-21): `cargo test --release` green; the set built from `inputs/24A446` with the
+v0.1.12 kernel by the tool before the change and after it (`image build --no-fetch`); `image verify` of both and of
+`out/image/24A446` (built 2026-11-11 by the Python chain) with the new tool; a PC boot of the new set (README "The
+image set without Python's bytes").
+
+Left, on purpose:
+1. `oneios-prelink/src/pyset.rs` (CPython's set order and `random.sample`): the order is the matcher's and align's
+   rule (the first qualifying site wins; the holdout sample), not a layout. Another order gives other pairs: a change
+   of the prelink's rules, with its own audit and boot.
+2. `oneios-common/src/pyrepr.rs` and `oneios-image/src/py.rs`: Python's `repr` in messages. No file is written with
+   them; tests and logs match the words.
+3. `oneios-log`'s table JSON (`table.rs`, one row a line): xnuhost's log tool's own layout.
+4. `oneios-testkit/src/mktar.rs` (another agent's, 2026-11-21): writes the names `tar` refuses (`../x`), which the
+   oneios-seed tests need.
+5. Not run: the phone (a set with the new seed staged and booted there; its Data store starts over).
 
 ## Notes for the next agent
 

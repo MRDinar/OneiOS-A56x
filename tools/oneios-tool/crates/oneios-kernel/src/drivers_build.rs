@@ -26,7 +26,7 @@
 
 use crate::gen::{self, fail, read_text, resolve, s};
 use anyhow::{anyhow, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::path::{Path, PathBuf};
 
 #[derive(clap::Args)]
@@ -134,7 +134,7 @@ pub fn record(records: &Path, name: &str) -> Result<Record> {
 }
 
 pub fn parse_record(text: &str) -> Result<Record> {
-    let value = pyjson::parse(text.trim().trim_end_matches(',')).map_err(|e| anyhow!("{e}"))?;
+    let value = json::parse(text.trim().trim_end_matches(',')).map_err(|e| anyhow!("{e}"))?;
     let text_of = |k: &str| -> Result<String> {
         Ok(value.get(k).and_then(Value::as_str).ok_or_else(|| anyhow!("the record has no {k}"))?.to_string())
     };

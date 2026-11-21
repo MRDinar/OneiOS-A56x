@@ -34,7 +34,7 @@
 
 use crate::gen;
 use anyhow::{anyhow, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use oneios_prelink::image::Image;
 use std::path::{Path, PathBuf};
 

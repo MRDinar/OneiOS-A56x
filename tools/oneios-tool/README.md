@@ -635,8 +635,8 @@ exists or where ours is measured to be faster; each such part says why in its mo
 | `plist` | `image tweaks`: every property list the root tweaks read and write, binary and XML (`oneios-tweaks/src/plist.rs`: the crate's reader and writers, since 2026-11-21); `prelink roots` and `emit`: reading the kernelcache's `__PRELINK_INFO` (written back by hand: below) |
 | `toml` | the kernel profile; `image profile`: the build profile |
 | `indexmap`, `md-5`, `hmac`, `rand_mt`, `memchr` | `prelink`: Python's dict order, the matcher's function digests, the collection's FIPS seals, `random.Random`'s generator for `align`, the search for the kexts' inline pools |
-| `tar` 0.4 (`Header`) | `image seed-pack`: every 512-byte ustar block of `data.seed`, field by field (`crates/oneios-image/src/tar.rs`; what stays ours and why: below) |
-| `serde_json` (`ser::Formatter`), `serde` | every JSON file the tools write: Python's `json.dumps` layout is a `Formatter` (`oneios-common/src/pyjson.rs`) |
+| `tar` 0.4 (`Builder`, `Header`, `Archive`) | every tar the tools write and read: `data.seed`'s headers (`Builder` into a buffer: ustar, a pax extended header for an entry's xattrs, GNU long names; the files' contents are written at their offsets in parallel, `seed.rs`), the image archive (`image pack`) and the runtime package's tar (`package`), since 2026-11-21 |
+| `serde_json`, `serde` | every JSON file the tools read and write: `oneios-common/src/json.rs` is serde_json's parser and its pretty (an indent of N spaces) or compact writer, since 2026-11-21 |
 | `base64`, `percent-encoding` | the seed's xattr values and their pax keys (`base64.b64encode`, `urllib.parse.quote`) |
 | `flate2` (`zlib-rs`) | `phone pull-data`, `phone sparse-write --gunzip`: the gzip stream of the phone's busybox; the zlib kinds of compressed APFS files. The backend is `zlib-rs` (pure Rust), the fastest of the three on the Data store's stream ("The sparse copy") |
 | `zbitmap` 0.1 (MIT, github.com/valentinogrande/zbitmap) | LZBITMAP, the compression of most files of iOS 27's OS volumes (decmpfs kinds 13 and 14). A young crate: its output is checked against apfs-fuse on every compressed file of the two images |
@@ -651,9 +651,9 @@ Hand-written, and why:
 |---|---|
 | The APFS reader (`crates/oneios-image/src/apfs.rs`, `apfs/files.rs`) | no maintained Rust crate reads iOS's sealed volumes, or any volume of a container but the first (`apfs` 0.4.1: neither; `apfs-core`: stubs; checked 2026-11-12, [todo_rust.md](todo_rust.md)). apfs-fuse is GPL, Linux only in practice, and needs FUSE: it is an optional second backend (`--apfs fuse`), run as a program. The decoders of compressed files are all libraries |
 | `ioslog`'s choice of files, filters, text output, checks (`crates/oneios-ioslog`, 950 lines) | this project's own; everything that decodes a log file is the library's |
-| `oneios-common/src/pyjson.rs`: the value type and the parser | the writer is serde_json's now (a `Formatter`: `", "` and `": "`, Python's indent, `\uXXXX` for everything outside ASCII, `repr(float)`). The value type keeps a dict's insertion order without serde_json's `preserve_order` feature, which must stay off (below); the parser stays ours because serde_json reads neither Python's `NaN` and `Infinity` nor integers beyond 64 bits as integers |
-| The seed's tar: four details of the header and the layout (`crates/oneios-image/src/tar.rs`, 100 lines without its tests) | `data.seed`'s SHA-256 is pinned in the image's trust list, and a changed seed starts the phone's Data store over. The `tar` crate writes the block's fields as Python does, except: **(1)** the checksum field (`set_cksum`: seven octal digits and a NUL, `0010715\0`; Python: six digits, a NUL and a space, `010715\0 `), in every header; **(2)** names (`set_path` moves the front of a long name into the ustar `prefix` field and refuses what does not fit; Python's pax format never uses `prefix`: the first 100 characters with `?` for each one that is not ASCII, and the whole name in a `path` record); **(3)** the extended header's own block (`Builder::append_pax_extensions`: an empty name and NUL mode, uid and gid fields; Python: `././@PaxHeader` and `0000000\0`; the records' text is the same); **(4)** the end (`Builder::finish`: two zero blocks; Python fills up to a multiple of 10240 bytes). So the block is `tar::Header` with these four done by hand, and `Builder` is not used (it also writes through one writer, and the seed is written at offsets in parallel) |
-| `oneios-image`: Python's `repr` and messages (`py.rs`) | compared byte for byte with the Python tool's output |
+| `oneios-common/src/json.rs`: the value type | an object keeps the order its keys were set or read in (records and reports read in a fixed order) without serde_json's `preserve_order` feature, which must stay off (below). It is serde_json's `Serialize` and `Deserialize` of that tree; nothing of the text is written by hand |
+| The prelink information's XML (`oneios-prelink/src/prelink_xml.rs`, 70 lines) | the kernel reads `__PRELINK_INFO` with `OSUnserializeXML`, which knows `&lt;`, `&gt;` and `&amp;` only; the `plist` crate writes `"` and `'` as `&quot;` and `&apos;` (quick-xml's `escape`), and 24A446's own prelink information has such strings (`<string>"Copyright ...`): the kernel would refuse the whole list. Reading is the `plist` crate |
+| `oneios-image`: Python's `repr` and messages (`py.rs`, `oneios-common/src/pyrepr.rs`) | the words of the messages, which tests and the app's logs match; no file is written with them |
 | `oneios-image/src/hashes.rs` | one read pass feeds the whole-file SHA-256 and the chunk hashes (1.9 to 2.9 times Python on the Mac); the list itself is a 32-byte header and the digests, written with `std::io::Write` |
 | `oneios-sym`'s index | the project's own on-disk index: answers in 3 to 10 ms where `dsc.py` takes 0.03 to 53 s |
 | `oneios-log` | xnuhost's own log format |
@@ -1448,6 +1448,55 @@ writes nothing; one `space` event and the refusal when the room is short; pause,
 fetch, the next request going on from the part, and a failed step removing everything it wrote while the fetched
 members stay; the AEA members decrypted with a local key service's key, one `space` event, the decryption's progress
 under `decrypt` and no steps of its own); `oneios-imagebuild`'s unit tests (the prelink's step names, the shell values, base64, the times).
+
+### The image set without Python's bytes (2026-11-21)
+
+The owner let byte parity with the retired Python go on 2026-11-21: the JSON is serde_json's, the tars the `tar`
+crate's, the root tweaks' property lists the `plist` crate's ([todo_rust.md](todo_rust.md) section 11 has every
+replacement and what was kept). Built on the Linux PC from `inputs/24A446` with the v0.1.12 runtime's
+`kernel/xnu.macho` (`326e2144...`), the root tweaks on, by the tool before the change (`e5cb74a`) and after it:
+
+```sh
+oneios-tool image build 'profiles/ios-27.0.1-iPhone18,2.toml' --indir inputs/24A446 --out SET --work WORK \
+  --no-fetch --xnu RUNTIME/kernel/xnu.macho --repo . --kernelcache -
+oneios-tool image verify SET
+```
+
+| | before (`e5cb74a`) | after |
+|---|---|---|
+| time, peak memory | 20.1 s, 1,019 MiB | 17.5 s, 1,018 MiB |
+| `data.seed` | `27ec4e10...`, 1,267,793,920 bytes | `5406d527...`, 1,265,063,424 bytes |
+| `kernel.kc` | `276aadac...` | `276aadac...` (its records the same but for the work folder's name) |
+| `manifest.json` | `f8320c5d...` | `a4c8bbd1...`: the seed's size and SHA-256, `tweaks.manifest.json`'s SHA-256 and the tool's own (`hook_sha256`) |
+| `overlay/userland/tweaks.manifest.json` | `a62d5d80...` | `deacce95...`: the SHA-256 of the three property lists below |
+| the other 18 files (the images, the hash lists, the trust files, `boot-contract.json`, `report.json`, `report.txt`, `owner-trust.json`, `xnuhost.conf`) | | the same SHA-256 |
+| `image verify` | ok, 22 files | ok, 22 files |
+
+The two seeds hold the same tree: GNU tar lists the same 20,851 entries in both (names, modes, numeric owners, sizes,
+times, link targets), no entry has xattrs, and unpacked the files are the same except the three binary property lists
+the tweaks write (`mobile/Library/Preferences/.GlobalPreferences.plist`, `com.apple.springboard.plist`,
+`com.apple.migration.plist`): other bytes from the `plist` crate's writer (same size), the same values (read back with
+the `plist` crate, a dictionary's order not counted). No property list of the seed or the overlay holds `&quot;` or
+`&apos;`. The seed of the unit test (`seed::tests::build`: a name that is not ASCII, one of 127 bytes, xattrs, a link)
+unpacks with `oneios-seed` built for the PC (`cc userland/helpers/oneios-seed.c`) to the same tree.
+
+**A set built before still works.** Nothing re-derives a manifest or a seed and compares bytes: `image verify`,
+`phone image-check`, the fork's verifier and xnuhost parse `manifest.json` and compare values; the phone's Data store
+is matched by the seed's SHA-256 in the manifest of the set that is staged. With the new tool `image verify
+out/image/24A446` (the set of 2026-11-11, from the Python chain: 20 files, 17,859,859,715 bytes) and `image verify`
+of the "before" set both say ok. A new set's seed has another SHA-256, so the first boot of a newly staged set starts
+the phone's Data store over (docs/image-format.md section 5); restaging the old set keeps its store.
+
+**The PC boot of the new set** (docs/building.md section 5's command: `qemu-aarch64 -cpu cortex-a710` of the v0.1.12
+runtime's `bin/xnuhost --mode bench --image SET --kernel SET/kernel.kc`, a new Data store, `--cpus 8 --ram 4G`, under
+`timeout 900`; the box had a load of 7 to 22 from other agents' jobs): `OneiOS Data: seed verified: 6032 files
+(1252792964 bytes), 14818 folders, 1 links, 0 extended attributes` at +158 s (the 20,851 entries; oneios-seed read the
+new headers), SpringBoard running at +257 s, `guest ready: first frame
+(it has content)` at +372 s and `session/ready` written (the boot of the old set on 2026-11-21, release3: SpringBoard
++217 s, ready +314 s, a box less loaded). No panic in the 900 s (`timeout` ended it: xnuhost `exit 0` on the signal), no jetsam kill; at the end lsd and
+rapportd were the busy processes (rapportd's busy loop is the open item of the release-kernel entry in
+docs/agents.md, seen with the old set too).
+
 
 ## sym
 
@@ -2519,7 +2568,7 @@ builds the binary when it is missing or stale (`scripts/lib/oneios-tool.sh`).
 | `merge-reviewed --reviewed F --native K --out F EXTRA...` | `merge-reviewed.py` | `merge_reviewed.rs` (reads the kernel's symbol table itself: no `llvm-nm`) |
 | `match KERNELCACHE NATIVE --out MAP [--reference-kernel K] --xnuprelink DIR` | XnuPrelink's `fileset_match.py` (matcher version 8, pin `9b950f2`) | `matcher.rs` over `image.rs` (`kc_image.py`, `fileset_shape.py`) |
 | `align`, `kclasses`, `structors`, `vtables` (the Python steps' options) | `align.py`, `kclasses.py`, `structors.py`, `vtables.py` | `align.rs` (+ `pyset.rs`), `kclasses.rs`, `structors.rs`, `vtables.rs` |
-| `emit` (emit.py's options) | `emit.py` over XnuPrelink's `fileset_emit.py`, `fileset_layout.py`, `fileset_segmented.py` | `emit.rs`, `layout.rs`, `plistpy.rs` |
+| `emit` (emit.py's options) | `emit.py` over XnuPrelink's `fileset_emit.py`, `fileset_layout.py`, `fileset_segmented.py` | `emit.rs`, `layout.rs`, `prelink_xml.rs` |
 | `audit` (audit.py's options, `--against` and `--draft` too; exit 1 on a failure) | `audit.py` | `audit.rs` |
 | `record --work DIR ... [--repo CHECKOUT] [--no-git] [--oneios-commit C] [--xnuprelink-commit C]` | `record.py` | `record.rs` (the three last options, 2026-11-15: the record's two commits given, or null, without starting `git`: the phone has none) |
 | `pin PROFILE` | the `tomllib` one-liner of `build.sh` | prints `[kernel.prelink] kernelcache_sha256` |
@@ -2534,10 +2583,12 @@ comparison below shows a drift.
 
 Hand-written here, and why (the library rule): the Mach-O reader (`image.rs`: the chains' walk order, the kernel
 collection pointer formats 7 and 8 and fileset file offsets; `object` and `goblin` read none of the three),
-CPython's `set` order and `random.sample` (`pyset.rs`: `align`'s holdout sample is drawn from a list made by
-iterating a set; no library has them; the generator is the `rand_mt` crate), and `plistlib`'s XML writer
-(`plistpy.rs`: the rewritten prelink information is inside `kernel.kc`, whose hash is recorded; reading is the
-`plist` crate). Libraries: `indexmap` (Python's dict order), `md-5`, `sha2`, `hmac` (the FIPS seals), `rand_mt`,
+CPython's `set` order and `random.sample` (`pyset.rs`: kept on 2026-11-21, when Python's bytes were let go
+elsewhere, because the order is the matcher's and align's rule, not a layout: `pair_metaclass_vtables` takes the first
+qualifying site in that order, and `align`'s holdout sample is drawn from a list made by iterating a set; another order
+gives other pairs; no library has them; the generator is the `rand_mt` crate), and the prelink information's XML
+writer (`prelink_xml.rs`: the kernel's `OSUnserializeXML` knows `&lt;`, `&gt;` and `&amp;` only, and the `plist`
+crate's writer also writes `&quot;` and `&apos;`, which 24A446's strings need; reading is the `plist` crate). Libraries: `indexmap` (Python's dict order), `md-5`, `sha2`, `hmac` (the FIPS seals), `rand_mt`,
 `plist`, `toml`, `base64`, `memchr`, `rayon` (the per-function scan, the audit's per-kext scan).
 
 The comparison today is with the frozen output of the Python chain (`tests/prelink/golden/`: per kernel, the name,
@@ -2994,8 +3045,9 @@ Mach-O magic and under 16 bytes; a record that is JSON but no object), the comma
 status 3: no package either way. The text after `unreadable build record:` is this parser's, not Python's. A wrong
 command line: clap's message and status 2 (the script: its docstring, status 1).
 
-`pack.rs` uses `oneios-common`'s `pyjson` (the manifest's layout), `pyrepr` (the values in the messages) and `pytar`
-(tarfile's ustar block: it was `oneios-image/src/tar.rs`, moved so that both crates use one). Checked on Linux
+`pack.rs` uses `oneios-common`'s `json` (serde_json: `runtime.json` with an indent of 2), `pyrepr` (the values in
+the messages) and the `tar` crate's `Builder` (ustar; a name too long for ustar as a GNU long name; since 2026-11-21:
+the archive is no longer Python tarfile's bytes, so the 4 archive cases of the comparison above are history). Checked on Linux
 only; nothing Linux-only is used (`std::os::unix` for modes and links, as macOS has them). On macOS
 `runtime/package.sh` takes `package archive` instead of GNU tar: that path was compared with `pack.py archive` here
 (the 4 archive cases), not run on a Mac.
@@ -3018,7 +3070,7 @@ results below are the record of that comparison.
 | `image fetch PROFILE INDIR [-j N] [--only ROLES] [--source S]` | `imagetool.py fetch` | `ipsw.rs` | yes: 6 cases (`inputs.json` and every fetched file the same); four small members of the real IPSW over HTTP: the same output, files and `inputs.json` |
 | `image record-plain INDIR ROLE PLAIN` | `imagetool.py record-plain` | `ipsw.rs` | yes: 1 case |
 | `image aea-info FILE` | `imagetool.py aea-info` | `aea.rs` | yes: 2 cases |
-| `image pack SETDIR OUT.tar.zst` | `imagetool.py pack` | `archive.rs` | yes: the archive of a stand-in set is the Python tool's byte for byte (and its `.sha256`) |
+| `image pack SETDIR OUT.tar.zst` | `imagetool.py pack` | `archive.rs` | yes until 2026-11-21: the archive of a stand-in set was the Python tool's byte for byte; since then the `tar` crate's `Builder` writes it (same members and order, ustar headers, two zero blocks at the end) |
 | `image verify SET.tar.zst` | `imagetool.py verify` of an archive | `archive.rs` | yes: the good archive, and 8 refusals with imagetool.py's message each |
 
 What ran (deleted since): `tests/imagepy/compare-python.sh` (25 cases, both tools side by side on one stand-in
@@ -3096,19 +3148,17 @@ The library (`serve`'s `tweaks`, the image build on the phone): `oneios_tweaks::
 `tweaks.info`), `oneios_tweaks::apply(&Apply)`, `bootcheck::check`, `macho::describe`. An error that is a wrong input
 is `oneios_tweaks::Refused` (roottweak's `TreeError` and `ConfigError`); a stop of the request is `job::Stop`.
 
-**Byte for byte.** The Data seed's SHA-256 is pinned in the image's trust list, so every file is the Python's:
+**The files.** Until 2026-11-21 every file was the Python's byte for byte (plistlib's writers by hand, Python's
+JSON layout); the owner let that go on 2026-11-21:
 
-- the property lists as Python 3.14's `plistlib.dumps(..., sort_keys=True)` writes them (`src/plist.rs`): the binary
-  writer's object order (depth first, a dictionary's keys before its values), one object per (type, value) of a
-  str, int, float (0.0 and -0.0 are one), date or bytes, containers never shared, the smallest reference and
-  offset sizes; the XML writer's header, tabs, `repr(float)`, base64 lines (76 columns less the indent); dates as
-  `datetime.timedelta` rounds them (binary) or to the second (XML). The reader keeps the file's key order (the
-  launchd cache's first job of a label wins, as in Python) and is plistlib's on its edge cases (an empty
-  `<plist>`, `int(text)`, binascii's base64). Checked against plistlib's own bytes in the unit tests and on lists of
-  every type in the comparison ("odd plists"). One case is refused instead of written differently: a binary list
-  that refers to one container from two places (plistlib keeps that one object and writes it once; this reader
-  makes two). Apple's CF writer never shares containers.
-- the JSON as `json.dump(indent=2, sort_keys=True)` (oneios-common's `pyjson`), the report's words as tweaks.py's.
+- the property lists are read and written by the `plist` crate (`src/plist.rs` converts to and from its `Value`):
+  binary (`bplist00`, which Apple's CoreFoundation and launchd read) or XML, whichever the file was; a dictionary's
+  keys sorted when written, so the same value gives the same bytes; an XML date cut to the second (Apple's XML date
+  has no fraction). The reader keeps the file's key order (the launchd cache's first job of a label wins). What
+  went: plistlib's object order and scalar sharing, `repr(float)` in `<real>`, its base64 lines, and the refusal of
+  a binary list that shares a container (it was there only because plistlib would write such a container once).
+- the JSON by serde_json (oneios-common's `json`: an indent of 2 where it was 2, compact where it had no indent),
+  the report's words as tweaks.py's.
 - written as `NAME.part` and renamed (the trees' files too); a stop leaves no part (`job::temp`).
 
 **On the phone.** No program is started (no `git`, no mount: `os_image` reads the OS volume in place), every tree
@@ -3146,7 +3196,7 @@ placed (2 CDHashes). The OS volume read from `os.img` (`ONEIOS_OS_IMAGE`) instea
 seed (`27ec4e10...` again), owner rules, summary, report and overlay.
 
 Tests: `cargo test -p oneios-tweaks`: the 38 cases of `userland/tests/test_roottweak.py` (`tests/roottweak.rs`, each
-named after the case it ports, on a Rust port of `fakeroot.py`) and 5 unit tests (plistlib's bytes, dates, base64,
+named after the case it ports, on a Rust port of `fakeroot.py`) and 3 unit tests (property lists written and read back, Apple's binary `.GlobalPreferences.plist` among them;
 shlex); `tests/serve.rs` `tweaks_writes_what_the_hook_command_writes` (the request's files are the command's, byte for byte;
 its refusals; `bye`'s children 0).
 

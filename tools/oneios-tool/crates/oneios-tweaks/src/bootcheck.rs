@@ -93,7 +93,7 @@ pub fn os_error(e: &std::io::Error, path: &Path) -> String {
 
 fn load_plist(path: &Path) -> Result<P, String> {
     let data = std::fs::read(path).map_err(|e| os_error(&e, path))?;
-    plist::loads(&data).map_err(|e| e.to_string())?.value.ok_or_else(|| "an empty property list".to_string())
+    plist::loads(&data)
 }
 
 /// Compares the override and launchd's log of a Data tree. `root` (the OS volume's files) adds how many of the

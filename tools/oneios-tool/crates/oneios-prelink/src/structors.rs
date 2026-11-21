@@ -29,7 +29,7 @@ use crate::kclasses::name_counts;
 use crate::records;
 use crate::vtables::named_vtables;
 use anyhow::{bail, Context, Result};
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(clap::Args, Debug)]
@@ -64,8 +64,8 @@ fn slice(s: &str, a: usize, b: usize) -> &str {
 pub fn run(args: Args) -> Result<()> {
     let _ = &args.xnuprelink;
     let raw = oneios_common::Map::open(&args.kernelcache)?;
-    let pairing = pyjson::load(&args.map)?;
-    let reviewed = pyjson::load(&args.reviewed)?;
+    let pairing = json::load(&args.map)?;
+    let reviewed = json::load(&args.reviewed)?;
     let cache = Image::new(&raw, 0)?;
     let kernel = cache.entry("com.apple.kernel")?;
     let mut starts = kernel.function_starts()?;
@@ -138,7 +138,7 @@ pub fn run(args: Args) -> Result<()> {
     // Factories: allocate from X::gMetaClass, then the object's virtual initWithFoo at some slot.
     let mut metaclasses: HashMap<u64, String> = records::named(&pairing, "data")?.into_iter().filter(|(_, n)| n.ends_with("10gMetaClassE")).collect();
     if let Some(path) = &args.classes {
-        metaclasses.extend(records::pairs(&pyjson::load(path)?, "data")?.into_iter().filter(|(_, n)| n.ends_with("10gMetaClassE")));
+        metaclasses.extend(records::pairs(&json::load(path)?, "data")?.into_iter().filter(|(_, n)| n.ends_with("10gMetaClassE")));
     }
     let (native_symbols, native_fixups) = (native_image.symbols()?, native_image.fixups()?);
     let mut address_of: HashMap<&str, u64> = HashMap::new();
@@ -239,7 +239,7 @@ pub fn run(args: Args) -> Result<()> {
     record.set("vnop_wrappers", Value::Int(vnops as i128));
     record.set("classes_with_constructors", Value::Int(constructors.len() as i128));
     record.set("pairs", Value::List(pairs));
-    std::fs::write(&args.out, pyjson::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
+    std::fs::write(&args.out, json::dumps(&record, Some(1), false) + "\n").with_context(|| args.out.clone())?;
     println!(
         "structors: {constructed} constructors and destructors of {} classes paired by their vtable, {factories} factories by their init slot, {vnops} VNOP wrappers by their descriptor ({} vtables named)",
         constructors.len(),

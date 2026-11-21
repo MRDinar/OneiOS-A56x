@@ -3,7 +3,7 @@
 
 use crate::image::unhex;
 use anyhow::{anyhow, Result};
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 
 /// `{int(k, 16): v['name'] for k, v in pairing[kind].items() if v.get('name')}`, in the file's order.
 pub fn named(pairing: &Value, kind: &str) -> Result<Vec<(u64, String)>> {

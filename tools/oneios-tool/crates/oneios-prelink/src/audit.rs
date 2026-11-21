@@ -40,7 +40,7 @@ use crate::pyset::PySet;
 use crate::records::{repr_counts, text, truthy, Counter};
 use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -298,7 +298,7 @@ pub fn run(args: Args) -> Result<bool> {
     let mut failures: Vec<String> = Vec::new();
     let mut reviewed_sites: IndexMap<u64, String> = IndexMap::new();
     if let Some(path) = &args.reviewed {
-        for record in pyjson::load(path)?.get("sites").and_then(Value::as_list).unwrap_or(&[]) {
+        for record in json::load(path)?.get("sites").and_then(Value::as_list).unwrap_or(&[]) {
             reviewed_sites.insert(unhex(text(record, "site")?)?, text(record, "native_symbol")?.to_string());
         }
     }
@@ -310,8 +310,8 @@ pub fn run(args: Args) -> Result<bool> {
         }
     }
     let found = targets(&original, &collection, &reviewed_sites);
-    let pairs = args.pairs.as_ref().map(pyjson::load).transpose()?;
-    let stubs = args.stubs.as_ref().map(pyjson::load).transpose()?;
+    let pairs = args.pairs.as_ref().map(json::load).transpose()?;
+    let stubs = args.stubs.as_ref().map(json::load).transpose()?;
     if let Some(pairs) = &pairs {
         if truthy(Some(pairs)) && pairs.get("kernelcache_sha256").and_then(Value::as_str) != Some(&original.sha256) {
             bail!("the pairs list is for another kernelcache");
@@ -463,11 +463,11 @@ pub fn run(args: Args) -> Result<bool> {
             }
             draft.set(kind, Value::List(rows));
         }
-        std::fs::write(path, pyjson::dumps(&draft, Some(0), false) + "\n").with_context(|| path.clone())?;
+        std::fs::write(path, json::dumps(&draft, Some(0), false) + "\n").with_context(|| path.clone())?;
     }
     report.set("failures", failures.clone());
     if let Some(path) = &args.report {
-        std::fs::write(path, pyjson::dumps(&report, Some(1), false) + "\n").with_context(|| path.clone())?;
+        std::fs::write(path, json::dumps(&report, Some(1), false) + "\n").with_context(|| path.clone())?;
     }
     println!(
         "audit: {}: {} paired, {} functions on the stub, {} data unpaired; {} failures",

@@ -15,7 +15,7 @@
 
 use crate::gen::{self, fail, Ctx};
 use anyhow::Result;
-use oneios_common::pyjson::Value;
+use oneios_common::json::Value;
 use std::path::Path;
 
 pub fn main() -> Result<()> {

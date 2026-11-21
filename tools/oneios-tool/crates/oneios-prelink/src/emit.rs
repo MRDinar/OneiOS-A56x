@@ -31,11 +31,11 @@
 use crate::image::{cstr_at, hex, put32, put64, scan, signed, u16_at, u32_at, u64_at, unhex, Fix, Image, RefKind, LC_DYLD_CHAINED_FIXUPS, LC_FILESET_ENTRY, LC_SEGMENT_64, LC_SYMTAB, LC_UNIXTHREAD};
 use crate::layout::{align, encode_uleb, relocate_native, relocate_original_stubs, Layout, PAGE};
 use crate::matcher::{matcher_signature, reviewed_records, MATCHER_VERSION};
-use crate::plistpy::Plist;
+use crate::prelink_xml::Plist;
 use crate::records::{text, truthy};
 use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
-use oneios_common::pyjson::{self, Value};
+use oneios_common::json::{self, Value};
 use oneios_common::sha256_hex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -1006,9 +1006,9 @@ pub fn run(args: Args) -> Result<()> {
     let raw = oneios_common::Map::open(&args.kernelcache)?;
     let original_raw = oneios_common::Map::open(&args.original_kernelcache)?;
     let native_data = oneios_common::Map::open(&args.native)?;
-    let payload = pyjson::load(&args.map)?;
-    let reviewed = pyjson::load(&args.reviewed)?;
-    let roots_value = pyjson::load(&args.roots)?.get("roots").cloned().ok_or_else(|| anyhow!("{}: no roots", args.roots))?;
+    let payload = json::load(&args.map)?;
+    let reviewed = json::load(&args.reviewed)?;
+    let roots_value = json::load(&args.roots)?.get("roots").cloned().ok_or_else(|| anyhow!("{}: no roots", args.roots))?;
     let roots: Vec<String> = roots_value.as_list().unwrap_or(&[]).iter().filter_map(|r| r.as_str().map(str::to_string)).collect();
     let reviewed_sha = text(&reviewed, "kernelcache_sha256")?;
     if sha256_hex(&original_raw) != reviewed_sha {
@@ -1017,7 +1017,7 @@ pub fn run(args: Args) -> Result<()> {
     let original = Image::new(&original_raw, 0)?;
     let check = |record: &Value| -> Result<()> {
         if !truthy(record.get("evidence")) {
-            bail!("a reviewed record needs its evidence: {}", pyjson::dumps(record, None, false));
+            bail!("a reviewed record needs its evidence: {}", json::dumps(record, None, false));
         }
         if let Some(pin) = record.get("check").filter(|p| truthy(Some(p))) {
             let (address, size) = (text(pin, "address")?, pin.get("size").and_then(Value::as_u64).ok_or_else(|| anyhow!("a check has no size"))?);
@@ -1035,7 +1035,7 @@ pub fn run(args: Args) -> Result<()> {
     let was = |previous: &Option<(u64, Option<String>)>| -> Value { previous.as_ref().and_then(|p| p.1.clone()).into() };
     let mut applied: IndexMap<&str, Vec<Value>> = ["functions", "functions_absent", "data", "data_inferred", "sites", "aligned", "known_good", "known_good_replaced", "known_good_absent", "stub_list"].into_iter().map(|k| (k, Vec::new())).collect();
     for path in &args.aligned {
-        let record = pyjson::load(path)?;
+        let record = json::load(path)?;
         for pair in list(&record, "data") {
             // kclasses: class objects by name
             let (orig, symbol) = (text(&pair, "original")?, text(&pair, "native_symbol")?);
@@ -1079,7 +1079,7 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
     if let Some(path) = &args.pairs {
-        let known = pyjson::load(path)?;
+        let known = json::load(path)?;
         if known.get("kernelcache_sha256").and_then(Value::as_str) != Some(reviewed_sha) {
             bail!("the known-good pairs are for another kernelcache");
         }
@@ -1112,7 +1112,7 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
     if let Some(path) = &args.stubs {
-        let stubs = pyjson::load(path)?;
+        let stubs = json::load(path)?;
         for kind in ["functions", "data"] {
             let side = if kind == "functions" { &mut functions } else { &mut data };
             for entry in list(&stubs, kind) {
@@ -1280,7 +1280,7 @@ pub fn run(args: Args) -> Result<()> {
     private_write(&args.output, &image)?;
     report.set("candidate_written", true);
     report.set("allow_missing", true);
-    private_write(&args.report, (pyjson::dumps(&report, Some(2), false) + "\n").as_bytes())?;
+    private_write(&args.report, (json::dumps(&report, Some(2), false) + "\n").as_bytes())?;
     println!("wrote {} ({} bytes)", args.output, image.len());
     let total: i128 = missing.values().flat_map(|t| t.values()).sum();
     let stubbed: usize = stubbed.values().map(BTreeMap::len).sum();

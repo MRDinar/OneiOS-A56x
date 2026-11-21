@@ -13,5 +13,3 @@ serde_json.workspace = true
 sha2.workspace = true
 # job: the process's nice value and scheduling class (setpriority, sched_getscheduler)
 libc.workspace = true
-# pytar: the 512-byte ustar block (Header), which Python's tarfile and this write field for field.
-tar = { version = "0.4", default-features = false }
