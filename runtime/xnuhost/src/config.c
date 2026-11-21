@@ -164,9 +164,9 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->encoder, value); }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
-  else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) strcpy(c->wifi, value); }
-  else if (!strcmp(key, "bluetooth")) { ok = !strcmp(value, "auto") || !strcmp(value, "virtual") || !strcmp(value, "hidl") || !strcmp(value, "sim"); if (ok) strcpy(c->bluetooth, value); }
-  else if (!strcmp(key, "haptics")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) strcpy(c->haptics, value); }
+  else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) { strcpy(c->wifi, value); c->wifi_given = true; } }
+  else if (!strcmp(key, "bluetooth")) { ok = !strcmp(value, "auto") || !strcmp(value, "virtual") || !strcmp(value, "hidl") || !strcmp(value, "sim"); if (ok) { strcpy(c->bluetooth, value); c->bluetooth_given = true; } }
+  else if (!strcmp(key, "haptics")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) { strcpy(c->haptics, value); c->haptics_given = true; } }
   else if (!strcmp(key, "haptics-native-impacts")) { bool on; if (flag(value, &on)) return -1; c->haptics_native_impacts = on; }
   else if (!strcmp(key, "legacy-boot-args")) return flag(value, &c->legacy_boot_args);
   else if (!strcmp(key, "setway-skip")) { bool on; if (flag(value, &on)) return -1; c->setway_skip = on; }
@@ -309,8 +309,23 @@ int xh_config_finish(xh_config *c)
   if (c->session_abi != 1) { fprintf(stderr, "xnuhost: session ABI %d is not supported (this build: 1)\n", c->session_abi); return -1; }
   if (strcmp(c->mode, "takeover") && strcmp(c->mode, "bench")) { fprintf(stderr, "xnuhost: mode %s is not supported\n", c->mode); return -1; }
   if (strcmp(c->display, "shm") && strcmp(c->display, "drm") && strcmp(c->display, "none")) { fprintf(stderr, "xnuhost: display %s is not supported\n", c->display); return -1; }
-  // The host bridges change the phone's state (a tap, routing rules, the motor): on in a session.
-  if (c->bridges < 0) c->bridges = !strcmp(c->mode, "takeover");
+  // The image set may carry settings of its own; the command line was applied first and a setting
+  // there wins for single values (disks add up). Not read for a selftest, which needs no image.
+  xh_config from_image;
+  xh_config_defaults(&from_image);
+  if (!c->selftest) {
+    if (!*c->image) { fprintf(stderr, "xnuhost: --image DIR is required\n"); return -1; }
+    if (snprintf(path, sizeof path, "%s/xnuhost.conf", c->image) < (int)sizeof path && xh_config_file(&from_image, path)) return -1;
+    // The userland hook's settings of this image (the UI scale its Data seed was made for), under the same rule.
+    if (snprintf(path, sizeof path, "%s/overlay/userland/xnuhost.conf", c->image) < (int)sizeof path && xh_config_file(&from_image, path)) return -1;
+  }
+  // The host bridges change the phone's state (a tap, routing rules, the motor): on in a session. bridges=, wifi=,
+  // bluetooth= and haptics= of the image set apply when the command line has none (until 2026-11-21 they were read
+  // and then ignored, though docs/booter.md and main.c's Bluetooth line said otherwise).
+  if (c->bridges < 0) c->bridges = from_image.bridges >= 0 ? from_image.bridges : !strcmp(c->mode, "takeover");
+  if (!c->wifi_given && from_image.wifi_given) strcpy(c->wifi, from_image.wifi);
+  if (!c->bluetooth_given && from_image.bluetooth_given) strcpy(c->bluetooth, from_image.bluetooth);
+  if (!c->haptics_given && from_image.haptics_given) strcpy(c->haptics, from_image.haptics);
   // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
   // Never let an input-grabbing guest take control of Android outside a SHM bench.
   if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
@@ -319,14 +334,6 @@ int xh_config_finish(xh_config *c)
     return -1;
   }
   if (c->selftest) return 0;
-  if (!*c->image) { fprintf(stderr, "xnuhost: --image DIR is required\n"); return -1; }
-  // The image set may carry settings of its own; the command line was applied first and a setting
-  // there wins for single values (disks add up).
-  xh_config from_image;
-  xh_config_defaults(&from_image);
-  if (snprintf(path, sizeof path, "%s/xnuhost.conf", c->image) < (int)sizeof path && xh_config_file(&from_image, path)) return -1;
-  // The userland hook's settings of this image (the UI scale its Data seed was made for), under the same rule.
-  if (snprintf(path, sizeof path, "%s/overlay/userland/xnuhost.conf", c->image) < (int)sizeof path && xh_config_file(&from_image, path)) return -1;
   if (!*c->boot_args) strcpy(c->boot_args, from_image.boot_args);
   if (!c->width) c->width = from_image.width;
   if (c->setway_skip < 0) c->setway_skip = from_image.setway_skip < 0 ? 1 : from_image.setway_skip;

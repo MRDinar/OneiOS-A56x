@@ -1953,6 +1953,18 @@ static void test_config(const char *dir)
   char *ram9[] = { "xnuhost", "--image", image, "--ram", "auto" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, ram9) == 0 && xh_config_finish(&c) == 0 && c.ram_bytes == 8960 * M && c.ram_auto_total == phone);   // 80% of 11.2 GiB
+  // The image set's bridges=, wifi=, bluetooth=, haptics= apply when the command line has none (they were read, then ignored)
+  f = fopen(path, "w");
+  fprintf(f, "boot-args=-v debug=0x8\nbridges=0\nwifi=sim\nbluetooth=sim\nhaptics=sim\n%s\n", set_meminfo);
+  fclose(f);
+  char *img1[] = { "xnuhost", "--image", image, "--mode", "takeover" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, img1) == 0 && xh_config_finish(&c) == 0 && c.bridges == 0 && !strcmp(c.wifi, "sim") &&
+        !strcmp(c.bluetooth, "sim") && !strcmp(c.haptics, "sim"));
+  char *img2[] = { "xnuhost", "--image", image, "--mode", "takeover", "--set", "bridges=1", "--set", "wifi=auto", "--set", "haptics=off" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, img2) == 0 && xh_config_finish(&c) == 0 && c.bridges == 1 && !strcmp(c.wifi, "auto") &&
+        !strcmp(c.bluetooth, "sim") && !strcmp(c.haptics, "off"));                                                 // the command line wins, auto too
   // The image set's own ram-giveback=0 holds the RAM fixed, at what fits (5376 MiB of MemAvailable 7 GiB)
   f = fopen(path, "w");
   fprintf(f, "boot-args=-v debug=0x8\nram-percent=80\nram-giveback=0\n%s\n", set_meminfo);
