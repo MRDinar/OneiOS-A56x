@@ -75,6 +75,11 @@ enum Tool {
         #[command(subcommand)]
         command: oneios_testkit::Command,
     },
+    /// A JSON file read or changed from a shell script: get, lines, len, set, check (README "json")
+    Json {
+        #[command(subcommand)]
+        command: oneios_json::Command,
+    },
 }
 
 /// `oneios-tool [--jobs N] [--nice N] TOOL ...`: the two options every command that runs alone takes, before the
@@ -147,6 +152,7 @@ fn main() {
             Tool::Package { command } => oneios_package::main(command),
             Tool::Serve(cli) => oneios_serve::main(cli),
             Tool::Debug { command } => oneios_testkit::main(command),
+            Tool::Json { command } => oneios_json::main(command),
         },
         Err(e) if !e.use_stderr() => {
             let _ = e.print();

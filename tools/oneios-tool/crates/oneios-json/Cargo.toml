@@ -1,0 +1,15 @@
+[package]
+name = "oneios-json"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# `oneios-tool json`: the shell scripts' JSON reads and small edits (they were inline `python3 -c 'import json ...'`).
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The keys keep the file's order when a file is edited (serde_json's own map sorts them: no `preserve_order` in
+# this workspace, see its Cargo.toml).
+indexmap = { version = "2", features = ["serde"] }

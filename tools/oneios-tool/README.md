@@ -661,6 +661,27 @@ features to the whole binary, and with it macos-unifiedlogs writes the keys of a
 order where its own `unifiedlog_iterator` writes them sorted (found by `tests/ioslog/compare.sh`: one line of 1,012,281
 differed).
 
+## json: a JSON file read or changed from a shell script (2026-11-21)
+
+`oneios-tool json` (crate `crates/oneios-json`) is what the shell scripts use where they had an inline
+`python3 -c 'import json ...'` (Python is retired from this repository: CLAUDE.md).
+
+```sh
+oneios-tool json get [--json] [--default TEXT] FILE|- PATH   # the value(s): a string as it is, else compact JSON; exit 1 when none
+oneios-tool json lines [--missing TEXT] FILE|- PATH FIELD... # per element of the array at PATH: the fields, tab-separated
+oneios-tool json len FILE|- PATH                             # elements, keys or bytes
+oneios-tool json set [--string] FILE PATH VALUE              # set (or add the last key); the file is written again
+oneios-tool json check FILE|-...                             # exit 1 when one is not JSON
+# PATH: segments joined by '.': a key, an index (0, 1, ...), or KEY[FIELD=TEXT] (the elements of the array KEY
+# whose FIELD is TEXT). '' or '.' is the whole document. e.g.
+oneios-tool json get runtime.json kernel.build_id
+oneios-tool json set out/k/xnu-inputs.json "patches[path=$PATCH].sha256" "\"$sum\""
+```
+
+An edited file keeps its keys' order and is written as Python's `json.dump(..., indent=2)` wrote it (two spaces,
+non-ASCII as `\uXXXX`, a newline at the end), so a file the scripts edited before reads the same. Tests: 4 unit
+tests (paths, selectors, the written bytes against `json.dumps`' for the same edits).
+
 ## debug: the tests' helpers
 
 `oneios-tool debug NAME` (crate `crates/oneios-testkit`): what the comparison scripts under `tests/` need beside
