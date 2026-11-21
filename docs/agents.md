@@ -2150,3 +2150,12 @@ persistent: a reboot costs a manual re-root.
   `runtime/host-tests.sh` green but for one xnuhost check (test_xnuhost.c:1160, the GPU two-lane 2 s wait) that failed
   only while the kernel build loaded every core (3 idle reruns: 14108 checks, 0 failed). NOT done: prelink/kernel.kc
   audit, `original`-crypto end-to-end, a PC boot, any phone boot. The `series` numbers 0068/0072-0074/0077 are taken.
+
+- 2026-11-21, SM8850 port 2 merged from `port-sm8850-2` (delegated agent, fast-forward a5f7e5b): 32 new fork commits
+  triaged, all skipped (27 docs, 5 Framework-takeover scripts/tests). From earlier fork-only commits: bridgectl haptic
+  checks plus the `haptic` exit-status fix (6 commits as written, +12 stand-in checks) and the adapted
+  `haptics-native-impacts` option (default off). `cpu-affinity-bench` superseded by `cpu-pin=1`; the audio/encoder
+  fixes left for a separate port. After the merge: xnuhost 14124/0, bridges host.sh ok, stand-in phone ALL OK
+  (agent: host-tests, cargo 199, stand-in 258 green). No phone, no kernel change. S26 default wanted (for the
+  host-device table, only after a session where `bridgectl haptic-native-inspect` passes): `haptics-native-impacts=1`
+  with `hw-backend-haptics=treble`, `hw-backend-fallback=0`.
