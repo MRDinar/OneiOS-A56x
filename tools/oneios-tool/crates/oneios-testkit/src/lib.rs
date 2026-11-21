@@ -10,15 +10,29 @@
 //!   pyrandom.rs       Python's random.Random, for the sample and the streams
 //!   stub_kc.rs        new: a made-up kernel collection for the tests of `prelink stubs-check`
 //!   fixture.rs        new: a made-up kernel and a made-up KernelDebugKit.pkg for tests/kernelpy
+//!   mkapfs            tests/ioslog/mkapfs.py       a raw APFS image from folders (the file is tests/support/mkapfs.rs,
+//!                                                  which the crates' own tests include too)
+//!   mkapk.rs          tests/app/mkapk.py           a stand-in APK around a certificate
+//!   ioslog_filters.rs tests/ioslog/filters.py      `ioslog show`'s filters against a reference CSV
+//!   sym_log.rs        tests/sym/make-log.py and the address-set block of tests/sym/compare-golden.sh
+//!   mktar.rs          new (userland/tests/test_helpers.py's `seed()`): a tar for the oneios-seed tests
+//!   holes.rs          new (an inline block of tests/phone/sparse-compare.sh): what the file system holds for a file
 
 pub mod fixture;
+pub mod holes;
+pub mod ioslog_filters;
 pub mod kcmap;
 pub mod kernel_diff;
 pub mod ksym_compare;
 pub mod ksym_make_log;
+#[path = "../../../tests/support/mkapfs.rs"]
+pub mod mkapfs;
+pub mod mkapk;
 pub mod mkstream;
+pub mod mktar;
 pub mod pyrandom;
 pub mod stub_kc;
+pub mod sym_log;
 
 #[derive(clap::Subcommand)]
 pub enum Command {
@@ -54,6 +68,34 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// A raw APFS image from folders: OUT.img NAME=FOLDER [NAME=FOLDER ...] [--stale-block0]
+    Mkapfs {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// A stand-in APK (a zip and an APK Signing Block v2) around CERT.der, for tests/app/run.sh
+    Mkapk { out: String, cert: String, text: Option<String> },
+    /// A tar from a spec on stdin (file|dir|symlink|hard NAME [mode= uid= gid= target= data=PATH pax=K=V]...)
+    Mktar {
+        #[arg(long, default_value = "pax")]
+        format: String,
+        out: String,
+    },
+    /// `ioslog show`'s filters against the rows of unifiedlog_iterator's CSV that each rule keeps
+    IoslogFilters { tool: String, source: String, reference: String, work: String },
+    /// A stand-in xnuhost log from a dyld shared cache: DSC_DIR OUT.log [--slide HEX] [--stacks N] [--seed N]
+    SymMakeLog {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// The address sets of tests/sym/compare-golden.sh from its stand-in logs: WORK LOG...
+    SymCases { work: String, logs: Vec<String> },
+    /// What the file system holds for a file: LENGTH ALLOCATED REGIONS DATA (--map: each data region)
+    Holes {
+        file: String,
+        #[arg(long)]
+        map: bool,
+    },
 }
 
 /// A helper's message ends on stderr with status 1, as the scripts' `SystemExit(message)` did.
@@ -66,6 +108,19 @@ pub fn main(command: Command) -> i32 {
         Command::Mkstream { args } => Ok(mkstream::run(&args)),
         Command::Fixture { name, out } => fixture::run(&name, &out),
         Command::StubKc { out, good, bad, note } => stub_kc::run(&out, good, bad, note.as_deref().unwrap_or("")),
+        Command::Mkapfs { args } => match mkapfs::run(&args) {
+            Ok(line) => {
+                println!("{line}");
+                Ok(0)
+            }
+            Err(message) => Err(anyhow::anyhow!(message)),
+        },
+        Command::Mkapk { out, cert, text } => mkapk::run(&out, &cert, text.as_deref()),
+        Command::Mktar { format, out } => mktar::run(&format, &out),
+        Command::IoslogFilters { tool, source, reference, work } => ioslog_filters::run(&tool, &source, &reference, &work),
+        Command::SymMakeLog { args } => sym_log::make_log(&args),
+        Command::SymCases { work, logs } => sym_log::cases(&work, &logs),
+        Command::Holes { file, map } => holes::run(&file, map),
     };
     done.unwrap_or_else(|e| {
         eprintln!("{e:#}");

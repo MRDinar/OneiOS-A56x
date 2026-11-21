@@ -3,7 +3,7 @@
 //
 //   oneios-mg                      prints the identity keys below, one "key=value" line each
 //   oneios-mg KEY...               prints those keys
-//   oneios-mg --expect FILE        FILE has "key=value" lines (roottweak writes identity.expect from the device
+//   oneios-mg --expect FILE        FILE has "key=value" lines (the root tweaks write identity.expect from the device
 //                                  profile); prints each as ok/DIFFERS/missing and exits 1 if any differs
 //
 // The identity reaches MobileGestalt from the device tree the booter builds (model, device class, display

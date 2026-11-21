@@ -2,7 +2,8 @@
 //! (included with `#[path]` by crates/oneios-image/tests/apfs_checkpoints.rs and
 //! crates/oneios-tool/tests/ioslog_checkpoints.rs); no Apple file, no owner data.
 //!
-//! `mkapfs.py` (tests/ioslog/mkapfs.py, checked against apfs-fuse by tests/ioslog/compare.sh) makes a store with
+//! `mkapfs.rs` (beside this file; `oneios-tool debug mkapfs`, tests/ioslog/mkapfs.py until 2026-11-21, checked
+//! against apfs-fuse by tests/ioslog/compare.sh) makes a store with
 //! one checkpoint from folders. `graft` puts two such stores into one container: the older one stays where it is
 //! (transaction 5, block 0 is its superblock: the state block 0 has is old, as on the phone), the newer one's
 //! blocks follow it, every address in them moved, and its superblock becomes the checkpoint of transaction 6 in
@@ -11,10 +12,9 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub const BLOCK: usize = 4096;
-/// mkapfs.py's layout: block 0, four blocks of checkpoint descriptors (map, superblock; map, superblock), four
+/// mkapfs.rs's layout: block 0, four blocks of checkpoint descriptors (map, superblock; map, superblock), four
 /// of checkpoint data.
 pub const DESC: u64 = 1;
 /// The address pattern the phone's copy failed with: block 0xffff0000ffff, the two empty free lists of a tree
@@ -191,7 +191,7 @@ pub fn layout(s: &Store, superblock: u64) -> Layout {
     Layout { xid: s.u64(superblock, 16), superblock, map: superblock - 1, omap: container, volumes }
 }
 
-/// Two stores of mkapfs.py (one checkpoint each, the same volumes) as one container with two checkpoints:
+/// Two stores of mkapfs.rs (one checkpoint each, the same volumes) as one container with two checkpoints:
 /// `older` as transaction 5 (and block 0), `newer` as transaction 6. Returns the store and the two layouts.
 pub fn graft(older: &Store, newer: &Store) -> (Store, Layout, Layout) {
     let shift = older.blocks();
@@ -265,7 +265,7 @@ pub fn graft(older: &Store, newer: &Store) -> (Store, Layout, Layout) {
     (out, old, new)
 }
 
-/// Give the container's object map of `new` (one root leaf, as mkapfs.py writes it for a few volumes) a history
+/// Give the container's object map of `new` (one root leaf, as mkapfs.rs writes it for a few volumes) a history
 /// for volume `index`: its superblock of `new` becomes transaction 6, and the mapping of transaction 5 names the
 /// volume superblock of `old`. The object map of a real container keeps one mapping per volume (it has no
 /// snapshots); the format allows this.
@@ -311,7 +311,10 @@ pub fn add_history(s: &mut Store, old: &Layout, new: &Layout, index: usize) {
     s.seal(leaf);
 }
 
-// ---- folders and mkapfs.py
+// ---- folders and the maker (mkapfs.rs beside this file: `oneios-tool debug mkapfs`)
+
+#[path = "mkapfs.rs"]
+mod mkapfs;
 
 pub fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("oneios-teststore-{name}-{}", std::process::id()));
@@ -331,34 +334,16 @@ pub fn put(root: &Path, rel: &str, data: &[u8]) {
     std::fs::write(path, data).unwrap();
 }
 
-/// tests/ioslog/mkapfs.py (`manifest`: CARGO_MANIFEST_DIR of a crate of this workspace).
-fn mkapfs_py(manifest: &str) -> PathBuf {
-    Path::new(manifest).join("../../tests/ioslog/mkapfs.py")
-}
-
-/// Whether this host can make a store (python3 for mkapfs.py); says so on stderr when it cannot.
-pub fn can_make(manifest: &str) -> bool {
-    if Command::new("python3").arg("--version").output().is_ok_and(|o| o.status.success()) {
-        return true;
-    }
-    eprintln!("skipped: no python3 for {}", mkapfs_py(manifest).display());
-    false
-}
-
 /// A store with the volumes Preboot, xART and Data, as the phone's: `data` is the Data volume's folder.
-pub fn make(manifest: &str, dir: &Path, name: &str, data: &Path) -> Store {
+pub fn make(dir: &Path, name: &str, data: &Path) -> Store {
     let small = dir.join(format!("{name}-preboot"));
     put(&small, "a/file", format!("preboot of {name}\n").as_bytes());
     let image = dir.join(format!("{name}.img"));
-    let made = Command::new("python3")
-        .arg("-I")
-        .arg(mkapfs_py(manifest))
-        .arg(&image)
-        .arg(format!("Preboot={}", small.display()))
-        .arg("xART=")
-        .arg(format!("Data={}", data.display()))
-        .output()
-        .unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let volumes = [
+        ("Preboot".to_string(), small.display().to_string()),
+        ("xART".to_string(), String::new()),
+        ("Data".to_string(), data.display().to_string()),
+    ];
+    mkapfs::make(&image, &volumes, false).unwrap();
     Store::read(&image)
 }

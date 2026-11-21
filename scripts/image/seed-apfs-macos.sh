@@ -14,7 +14,8 @@ die() { echo "seed-apfs: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run with sudo (owners are written as they are in the seed)"
 [ $# = 4 ] || die "usage: seed-apfs-macos.sh SEED.tar OUT.img VOLUME_UUID PROFILE"
 tar_in=$1 out=$2 vol_uuid=$3
-name=$("${ONEIOS_TOOL:-$(dirname "$0")/../../tools/oneios-tool/target/release/oneios-tool}" image profile "$4" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["data"].get("volume_name","Data"))')
+tool=${ONEIOS_TOOL:-$(dirname "$0")/../../tools/oneios-tool/target/release/oneios-tool}
+name=$("$tool" image profile "$4" | "$tool" json get --default Data - data.volume_name)
 [ ! -e "$out" ] || die "refusing to overwrite $out"
 bytes=$(stat -f %z "$tar_in")
 mib=${SEED_MIB:-$(( bytes * 3 / 2 / 1048576 + 1 ))}

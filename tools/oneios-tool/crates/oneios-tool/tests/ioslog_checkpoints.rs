@@ -1,7 +1,7 @@
 //! `oneios-tool ioslog` on Data stores whose newest checkpoint was cut off in the middle of a write: `show`,
 //! `boots`, `checks` and `save` must give the log of the newest checkpoint that passes the checks, exactly as
 //! they give it from that state's folder, and say on stderr which transaction they read and what they skipped.
-//! The stores: tests/support/apfs_store.rs (two of mkapfs.py's grafted into one container, then damaged).
+//! The stores: tests/support/apfs_store.rs (two of tests/support/mkapfs.rs's grafted into one container, then damaged).
 //!
 //! The log files are stand-ins made here (header chunks only: no entries) unless a real archive is named:
 //!
@@ -13,8 +13,6 @@
 //!   ONEIOS_TEST_FUSE=1                      also: apfs-fuse must read the good store as its newer state
 //!                                           (`--apfs fuse`), which checks the store's maker
 //!   ONEIOS_TEST_WORK=DIR                    where the stores are made (default: the temporary folder) and kept
-//!
-//! Needs python3 (mkapfs.py); skipped with a line on stderr where there is none.
 
 #[path = "../../../tests/support/apfs_store.rs"]
 mod store;
@@ -164,16 +162,12 @@ fn log_of(source: &str, what: &str, more: &[&str], work: &Path) -> (Log, String)
 
 #[test]
 fn the_log_of_the_newest_checkpoint_that_passes() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    if !store::can_make(manifest) {
-        return;
-    }
     let keep = std::env::var_os("ONEIOS_TEST_WORK").map(PathBuf::from);
     let dir = keep.clone().unwrap_or_else(|| store::scratch("ioslog"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let (older, newer, real) = states(&dir);
-    let (good, old, new) = store::graft(&store::make(manifest, &dir, "older", &older), &store::make(manifest, &dir, "newer", &newer));
+    let (good, old, new) = store::graft(&store::make(&dir, "older", &older), &store::make(&dir, "newer", &newer));
 
     // the reference: the same commands on the two states' folders
     let (want_old, _) = log_of(older.to_str().unwrap(), older.to_str().unwrap(), &[], &dir);

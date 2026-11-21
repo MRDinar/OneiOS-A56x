@@ -3,10 +3,11 @@
 # Target GPU: Samsung Xclipse 540 (AMD RDNA3) via /dev/dri/renderD128 (amdgpu/sgpu)
 # Optimizations: Ultra-lightweight QuartzCore compositor, ~1.8 GB RAM footprint, zero zRAM swapping
 #
-# REFERENCE ONLY (port-a56): no [[member]] fetch pins yet (docs/image-format.md section 2), so imagetool's
-# load_profile and the fetch refuse it by design; the 16.5 set was staged by hand, not fetched. What is pinned
+# REFERENCE ONLY (port-a56): no [[member]] fetch pins yet (docs/image-format.md section 2), so `oneios-tool image`'s
+# profile reader and the fetch refuse it by design; the 16.5 set was staged by hand, not fetched. What is pinned
 # here: the IPSW identity, the A56 hardware facts the session needs, and the launchd jobs disabled for the
-# lock-screen run of 2026-11-18 (docs/a56.md). Enforcement of the daemon list is roottweak's config, not this file.
+# lock-screen run of 2026-11-18 (docs/a56.md). Enforcement of the daemon list is the root tweaks' config
+# (userland/config, `oneios-tool image tweaks`), not this file.
 schema = 1
 
 [os]

@@ -3,8 +3,9 @@
 # (the Python symbolizer it replaced, deleted on 2026-11-12 after 18 of 18 address sets gave the same bytes on the
 # Mac's real logs and on Linux: tools/oneios-tool/README.md "sym").
 #
-# The address sets come from two stand-in logs that tests/sym/make-log.py writes from the dyld shared cache of
-# 24A446 (real return addresses, frames drawn at random with a fixed seed; the script makes them):
+# The address sets come from two stand-in logs that `oneios-tool debug sym-make-log` writes from the dyld shared
+# cache of 24A446 (real return addresses, frames drawn at random with a fixed seed: the addresses
+# tests/sym/make-log.py drew until 2026-11-21), and `debug sym-cases` makes the sets from them:
 #   a   whole backtraces of the logs (oneios-ubt thread lines, sheng-ubt frames), no --slide
 #   b   the same with --slide
 #   c   addresses outside the cache, with and without --slide
@@ -16,7 +17,7 @@
 #
 # Needs: ONEIOS_DSC_DIR (the folder with dyld_shared_cache_arm64e, its subcaches and .symbols; from the image:
 # oneios-tool image apfs-copy out/image/24A446/systemos.img System/Library/Caches/com.apple.dyld DIR), the tool
-# built (or ONEIOS_TOOL=path), python3 (make-log.py and the set maker below). Work files: out/rustport-sym/.
+# built (or ONEIOS_TOOL=path). Work files: out/rustport-sym/.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
@@ -27,55 +28,12 @@ golden=$here/golden/24A446.txt
 [ -x "$tool" ] || { echo "no tool at $tool: build it or set ONEIOS_TOOL" >&2; exit 2; }
 rm -rf "$work"; mkdir -p "$work/logs"
 logs=$work/logs
-python3 -I "$here/make-log.py" "$ONEIOS_DSC_DIR" "$logs/standin-a.log" || exit 2
-python3 -I "$here/make-log.py" "$ONEIOS_DSC_DIR" "$logs/standin-b.log" --slide 0x124d8000 --seed 7 --stacks 350 || exit 2
+"$tool" debug sym-make-log "$ONEIOS_DSC_DIR" "$logs/standin-a.log" || exit 2
+"$tool" debug sym-make-log "$ONEIOS_DSC_DIR" "$logs/standin-b.log" --slide 0x124d8000 --seed 7 --stacks 350 || exit 2
 
-# The address sets: one file per case, the arguments one per line.
-python3 - "$work" "$logs"/*.log <<'EOF' || exit 2
-import re, sys
-work, logs = sys.argv[1], sys.argv[2:]
-thread = re.compile(r'^\[[^\]]*\] guest\s+oneios-ubt: \S+\[\d+\] thread 0x[0-9a-f]+ state 0x[0-9a-f]+:((?: 0x[0-9a-f]+)+)$')
-frame = re.compile(r'sheng-ubt sheng-exc: #\d+ fp=0x[0-9a-f]+ ret=(0x[0-9a-f]+)$')
-first_lr = re.compile(r'sheng-ubt sheng-exc: pc=0x[0-9a-f]+ lr=(0x[0-9a-f]+) ')
-def write(name, args):
-    open(f'{work}/{name}.args', 'w').write(''.join(a + '\n' for a in args))
-whole, every, crashes = [], [], []
-for path in logs:
-    stacks, crash, got = [], None, False
-    for line in open(path, errors='replace'):
-        line = line.rstrip('\n')
-        m = thread.match(line)
-        if m:
-            stacks.append(m.group(1).split())
-            continue
-        m = first_lr.search(line)
-        if m:
-            crash = [m.group(1)]
-            continue
-        m = frame.search(line)
-        if m and crash is not None:
-            crash.append(m.group(1))
-        elif crash and len(crash) >= 4 and not got:
-            crashes.append(crash); crash = None; got = True
-    long = [s for s in stacks if len(s) >= 12]
-    whole += long[:2]
-    if not every and len(stacks) > 300:
-        every = [a for s in stacks for a in s]
-if not whole and not crashes:
-    sys.exit('no oneios-ubt thread line of 12 addresses and no sheng-ubt backtrace in the logs')
-names = []
-for i, s in enumerate(whole[:4] + crashes[:2]):
-    write(f'a{i + 1}', s); names.append((f'a{i + 1}', s))
-first = (whole or crashes)[0]
-write('c1', ['0x1007c9084', '0x16f1648f8', '0x0', '0x7fffffffffff', '0xffffffffffffffff'])
-write('c2', ['--slide', '0xedb4000', '0x1007c9084', '0x16f1648f8', '0x0', '0x7fffffffffff', '0x180000000'])
-write('d1', first[1:3])
-write('d2', first[:1])
-if every:
-    large = every[:4000]
-    write('e-large', large)                     # --slide is added by the script
-open(f'{work}/cases', 'w').write(' '.join(n for n, _ in names) + '\n')
-EOF
+# The address sets: one file per case, the arguments one per line (a: whole backtraces, c: outside the cache,
+# d: two that tie, e-large), and the names of the a sets in $work/cases.
+"$tool" debug sym-cases "$work" "$logs"/*.log || exit 2
 
 TIMEFORMAT=%R
 : > "$work/found.txt"

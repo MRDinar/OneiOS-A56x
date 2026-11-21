@@ -7,8 +7,8 @@
 #
 # Exit 0 and a line starting "ok:" when everything matches; otherwise one line that names the first difference.
 #
-# The checks are `oneios-tool image verify` (tools/oneios-tool, Rust; scripts/image/imagetool.py did them until
-# 2026-11-13 and is still in the tree, unused): a folder's files are hashed in parallel; an archive is read through
+# The checks are `oneios-tool image verify` (tools/oneios-tool, Rust; scripts/image/imagetool.py, deleted on
+# 2026-11-21, did them until 2026-11-13): a folder's files are hashed in parallel; an archive is read through
 # the `zstd` program. The binary is built when it is missing or older than its sources; ONEIOS_TOOL=PATH names another.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

@@ -1,11 +1,13 @@
-//! The APFS file reader (`apfs/files.rs`) on an image made by tests/ioslog/mkapfs.py from a folder made here:
+//! The APFS file reader (`apfs/files.rs`) on an image made by tests/support/mkapfs.rs from a folder made here:
 //! listings, file contents (one extent, two extents, empty), a link's target, the choice of the volume, and the
-//! newest checkpoint against block 0. No Apple file. mkapfs.py itself is checked against apfs-fuse by
-//! tests/ioslog/compare.sh; this test needs python3 and is skipped (with a line on stderr) where there is none.
+//! newest checkpoint against block 0. No Apple file. The maker itself is checked against apfs-fuse by
+//! tests/ioslog/compare.sh.
 
 use oneios_image::apfs::{ApfsTree, DT_DIR, DT_LNK, DT_REG};
 use std::path::PathBuf;
-use std::process::Command;
+
+#[path = "../../../tests/support/mkapfs.rs"]
+mod mkapfs;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("oneios-apfs-files-{name}-{}", std::process::id()));
@@ -21,11 +23,6 @@ fn pattern(len: usize, seed: u8) -> Vec<u8> {
 
 #[test]
 fn files_of_a_made_image() {
-    let mkapfs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/ioslog/mkapfs.py");
-    if Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: no python3 for {}", mkapfs.display());
-        return;
-    }
     let dir = scratch("made");
     let src = dir.join("src");
     std::fs::create_dir_all(src.join("db/diagnostics/Persist")).unwrap();
@@ -44,17 +41,8 @@ fn files_of_a_made_image() {
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join("x"), b"x").unwrap();
     let image = dir.join("t.img");
-    let made = Command::new("python3")
-        .arg("-I")
-        .arg(&mkapfs)
-        .arg(&image)
-        .arg(format!("First={}", other.display()))
-        .arg("Empty=")
-        .arg(format!("Data={}", src.display()))
-        .arg("--stale-block0")
-        .output()
-        .unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let volumes = [("First".to_string(), other.display().to_string()), ("Empty".to_string(), String::new()), ("Data".to_string(), src.display().to_string())];
+    mkapfs::make(&image, &volumes, true).unwrap();
     let image = image.to_str().unwrap();
 
     assert_eq!(ApfsTree::volume_count(image, true).unwrap(), 3);

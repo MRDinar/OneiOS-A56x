@@ -121,15 +121,14 @@ sleep 3.5; kill -INT $wpid; wait $wpid; st=$?
 touch "$W/drop2"
 FAKE_DROP=$W/drop2 FAKE_DROP_NEW=1 "$TOOL" phone log --follow --save "$W/new.log" > "$W/new.out" 2> "$W/new.err" & fpid=$!
 wait_for 20 grep -q "is a new file" "$W/new.err"; wait_for 10 sh -c '[ "$(wc -l < "$1")" -ge 4 ]' sh "$L"; sleep 1; kill -INT $fpid; wait $fpid
-python3 -I - "$W/new.log" "$S/logs/xnuhost-dropped.log" "$L" <<'PY2' && ok "log --follow: a drop back to a new file reads it from its start (the old file's lines, then the new one's, none twice)" || bad "log --follow: the drop to a new file" "$(tr '\n' '|' < "$W/new.err")"
-import sys
-saved, old, new = (open(f).read().splitlines() for f in sys.argv[1:])
-a = 0
-while a < min(len(saved), len(old)) and saved[a] == old[a]: a += 1
-rest = saved[a:]
-# what came before the drop is the old file's head; what came after is the new file's head, from its first line
-assert a >= 10 and len(rest) >= 3 and rest == new[:len(rest)], (a, len(rest), rest[:2], new[:2])
-PY2
+# what came before the drop is the old file's head (a lines); what came after is the new file's head, from its first line
+drop_new() {  # SAVED OLD NEW
+  local a n
+  a=$(awk 'NR == FNR { s[FNR] = $0; ns = FNR; next } !done && FNR <= ns && s[FNR] == $0 { a = FNR; next } { done = 1 } END { print a + 0 }' "$1" "$2")
+  n=$(( $(wc -l < "$1") - a ))
+  [ "$a" -ge 10 ] && [ "$n" -ge 3 ] && cmp -s <(tail -n +$((a + 1)) "$1" | awk 1) <(head -n "$n" "$3" | awk 1)
+}
+drop_new "$W/new.log" "$S/logs/xnuhost-dropped.log" "$L" && ok "log --follow: a drop back to a new file reads it from its start (the old file's lines, then the new one's, none twice)" || bad "log --follow: the drop to a new file" "$(tr '\n' '|' < "$W/new.err")"
 "$TOOL" phone return > /dev/null 2>&1; wait_for 10 no_session "$P"
 echo 0.1 > "$P/.fake/step"
 end_case
@@ -157,13 +156,8 @@ cat > "$R/runtime/package.sh" <<'B'
 #!/bin/bash
 d=$(mktemp -d); mkdir -p "$d/bin" out/release
 echo "xnuhost $1" > "$d/bin/xnuhost"
-python3 -I - "$d" "$1" <<'PY'
-import hashlib, json, os, sys
-d, v = sys.argv[1:3]
-b = open(f"{d}/bin/xnuhost", "rb").read()
-json.dump({"format": 1, "name": "oneios-runtime", "version": v, "arch": "arm64", "session_abi": 1, "image_formats": [1], "xnuhost": "bin/xnuhost",
-           "files": [{"path": "bin/xnuhost", "size": len(b), "sha256": hashlib.sha256(b).hexdigest(), "mode": "0755"}]}, open(f"{d}/runtime.json", "w"))
-PY
+printf '{"format": 1, "name": "oneios-runtime", "version": "%s", "arch": "arm64", "session_abi": 1, "image_formats": [1], "xnuhost": "bin/xnuhost", "files": [{"path": "bin/xnuhost", "size": %d, "sha256": "%s", "mode": "0755"}]}' \
+  "$1" "$(wc -c < "$d/bin/xnuhost")" "$(sha256sum "$d/bin/xnuhost" | cut -d' ' -f1)" > "$d/runtime.json"
 tar -C "$d" -cf - runtime.json bin | zstd -q -f -o "out/release/oneios-runtime-$1-arm64.tar.zst"; rm -rf "$d"
 echo "package: out/release/oneios-runtime-$1-arm64.tar.zst"
 B

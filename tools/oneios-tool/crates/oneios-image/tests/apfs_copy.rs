@@ -1,8 +1,6 @@
 //! `image apfs-copy` in threads against the copy one entry after the other (`ONEIOS_APFS_COPY=serial`): the same
-//! files, bytes, links and counts from an image made by tests/ioslog/mkapfs.py, with one thread and with several;
+//! files, bytes, links and counts from an image made by tests/support/mkapfs.rs, with one thread and with several;
 //! a copy that is stopped (the running request's cancel, `oneios_common::job`) ends with an error. No Apple file.
-//! Needs python3 for mkapfs.py (the stand-in images' maker, as tests/apfs_files.rs) and is skipped, with a line on
-//! stderr, where there is none.
 //!
 //! One test function: it sets an environment variable and the process's stop flag, which other tests of the same
 //! binary would see.
@@ -11,7 +9,9 @@ use oneios_image::apfs::Pick;
 use oneios_image::apfs_tools::{copy_to, CopyResult};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+#[path = "../../../tests/support/mkapfs.rs"]
+mod mkapfs;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("oneios-apfs-copy-{name}-{}", std::process::id()));
@@ -48,11 +48,6 @@ fn tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
 
 #[test]
 fn the_copy_in_threads_is_the_copy_one_by_one() {
-    let mkapfs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/ioslog/mkapfs.py");
-    if Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: no python3 for {}", mkapfs.display());
-        return;
-    }
     let dir = scratch("made");
     let src = dir.join("src");
     for folder in ["System/Library/Caches", "System/Library/Frameworks/A.framework", "private/var/empty", "usr/lib"] {
@@ -67,8 +62,7 @@ fn the_copy_in_threads_is_the_copy_one_by_one() {
     std::os::unix::fs::symlink("Library/Caches", src.join("System/link")).unwrap();
     std::os::unix::fs::symlink("/usr/lib/one", src.join("usr/lib/abs-link")).unwrap();
     let image = dir.join("t.img");
-    let made = Command::new("python3").arg("-I").arg(&mkapfs).arg(&image).arg(format!("Data={}", src.display())).output().unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    mkapfs::make(&image, &[("Data".to_string(), src.display().to_string())], false).unwrap();
     let image = image.to_str().unwrap();
     let want = tree(&src);
     let files = want.values().filter(|v| v.as_slice() != b"dir" && !v.starts_with(b"-> ")).count() as u64;

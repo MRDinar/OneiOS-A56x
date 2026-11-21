@@ -7,14 +7,15 @@
 #
 #   1  archive:  ioslog show ARCHIVE -f csv              ==  unifiedlog_iterator on ARCHIVE          (cmp)
 #   2  jsonl:    ioslog show ARCHIVE -f jsonl            ==  unifiedlog_iterator -f jsonl            (cmp; JSONL=1)
-#   3  image:    a Data store image is made from ARCHIVE's files (tests/ioslog/mkapfs.py: three volumes, the
+#   3  image:    a Data store image is made from ARCHIVE's files (`oneios-tool debug mkapfs`: three volumes, the
 #                log in the third as db/diagnostics and db/uuidtext, block 0 one transaction behind);
 #                apfs-fuse must show the same tree as the folder the image was made from       (diff -r)
 #   4  save:     ioslog save IMAGE X.logarchive          ==  the manual copy out of apfs-fuse's mount (diff -r)
 #   5  show:     ioslog show IMAGE -f csv                ==  unifiedlog_iterator on the manual copy  (cmp)
 #   6  mounted:  ioslog show <apfs-fuse mount>/root -f csv == the same                               (cmp)
 #   7  block 0:  ioslog show IMAGE --block0 must find no log (the files are in the newest checkpoint only)
-#   8  filters:  ioslog show with --boot/--proc/--type/--grep keeps exactly the CSV rows a check in Python keeps
+#   8  filters:  ioslog show with --boot/--proc/--type/--grep keeps exactly the CSV rows each rule keeps
+#                (`oneios-tool debug ioslog-filters`, the rules written apart from ioslog's own)
 #
 # Needs: the tool built; REF_ITER = Mandiant's unifiedlog_iterator built from the commit Cargo.lock pins
 # (git clone https://github.com/mandiant/macos-unifiedlogs; cargo build --release --manifest-path
@@ -70,7 +71,7 @@ done
 echo "not a log" > "$stage/root/log/other.txt"
 ln -s ../root/log "$stage/mobile/Library/Logs"
 mkdir -p "$work/small/a"; echo hello > "$work/small/a/file"
-python3 -I "$here/mkapfs.py" "$work/data.img" "Preboot=$work/small" "xART=" "Data=$stage" --stale-block0 || { bad "mkapfs.py"; exit 1; }
+"$tool" debug mkapfs "$work/data.img" "Preboot=$work/small" "xART=" "Data=$stage" --stale-block0 || { bad "debug mkapfs"; exit 1; }
 "$tool" image apfs-info "$work/data.img" | grep '"name"' | tr -d '\n'; echo
 manual=$work/manual.logarchive
 if [ $fuse = 1 ]; then
@@ -126,7 +127,7 @@ fi
 echo "== 8 filters"
 "$tool" ioslog boots "$work/data.img" > "$work/boots.txt" 2>&1 || bad "ioslog boots"
 tail -n +2 "$work/boots.txt" | head -6
-python3 -I "$here/filters.py" "$tool" "$work/data.img" "$work/ref-image.csv" "$work" || status=1
+"$tool" debug ioslog-filters "$tool" "$work/data.img" "$work/ref-image.csv" "$work" || status=1
 
 [ -n "${KEEP:-}" ] || { [ $fuse = 1 ] && fusermount3 -u "$work/mnt" 2>/dev/null; trap - EXIT; rm -rf "$work/stage" "$work/data.img" "$work/saved.logarchive" "$work/manual.logarchive" "$work"/*.csv "$work"/*.jsonl; }
 [ $status = 0 ] && echo "ioslog compare: all the same" || echo "ioslog compare: FAILED"

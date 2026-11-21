@@ -18,8 +18,8 @@
 # INPUTS/.aea-keys/ for the second image, never elsewhere), authenticates every byte as it decrypts, and checks the
 # plain image against the profile's `plain_sha256` where it pins one.
 # Linux and macOS. Tools: oneios-tool (tools/oneios-tool, Rust: `image check-ipsw`, `fetch`, `aea-info`, `record-plain`;
-# built when missing or stale, ONEIOS_TOOL=PATH for another; scripts/image/imagetool.py did this until 2026-11-13 and is
-# still in the tree, unused), python3 (the last check of the decrypted images).
+# built when missing or stale, ONEIOS_TOOL=PATH for another; scripts/image/imagetool.py did this until 2026-11-13),
+# sha256sum or shasum (SHA256SUMS, the last check of the decrypted images).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$ROOT/scripts/lib/oneios-tool.sh"
@@ -43,8 +43,7 @@ done
 
 oneios_tool "$ROOT" || die "the image tool is oneios-tool (Rust): cargo build --release --manifest-path tools/oneios-tool/Cargo.toml"
 tool() { "$ONEIOS_TOOL" image "$@"; }
-command -v python3 >/dev/null || die "missing tool: python3 (3.11 or newer)"
-python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || die "missing tool: python3 3.11 or newer (this one is $(python3 -V 2>&1))"
+if command -v sha256sum >/dev/null; then sums=(sha256sum); elif command -v shasum >/dev/null; then sums=(shasum -a 256); else die "missing tool: sha256sum or shasum"; fi
 
 if [ "$list" = 1 ]; then
   exec "$ONEIOS_TOOL" image check-ipsw "$profile" ${source:+--source "$source"}
@@ -80,13 +79,6 @@ while IFS=$'\t' read -r role member name aea size out; do
 done < <(tool profile "$profile" --members)
 
 ( cd "$IN" && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name 'inputs.json*' ! -name '*.part*' -print0 |
-  sort -z | xargs -0 python3 -I -c '
-import hashlib, sys
-for p in sys.argv[1:]:
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        while b := f.read(1 << 22):
-            h.update(b)
-    print(h.hexdigest() + "  " + p[2:])' > SHA256SUMS )
+  sort -z | xargs -0 "${sums[@]}" | sed 's|^\([0-9a-f]*\)  \./|\1  |' > SHA256SUMS )
 ls -l "$IN"
 echo "inputs of $P_NAME are in $IN (hashes: SHA256SUMS, inputs.json). Next: scripts/image/build.sh $profile"

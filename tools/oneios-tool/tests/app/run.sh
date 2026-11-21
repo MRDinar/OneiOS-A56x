@@ -11,7 +11,8 @@
 # failing build, the APK's facts); doctor (each prerequisite missing and present; a token is never printed);
 # install (a new install, the same certificate, another certificate refused without an uninstall, a session
 # open, --release through gh with its .sha256); stage-scripts (the three files, their sha256 before and after).
-# `app version --no-phone` also runs on the real OneOS clone when there is one. Needs python3, openssl, git.
+# `app version --no-phone` also runs on the real OneOS clone when there is one. Needs openssl, git; the stand-in
+# APKs are made by `oneios-tool debug mkapk` (tests/app/mkapk.py until 2026-11-21).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
@@ -45,7 +46,7 @@ echo "# root script of the stand-in fork" > "$F/app-android/app/src/full/assets/
 # two keys, and an APK signed by each
 for k in a b; do
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/$k.key" -out "$W/$k.der" -outform DER -days 2 -subj "/CN=stand-in $k" 2>/dev/null
-  python3 -I "$HERE/mkapk.py" "$W/$k.apk" "$W/$k.der" "apk $k"
+  "$TOOL" debug mkapk "$W/$k.apk" "$W/$k.der" "apk $k"
   printf 'Packages:\n  Package [com.fahadali.oneos] (1a2b3c4):\n    versionCode=117 minSdk=31 targetSdk=37\n    versionName=0.4.88\n' > "$W/$k.apk.package.txt"
 done
 certa=$(openssl dgst -sha256 "$W/a.der" | sed 's/.*= //'); certb=$(openssl dgst -sha256 "$W/b.der" | sed 's/.*= //')

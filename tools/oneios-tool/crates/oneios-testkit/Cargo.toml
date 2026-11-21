@@ -17,3 +17,10 @@ rand_mt = "5"
 # fixture kdk-pkg: the xar table of contents (zlib) and a pbzx chunk (xz), as kdk-headers reads them.
 flate2 = "1"
 lzma-rs = "0.3"
+# mkapk: the zip's CRC-32; ioslog-filters: the reference CSV, the --grep rule and the rows' SHA-256; sym-cases: the log lines.
+crc32fast = "1"
+csv = "1"
+regex = "1"
+sha2.workspace = true
+# holes: SEEK_DATA and SEEK_HOLE
+libc.workspace = true

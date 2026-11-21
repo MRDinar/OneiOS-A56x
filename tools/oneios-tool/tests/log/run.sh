@@ -45,7 +45,7 @@ for log in $logs; do
   for command in gpu cpu display perf; do
     check "$base.$command.json" "$command" "$log" --json
     check "$base.$command.csv" "$command" "$log" --csv
-    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$work/$base.$command.json.txt" || { echo "FAIL   $base.$command.json: not JSON"; status=1; }
+    "$tool" json check "$work/$base.$command.json.txt" 2>/dev/null || { echo "FAIL   $base.$command.json: not JSON"; status=1; }
   done
   [ -n "$first" ] && check "diff.$(basename "$first" .log).$base" diff "$first" "$log"
   [ -z "$first" ] && first=$log

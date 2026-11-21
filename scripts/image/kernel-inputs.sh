@@ -11,7 +11,7 @@
 # Tools: oneios-tool (tools/oneios-tool, Rust: `image profile`, `image im4p` with LZFSE decoded in Rust, `prelink pin`;
 # built when missing or stale, ONEIOS_TOOL=PATH for another, IM4P_TOOL=PATH for the decoder alone). It replaced
 # scripts/image/imagetool.py here on 2026-11-13 (which started the `lzfse` program for the payload: the same files
-# and the same line); that script is still in the tree, unused.
+# and the same line); that script was deleted on 2026-11-21.
 # The decoded kernelcache must have the SHA-256 the kernel profile pins (kernel/unixnu/profiles/os/*-<build>/
 # profile.toml, [kernel.prelink] kernelcache_sha256) when there is such a profile: a mismatch stops the script.
 # Linux and macOS. Never in git.

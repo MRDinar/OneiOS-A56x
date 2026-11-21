@@ -1,4 +1,4 @@
-# Preferences seeded into the Data volume before the first boot. Read by roottweak.
+# Preferences seeded into the Data volume before the first boot. Read by the root tweaks (`oneios-tool image tweaks`).
 #
 # [[pref]] user = "mobile" | "root" | "any"   (any: /private/var/preferences, the any-user domain)
 #          domain, group, source, and a [pref.values] table. "@BUILD@" is the root's build number.

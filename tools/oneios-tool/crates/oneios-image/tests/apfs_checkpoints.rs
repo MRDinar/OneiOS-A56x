@@ -1,8 +1,7 @@
 //! The APFS reader on stores whose newest checkpoint was cut off in the middle of a write (`apfs/check.rs`): the
 //! checks before a read, and the fall back to the newest checkpoint that passes. The stores: two of
-//! tests/ioslog/mkapfs.py's grafted into one container with two checkpoints and then damaged
-//! (tests/support/apfs_store.rs). No Apple file, no owner data. Needs python3 (mkapfs.py); skipped with a line on
-//! stderr where there is none.
+//! tests/support/mkapfs.rs's grafted into one container with two checkpoints and then damaged
+//! (tests/support/apfs_store.rs). No Apple file, no owner data.
 
 #[path = "../../../tests/support/apfs_store.rs"]
 mod store;
@@ -75,10 +74,6 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Option<Fixture> {
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        if !store::can_make(manifest) {
-            return None;
-        }
         let dir = store::scratch(name);
         let (a, b) = (dir.join("older"), dir.join("newer"));
         for (root, grown) in [(&a, false), (&b, true)] {
@@ -95,7 +90,7 @@ impl Fixture {
                 store::put(root, "db/diagnostics/Persist/0000000000000003.tracev3", &store::pattern(70_000, 3));
             }
         }
-        let (good, old, new) = store::graft(&store::make(manifest, &dir, "older", &a), &store::make(manifest, &dir, "newer", &b));
+        let (good, old, new) = store::graft(&store::make(&dir, "older", &a), &store::make(&dir, "newer", &b));
         assert!(new.volumes[2].nodes.iter().any(|(_, level)| *level > 0), "the Data volume's tree has an index node");
         Some(Fixture { older: folder(&a), newer: folder(&b), dir, good, old, new, count: 0 })
     }

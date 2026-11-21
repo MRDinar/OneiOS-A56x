@@ -18,7 +18,7 @@
 // uid, gid, LIBARCHIVE.xattr.<name> in base64), GNU long names; folders, regular files and symbolic links.
 // Anything else (devices, hard links, a path with ".." or through a symbolic link) stops it.
 //
-// Builds for the guest with an iOS SDK and for the host with cc (tests/test_helpers.py).
+// Builds for the guest with an iOS SDK and for the host with cc (tests/host.sh).
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>

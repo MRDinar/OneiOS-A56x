@@ -7,10 +7,10 @@
 # Options: --kernel FILE   the kernel collection to put in the set (default out/kernel/<build>/kernel.kc)
 #          --no-kernel     build a set without one (the runtime cannot start it; for work on the images)
 #          --hook FILE     another userland hook: an executable file run with hook API 1's ONEIOS_* (docs/image-format.md 6)
-#          --python-hook   the frozen Python hook, userland/image-hook (roottweak), to compare with the default
 #          --no-hook       do not run a hook: the seed is the OS volume's own /private/var
-#          (default: the Rust hook `oneios-tool image tweaks hook --repo ROOT`, the port of userland/image-hook since
-#          2026-11-21: the same seed and overlay byte for byte, tools/oneios-tool/README.md "image tweaks")
+#          (default: the Rust hook `oneios-tool image tweaks hook --repo ROOT`, the port of the Python
+#          userland/image-hook, which ran here until 2026-11-21 and is deleted: the same seed and overlay byte for
+#          byte, tools/oneios-tool/README.md "image tweaks")
 #          --seed tar|apfs the Data seed's format. tar (default) is made anywhere; apfs needs macOS
 #          --no-pack       stop after the set folder; no .tar.zst
 #          --os-root DIR, --systemos-root DIR, --app-root DIR
@@ -20,7 +20,8 @@
 #      ONEIOS_TOOL=PATH    the image tool's binary. The tool is `oneios-tool image` (tools/oneios-tool, Rust: built when
 #                          it is missing or older than its sources, scripts/lib/oneios-tool.sh). It replaced
 #                          scripts/image/imagetool.py here on 2026-11-13 (the same files, byte for byte:
-#                          tools/oneios-tool/README.md "image"); that script is still in the tree, unused.
+#                          tools/oneios-tool/README.md "image"); that script was deleted on 2026-11-21.
+# Needs no Python: the hook's record and the seed's record are written with `oneios-tool json set`.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 die() { echo "build: $*" >&2; exit 1; }
@@ -28,6 +29,19 @@ die() { echo "build: $*" >&2; exit 1; }
 . "$ROOT/scripts/lib/oneios-tool.sh"
 oneios_tool "$ROOT" || die "the image tool is oneios-tool (Rust): cargo build --release --manifest-path tools/oneios-tool/Cargo.toml"
 tool() { "$ONEIOS_TOOL" image "$@"; }
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+# relpath TARGET BASE: TARGET relative to BASE (both absolute and clean), as Python's os.path.relpath gives it
+relpath() {
+  local t=$1 b=$2 up=
+  while :; do
+    if [ "$b" = / ]; then echo "$up${t#/}"; return; fi
+    case "$t" in
+    "$b") up=${up%/}; echo "${up:-.}"; return ;;
+    "$b"/*) echo "$up${t#"$b"/}"; return ;;
+    esac
+    b=$(dirname "$b"); up="../$up"
+  done
+}
 
 kernel= no_kernel=0 hook= no_hook=0 seed=tar pack=1 profile= os_root= sys_root= app_root=
 while [ $# -gt 0 ]; do
@@ -35,7 +49,6 @@ while [ $# -gt 0 ]; do
   --kernel) kernel=${2:?--kernel FILE}; shift ;;
   --no-kernel) no_kernel=1 ;;
   --hook) hook=${2:?--hook FILE}; shift ;;
-  --python-hook) hook=$ROOT/userland/image-hook ;;
   --no-hook) no_hook=1 ;;
   --seed) seed=${2:?--seed tar|apfs}; shift ;;
   --no-pack) pack=0 ;;
@@ -47,7 +60,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$profile" ] || die "usage: scripts/image/build.sh [--kernel FILE|--no-kernel] [--hook FILE|--python-hook|--no-hook] [--seed tar|apfs] [--no-pack] PROFILE"
+[ -n "$profile" ] || die "usage: scripts/image/build.sh [--kernel FILE|--no-kernel] [--hook FILE|--no-hook] [--seed tar|apfs] [--no-pack] PROFILE"
 [ -f "$profile" ] || die "no profile $profile"
 case "$seed" in tar|apfs) ;; *) die "--seed is tar or apfs" ;; esac
 OS=$(uname -s)
@@ -55,7 +68,6 @@ OS=$(uname -s)
 # ---- tools first: one line that names everything missing
 missing=()
 need() { command -v "$1" >/dev/null 2>&1 || missing+=("$1${2:+ ($2)}"); }
-need python3 "3.11 or newer: the hook's record and the seed's record are written with it"
 [ "$pack" = 0 ] || need zstd
 case "$OS" in
 Linux)
@@ -70,7 +82,6 @@ Darwin)
 *) missing+=("Linux or macOS (this is $OS)") ;;
 esac
 [ ${#missing[@]} = 0 ] || die "missing tools: $(IFS=';'; echo "${missing[*]}" | sed 's/;/; /g')"
-python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || die "missing tools: python3 3.11 or newer (this one is $(python3 -V 2>&1))"
 
 eval "$(tool profile "$profile" --shell)"
 IN=${INPUTS:-$ROOT/inputs/$P_BUILD}
@@ -180,25 +191,23 @@ if [ -n "$hook" ]; then
   ONEIOS_INFO=$WORK/hook-info.json ONEIOS_EPOCH=$P_EPOCH ONEIOS_DATA_UUID=$P_DATA_UUID \
     "${run_hook[@]}" || die "the userland hook failed (exit $?); nothing was written to $SET"
   # the record: the hook and its SHA-256 (the Rust hook: "oneios-tool image tweaks", the tool's binary), the commit
-  python3 -I - "$hook" "$WORK/hook-info.json" "$ROOT" "$ONEIOS_TOOL" > "$tweaks" <<'PY'
-import hashlib, json, os, subprocess, sys
-hook, info_path, root, tool = sys.argv[1:5]
-if hook == "builtin":
-    out = {"hook": "oneios-tool image tweaks", "hook_sha256": hashlib.sha256(open(tool, "rb").read()).hexdigest()}
-    paths = ["userland", "tools/oneios-tool/crates/oneios-tweaks"]
-else:
-    out = {"hook": os.path.relpath(os.path.abspath(hook), root), "hook_sha256": hashlib.sha256(open(hook, "rb").read()).hexdigest()}
-    paths = ["userland"]
-try:
-    out["commit"] = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
-    out["dirty"] = bool(subprocess.check_output(["git", "-C", root, "status", "--porcelain", "--"] + paths, text=True).strip())
-except (OSError, subprocess.CalledProcessError):
-    pass
-text = open(info_path).read().strip()
-if text:
-    out["info"] = json.loads(text)
-print(json.dumps(out))
-PY
+  # and whether the hook's sources differ from it, the hook's summary. The keys and values are the ones the Python
+  # writer here gave until 2026-11-21 (the manifest reads them again: its `tweaks` object is the same bytes).
+  if [ "$hook" = builtin ]; then
+    hook_name="oneios-tool image tweaks" hook_file=$ONEIOS_TOOL hook_paths=(userland tools/oneios-tool/crates/oneios-tweaks)
+  else
+    hook_name=$(relpath "$(cd "$(dirname "$hook")" && pwd)/$(basename "$hook")" "$ROOT") hook_file=$hook hook_paths=(userland)
+  fi
+  echo '{}' > "$tweaks"
+  "$ONEIOS_TOOL" json set --string "$tweaks" hook "$hook_name"
+  "$ONEIOS_TOOL" json set --string "$tweaks" hook_sha256 "$(sha256 "$hook_file")"
+  if command -v git >/dev/null 2>&1 && commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null); then
+    "$ONEIOS_TOOL" json set --string "$tweaks" commit "$commit"
+    if changed=$(git -C "$ROOT" status --porcelain -- "${hook_paths[@]}"); then
+      "$ONEIOS_TOOL" json set "$tweaks" dirty "$([ -n "$changed" ] && echo true || echo false)"
+    fi
+  fi
+  [ -z "$(tr -d ' \t\r\n' < "$WORK/hook-info.json")" ] || "$ONEIOS_TOOL" json set "$tweaks" info "$(cat "$WORK/hook-info.json")"
 else
   echo "no userland hook: the seed is the OS volume's own /$P_DATA_SOURCE"
 fi
@@ -207,7 +216,7 @@ cleanup; mounts=()
 tool seed-pack "$WORK/data" "$WORK/data.meta.json" "$WORK/data.seed.tar" --epoch "$P_EPOCH" --owners "$WORK/owners.tsv" > "$WORK/seed.json"
 if [ "$seed" = apfs ]; then
   "$ROOT/scripts/image/seed-apfs-macos.sh" "$WORK/data.seed.tar" "$NEW/$P_SEED" "$P_DATA_UUID" "$profile"
-  python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d["format"]="apfs-raw"; json.dump(d,open(sys.argv[1],"w"))' "$WORK/seed.json"
+  "$ONEIOS_TOOL" json set --string "$WORK/seed.json" format apfs-raw
 else
   mv "$WORK/data.seed.tar" "$NEW/$P_SEED"
 fi

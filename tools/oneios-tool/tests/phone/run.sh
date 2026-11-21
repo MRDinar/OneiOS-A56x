@@ -125,14 +125,8 @@ check "stage image: a name with a space never reaches root's shell" 1 "character
 # runtime: an unpacked package
 R=$W/runtime-pkg; mkdir -p "$R/bin"
 echo "xnuhost 0.1.7" > "$R/bin/xnuhost"; echo "a helper" > "$R/bin/stub"; echo "notes" > "$R/NOTES"
-python3 -I - "$R" <<'PY'
-import hashlib, json, os, sys
-d = sys.argv[1]
-files = [{"path": p, "size": os.path.getsize(f"{d}/{p}"), "sha256": hashlib.sha256(open(f"{d}/{p}", "rb").read()).hexdigest(), **({"mode": "0755"} if p.startswith("bin/") else {})}
-         for p in ("bin/xnuhost", "bin/stub", "NOTES")]
-json.dump({"format": 1, "name": "oneios-runtime", "version": "0.1.7-dev", "arch": "arm64", "session_abi": 1, "image_formats": [1, 2],
-           "xnuhost": "bin/xnuhost", "files": files}, open(f"{d}/runtime.json", "w"), indent=2)
-PY
+echo '{}' > "$R/runtime.json"
+"$TOOL" json set "$R/runtime.json" . "{\"format\":1,\"name\":\"oneios-runtime\",\"version\":\"0.1.7-dev\",\"arch\":\"arm64\",\"session_abi\":1,\"image_formats\":[1,2],\"xnuhost\":\"bin/xnuhost\",\"files\":[$(file_entries "$R" bin/xnuhost bin/stub NOTES)]}"
 if [ -n "$FORK" ]; then
   phone stage runtime "$R" > "$W/rs.out" 2>&1; rs=$?; stage_sh runtime "$R" > "$W/sh.out" 2>&1; sh_=$?
   [ $rs = 0 ] && [ $sh_ = 0 ] && same "stage runtime" || bad "stage runtime" "status $rs and $sh_: $(tail -n 2 "$W/rs.out" | tr '\n' '|')"
@@ -155,8 +149,8 @@ check "switch: refused before One UI is touched when xnuhost would refuse the se
 check "manifest DIR: the phone's, with DIR's entries" 0 "\"sha256\": \"$(sha256sum < "$I/kernel.kc" | cut -d' ' -f1)\"" phone manifest "$I"
 check "manifest DIR: a file that is not in the set is refused" 1 "other.bin is not a file of the phone's image set" phone manifest "$W/notstaged"
 phone manifest "$I" --out "$W/manifest.json" > /dev/null 2>&1
-python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [f["path"] for f in m["files"]] == ["data.seed","kernel.kc","kernel.kc.hashes","overlay/userland/xnuhost.conf"] and m["build"] == "24A446"' "$W/manifest.json" \
-  && ok "manifest --out: every entry and key kept, in order" || bad "manifest --out: the file"
+[ "$("$TOOL" json lines "$W/manifest.json" files path | paste -sd' ')" = "data.seed kernel.kc kernel.kc.hashes overlay/userland/xnuhost.conf" ] \
+  && [ "$("$TOOL" json get "$W/manifest.json" build)" = 24A446 ] && ok "manifest --out: every entry and key kept, in order" || bad "manifest --out: the file"
 check "manifest DIR --stage: the files and their manifest, then the check" 0 "image: manifest.json and the 4 files it lists agree" phone manifest "$I" --stage
 check "image-check: the set agrees again" 0 "image: manifest.json and the 4 files it lists agree" phone image-check
 

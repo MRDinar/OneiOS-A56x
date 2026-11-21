@@ -20,6 +20,17 @@ if [ -n "$(gnu_missing)" ]; then
 fi
 ok() { echo "ok      $1"; }
 bad() { echo "FAILED  $1${2:+: $2}"; FAILED=$((FAILED + 1)); }
+# file_entries DIR PATH...: the manifest entries of DIR's files, compact JSON objects joined by commas
+# ({"path", "size", "sha256"}, and "mode": "0755" for a file under bin/). The JSON files are written with
+# `$TOOL json set` (indent 2): the tests ran inline Python for this until 2026-11-21.
+file_entries() {
+  local d=$1 p sep=; shift
+  for p in "$@"; do
+    printf '%s{"path":"%s","size":%s,"sha256":"%s"%s}' "$sep" "$p" "$(stat -c %s "$d/$p")" "$(sha256sum < "$d/$p" | cut -d' ' -f1)" \
+      "$(case "$p" in bin/*) echo ',"mode":"0755"' ;; esac)"
+    sep=,
+  done
+}
 # check NAME WANT-STATUS 'grep -E pattern on stdout+stderr' cmd...
 check() {
   local name=$1 want=$2 pat=$3; shift 3
@@ -92,14 +103,9 @@ PKG
   echo "hash list stand-in" > "$S/image/kernel.kc.hashes"
   echo "seed stand-in" > "$S/image/data.seed"
   echo "boot-args=stand-in" > "$S/image/overlay/userland/xnuhost.conf"
-  # a manifest that lists the set's files, as imagetool.py writes it (json.dumps indent 2): switch checks it
-  python3 -I - "$S/image" <<'PY'
-import hashlib, json, os, sys
-d = sys.argv[1]
-files = [{"path": p, "size": os.path.getsize(f"{d}/{p}"), "sha256": hashlib.sha256(open(f"{d}/{p}", "rb").read()).hexdigest()}
-         for p in ("data.seed", "kernel.kc", "kernel.kc.hashes", "overlay/userland/xnuhost.conf")]
-open(f"{d}/manifest.json", "w").write(json.dumps({"format": 1, "build": "24A446", "files": files}, indent=2) + "\n")
-PY
+  # a manifest that lists the set's files, as the image build writes it (indent 2): switch checks it
+  echo '{}' > "$S/image/manifest.json"
+  "$TOOL" json set "$S/image/manifest.json" . "{\"format\":1,\"build\":\"24A446\",\"files\":[$(file_entries "$S/image" data.seed kernel.kc kernel.kc.hashes overlay/userland/xnuhost.conf)]}"
   (cd "$S/image" && for f in kernel.kc kernel.kc.hashes manifest.json data.seed overlay/userland/xnuhost.conf; do
     sha256sum "$f" >> ../image.sha256; echo "$(stat -c '%d:%i:%s:%Y' "$f") $f" >> ../image.ids; done)
   echo "xnuhost stand-in" > "$S/runtime/bin/xnuhost"

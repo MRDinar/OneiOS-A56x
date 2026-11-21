@@ -1,4 +1,4 @@
-# The guest OneiOS presents: iPhone18,2 on iOS 27.0.1. Read by roottweak; the booter builds the device tree
+# The guest OneiOS presents: iPhone18,2 on iOS 27.0.1. Read by the root tweaks (`oneios-tool image tweaks`, roottweak's port); the booter builds the device tree
 # from the [adt] tables through the boot contract (docs/userland.md, "Boot contract").
 #
 # Marks: [F] taken from a source named beside it, [I] inferred, [U] unknown. "DT" is the IPSW's own device tree
@@ -22,7 +22,7 @@ version = "27.0.1"
 # scaled on the way to the glass. [F] xnuhost takes the mode from the panel (docs/booter.md 2.8); these are the
 # values it gets there. The iPhone 17 Pro Max's own panel is 1320x2868 @3x (440x956 points, 460 ppi).
 # scale is the UI scale, 3 (the default: 480x1040 points, 9 % wider and taller than the Pro Max's) or 2
-# (720x1560 points): `roottweak apply --scale 2` (ONEIOS_SCALE=2 for the image hook) changes it here, in
+# (720x1560 points): `oneios-tool image tweaks apply --scale 2` (ONEIOS_SCALE=2 for the image hook) changes it here, in
 # [adt.chosen] display-scale, [adt.product] artwork-scale-factor and main-screen-scale below, and writes it to
 # overlay/userland/xnuhost.conf for xnuhost. docs/userland.md "The screen" has the layout risks of both.
 width = 1440
