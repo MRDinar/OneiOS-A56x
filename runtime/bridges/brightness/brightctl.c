@@ -12,6 +12,8 @@
 #define _GNU_SOURCE
 #include "brightness.h"
 #include "bridges/hw_backend.h"
+#include "bridges/host_device.h"
+#include "bridges/bridges.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -137,6 +139,11 @@ int main(int argc, char **argv)
   const char *bad = NULL;
   br_hw_settings_init(&hw);
   if (br_hw_settings_env(&hw, &bad)) { printf("brightctl: failed: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  // The host phone (bridges/host_device.h): its environment defaults (ONEIOS_BRIGHT_MAX on the S26 Ultra) and hw-backend
+  // defaults under the environment's own, as xnuhost takes them; ONEIOS_HOST_DEVICE=none: today's defaults.
+  char host[512];
+  if (br_host_tool(&hw, NULL, host, sizeof host)) { printf("brightctl: failed: %s\n", host); return 2; }
+  br_log(1, "%s", host);
   br_hw_configure(&hw);
 
   if (!strcmp(command, "info")) {

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -28,7 +29,7 @@ void xh_config_defaults(xh_config *c)
   c->return_graceful_ms = -1;
   c->ready_content_wait = -1;
   strcpy(c->display, "shm");
-  strcpy(c->gpu, "auto");
+  // gpu: "" until xh_config_finish (the command line, the image set, the host device's default, else auto)
   c->input = true;
   c->display_direct = -1;
   c->touch_exclusive = false;  // bench-only touchscreen grab; never on in takeover
@@ -180,6 +181,13 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
     if (taken > 0) return -1;
     ok = taken == 0;
   }
+  else if (!strcmp(key, "host-device")) {
+    // auto, none or a name of the host table (bridges/host_device.h)
+    ok = !strcasecmp(value, "auto") || !strcasecmp(value, "none") || br_host_find(value);
+    if (ok) return copy(c->host_device, sizeof c->host_device, value);
+  }
+  else if (!strcmp(key, "host-props")) return copy(c->host_props, sizeof c->host_props, value);
+  else if (!strcmp(key, "host-root")) return copy(c->host_root, sizeof c->host_root, value);
   else if (!strcmp(key, "log-level")) c->log_level = atoi(value);
   else if (!strcmp(key, "disk") || !strcmp(key, "disk-rw") || !strcmp(key, "data-store")) {
     // disk=FILE (read-only), disk-rw=FILE[,SEED], data-store=FILE[,SEED]
@@ -228,6 +236,7 @@ static void usage(void)
         "               [--boot-args TEXT] [--display shm|drm|none] [--gpu auto|3d|2d] [--width W --height H]\n"
         "               [--hz N] [--scale 2|3] [--display-format bgrx|rgba16f]\n"
         "               [--hw-backend samsung|treble] [--hw-backend-BRIDGE samsung|treble] [--hw-backend-fallback 0|1]\n"
+        "               [--host-device auto|none|NAME] [--host-props FILE] [--host-root DIR]\n"
         "               [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
@@ -276,6 +285,73 @@ static bool exists(const char *dir, const char *name, char *out, size_t size)
   return stat(out, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+// The host phone's layer (bridges/host_device.h; docs/hardware.md, "The host device"): `device` gets the table entry's
+// xnuhost settings over the defaults, and c->host and c->host_line say what was found and what of it is taken. Only the
+// keys below are merged as device defaults (xh_config_finish: gpu, hw-backend*); a table entry with another key is
+// refused here, so a new default cannot be added to the table without its merge (test_xnuhost checks every entry).
+static bool device_key(const char *key) { return !strcmp(key, "gpu") || !strncmp(key, "hw-backend", 10); }
+
+// Whether the command line or the image set (`over`, the two already merged for hw) gives the key of setting `key=value`.
+static bool given_above(const xh_config *c, const xh_config *image, const br_hw_settings *over, const char *key, const char *value)
+{
+  if (!strcmp(key, "gpu")) return *c->gpu || *image->gpu;
+  br_hw_settings one;
+  br_hw_settings_init(&one);
+  if (br_hw_setting(&one, key, value)) return false;
+  if (one.all && over->all) return true;
+  if (one.fallback >= 0 && over->fallback >= 0) return true;
+  for (unsigned i = 0; i < BR_HW_NBRIDGE; i++) if (one.one[i] && over->one[i]) return true;
+  return false;
+}
+
+static int host_device_layer(xh_config *c, const xh_config *image, xh_config *device)
+{
+  xh_config_defaults(device);
+  if (!*c->host_device) strcpy(c->host_device, *image->host_device ? image->host_device : "auto");
+  if (!*c->host_props) strcpy(c->host_props, image->host_props);
+  if (!*c->host_root) strcpy(c->host_root, image->host_root);
+  br_host_facts f;
+  char why[260], read[400], names[200];
+  c->host = NULL;
+  if (br_host_choose(c->host_device, c->host_props, c->host_root, &f, &c->host, why, sizeof why)) {
+    br_host_names(names, sizeof names);
+    fprintf(stderr, "xnuhost: %s (host-device: auto, none or one of %s)\n", why, names);
+    return -1;
+  }
+  if (!c->host) {
+    if (!strcasecmp(c->host_device, "none")) snprintf(c->host_line, sizeof c->host_line, "host: detection off (host-device=none): today's defaults");
+    else {
+      br_host_names(names, sizeof names);
+      br_host_describe(&f, read, sizeof read);
+      snprintf(c->host_line, sizeof c->host_line, "host: unknown phone (read: %s): today's defaults (host-device=NAME forces one of %s)", read, names);
+    }
+    return 0;
+  }
+  br_hw_settings over = c->hw;
+  br_hw_settings_merge(&over, &image->hw);
+  char taken[300] = "", env[200];
+  size_t used = 0;
+  for (unsigned i = 0; i < BR_HOST_SETTINGS && c->host->config[i]; i++) {
+    const char *pair = c->host->config[i], *eq = strchr(pair, '=');
+    char key[64];
+    if (!eq || (size_t)(eq - pair) >= sizeof key) { fprintf(stderr, "xnuhost: host table: %s: %s is not KEY=VALUE\n", c->host->name, pair); return -1; }
+    memcpy(key, pair, (size_t)(eq - pair));
+    key[eq - pair] = 0;
+    if (!device_key(key) || xh_config_set(device, key, eq + 1)) {
+      fprintf(stderr, "xnuhost: host table: %s: %s is not a device default xnuhost takes\n", c->host->name, pair);
+      return -1;
+    }
+    bool above = given_above(c, image, &over, key, eq + 1);
+    if (used < sizeof taken)
+      used += (size_t)snprintf(taken + used, sizeof taken - used, "%s%s%s", used ? ", " : "", pair, above ? " not taken (the command line or the image set gives it)" : "");
+  }
+  br_host_env_describe(c->host, env, sizeof env);
+  br_host_describe(&f, read, sizeof read);
+  snprintf(c->host_line, sizeof c->host_line, "host: %s (%s), %s; read: %s; defaults: %s%s%s", c->host->name, c->host->label, why, read,
+           *taken || *env ? taken : "none (today's)", *taken && *env ? ", " : "", env);
+  return 0;
+}
+
 int xh_config_finish(xh_config *c)
 {
   char path[512];
@@ -291,7 +367,7 @@ int xh_config_finish(xh_config *c)
     fprintf(stderr, "xnuhost: touch-exclusive=1 requires mode=bench, display=shm, input=1, bridges=0\n");
     return -1;
   }
-  if (c->selftest) return 0;
+  if (c->selftest) { if (!*c->gpu) strcpy(c->gpu, "auto"); return 0; }
   if (!*c->image) { fprintf(stderr, "xnuhost: --image DIR is required\n"); return -1; }
   // The image set may carry settings of its own; the command line was applied first and a setting
   // there wins for single values (disks add up).
@@ -300,6 +376,10 @@ int xh_config_finish(xh_config *c)
   if (snprintf(path, sizeof path, "%s/xnuhost.conf", c->image) < (int)sizeof path && xh_config_file(&from_image, path)) return -1;
   // The userland hook's settings of this image (the UI scale its Data seed was made for), under the same rule.
   if (snprintf(path, sizeof path, "%s/overlay/userland/xnuhost.conf", c->image) < (int)sizeof path && xh_config_file(&from_image, path)) return -1;
+  // The host phone's defaults (bridges/host_device.h), under both: the command line > the image set > the table > built in.
+  xh_config device;
+  if (host_device_layer(c, &from_image, &device)) return -1;
+  if (!*c->gpu) strcpy(c->gpu, *from_image.gpu ? from_image.gpu : *device.gpu ? device.gpu : "auto");
   if (!*c->boot_args) strcpy(c->boot_args, from_image.boot_args);
   if (!c->width) c->width = from_image.width;
   if (c->setway_skip < 0) c->setway_skip = from_image.setway_skip < 0 ? 1 : from_image.setway_skip;
@@ -311,7 +391,8 @@ int xh_config_finish(xh_config *c)
   if (c->spin_task < 0) c->spin_task = from_image.spin_task;
   if (c->map_defer < 0) c->map_defer = from_image.map_defer;
   if (c->cpu_pin < 0) c->cpu_pin = from_image.cpu_pin < 0 ? 1 : from_image.cpu_pin;
-  br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's
+  br_hw_settings_merge(&c->hw, &from_image.hw);     // each hw-backend setting: the command line's, else the image set's,
+  br_hw_settings_merge(&c->hw, &device.hw);         // else the host phone's
   if (c->map_defer < 0) c->map_defer = 1;
   if (!c->height) c->height = from_image.height;
   if (!c->hz) c->hz = from_image.hz;

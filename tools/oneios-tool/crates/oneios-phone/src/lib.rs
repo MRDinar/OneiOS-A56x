@@ -9,6 +9,7 @@ pub mod adb;
 pub mod app;
 pub mod cpu;
 pub mod cycle;
+pub mod host;
 pub mod local;
 pub mod log;
 pub mod phone;
@@ -29,7 +30,8 @@ pub struct Cli {
 
 #[derive(clap::Subcommand)]
 pub enum Command {
-    /// Root, the installed app, the session, and what `oneios_root.sh status` says (read only)
+    /// Root, the host phone (the table entry xnuhost will pick), the installed app, the session, and what
+    /// `oneios_root.sh status` says (read only)
     Status {
         /// Again every SECONDS (default 5) until Ctrl-C
         #[arg(long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "5")]

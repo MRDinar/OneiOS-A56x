@@ -9,6 +9,7 @@
 #include "battery.h"
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
+#include "bridges/host_device.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,11 @@ int main(int argc, char **argv)
   const char *bad = NULL;
   br_hw_settings_init(&hw);
   if (br_hw_settings_env(&hw, &bad)) { printf("batteryctl: failed: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  // The host phone (bridges/host_device.h): its environment defaults (ONEIOS_BRIGHT_MAX on the S26 Ultra) and hw-backend
+  // defaults under the environment's own, as xnuhost takes them; ONEIOS_HOST_DEVICE=none: today's defaults.
+  char host[512];
+  if (br_host_tool(&hw, NULL, host, sizeof host)) { printf("batteryctl: failed: %s\n", host); return 2; }
+  br_log(1, "%s", host);
   br_hw_configure(&hw);
   int backend = br_hw_choose(&hw, BR_HW_BATTERY, BR_HW_UNSET, NULL, 0);
   // ONEIOS_BATTERY_DIR: the options (the bridge then reads no other variable); otherwise the phone's paths and variables.

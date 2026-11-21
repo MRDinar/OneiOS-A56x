@@ -14,6 +14,7 @@ tests/host.sh      # both; CI runs it (Linux only: on a Mac, runtime/host-tests.
 | `include/bridges/bridges.h` | every bridge's C API, with no dependency on xnuhost |
 | `include/bridges/devices.h` | the virtio devices on xnuhost's transport (`runtime/xnuhost/src/xnuhost.h`) |
 | `include/bridges/hw_backend.h`, `hw/` | the backend layer: `hw-backend=samsung\|treble`, `hw-backend-<bridge>`, `hw-backend-fallback` (`hw_backend.c`, pure: the settings, the choice; `hw_log.c`: the `hw: <bridge>: backend ...` and `... treble: missing: ...` lines); `test_hw_backend.c` (in `make test`). `docs/hardware.md` 7e: the audit table |
+| `include/bridges/host_device.h`, `hw/host_device.c` | the host phone and its defaults (`docs/hardware.md` 7h): the one table of known phones (S24 Ultra, S25 Ultra, S25, S26 Ultra, A56; an entry holds only existing options), detection from `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (soc0 and the device tree as fallbacks; a getprop dump and a root folder for tests), the `host: ...` line; xnuhost's `host-device=auto\|none\|NAME` and the ctl tools' `ONEIOS_HOST_DEVICE`, `ONEIOS_HOST_PROPS`, `ONEIOS_HOST_ROOT`. Every ctl tool says the host first and takes the entry's environment defaults (`ONEIOS_BRIGHT_MAX` on the S26 Ultra; a set variable wins); tested in `test_hw_backend.c` |
 | `hal/` | the treble backend's HAL client (`hal.c`: a HAL by name from servicemanager on `/dev/binder`, its descriptor checked, the calls; the Wi-Fi bridge's `aidl_binder.c` underneath) and the HALs' parcels both ways (`HealthInfo`, `Temperature[]`); `tests/fake_hal.c` (`build/host/fake-hal DIR`: a fake servicemanager with fake health, thermal and vibrator HALs whose values are files of DIR) and `tests/test_hal_binder.c` (`make test-binder`: the treble bridges against it on a real binder driver) |
 | `cpu/` | host topology from sysfs, the vCPU plan (E first, then P), thread placement, the cpufreq register window |
 | `haptics/` | evdev force feedback (`sec_vibrator_inputff`) or, with `hw-backend-haptics=treble`, the vibrator HAL (`br_haptic_open_as`), a worker thread, the iOS-to-effect mapping, the counters (`haptics: effect N played`, `haptics: counters:`) and the stand-in actuator of xnuhost's `haptics=sim` (a boot with no vibrator). Native impacts (off by default): with `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` and TICK/CLICK/HEAVY_CLICK presets advertised, an explicit `OB_HAPTIC_IMPACT` plays the matching `IVibrator.perform()` preset (`docs/hardware.md` 5); the guest opts in with `oneios_native_impacts=1` |
@@ -81,6 +82,7 @@ br_virtio_snd_create(base2, spi2, audio, audio_ctx);    // /arm-io/virtio-snd
 
 ```sh
 adb push build/android/bridgectl build/android/oneios-audio /data/local/tmp/
+adb shell su -c '/data/local/tmp/bridgectl host'           # read only: the properties, the table entry xnuhost would take, the table
 adb shell su -c '/data/local/tmp/bridgectl cpu'
 adb shell su -c '/data/local/tmp/bridgectl haptic 200 1000'
 adb shell su -c '/data/local/tmp/bridgectl haptic-pattern'
@@ -90,6 +92,10 @@ adb shell su -c '/data/local/tmp/bridgectl audio /data/local/tmp/oneios-audio 12
 adb shell su -c '/data/local/tmp/bridgectl audio-loop /data/local/tmp/oneios-audio 10'   # 10 clicks: the round trip
 ```
 
+`host` changes nothing (safe beside One UI and a session): `read: ro.product.model=... ...`, `host: galaxy-s24-ultra
+(matched by ro.product.model=SM-S928B)` on the S24 Ultra, then one line per table entry (`*` marks the one taken) with
+its match strings and defaults; `ONEIOS_HOST_PROPS=FILE` replays another phone's `getprop` dump. Not run on a phone yet.
+Every command (and `brightctl`, `batteryctl`, `thermalctl`) first prints `host: ...`.
 `bt` takes the controller from One UI's Bluetooth app if that app has it open: turn Bluetooth off first. It prints
 `HAL 1.1 registered`, `bluetooth: HAL 1.1 found, initialising ...`, `bluetooth: HAL initialisation complete: the
 controller is on (status 0)`, `state 1`, two events `<- type 4, 6 bytes: 0e 04 01 03 0c 00` (Reset) and `<- type 4,

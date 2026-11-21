@@ -13,6 +13,8 @@
 #                  serves the fake vibrator HAL, whose calls are .fake/hal/vibrator.log
 #   odd            a phone whose backlight has a vendor's own name (vendor-bl): samsung's folder listing finds it, the
 #                  treble backend (named paths only) does not
+#   s26            a Galaxy S26 Ultra's panel (panel0-backlight, max 12750) and its getprop dump: the host table's
+#                  ONEIOS_BRIGHT_MAX=2300 (runtime/bridges/hw/host_device.c), none, a set variable, the S24's dump, a bad name
 # Checked per backend: which node is used and its range, the line naming the backend and why, what is written and
 # restored, what is left alone (the touch IC's node in treble), the one "missing" line and the fallback rule.
 # The stand-ins are under a short folder of their own (mktemp -d /tmp/oneios-hw.XXXXXX), removed at the end.
@@ -74,6 +76,38 @@ hw_backend_checks() {
     && ok "hw-backend: backlight treble with hw-backend-fallback=1: samsung's form finds vendor-bl" || bad "hw-backend: backlight fallback" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
   out=$(bl "$S24" ONEIOS_HW_BACKEND=pixel 2>&1); st=$?
   [ $st = 2 ] && printf '%s\n' "$out" | grep -q 'bad ONEIOS_HW_BACKEND' && ok "hw-backend: a backend that does not exist is refused" || bad "hw-backend: a bad backend" "status $st: $out"
+
+  # ---- the host phone (bridges/host_device.h): a Galaxy S26 Ultra's panel (panel0-backlight, max 12750, One UI's manual
+  # top 2300) and its getprop dump. Detected, the table's ONEIOS_BRIGHT_MAX=2300 caps the slider at One UI's manual top;
+  # ONEIOS_HOST_DEVICE=none gives today's whole range; a variable that is set wins over the table; the S24's dump changes
+  # nothing; a name that is not in the table is refused.
+  local S26=$T/s26
+  mkdir -p "$S26/sys/class/backlight/panel" "$S26/sys/class/backlight/panel0-backlight" "$S26/root"
+  echo 0 > "$S26/sys/class/backlight/panel/max_brightness"; echo 0 > "$S26/sys/class/backlight/panel/brightness"
+  echo 12750 > "$S26/sys/class/backlight/panel0-backlight/max_brightness"; echo 1500 > "$S26/sys/class/backlight/panel0-backlight/brightness"
+  printf '[ro.product.model]: [SM-S948B]\n[ro.soc.model]: [SM8850]\n[ro.soc.manufacturer]: [QTI]\n' > "$S26/getprop.txt"
+  printf '[ro.product.model]: [SM-S928B]\n[ro.product.device]: [e3q]\n[ro.soc.model]: [SM8650]\n' > "$S26/getprop-s24.txt"
+  BL_ARGS=(info)
+  out=$(bl "$S26" ONEIOS_HOST_PROPS="$S26/getprop.txt" ONEIOS_HOST_ROOT="$S26/root" 2>&1); st=$?
+  [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^bridges: host: galaxy-s26-ultra, matched by ro.product.model=SM-S948B; read: .*; defaults: ONEIOS_BRIGHT_MAX=2300$' \
+    && printf '%s\n' "$out" | grep -q 'panel0-backlight/brightness  max_brightness 12750, slider range 1..2300, One UI.s value 1500' \
+    && [ "$(cat "$S26/sys/class/backlight/panel0-backlight/brightness")" = 1500 ] \
+    && ok "host device: S26 Ultra detected: the slider ends at One UI's manual top (1..2300 of 12750)" || bad "host device: S26 Ultra detected" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+  out=$(bl "$S26" ONEIOS_HOST_PROPS="$S26/getprop.txt" ONEIOS_HOST_ROOT="$S26/root" ONEIOS_HOST_DEVICE=none 2>&1); st=$?
+  [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^bridges: host: detection off (ONEIOS_HOST_DEVICE=none): today.s defaults$' \
+    && printf '%s\n' "$out" | grep -q 'max_brightness 12750, slider range 1..12750' \
+    && ok "host device: ONEIOS_HOST_DEVICE=none: today's range (1..12750)" || bad "host device: none" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+  out=$(bl "$S26" ONEIOS_HOST_PROPS="$S26/getprop.txt" ONEIOS_HOST_ROOT="$S26/root" ONEIOS_BRIGHT_MAX=1000 2>&1); st=$?
+  [ $st = 0 ] && printf '%s\n' "$out" | grep -q 'defaults: ONEIOS_BRIGHT_MAX=2300 not taken (the environment.s 1000)$' \
+    && printf '%s\n' "$out" | grep -q 'slider range 1..1000' \
+    && ok "host device: a set ONEIOS_BRIGHT_MAX wins over the table (1..1000)" || bad "host device: the environment over the table" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+  out=$(bl "$S26" ONEIOS_HOST_PROPS="$S26/getprop-s24.txt" ONEIOS_HOST_ROOT="$S26/root" 2>&1); st=$?
+  [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^bridges: host: galaxy-s24-ultra, matched by ro.product.model=SM-S928B; .*defaults: none (today.s)$' \
+    && printf '%s\n' "$out" | grep -q 'slider range 1..12750' \
+    && ok "host device: the S24 Ultra's properties change nothing (1..12750)" || bad "host device: S24 Ultra" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
+  out=$(bl "$S26" ONEIOS_HOST_DEVICE=pixel 2>&1); st=$?
+  [ $st = 2 ] && printf '%s\n' "$out" | grep -q 'brightctl: failed: host: host-device=pixel is not a known phone (ONEIOS_HOST_DEVICE: auto, none or one of ' \
+    && ok "host device: a name that is not in the table is refused" || bad "host device: a bad name" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
 
   # ---- the HAL-based treble forms: a fake servicemanager and HALs (fake-hal) on a binderfs in a user namespace
   local HAVE_HAL=1

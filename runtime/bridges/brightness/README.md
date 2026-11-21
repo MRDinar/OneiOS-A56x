@@ -63,7 +63,9 @@ hw-backend.sh`: `brightctl info` and `levels` with `ONEIOS_HW_BACKEND=treble`).
   leave the panel off for the return's screen.
 - Ceiling: `max_brightness`, except that 510 and 51000 are halved. Samsung's node carries the high-brightness
   levels above the manual range on some panels (2 x 255, 2 x 25500); those stay One UI's [I: the rule is from
-  Samsung's older trees, not read on this phone]. `ONEIOS_BRIGHT_MAX` sets the ceiling by hand.
+  Samsung's older trees, not read on this phone]. `ONEIOS_BRIGHT_MAX` sets the ceiling by hand; on a
+  Galaxy S26 Ultra the host table (`docs/hardware.md` 7h) sets it to 2300, One UI's manual top there, unless it is set
+  (xnuhost and `brightctl` alike; `ONEIOS_HOST_DEVICE=none` turns that off).
 - Fades (`FadePeriod`): the worker walks the level in 16 ms steps. `br_bright_set` never waits for the panel.
 - iOS is told the top is 500 nits (`ONEIOS_BRIGHT_NITS`) [I]; it uses the number for its own model only.
 

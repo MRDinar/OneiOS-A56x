@@ -299,6 +299,14 @@ treble interface that is missing `hw: <bridge>: treble: missing: <what>; ...`; t
 session's log view. The fork's own scripts keep their Samsung paths (the backlight glob, `gpu_max_clock`,
 `cpufreq_limit`): the table in `docs/hardware.md` 7e lists their treble forms for the profiles.
 
+Since 2026-11-21 xnuhost also finds the host phone itself (`docs/hardware.md` 7h): it reads `ro.product.model`,
+`ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` and takes that phone's defaults from one
+table (`runtime/bridges/hw/host_device.c`), under every setting the fork passes. Nothing changes for the fork: on the
+S24 Ultra the entry holds no defaults, and the session's command line is unchanged. A device profile may pass
+`--host-device NAME` (force a row) or `--host-device none` (today's defaults on any phone); a name that is not in the
+table ends xnuhost at start (exit 2) with `xnuhost: host-device=NAME is not a known phone (...)`. xnuhost's log says
+the result in one line after its first, `host: NAME (...), matched by ro.product.model=...; read: ...; defaults: ...`.
+
 ## 7. Overlay mode
 
 Not part of this interface. The fork only does the takeover session.

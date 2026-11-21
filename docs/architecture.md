@@ -63,6 +63,20 @@ A treble interface that is missing is one line (`br_hw_missing`); the bridge the
 `hw-backend-fallback=1` uses its samsung form. Touch and the side keys have one lookup for both (evdev by
 capabilities, never grabbed). The audit table of every path, and each bridge's status: [hardware.md](hardware.md) 7e.
 
+## The host device table: one tree, many phones
+
+Which phone xnuhost runs on is found at its start, not built in: `runtime/bridges/hw/host_device.c` reads the
+properties `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (and as
+fallbacks soc0's `machine` and the device tree's `compatible`) and matches them against one compiled-in table of known
+hosts: the Galaxy S24 Ultra (the home device, no defaults of its own: today's behaviour), S25 Ultra, S25, S26 Ultra and
+A56. An entry holds only settings that already exist as options (an xnuhost setting `config.c` merges as a device
+default, or an environment variable a bridge reads), and goes under every explicit setting: the command line > the
+image set's `xnuhost.conf` > the table > the built-in default. `host-device=NAME` forces an entry, `host-device=none`
+turns detection off; an unknown phone keeps today's defaults. xnuhost logs one `host: ...` line at its start (the
+entry, the property that matched, each default taken or not); the bridges' ctl tools and `oneios-tool phone status`
+use the same table (the Rust copy is checked against the C one by a test). A new phone is a new table row plus its
+record, never a fork: [hardware.md](hardware.md) 7h has the table, what is marked unverified per phone, and the tests.
+
 ## A session, step by step
 
 1. **Stage** (in the app, One UI running): the runtime package and the image set are verified against their

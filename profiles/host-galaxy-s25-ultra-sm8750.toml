@@ -1,5 +1,7 @@
 # Host profile for OneiOS on Galaxy S25 Ultra (Snapdragon). Not Apple's IPSW profile.
-# Used by port docs and future host-aware checks; the guest image stays profiles/ios-27.0.1-iPhone18,2.toml.
+# A record for the port docs; no code reads it. What xnuhost does differently on this phone comes from its row in
+# runtime/bridges/hw/host_device.c (galaxy-s25-ultra, the source of truth: docs/hardware.md 7h). The guest image stays
+# profiles/ios-27.0.1-iPhone18,2.toml.
 
 [host]
 label = "Galaxy S25 Ultra"

@@ -11,6 +11,7 @@
 #include "thermal.h"
 #include "bridges/bridges.h"
 #include "bridges/hw_backend.h"
+#include "bridges/host_device.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -60,6 +61,11 @@ static int report(void)
   const char *bad = NULL;
   br_hw_settings_init(&hw);
   if (br_hw_settings_env(&hw, &bad)) { printf("thermalctl: bad %s (samsung or treble; ONEIOS_HW_FALLBACK 0 or 1)\n", bad); return 2; }
+  // The host phone (bridges/host_device.h): its environment defaults (ONEIOS_BRIGHT_MAX on the S26 Ultra) and hw-backend
+  // defaults under the environment's own, as xnuhost takes them; ONEIOS_HOST_DEVICE=none: today's defaults.
+  char host[512];
+  if (br_host_tool(&hw, NULL, host, sizeof host)) { printf("thermalctl: %s\n", host); return 2; }
+  br_log(1, "%s", host);
   br_hw_configure(&hw);
   if (br_hw_choose(&hw, BR_HW_THERMAL, BR_HW_UNSET, NULL, 0) == BR_HW_TREBLE) {
     // The treble backend: the bridge itself (its HAL client), one reading.
