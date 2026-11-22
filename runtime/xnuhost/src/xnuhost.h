@@ -497,7 +497,8 @@ enum {
                             // return to this vCPU's next thread_run, the time it idled taken out
   XP_ORDER_MAP, XP_ORDER_UNMAP, XP_ORDER_PROTECT, XP_ORDER_CLONE,   // one order to a task's service thread, there and back
   XP_DRAIN,                 // deferred maps carried out by the released thread itself (task.c, map-defer)
-  XP_KICK,                  // the vCPU signalled a running thread (its interrupt line rose) -> it has the thread's trap
+  XP_KICK,                  // a running thread was signalled (the vCPU's interrupt line rose; by the raiser itself since
+                            // 2026-11-23, xh_tasks_kick, else by the vCPU) -> the vCPU has the thread's trap
   XP_COUNT
 };
 typedef struct {
@@ -512,6 +513,7 @@ typedef struct {
   uint64_t uclamp_sets;                   // sched_setattr calls that gave an iOS thread its vCPU's uclamp.min (task.c)
   uint64_t kicks, kicks_skipped;          // raises of another vCPU's line that signalled or woke it; those it had up already
   uint64_t kicks_again;                   // kicks of an iOS thread sent again: it was not back 200 ms after the first (task.c)
+  uint64_t kicks_direct;                  // raises that kicked the iOS thread a vCPU waits for straight away (xh_tasks_kick)
   uint64_t places, prep_ticks;            // fix-mach-rpc: sched_setaffinity calls that put an iOS thread with its vCPU (thread_run),
                                           // and the ticks thread_run spent before the release (placement, uclamp, the queue)
   // thread_run's bookkeeping between two calls
@@ -546,6 +548,13 @@ struct xh_vcpu {
   uint64_t  stat_irqs, stat_mmio, stat_sysreg, stat_traps;
   uint64_t  stat_acks, acks_mark;     // interrupts acknowledged; the count when the last interrupt upcall began
   uint64_t  stat_reraised, stat_timer, stat_sgi;   // frame_resume re-raises; INTID 27 and SGIs acknowledged
+  // The iOS thread this vCPU has released and waits for in thread_run, for the direct kick (task.c xh_tasks_kick):
+  // run_word is (release number << 1) | 1 once a kick was sent for that release, 0 while no thread is released;
+  // run_pid and run_tid are written before the word. run_kicked_at: the counter when a raiser kicked (perf).
+  uint64_t  run_word;
+  int32_t   run_pid;
+  uint32_t  run_tid;
+  uint64_t  run_seq, run_kicked_at;
   xh_perf   perf;
 };
 extern xh_vcpu g_vcpu[XH_MAX_CPUS];
@@ -889,6 +898,11 @@ bool    xh_tasks_seccomp(void);        // ... trapped by a seccomp filter (the p
 extern bool xh_text_fixup_svc;
 uint64_t xh_tasks_va_limit(void);
 void    xh_tasks_shutdown(void);
+// The interrupt line of vCPU `v` rose (cpu.c xh_cpu_line, on another thread): when `v` waits in thread_run for an
+// iOS thread it released, signal that thread straight away (one signal, the thread stops and hands the vCPU its
+// trap) instead of the vCPU's thread, which would have to be scheduled on the busy core first only to send the same
+// signal. True: the thread was kicked (now or already for this release); false: the caller signals the vCPU.
+bool    xh_tasks_kick(xh_vcpu *v);
 // The tasks' lasting line (docs/booter.md "Health lines"), every 60 s when one of the counts moved:
 //   tasks: 60 s: +12 made, +10 ended by the kernel, +1 died on their own, +2 fatal traps, +0 refused; live 187 (most 190)
 // "died on their own": the Linux process of an iOS task ended without the kernel's destroy (each one also has a line

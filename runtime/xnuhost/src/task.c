@@ -898,6 +898,36 @@ static void run_ended(task *t)
   __atomic_sub_fetch(&t->running, 1, __ATOMIC_SEQ_CST);
 }
 
+// The direct kick (xnuhost.h xh_tasks_kick; docs/booter.md 2.6a, "The kick"). Until 2026-11-23 a raise of a busy
+// vCPU's line always signalled the vCPU's thread, which sleeps in thread_run's futex on the same core as the iOS
+// thread it released (cpu-pin): that thread had to be woken and scheduled there, ahead of the iOS thread it shares
+// the core with, only to send the iOS thread the signal below. On the phone (2026-11-23 03:28, 0085 and 0089 active,
+// every vCPU busy) that was 24,419 kicks in 30 s, mean 136 us, p99 3.7 ms. Now the raiser signals the iOS thread
+// itself: one signal, the thread stops at once and hands its trap to the sleeping vCPU. Whoever sets bit 0 of the
+// release's run_word sends the kick, so one release gets one kick; a kick that lands after its thread is back stays
+// pending in the stub's handler (it blocks every signal) and is a spurious interrupt trap at that thread's next
+// release, which the kernel takes as an interrupt with nothing pending (hosted_user.c, XH_TRAP_INTERRUPT).
+bool xh_tasks_kick(xh_vcpu *v)
+{
+  uint64_t w = __atomic_load_n(&v->run_word, __ATOMIC_ACQUIRE);
+  if (!w) return false;                                         // no released thread: the vCPU's own signal
+  if (w & 1) return true;                                       // kicked already for this release
+  const int32_t pid = __atomic_load_n(&v->run_pid, __ATOMIC_RELAXED);
+  const uint32_t tid = __atomic_load_n(&v->run_tid, __ATOMIC_RELAXED);
+  // Sets the bit only if the word is still this release's (the release numbers are never reused): pid and tid,
+  // read after the word with acquire and before this exchange with release, are that release's thread.
+  if (!__atomic_compare_exchange_n(&v->run_word, &w, w | 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return (w & 1) != 0;                                        // kicked by another raiser or the vCPU; 0 or a new
+                                                                // release not kicked yet: the vCPU's own signal
+  __atomic_store_n(&v->run_kicked_at, xh_counter(), __ATOMIC_RELAXED);
+  if (pid > 0 && tid && syscall(SYS_tgkill, pid, tid, KICK_SIGNAL) == 0) return true;
+  // Refused (the process is gone, or its queue of real-time signals is full): the bit off again, and the vCPU's
+  // own signal, after which thread_run kicks (and says a refusal) as before.
+  uint64_t set = w | 1;
+  __atomic_compare_exchange_n(&v->run_word, &set, w, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+  return false;
+}
+
 // thread_run's end, for perf.c: the trap's kind and when it was handed to the kernel.
 static void run_done(xh_vcpu *v, uint32_t kind)
 {
@@ -982,6 +1012,11 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   tp->command = XS_RUN;
   tp->spin_ticks = T.spin_task;
   __atomic_store_n(&tp->to_host, 0, __ATOMIC_RELEASE);
+  // From here a raise of this vCPU's line may kick the thread itself (xh_tasks_kick): before the release, so that a
+  // raise that comes first is a kick that stays pending in the stub and stops the thread before its first instruction.
+  __atomic_store_n(&v->run_pid, t->pid, __ATOMIC_RELAXED);
+  __atomic_store_n(&v->run_tid, __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE), __ATOMIC_RELAXED);
+  __atomic_store_n(&v->run_word, ++v->run_seq << 1, __ATOMIC_SEQ_CST);
   uint64_t released = xh_counter();
   p->prep_ticks += released - entered;         // placement, uclamp, the queue: host work of the release, before the hand-off
   th->released_at = released;
@@ -1003,6 +1038,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     }
     if (!draining && __atomic_load_n(&tp->to_host, __ATOMIC_ACQUIRE)) break;
     if (t->dead) {
+      __atomic_store_n(&v->run_word, 0, __ATOMIC_SEQ_CST);
       if (draining) { unmaps_done(t); pthread_mutex_unlock(&t->lock); }
       if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
       trap->kind = XH_TRAP_EXITED; trap->exit_status = t->exit_status;
@@ -1015,11 +1051,23 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     // the wait below): force the iOS thread to stop. Again at each futex step (200 ms) while it is not back: a kick
     // that did not get there (tgkill refused: the queue of real-time signals full) must not leave the vCPU deaf to its
     // interrupts and to the debugger's cross-call (a stackshot panics after debug-ack, 5 s). The first refusal is said.
+    // The first kick of a release is whoever sets bit 0 of run_word: a raiser on another thread (xh_tasks_kick, which
+    // then signalled the thread already) or this loop; the second, 200 ms on, is always this loop's.
     if ((v->cpu.irq_pending || xh_stopping()) && (!kicked || xh_counter() - kicked_last >= T.kick_again)) {
       uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
+      bool send = kicked;
+      if (!kicked) {
+        uint64_t w = __atomic_load_n(&v->run_word, __ATOMIC_ACQUIRE);
+        send = !(w & 1) && __atomic_compare_exchange_n(&v->run_word, &w, w | 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+      }
       kicked_last = xh_counter();
-      if (!kicked) kicked_at = kicked_last; else p->kicks_again++;
-      if (tid && syscall(SYS_tgkill, t->pid, tid, KICK_SIGNAL) && !__atomic_exchange_n(&T.kick_failed_said, true, __ATOMIC_RELAXED))
+      if (kicked) p->kicks_again++;
+      else if (send) kicked_at = kicked_last;
+      else {                                     // a raiser's kick, sent from its own thread (xh_tasks_kick)
+        uint64_t at = __atomic_load_n(&v->run_kicked_at, __ATOMIC_RELAXED);
+        kicked_at = at >= released && at <= kicked_last ? at : kicked_last;
+      }
+      if (send && tid && syscall(SYS_tgkill, t->pid, tid, KICK_SIGNAL) && !__atomic_exchange_n(&T.kick_failed_said, true, __ATOMIC_RELAXED))
         LOGE("tasks: the kick of pid %d tid %u (vCPU %u's interrupt) was refused: %s; it is sent again every 200 ms", t->pid, tid,
              v->cpu.index, strerror(errno));
       kicked = true;
@@ -1037,7 +1085,14 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
     futex(&tp->to_host, FUTEX_WAIT, 0, &step);
   }
   if (sleeping) __atomic_store_n(&tp->host_sleeping, 0, __ATOMIC_RELAXED);
+  // No more direct kicks for this release; a raiser's kick that landed while the loop did not look (the trap came
+  // back first) counts for the histogram when the trap is the interrupt it caused.
+  const uint64_t last_word = __atomic_exchange_n(&v->run_word, 0, __ATOMIC_SEQ_CST);
   uint64_t seen = xh_counter();
+  if (!kicked && (last_word & 1)) {
+    uint64_t at = __atomic_load_n(&v->run_kicked_at, __ATOMIC_RELAXED);
+    if (at >= released && at <= seen) { kicked = true; kicked_at = at; }
+  }
   run_ended(t);
   p->ticks_user += seen - released;
   *state = tp->state;
@@ -1081,6 +1136,7 @@ bool xh_tasks_seccomp(void) { return false; }
 void xh_tasks_dump(void) {}
 uint64_t xh_tasks_va_limit(void) { return 0; }
 void xh_tasks_shutdown(void) {}
+bool xh_tasks_kick(xh_vcpu *v) { (void)v; return false; }
 void xh_tasks_tick(void) {}
 
 #endif

@@ -1285,6 +1285,68 @@ sha256 `ae21dcbf...`, releasable; the prelink: `kernel.kc` sha256 `988c2a7b...`,
 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `oneios-smp:` strings are in the kernel.
 Not booted under qemu (the owner asked for the combined phone boot first); staged on the phone 2026-11-23 for that boot.
 
+On the phone (2026-11-23 03:28, kernel `988c2a7b`): `oneios-smp: all 8 CPUs booted ...`, `oneios-edge: E -> P migration
+and steal allowed on 6 edges ...`, `oneios-smp: the scheduler's completion step done in 10 ms (... pcs_init_completed
+1)`. vCPU 2-7 carried work (22-38% idle where they were 80-99%), and the threads went back and forth between the
+clusters: 0091.
+
+## 0091-edge-no-pullback-ipi-counts.patch (fix-fps-scheduler-migration, 2026-11-23)
+
+The fault: with 0089, page switches felt slower than in the boots before, and the host did far more work for the same
+screens. xnuhost's lines of the 2026-11-23 03:28 boot against the boot before (0085 inactive), per 30 s: task traps
+48.8k/s against 17-18k/s, `release: N iOS threads put with another vCPU's core (sched_setaffinity)` 70,200 against
+about 15,000, `kick` 24,419 (mean 136 us, p99 3.7 ms) against about 950, vCPU futex sleeps 1.33 million against
+about 130,000; the host at 567-711% of 800 with the SoC at 95 C (thermal "heavy" for 85 s). The work itself spread as
+0085 meant (every `oneios-cpu:` line "all 800%" while apps started, the RPC round trip 645 us against 55,786 us, a woken
+thread's wait for its IPI 4.2 ms against 345 ms); the moves and kicks did not have to.
+
+Cause (`osfmk/kern/sched_clutch.c`, read in this tree): once the completion step has run, the Edge scheduler takes a
+spilled thread back to its preferred cluster at once, in three places. An E CPU that goes idle and finds a P CPU
+running a thread that prefers E sends that CPU a rebalance IPI (`sched_edge_balance`, from `processor_idle`; until it
+does, `sched_edge_processor_idle` returns no thread instead of stealing); a P CPU's `csw_check` preempts such a thread
+when the E cluster's load metric is 0 (`sched_edge_thread_avoid_processor`: "compaction") or when any cluster of its
+preferred type has that load ("running rebalance"). With two E vCPUs that go idle and busy thousands of times a
+second and 0085's weight 0 sending the threads to P again, a thread rarely ran twice on the same vCPU: 70,200 moves
+against about 131,000 dispatches in the same 30 s (the `wake:` line's 52,376 plus 78,772 others). On an iPhone the IPI
+and the move cost about a microsecond; here an IPI to a busy vCPU is a kick of the iOS thread it runs (a signal; the
+`kick` line), each move a `sched_setaffinity` of that thread to the new vCPU's core (`release:`), and the thread
+lands on an A520, about half an A720's speed.
+
+What the patch changes (`XNU_HOSTED`; `oneios-edge-pullback=0`, the default):
+
+- `sched_edge_balance`: an E CPU going idle sends no rebalance IPI; it counts the case when a spilled thread was there
+  to take (`sched_edge_foreign_running_thread_available`, the lock-free scan XNU itself uses).
+- `sched_edge_processor_idle`: an E CPU then goes on to steal by the edges' weights (XNU's P -> E edge: 64 us of
+  scheduling latency, steal allowed) instead of returning no thread for the rebalance.
+- `sched_edge_thread_avoid_processor`: a thread that prefers E, running on a P CPU, is not preempted by the
+  compaction and running-rebalance rules; it runs until it blocks or its quantum ends, and its next wake-up places it
+  by the edges again (E when E has room). The rules above them (a bound thread, an edge that no longer allows it, the
+  shared-resource policies, realtime, stir-the-pot) are unchanged.
+- A thread that prefers P and runs on E (the UI's threads when P was full) is still pulled to an idle P CPU: only
+  the move from a P CPU to an E CPU is left out.
+- `sched_ipi_action` (`osfmk/kern/sched_prim.c`): each IPI the scheduler sends is counted by its event (bound thread,
+  preempt, SMT rebalance, spill, rebalance, realtime preempt) and by whether the CPU was idle or busy.
+- `oneios-edge-pullback=1` is XNU's way (the IPIs and preemptions are made, and counted).
+
+The line, every perf period (`osfmk/arm64/hosted/hosted_smp.c` `hosted_edge_report`, after 0081's): `oneios-perf:
+0091: spilled threads kept on P: N pull-back IPIs not sent, M preemptions not made; pull-back IPIs sent K
+(oneios-edge-pullback=0); scheduler IPIs to idle/busy CPUs: preempt a/b, spill a/b, rebalance a/b, realtime a/b, bound
+a/b, other a/b`. The busy counts are the kicks the scheduler asked for; xnuhost's `kick` and `perf:   queue:` lines say
+what they cost.
+
+Not changed: 0085's weights (default and higher at 0: the spill that took the RPC round trip from 56 ms to 0.6 ms),
+the steal of an idle P CPU from E, the UI's P preference. An A/B without a rebuild: `oneios-edge-pullback=1` against
+the default in two boots with the same screens.
+
+Tested (build laptop, 2026-11-23): `HOSTED_OUT=fps ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0089 and 0091 (no 0090 in this tree), `xnu.macho`
+sha256 `9a9e0a3c...`; the prelink: `kernel.kc` sha256 `ca1606e5a804383c426cc486756622779398d999699f583164434eca746fe966`, audit 2711
+paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `0091:`
+line and the `oneios-edge-pullback` boot-arg are in the kernel. `git apply --check` in a tree of 0001-0089 with the camera
+helper's 0090 applied (`t3/camera-preview-stream-fix`, `0090-camera-plugin-boot-addon.patch`, only `bsd/kern/kern_exec.c`):
+0091 applies after it. Numbered 0091 for that 0090. Not booted under qemu or on the phone yet. On the phone:
+the `0091:` line (pull-backs not sent; preempt IPIs to busy CPUs), and xnuhost's `release:` and `kick` lines back near
+the boot before 0089 (about 15,000 moves and 950 kicks in 30 s) while `perf: cpuN:` still shows vCPU 2-7 busy.
+
 ## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
 
 The fault: no haptic is felt. With 0078 audiomxd's haptic server starts and plays, and the Actuator device runs I/O,
