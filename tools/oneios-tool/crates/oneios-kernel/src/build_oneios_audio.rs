@@ -23,6 +23,10 @@
 //! oneios-audio-selftest=SECONDS (a quiet 1 kHz tone from the kernel, OneiOSAudio.c), oneios-actuator=0 (no Actuator
 //! device), oneios-actuator-channels=1|2 (default 1).
 //!
+//! The Speaker's volume (2026-11-22): a hardware volume control in its "controls" (VirtualAudio's speaker route is
+//! HardwareOnly), set by the HAL's SetControlValue, applied to each period before the transport (staged/audio.rs,
+//! "fix-audio-volume"); log `DroidVMAudio: speaker volume N of 128 (...)`.
+//!
 //! The Actuator device: VirtualAudio makes VirtualAudioDevice_Actuator (Device_Actuator_Aspen, iOS 27's VirtualAudio.plugin)
 //! on a physical device with UID "Actuator"; Core Haptics, UIFeedbackGenerator and the keyboard play their haptics on it
 //! as audio once MobileGestalt says closed-loop haptics (IODeviceTree:/product/haptics, drivers/haptics). Its engine runs

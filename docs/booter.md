@@ -184,6 +184,25 @@ A port of DarwinBoot to plain C with no firmware under it:
   `/options`, `/product` (copied from the identity tree, minus exclaves and the AGX-only feature
   sets; `artwork-scale-factor` is the UI scale), `/buttons`, `/bluetooth`, `/arm-io` with the GICv3, `wlan`, `uart0` and one node per virtio window
   under the names and `compatible` strings UniXNU's drivers match; `/chosen/xnuhost` for a hosted kernel.
+  **The cameras (2026-11-22, `xl_machine.cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
+  `camera-rear` = 1 when the camera helper lists a back camera (wide, ultra-wide or a telephoto) and `camera-front` = 1
+  when it lists the front one (u32, the iPhone18,2's values; no `compatible`, no `device_type`: no driver matches it),
+  an empty `/product/camera`, and without an identity tree `/product unique-model` = `V54AP` (an identity tree's own
+  value stays). What 24A446's libMobileGestalt reads them for: `rear-facing-camera` = isp `camera-rear`,
+  `front-facing-camera` = isp `camera-front`, `still-camera` (Camera.app's `SBAppTags`; SpringBoard shows the app
+  only with it) = either, `video-camera` = `/product/camera` is there, and `HWModelDescriptionForCamera` (also
+  `...ForAnalytics`, `...ForAudio`, `...ForPowerPerf`, `...ForAutomatedTesting`: the same answer) = `unique-model`,
+  which CMCapture takes less "AP" as the folder of its per-model tables (`CMCapture.framework/V54/`). xnuhost waits
+  for the helper's list before it builds the tree, asleep on the bridge's condition variable, at most 3 s (the phone:
+  170 ms after the helper's start); `camera: iOS is told of a rear camera and a front camera (3 cameras from the
+  helper)`. Without the camera device, or with an empty list, the tree is as before.
+  **`/chosen oneios-identity` (`xl_machine_identity`, 2026-11-22):** 8 bytes, FNV-1a 64 of what MobileGestalt can
+  read that stays the same from boot to boot: the root's own properties, the `/product`, `/arm-io`, `/buttons` and
+  `/bluetooth` subtrees, `/chosen`'s own properties and `/chosen/xnuhost`'s `display-*` ones; not `random-seed`,
+  `dram-base`, `dram-size`, the GPU and media pools, the memory map, xnuhost's vector (its ASLR) or `/defaults` (its
+  limits follow the RAM). xnuhost writes it on the finished tree (after a shipped tree's nodes). Hosted 0084 keeps
+  MobileGestalt's cache while it stays the same and removes it once when it changes ([userland.md](userland.md),
+  "MobileGestalt's cache follows the tree"). xnuhost logs it: `identity: <16 hex digits> (/chosen oneios-identity: ...)`.
 - `boot.c`: `boot_args` (1024-byte command line of Darwin 23+, or the 608-byte one), the sidecar checks
   (trust caches, packed RAM disk `DBRDISK1`, GPU addon, root policies) and the placement in DarwinBoot's
   order: kernel, `boot_args`, tree, RAM disk, trust caches, addon, policies; memory-map entries filled.
@@ -924,6 +943,11 @@ background and darwin-background threads (RunningBoard's background and suspende
 background QoS; the `uclamp.max` 512 that stood here until 2026-11-16 also slowed chronod's widget extensions, #57, and
 is gone: newtodo's decision list). The same word is readable by host code on the vCPU
 (the GPU path: `xh_cpu_self()->cpu.perf_hint`, for fix-gpu-perf's per-context priority).
+The E cluster is DroidVMCpufreq's preferred cluster of every class but UI, above-UI and realtime, and XNU's Edge edges
+let nothing move from E to P: until hosted `0085` (2026-11-22) the `perf: cpuN:` lines showed vCPU 0-1 0% idle and
+vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0085` opens the E -> P edges (migration and steal;
+weight 0 to default, 64 utility, 1000 background, us of scheduling latency): on the phone the same lines should show
+vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line.
 
 **The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
 `sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's
@@ -1312,7 +1336,10 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   `/product artwork-device-subtype` stays the identity's (2868). The Data seed's `identity.expect` holds the
   scale the image was built with; a `--set scale=` that differs from the image's makes `oneios-mg` report it.
 - **`drm`.** Direct KMS: DRM master on `/dev/dri/card0`, a dumb buffer, `SETCRTC`, `DIRTYFB` per flush. For a
-  session in which surfaceflinger and the composer are stopped. Written against the kernel's UAPI, never run.
+  session in which surfaceflinger and the composer are stopped. Written against the kernel's UAPI, never run. What it
+  still needs before it can replace the surfaceflinger path (the master, a probe of Qualcomm's driver, atomic
+  commits, two buffers and flips, the mode, panel power, a boot picture, the fork's part and the way back):
+  [plan-ios-first-session.md](plan-ios-first-session.md) section 2.1.
 - **`none`.** Frame in memory only.
 - **Input** is read from evdev directly and not grabbed, so the switch's Volume Up + Volume Down watcher
   keeps working beside it. The guest's side is `kernel/patches/oneios-hosted/hid` (`docs/hardware.md` 7b).
@@ -1534,7 +1561,7 @@ before this change.
 | Wi-Fi | `wifi: ...` (each step), guest `ONEIOS WIFI: 60 s: ...` | per event; 60 s | present | present |
 | audio | `audio: on: helper ...`, the helper's `oneios-audio: speaker open/running/closed ...` | per event | present | present |
 | haptics | `haptics: on: ...`; `haptics: counters: ...` at 16, 32, ... effects and at the stop | stop | partial: nothing during a session that ended by a kill | `haptics: 60 s: +N requests (+N vibrate, +N stop, +N impacts), +N played, +N failed` (60 s, when moved) |
-| camera | `camera: helper ...`, `camera: the helper has N cameras`; the helper's counters at its stop | once | start only | unchanged |
+| camera | `camera: helper ...`, `camera: the helper has N cameras`, `camera: iOS is told of ...` (the tree's camera nodes); the helper's counters at its stop | once | start only | unchanged |
 | video encoder | `encoder:` and the helper's lines when iOS uses it | per event | none in these logs (not used) | unchanged |
 | Bluetooth | `bluetooth: on: ...` | once | start only | unchanged |
 | battery | `battery: on: ... read every 3000 ms while iOS listens`; the host's battery in `thermal: 30 s` | once; 30 s | start only | unchanged |

@@ -80,6 +80,12 @@ typedef struct {
   // display-scale, which MobileGestalt answers main-screen-scale from, and /product artwork-scale-factor) and the
   // panel's refresh rate. /chosen/xnuhost carries all four for the hosted kernel's display driver.
   uint32_t    display_width, display_height, display_scale, display_hz;
+  // The cameras iOS is told about (XL_CAMERA_*; 0 = none), used only with an "oneios,camera" device: /arm-io/isp
+  // camera-rear and camera-front (MobileGestalt's rear-facing-camera, front-facing-camera and still-camera, which
+  // SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and without an identity tree /product
+  // unique-model "V54AP" (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from
+  // CMCapture.framework/V54). docs/hardware.md section 7.
+  uint32_t    cameras;
   const char *text_fixups;                // NUL-separated list for /chosen text-fixups, with its length
   uint32_t    text_fixups_length;
   // xnuhost: where a hosted kernel finds the host (0 = not hosted, node omitted)
@@ -112,8 +118,21 @@ void xl_machine_board(xl_machine *m, unsigned ncpu, const xl_device_kind *kinds,
 // The guest's stable addresses, from its unique chip ID: which = 0 Bluetooth, 1 Wi-Fi (en0), 2 Ethernet.
 void xl_machine_mac(const xl_machine *m, unsigned which, uint8_t mac[6]);
 
+#define XL_CAMERA_REAR  1u      // a back camera (the bridge's wide, ultra-wide or a telephoto)
+#define XL_CAMERA_FRONT 2u      // the front camera
+
 // Builds the tree. NULL with *error set for a machine that cannot be described.
 xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error);
+
+// The identity MobileGestalt answers from and keeps in its cache, as one number: FNV-1a 64 (names, lengths and
+// values, in the tree's order) of the root's own properties, the /product, /arm-io, /buttons and /bluetooth subtrees,
+// /chosen's own properties and /chosen/xnuhost's display-* ones. Nothing that changes from boot to boot is in it: not
+// random-seed, dram-base, dram-size, the GPU and media pools, /chosen's memory map, xnuhost's vector, /defaults (its
+// limits follow the RAM), nor oneios-identity itself. xl_machine_identity also writes it as /chosen oneios-identity
+// (8 bytes): hosted 0084 removes MobileGestalt's cache only when it changed. Call it on the finished tree (after a
+// shipped tree's nodes are merged).
+uint64_t xl_machine_identity_hash(const xl_adt_node *tree);
+uint64_t xl_machine_identity(xl_adt_node *tree);
 
 // A fresh volatile CHRP NVRAM bank for IODTNVRAM (8192 bytes written to `image`).
 void xl_nvram_proxy(uint8_t image[8192]);

@@ -49,6 +49,10 @@ rewrite() { "$FAKE_REWRITE"; }
 if [ "$FAKE_PROC" = stand-in ] && [ -d "$P/.fake/proc" ]; then
   for d in "$P/.fake/proc"/*; do
     [ -e "$d" ] || continue
+    # only a process's entry can be gone: stat and meminfo are the stand-in kernel's own files, and an entry with a
+    # file `made-up` is a process a test wrote, with no process of this machine behind it (tests/phone/procs.sh)
+    case "${d##*/}" in *[!0-9]*) continue ;; esac
+    [ ! -e "$d/made-up" ] || continue
     kill -0 "${d##*/}" 2>/dev/null || rm -rf "$d"
   done
 fi

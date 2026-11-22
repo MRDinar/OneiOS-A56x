@@ -1887,7 +1887,7 @@ gzip stream and broke twice (below, "The copy that goes on"); the copy in chunks
 on the phone**. `scripts/phone/stage.sh` stays until they have.
 
 ```sh
-oneios-tool phone status                      # root, the host phone, the installed app, the session, `oneios_root.sh status` (read only)
+oneios-tool phone status                      # root, the host phone, the installed app, the session, the boot screen's step (`control/bootui/progress`, `next`), `oneios_root.sh status` (read only)
 oneios-tool phone stage runtime DIR           # an unpacked runtime package, through oneios_root.sh begin/receive/finish
                                               #   (finish's ten fields: runtime.json's kernel build_id, sha256, xnu last,
                                               #   or `none` each; the fork's script since 53abb04, fixed here 2026-11-21)
@@ -1916,6 +1916,10 @@ oneios-tool phone wifi p2p [--station IFACE] [--save FILE]   # the staged wifict
                                               #   the AirDrop verdicts, Wonder's files; then a summary of those lines
 oneios-tool phone wifi wonder [--seconds 30] [--freq 2437|5220|5745] [--country CC] [--save FILE]
                                               # wifictl wonder (docs/hardware.md 4a), its lines as they come (adb exec-out)
+oneios-tool phone procs [--seconds 5] [--sort cpu|mem] [--top N] [--kernel] [--raw] [--from FILE]
+                                              # every process with its CPU share and RAM, with or without a session (read only):
+                                              #   the session, the fork's watchers, the kernel's threads, and each Android or
+                                              #   vendor process that still runs beside iOS ("The process list" below)
 oneios-tool phone pull-log DIR [--boot last|UUID] [--keep]   # iOS's log only: ioslog show runs on the phone (the runtime's
                                               #   oneios-tool on the staged store; an open session is fine, its newest
                                               #   checkpoint is read), only the gzipped text crosses adb; then DIR/ioslog.txt,
@@ -2061,6 +2065,9 @@ tools/oneios-tool/tests/phone/run.sh          # 258 checks against the stand-in 
                                               #   phones, their host-built tools; docs/hardware.md 7e;
                                               #   12 of them serve.sh, 2026-11-15: `oneios-tool serve` on the stand-in's stage,
                                               #   its local forms against the adb forms, the refusals in a session); ALL OK
+                                              #   since 2026-11-23 also procs.sh's 38 (`phone procs` on a made-up /proc). The Mac,
+                                              #   2026-11-23: 265 ok, ALL OK (hw-backend.sh skipped: the bridges' host tools do not
+                                              #   build there; before that day the suite failed on the Mac: lib.sh, below)
 tools/oneios-tool/tests/cycle/run.sh          # phone log, status --watch and cycle: 117 checks; ALL OK
 tools/oneios-tool/tests/phone/modes.sh        # phone, app and cycle in each /proc mode this host has (below); ALL OK
 FAKE_PROC=stand-in tools/oneios-tool/tests/phone/run.sh   # one suite with the stand-in's own /proc (macOS's way)
@@ -2096,6 +2103,12 @@ the phone's command byte for byte). The stand-in answers it in one of two modes,
   `modes.sh cycle` runs at once, against the fork's `oneios` (0.4.86) and PR #3's merge (0.5.14): both 103 ok in both
   modes, no session left on the box's tmux server.
 
+**macOS's bash 3.2 (2026-11-23).** The suites run under `/bin/bash`, which is 3.2 on the Mac. `lib.sh`'s
+`file_entries` (2026-11-21) had a `case "$p" in bin/*) ...` inside `$( )`: bash 3.2 takes that `)` for the end of the
+substitution, so the stand-in phone's `manifest.json` and `runtime.json` got no `files` list and many checks of
+`tests/phone/run.sh` failed on the Mac (`manifest.json has no "files" list`). The pattern is now `(bin/*)`, which
+both bash versions read. Seen and fixed while adding `procs.sh`: before the fix 168 ok and the rest FAILED, after it 265 ok and none FAILED.
+
 Before this (the Mac, 2026-11-12) the stand-in on macOS read a `/proc` that is not there: the tool never saw a
 stand-in session (status said none, the refusals in a session did not come, a return found "no session"), and
 the session lived on into the next case, where the fork's root script refused the switch. Simulated on Linux with
@@ -2123,6 +2136,64 @@ suite's process group while a session ran stopped it with none left, in both mod
 5 passed. Before the change, on the same box: the host mode passed (phone 73, cycle 90 checks); the stand-in's
 `/proc` pointed at nothing (the Mac's case) failed 12 and 31 (above). **Linux only**: macOS itself was not run
 here; there, `stand-in` is the only mode, and the GNU tools and perl's setsid are the Mac's.
+
+### The process list (`procs`, 2026-11-23)
+
+`phone procs` answers "what of One UI still runs beside iOS, and what does it cost" (`docs/plan-ios-first-session.md`:
+the plan it is stage 1 of, and what to capture on the phone). Read only, with or without a session; root is needed
+(the phone hides other users' `/proc` entries from the shell user). **Not run on the phone yet.**
+
+```sh
+oneios-tool phone procs                       # two CPU readings 5 s apart, then the report
+oneios-tool phone procs --seconds 30 --raw > procs.raw   # the phone's own lines, to keep
+oneios-tool phone procs --from procs.raw --sort mem      # the report of a kept capture, with no phone
+# session: xnuhost pid 21870
+# host: CPU 352% of 800 (user 152%, sys 187%, irq 13%), 8 CPUs online      (xnuhost's `thermal: 30 s: host CPU` figure)
+# memory: MemTotal 11084 MiB, MemAvailable 1996 MiB, swap 656 of 12287 MiB used, Shmem ..., Mlocked ..., page tables ...
+# group                                              procs threads    cpu%  anon MiB  swap MiB   rss MiB
+# the session (xnuhost, iOS's tasks, the helpers)    ...
+# the fork's watchers (the way back)                 ...
+# adb (this command's shell is in it)                ...
+# the kernel's threads                               ...
+# Android and the vendor                             ...
+# init services: N running of M; zygote stopped, surfaceflinger running, ...
+# Android and the vendor: N processes, by CPU, then anon + swap:
+#     pid   cpu% anon MiB swap MiB  rss MiB  thr  service          command          role
+# the session's own processes:        (xnuhost, the task factory, the helpers, the display helper; iOS's tasks as one line)
+# the kernel's threads at 0.1% of a CPU or more (the first 8; --kernel: all):
+```
+
+- **What is read** (one script for root's shell, `procs.rs` `procs_script`): `/proc/stat` and every `/proc/PID/stat`
+  (one `cat` of the files `ps -A -o PID=` names), the phone waits `--seconds`, the same again; then `grep -H` of six
+  keys (`Uid`, `VmRSS`, `RssAnon`, `RssFile`, `RssShmem`, `VmSwap`) of every `/proc/PID/status`, `ps -A -w -o
+  PID=,ARGS=`, `getprop` (init's services: `init.svc.NAME`, `init.svc_debug_pid.NAME`), `/proc/meminfo`, and the
+  stage's `session/xnuhost.pid` and `control/display.pid`. Named files only: no glob, no directory walk, nothing
+  written, no signal. No `smaps` or `smaps_rollup`: that read walks a process's page tables under its mmap lock,
+  which would stall the maps and unmaps of iOS's tasks. So there is no PSS: `anon` (RssAnon) is a process's own
+  pages, and `rss` counts shared file pages once per process.
+- **cpu%** is of one CPU: a process's ticks in the span (utime + stime, and cutime + cstime: the children it waited
+  for, so a shell loop is charged the short commands it starts) over the ticks one CPU had (the sum of `/proc/stat`'s
+  `cpu` line over the CPUs online). A process that started inside the span counts from 0. A parent that reaps a
+  long-lived child inside the span is charged that child's whole life once.
+- **Groups.** The session: the pid of `session/xnuhost.pid` when that process is an xnuhost, and the pids of
+  `control/display.pid`, each with everything it started. The fork's watchers: every process whose command line
+  names `oneios_switch.sh`, `oneios_return.sh` or `oneios_root.sh`, with its children (the key readers). adb: `adbd`
+  and its children, the tool's own shell among them. The kernel's threads: `PF_KTHREAD`. Android and the vendor:
+  the rest.
+- **service** is the init service whose pid init publishes for that process, or `NAME+` for a process a service
+  started. **role** is what the repository's docs say about it (`procs.rs` `role`, the plan's table): `bridge: ...`
+  (one of our bridges needs it), `keep: ...` (the way back, the keys and the TEE, the thermal and charge limits),
+  `restart list; ...` (zygote's restart list, which the return restarts at every return), or `-`: **not
+  classified, which is not "safe to stop"**.
+- `--seconds 0`: one reading, no CPU figures, no wait. `--top N`: the first N Android processes. `--kernel`: every
+  kernel thread. `--raw`: what the phone gave; `--from FILE` reads it again and needs no phone.
+- Cost on the phone: three `ps`, two `cat`, one `grep`, one `getprop`, and a `sleep`.
+
+Tested: `cargo test -p oneios-phone procs` (the script's words, a stat line whose name holds spaces and
+parentheses, the groups, each figure of a session's report, both orders, one reading, a cut output, a pid file that
+names no xnuhost, a shell loop's ended commands, the roles), and `tests/phone/procs.sh` from `run.sh` on a stand-in
+phone with a made-up `/proc`, `ps`, `sleep` and `getprop` (the same scene through adb's stand-in, what was sent to
+the phone, `--raw` and `--from`, a process that ended before the read).
 
 ### The session's own commands (`display-restart`, `touch`, `backlight`)
 
@@ -2916,6 +2987,13 @@ stale (`stage_tool` in `kernel/lib/stage.sh`; `ONEIOS_TOOL=PATH` for another bin
 | `kernel hosted-archives BOARD DEFCONFIG ENTRY...` | its second block | `hosted_device.rs` | **retired 2026-11-21**: the ENTRYs in place of the board's own archive entry; the hosted defconfig's six force-loads and `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y` |
 | `kernel host-cc SETUP_TOOLCHAIN CLT CLANG` | the inline `python3` block of `kernel/linux/unixnu-layout.sh` (it imported UniXNU's `scripts/linux/setup-toolchain.py`) | `host_cc.rs` | **retired 2026-11-21**: `xnu-host-cc`, `unixnu-host-prefix.h` and `copyfile.h` from that file's text (read, never run) |
 | `kernel display-capture --session DIR [--out PREFIX] [--seconds N] [--every S]` | `kernel/patches/oneios-hosted/display/display-capture.py` | `display_capture.rs` | **retired 2026-11-21**: the PC viewer of xnuhost's `display.sock` (Linux); also reads half-float frames, which the script refused |
+
+`kernel gen audio`'s edit list (`staged/audio.rs`) gained the Speaker's hardware volume control on 2026-11-22
+(fix-audio-volume-haptics, `docs/hardware.md` section 6, "Volume"): `synthetic/audio.in` has three more raw anchors and
+`audio.out` the result (`cargo test -p oneios-kernel`, 14 of 14), and `staged.sha256` the staged `DroidVMAudio.cpp` of
+`HOSTED_OUT=audio` (`9feea520...`, 37,706 bytes). That build's `stdout.txt` and the rest of `staged.sha256` were not
+re-recorded (its log paths are the main checkout's through the worktree's `out` link, and its net line counts 7 slots
+of IO80211Interface against the golden's 6: not this change).
 
 Shared: `gen.rs` (where a generator runs, Python's file and process calls as the scripts used them, the steps every
 script repeated), `drivers_build.rs` (`drivers/build.py`: `record`, `command`, and since 2026-11-13 the whole script), `macho_object.rs` (a compiled

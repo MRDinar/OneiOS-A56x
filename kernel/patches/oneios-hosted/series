@@ -351,3 +351,30 @@
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush
 # thread, not on the vCPU that sent the flush (docs/booter.md 2.7, "Disks"). Reads and writes are unchanged.
+# enable-camera-app (2026-11-22): MobileGestalt's cache follows the device tree. The base's native_gestalt_cache_drop
+# removed the cache at every boot (each boot then ran its first seconds with no cache: 145-272 "Could not open
+# .../com.apple.MobileGestalt.plist" lines on the phone); now xnuhost's loader writes /chosen oneios-identity (a hash of
+# what MobileGestalt reads that stays the same from boot to boot) and the kernel, before launchd, removes the cache only
+# when that differs from /private/var/oneios/mobilegestalt-identity (or there is none), then writes the marker. So a
+# device-tree change (the camera nodes) still reaches an existing Data store, once. `oneios-mg-cache:` line;
+# oneios-mg-cache=2 is the old way (at every boot), =0 never. README.md, "0084".
+# Rebased 2026-11-23 on 0083 (made on a tree without it: it did not apply on main; only the hunks' offsets changed).
+0084-mobilegestalt-cache-identity.patch
+# fix-launch-control-center-fitness (2026-11-22): the Edge scheduler's E -> P edges. DroidVMCpufreq gives every thread
+# group the E cluster (2 vCPUs, the A520s) with only the UI, above-UI and realtime classes on P (6 vCPUs, the A720s and
+# the X4); XNU's default edges allow no migration and no steal from E to P, and without CLPC nothing changes them. On the
+# phone (s6, s8, s9) vCPU 0-1 were 0% idle in every period while vCPU 4-7 were 85-99% idle and the render server drew
+# 20-32 frames a second with 1.5-5 ms of GPU time; iOS's log: SpringBoard 90 hangs (214.9 s), chronod 126 watchdog kills
+# of widget extensions. Once all CPUs are up (oneios_board_late_start), E -> P migration and steal are allowed for
+# fixed-priority, foreground, user-initiated and default (weight 0), utility (64 us of scheduling latency) and background
+# (1000 us). oneios-edge-spill=0 is the old way, =1 keeps background on E. One `oneios-edge:` line. README.md, "0085".
+0085-edge-e-to-p-spill.patch
+# fix-audio-volume-haptics (2026-11-22): the Actuator's DSP chain. With 0078 the haptic server plays and the Actuator
+# runs I/O, and every period is silence (ONEIOS HAPTIC counters "0 with samples", RTAID Actuator-Output -120 dB):
+# VirtualAudio finds no strips file for the Actuator's chain ("Cannot find strips file oneios,xnuhost/VAD/
+# d42_actuator_general"), the chain that turns the haptic synth's 2 channels into the actuator's 1 (the iPhone's
+# AID8022/VAD/actuator_general: AUHapticsProtection, AUVolumeForHaptics). 0078's link oneios,xnuhost -> V54 becomes a
+# folder of links: Haptics -> ../V54/Haptics and VAD/d42_actuator_general.{austrip,dspg} -> ../../AID8022/VAD/
+# actuator_general.*; nothing of Apple's copied. oneios-audio-tunings-vad=0: only the Haptics link. README.md, "0086".
+# Numbered 0086: 0084 is the MobileGestalt cache patch and 0085 the Edge spill patch; 0084 and 0086 apply in either order.
+0086-audio-tunings-actuator-chain.patch

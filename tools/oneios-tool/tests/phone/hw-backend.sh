@@ -24,6 +24,12 @@ hw_backend_checks() {
     echo "skipped hw-backend (the bridges' host tools do not build here: $(tail -n 1 "$W/hw-build.txt" 2>/dev/null))"; return
   fi
   local BRIGHTCTL=$B/brightness/build/host/brightctl
+  # build/host/ is shared with runtime/host-tests.sh's container: a Linux build there is up to date for make and
+  # cannot run on the Mac (status 126), so it is a skip, not 12 failures
+  "$BRIGHTCTL" > /dev/null 2>&1 < /dev/null; st=$?
+  if [ $st = 126 ] || [ $st = 127 ]; then
+    echo "skipped hw-backend ($BRIGHTCTL cannot run here, status $st: a build for another system, e.g. the container's; make -C runtime/bridges/brightness clean, then run again)"; return
+  fi
   # the stand-ins live under a short folder of their own: the bridges keep a sysfs path in 200 bytes, as the phone's are
   local T; T=$(mktemp -d /tmp/oneios-hw.XXXXXX) || { bad "hw-backend: no scratch folder"; return; }
   local S24=$T/s24 OTHER=$T/other ODD=$T/odd

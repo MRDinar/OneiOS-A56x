@@ -54,10 +54,65 @@ pub fn status(adb: &Adb) -> Result<()> {
         None => println!("app: {APP_ID} is not installed"),
     }
     println!("session: {}", if adb.session_open()? { "open" } else { "none" });
+    // the boot screen's two files (the fork's feeder, oneos/interface.md section 4): one read, gone after a return
+    let r = adb.root(&format!(
+        "printf '@@P %s\\n' \"$(cat {STAGE}/control/bootui/progress 2>/dev/null)\"; printf '@@N %s\\n' \"$(cat {STAGE}/control/bootui/next 2>/dev/null)\"\n"
+    ))?;
+    println!("{}", bootui_line(&r.out));
     for line in root_status(adb)? {
         println!("{line}");
     }
     Ok(())
+}
+
+/// `boot screen: ...` from `@@P <progress>` and `@@N <next>`: `progress` is `<step> <steps> <fraction>`, `next` the
+/// next step's name (empty at the last step, after a panic, or when xnuhost ended).
+pub fn bootui_line(out: &str) -> String {
+    let field = |tag: &str| out.lines().find_map(|l| l.strip_prefix(tag)).map(str::trim).unwrap_or("");
+    let (progress, next) = (field("@@P "), field("@@N "));
+    let w: Vec<&str> = progress.split_whitespace().collect();
+    let parsed = match w.as_slice() {
+        [step, steps, frac] => match (step.parse::<u32>(), steps.parse::<u32>(), frac.parse::<f64>()) {
+            (Ok(s), Ok(n), Ok(f)) if s >= 1 && s <= n && (0.0..=1.0).contains(&f) => Some((s, n, f)),
+            _ => None,
+        },
+        _ => None,
+    };
+    match parsed {
+        Some((s, n, f)) => format!(
+            "boot screen: step {s} of {n}, {:.0}% (control/bootui/progress){}",
+            f * 100.0,
+            if next.is_empty() { String::new() } else { format!(", next: {next}") }
+        ),
+        None if progress.is_empty() => "boot screen: no progress file (no session start, or the return removed it)".to_string(),
+        None => format!("boot screen: control/bootui/progress is not `<step> <steps> <fraction>`: \"{progress}\""),
+    }
+}
+
+#[cfg(test)]
+mod bootui_tests {
+    use super::bootui_line;
+
+    #[test]
+    fn a_step_and_the_next() {
+        assert_eq!(
+            bootui_line("@@P 7 12 0.235\n@@N Starting iOS's system services\n"),
+            "boot screen: step 7 of 12, 24% (control/bootui/progress), next: Starting iOS's system services"
+        );
+    }
+
+    #[test]
+    fn the_last_step_has_no_next() {
+        assert_eq!(bootui_line("@@P 12 12 1.000\n@@N \n"), "boot screen: step 12 of 12, 100% (control/bootui/progress)");
+    }
+
+    #[test]
+    fn no_file_and_a_bad_file() {
+        assert!(bootui_line("@@P \n@@N \n").contains("no progress file"));
+        assert!(bootui_line("").contains("no progress file"));
+        assert!(bootui_line("@@P 13 12 0.5\n@@N x\n").contains("is not `<step> <steps> <fraction>`"));
+        assert!(bootui_line("@@P 3 12\n@@N x\n").contains("is not"));
+    }
 }
 
 // ---------------------------------------------------------------- switch and return

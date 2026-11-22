@@ -39,3 +39,12 @@ Since 2026-11-15 (fix-audio-latency) the staged source also changes the speaker'
   safety offset 240, each period handed on as it starts; output latency N frames`.
 The Mic keeps its 8192-frame ring and 480-frame safety offset; the Actuator its ring and timing (only the wrap fix
 reaches it). `docs/hardware.md` section 6, "Latency end to end".
+
+Since 2026-11-22 (fix-audio-volume-haptics) the Speaker has a hardware volume control (the staged source's block
+"fix-audio-volume"): iOS 27's speaker route has the software volume mode HardwareOnly, and without a control audiomxd
+threw at every volume set ("Volume Mode is HardwareOnly but physical device does not support HW volume"), so the keys,
+the slider and the HUD did nothing. `controls` holds one volume (`vlme`, base class `levl`, output scope, element 0,
+steps 0..128 over -64..0 dB in 0.5 dB steps, step 0 silence), the HAL's SetControlValue (selector 2) sets it, and the
+speaker engine scales each period by its gain before virtio-snd; the host's helper plays at full scale
+(`runtime/bridges/audio`). Log: `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain N of 65536), change N: ...`.
+The Mic and the Actuator have no control. `docs/hardware.md` section 6, "Volume".
