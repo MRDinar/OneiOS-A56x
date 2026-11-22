@@ -309,6 +309,8 @@
 # first 24 shared-region vm_protects with where they came from. README.md, "0080". 2026-11-16: the early-halt guard
 # waits for the first completed shared region; the phone boots, newfs_apfs succeeds and session/ready arrives. The
 # pmap entries-kept path works; the shared-region no-op count was still 0, so that optimization and typing A/B stay open.
+# 2026-11-22 (0082): the count stays 0 because every shared-region protect of dyld carries VM_PROT_COPY; 0082 removes
+# the big ones.
 0080-shared-region-protect.patch
 # fix-mach-rpc (2026-11-15): interrupts and IPIs by host call. ArmCpu sent each IPI as a store to GICD_ISPENDR and took
 # each interrupt with ICC_IAR1_EL1, a GICD_ICPENDR store, ICC_EOIR1_EL1 and ICC_IAR1_EL1 again: under xnuhost every one a
@@ -320,6 +322,17 @@
 # woken by an IPI: made runnable -> IPI sent -> taken -> running), `0081:` (interrupts and IPIs by path, the mean time of
 # a dispatch) and `syscalls:` (calls back to their own thread against calls that blocked). README.md, "0081".
 0081-irq-host-calls-rpc-stats.patch
+# fix-dyld-cache-unnesting (2026-11-22): the shared cache's __DATA_CONST is mapped copy-on-write (no TPRO on this host).
+# dyld-27062 writes 7 function-variant pointers (QuartzCore, libdispatch, AVConference: `mte_enabled`) into __TPRO_CONST in
+# every process; before that, DyldCacheDataConstLazyScopedWriter::makeWriteable vm_protects all 6 CONST_DATA ranges of
+# the cache (about 367 MiB) to COPY|READ|WRITE and back to READ, unless apple[] has dyld_hw_tpro_pagers=1 (Apple's
+# kernel on TPRO hardware). That unnested the shared region in every process (`triggered unnest of range
+# 0x1fa600000->0x1fc600000`, 0080's oneios-srprot prot 0x13/0x1 lines); 0080's no-op shortcut never applied (VM_PROT_COPY).
+# Before launchd, the commpage's dyld flags get bit 0x200000 (dyld: enableReadOnlyDataConst = !(flags & 0x200000)), and a
+# write of kern.dyld_flags by launchd keeps it: launchd's dyld maps CONST_DATA read-write copy-on-write, as __DATA, and
+# makeWriteable does nothing. `oneios-dyld-flags:` lines (the commpage at boot, launchd's write).
+# oneios-dyld-rw-data-const=0 is the old way. README.md, "0082".
+0082-dyld-rw-data-const.patch
 # fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush
