@@ -11,6 +11,7 @@
 use crate::adt::Node;
 use crate::macho::Kernel;
 use crate::Error;
+use xh_core::bytes::le;
 
 const SIZE_4K: u64 = 0x1000;
 const SIZE_16K: u64 = 0x4000;
@@ -58,18 +59,6 @@ const _: () = assert!(args::boot_flags(BOOT_LINE_LENGTH) + 8 == 0x478, "memory A
 const _: () = assert!(args::size(BOOT_LINE_LENGTH) == 0x480, "boot_args ABI");
 const _: () = assert!(args::size(BOOT_LINE_LENGTH_LEGACY) == 736, "legacy boot_args ABI");
 
-fn u32_at(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
-}
-
-fn u64_at(data: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(data[at..at + 8].try_into().unwrap())
-}
-
-fn put_u64(out: &mut [u8], at: usize, v: u64) {
-    out[at..at + 8].copy_from_slice(&v.to_le_bytes());
-}
-
 /// True for a well-formed trust cache sidecar: u32 count, u32 offsets[count], then version 2 modules (version,
 /// uuid[16], entry count, sorted 24-byte entries).
 pub fn trustcaches_valid(data: &[u8]) -> bool {
@@ -77,20 +66,20 @@ pub fn trustcaches_valid(data: &[u8]) -> bool {
     if size < 8 {
         return false;
     }
-    let count = u32_at(data, 0) as usize;
+    let count = le::u32(data, 0) as usize;
     if count == 0 || count > 128 || count > (size - 4) / 4 {
         return false;
     }
     (0..count).all(|i| {
-        let start = u32_at(data, 4 + i * 4) as usize;
-        let end = if i + 1 < count { u32_at(data, 8 + i * 4) as usize } else { size };
+        let start = le::u32(data, 4 + i * 4) as usize;
+        let end = if i + 1 < count { le::u32(data, 8 + i * 4) as usize } else { size };
         if start < 4 + count * 4 || start & 3 != 0 || end > size || end < start || end - start < 24 {
             return false;
         }
-        if u32_at(data, start) != 2 {
+        if le::u32(data, start) != 2 {
             return false;
         }
-        let entries = u32_at(data, start + 20) as usize;
+        let entries = le::u32(data, start + 20) as usize;
         if entries > (end - start - 24) / 24 || end - start != 24 + entries * 24 {
             return false;
         }
@@ -116,10 +105,10 @@ pub fn ramdisk_layout(data: &[u8]) -> Option<RamdiskLayout> {
     if size < 8 || &data[..8] != b"DBRDISK1" {
         return Some(plain);
     }
-    if size < 32 || u32_at(data, 8) != 1 || u64::from(u32_at(data, 12)) != SIZE_4K {
+    if size < 32 || le::u32(data, 8) != 1 || u64::from(le::u32(data, 12)) != SIZE_4K {
         return None;
     }
-    let (logical, count) = (u64_at(data, 16), u64_at(data, 24));
+    let (logical, count) = (le::u64(data, 16), le::u64(data, 24));
     if logical == 0
         || logical > RAMDISK_MAX_LOGICAL
         || logical & (SIZE_4K - 1) != 0
@@ -130,7 +119,7 @@ pub fn ramdisk_layout(data: &[u8]) -> Option<RamdiskLayout> {
     }
     let (mut cursor, mut end) = (32 + count * 16, 0);
     for i in 0..count as usize {
-        let (offset, length) = (u64_at(data, 32 + i * 16), u64_at(data, 40 + i * 16));
+        let (offset, length) = (le::u64(data, 32 + i * 16), le::u64(data, 40 + i * 16));
         if length == 0
             || (offset | length) & (SIZE_4K - 1) != 0
             || offset < end
@@ -153,10 +142,10 @@ pub fn ramdisk_copy(destination: &mut [u8], data: &[u8], packed: bool) {
         destination[..data.len()].copy_from_slice(data);
         return;
     }
-    let count = u64_at(data, 24) as usize;
+    let count = le::u64(data, 24) as usize;
     let mut cursor = 32 + count * 16;
     for i in 0..count {
-        let (offset, length) = (u64_at(data, 32 + i * 16) as usize, u64_at(data, 40 + i * 16) as usize);
+        let (offset, length) = (le::u64(data, 32 + i * 16) as usize, le::u64(data, 40 + i * 16) as usize);
         destination[offset..offset + length].copy_from_slice(&data[cursor..cursor + length]);
         cursor += length;
     }
@@ -286,17 +275,17 @@ impl BootRequest<'_> {
             return Err(Error("trust cache sidecar rejected"));
         }
         if let Some(a) = self.gpu_addon {
-            if a.len() < 24 || &a[..8] != b"NGPUADD2" || u64_at(a, 16) != a.len() as u64 {
+            if a.len() < 24 || &a[..8] != b"NGPUADD2" || le::u64(a, 16) != a.len() as u64 {
                 return Err(Error("GPU addon sidecar rejected"));
             }
         }
         if let Some(p) = self.root_policies {
             if p.len() < 32
                 || &p[..8] != b"VROOTB01"
-                || u64_at(p, 8) != 1
-                || u64_at(p, 16) == 0
-                || u64_at(p, 16) > 16
-                || u64_at(p, 24) != p.len() as u64
+                || le::u64(p, 8) != 1
+                || le::u64(p, 16) == 0
+                || le::u64(p, 16) > 16
+                || le::u64(p, 24) != p.len() as u64
             {
                 return Err(Error("root policy sidecar rejected"));
             }
@@ -371,18 +360,18 @@ impl BootRequest<'_> {
         a.fill(0);
         a[0..2].copy_from_slice(&2u16.to_le_bytes()); // revision
         a[2..4].copy_from_slice(&2u16.to_le_bytes()); // version
-        put_u64(a, args::VIRT_BASE, va);
-        put_u64(a, args::PHYS_BASE, pa);
-        put_u64(a, args::MEM_SIZE, window);
-        put_u64(a, args::TOP_OF_KERNEL_DATA, pa + used);
+        le::put_u64(a, args::VIRT_BASE, va);
+        le::put_u64(a, args::PHYS_BASE, pa);
+        le::put_u64(a, args::MEM_SIZE, window);
+        le::put_u64(a, args::TOP_OF_KERNEL_DATA, pa + used);
         for (i, v) in self.video.iter().enumerate() {
-            put_u64(a, args::VIDEO + i * 8, *v);
+            le::put_u64(a, args::VIDEO + i * 8, *v);
         }
-        put_u64(a, args::DEVICE_TREE, va + tree_at);
+        le::put_u64(a, args::DEVICE_TREE, va + tree_at);
         a[args::DEVICE_TREE_LENGTH..args::DEVICE_TREE_LENGTH + 4].copy_from_slice(&(tree_size as u32).to_le_bytes());
         a[args::COMMAND_LINE..args::COMMAND_LINE + command.len()].copy_from_slice(command);
-        put_u64(a, args::boot_flags(line), self.boot_flags);
-        put_u64(a, args::boot_flags(line) + 8, self.mem_size_actual.max(window));
+        le::put_u64(a, args::boot_flags(line), self.boot_flags);
+        le::put_u64(a, args::boot_flags(line) + 8, self.mem_size_actual.max(window));
 
         let present = |blob: Option<&[u8]>, at: u64| if blob.is_some() { pa + at } else { 0 };
         Ok(BootLayout {

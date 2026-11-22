@@ -36,6 +36,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use xh_core::bytes::le;
 
 use oneios_display::sys::{self as dsys, Errno, Map};
 use oneios_display::xhd::{Kind, Message, Seg, Slot, DONE_FAILED, PANEL_DIRECT};
@@ -556,7 +557,7 @@ fn helper_report(listen: Option<&OwnedFd>, first: &mut Option<OwnedFd>) -> Optio
         .ok()
         .and_then(|r| config::panel_report(&packet[..r.length.min(Message::BYTES)]).map(|p| (p, r.length)));
     match report {
-        Some((panel, _)) => Some((panel, u32::from_le_bytes(packet[16..20].try_into().unwrap()))),
+        Some((panel, _)) => Some((panel, le::u32(&packet, 16))),
         None => {
             logi!("display: the helper's report of the panel's mode was not usable");
             None

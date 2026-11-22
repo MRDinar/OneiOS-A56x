@@ -3,51 +3,45 @@
 //! follows DarwinBoot's Test/make-fixtures.py (a __TEXT with the header and code, a zero-fill __DATA,
 //! LC_UNIXTHREAD).
 
+use xh_core::bytes::le;
+
 pub const BASE: u64 = 0xffff_fff0_0700_4000;
-
-pub fn w32(p: &mut [u8], at: usize, v: u32) {
-    p[at..at + 4].copy_from_slice(&v.to_le_bytes());
-}
-
-pub fn w64(p: &mut [u8], at: usize, v: u64) {
-    p[at..at + 8].copy_from_slice(&v.to_le_bytes());
-}
 
 /// An LC_SEGMENT_64 command (no sections) at the start of `p`; returns its length, 72.
 pub fn segment(p: &mut [u8], name: &str, addr: u64, size: u64, off: u64, len: u64, prot: u32) -> usize {
     p[..72].fill(0);
-    w32(p, 0, 0x19);
-    w32(p, 4, 72);
+    le::put_u32(p, 0, 0x19);
+    le::put_u32(p, 4, 72);
     let n = name.len().min(16);
     p[8..8 + n].copy_from_slice(&name.as_bytes()[..n]);
-    w64(p, 24, addr);
-    w64(p, 32, size);
-    w64(p, 40, off);
-    w64(p, 48, len);
-    w32(p, 56, prot);
-    w32(p, 60, prot);
+    le::put_u64(p, 24, addr);
+    le::put_u64(p, 32, size);
+    le::put_u64(p, 40, off);
+    le::put_u64(p, 48, len);
+    le::put_u32(p, 56, prot);
+    le::put_u32(p, 60, prot);
     72
 }
 
 /// An LC_UNIXTHREAD (ARM_THREAD_STATE64) with this pc at the start of `p`; returns its length, 288.
 pub fn thread(p: &mut [u8], pc: u64) -> usize {
     p[..288].fill(0);
-    w32(p, 0, 5);
-    w32(p, 4, 288);
-    w32(p, 8, 6);
-    w32(p, 12, 68);
-    w64(p, 272, pc);
+    le::put_u32(p, 0, 5);
+    le::put_u32(p, 4, 288);
+    le::put_u32(p, 8, 6);
+    le::put_u32(p, 12, 68);
+    le::put_u64(p, 272, pc);
     288
 }
 
 /// The Mach-O header: magic, arm64, the subtype, the file type, the command count and size.
 pub fn header(p: &mut [u8], subtype: u32, filetype: u32, ncmds: u32, sizeofcmds: usize) {
-    w32(p, 0, 0xfeed_facf);
-    w32(p, 4, 0x0100_000c);
-    w32(p, 8, subtype);
-    w32(p, 12, filetype);
-    w32(p, 16, ncmds);
-    w32(p, 20, sizeofcmds as u32);
+    le::put_u32(p, 0, 0xfeed_facf);
+    le::put_u32(p, 4, 0x0100_000c);
+    le::put_u32(p, 8, subtype);
+    le::put_u32(p, 12, filetype);
+    le::put_u32(p, 16, ncmds);
+    le::put_u32(p, 20, sizeofcmds as u32);
 }
 
 /// MH_EXECUTE at `base`: __TEXT (header, `code` at +0x1000; text_size bytes, at least 0x2000) and a zero-fill
@@ -69,14 +63,14 @@ pub fn kernel_sized(
     let mut ncmds = 3;
     if symbols {
         for (i, v) in [2, 24, 0x800, 1, 0x810, 32].into_iter().enumerate() {
-            w32(&mut im, c + 4 * i, v);
+            le::put_u32(&mut im, c + 4 * i, v);
         }
         c += 24;
         ncmds += 1;
-        w32(&mut im, 0x800, 1);
+        le::put_u32(&mut im, 0x800, 1);
         im[0x804] = 0x0f;
         im[0x805] = 1;
-        w64(&mut im, 0x808, base + 0x1008);
+        le::put_u64(&mut im, 0x808, base + 0x1008);
         im[0x811..0x811 + 16].copy_from_slice(b"_fixture_symbol\0");
     }
     header(&mut im, subtype, 2, ncmds, c - 32);
@@ -96,12 +90,12 @@ pub fn collection(base: u64, subtype: u32, code: &[u8]) -> Vec<u8> {
     let kbase = base + 0x4000;
     let k = kernel(kbase, subtype, code, true);
     im[0x4000..0x4000 + k.len()].copy_from_slice(&k);
-    w32(&mut im, 0x4000 + 24, 0x8000_0000); // MH_DYLIB_IN_CACHE
-    w64(&mut im, 0x4000 + 32 + 40, 0x4000); // __TEXT fileoff, absolute
-    w32(&mut im, 0x4000 + 32 + 72 + 72 + 288 + 8, 0x4000 + 0x800); // symoff
-    w32(&mut im, 0x4000 + 32 + 72 + 72 + 288 + 16, 0x4000 + 0x810); // stroff
+    le::put_u32(&mut im, 0x4000 + 24, 0x8000_0000); // MH_DYLIB_IN_CACHE
+    le::put_u64(&mut im, 0x4000 + 32 + 40, 0x4000); // __TEXT fileoff, absolute
+    le::put_u32(&mut im, 0x4000 + 32 + 72 + 72 + 288 + 8, 0x4000 + 0x800); // symoff
+    le::put_u32(&mut im, 0x4000 + 32 + 72 + 72 + 288 + 16, 0x4000 + 0x810); // stroff
     header(&mut im[0xc000..], subtype, 11, 0, 0); // the kext member: header only
-    w32(&mut im, 0xc000 + 24, 0x8000_0000);
+    le::put_u32(&mut im, 0xc000 + 24, 0x8000_0000);
     let mut c = 32;
     c += segment(&mut im[c..], "__TEXT", base, 0x4000, 0, 0x4000, 1);
     c += segment(&mut im[c..], "__PRELINK_TEXT", kbase, 0x2000, 0x4000, 0x2000, 5);
@@ -110,11 +104,11 @@ pub fn collection(base: u64, subtype: u32, code: &[u8]) -> Vec<u8> {
     c += thread(&mut im[c..], kbase + 0x1000);
     for (name, off) in [("com.apple.kernel", 0x4000u64), ("com.example.kext", 0xc000)] {
         im[c..c + 56].fill(0);
-        w32(&mut im, c, 0x8000_0035);
-        w32(&mut im, c + 4, 56);
-        w64(&mut im, c + 8, base + off);
-        w64(&mut im, c + 16, off);
-        w32(&mut im, c + 24, 32);
+        le::put_u32(&mut im, c, 0x8000_0035);
+        le::put_u32(&mut im, c + 4, 56);
+        le::put_u64(&mut im, c + 8, base + off);
+        le::put_u64(&mut im, c + 16, off);
+        le::put_u32(&mut im, c + 24, 32);
         im[c + 32..c + 32 + name.len()].copy_from_slice(name.as_bytes());
         c += 56;
     }
@@ -125,13 +119,13 @@ pub fn collection(base: u64, subtype: u32, code: &[u8]) -> Vec<u8> {
 /// One version 2 trust cache module with `entries` sorted CDHashes, in the sidecar envelope.
 pub fn trustcache(entries: usize) -> Vec<u8> {
     let mut im = vec![0u8; 8 + 24 + entries * 24];
-    w32(&mut im, 0, 1);
-    w32(&mut im, 4, 8);
-    w32(&mut im, 8, 2);
+    le::put_u32(&mut im, 0, 1);
+    le::put_u32(&mut im, 4, 8);
+    le::put_u32(&mut im, 8, 2);
     for i in 0..16 {
         im[12 + i] = i as u8;
     }
-    w32(&mut im, 28, entries as u32);
+    le::put_u32(&mut im, 28, entries as u32);
     for e in 0..entries {
         let h = 32 + e * 24;
         im[h..h + 20].fill(0x10 + e as u8);

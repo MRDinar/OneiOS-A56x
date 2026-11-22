@@ -17,6 +17,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 
+use xh_core::bytes::le;
 use xh_core::pixels::{self, BGRX8, LIT_LEVEL, LIT_STEP, RGBA16F, VIRTIO_GPU_FORMAT_RGBA16F};
 use xh_core::virtio::{self, Viov, Virtio};
 use xh_core::{logi, time};
@@ -98,14 +99,6 @@ fn format_bpp(f: u32) -> u32 {
     }
 }
 
-fn u32_at(b: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes(b[i..i + 4].try_into().unwrap())
-}
-
-fn u64_at(b: &[u8], i: usize) -> u64 {
-    u64::from_le_bytes(b[i..i + 8].try_into().unwrap())
-}
-
 /// The command header (struct virtio_gpu_ctrl_hdr, 24 bytes).
 #[derive(Clone, Copy, Debug, Default)]
 struct Hdr {
@@ -120,10 +113,10 @@ struct Hdr {
 impl Hdr {
     fn decode(b: &[u8]) -> Hdr {
         Hdr {
-            kind: u32_at(b, 0),
-            flags: u32_at(b, 4),
-            fence: u64_at(b, 8),
-            ctx: u32_at(b, 16),
+            kind: le::u32(b, 0),
+            flags: le::u32(b, 4),
+            fence: le::u64(b, 8),
+            ctx: le::u32(b, 16),
             ring: b[20],
             pad: [b[21], b[22], b[23]],
         }
@@ -149,7 +142,7 @@ struct Rect {
 
 impl Rect {
     fn decode(b: &[u8]) -> Rect {
-        Rect { x: u32_at(b, 0), y: u32_at(b, 4), w: u32_at(b, 8), h: u32_at(b, 12) }
+        Rect { x: le::u32(b, 0), y: le::u32(b, 4), w: le::u32(b, 8), h: le::u32(b, 12) }
     }
 
     fn ok(&self, w: u32, h: u32) -> bool {
@@ -775,7 +768,7 @@ impl Gpu {
         let b = self.b.as_deref();
         let left = body.len();
         let resp_max = resp.len();
-        let a = |i: usize| u32_at(body, i * 4);
+        let a = |i: usize| le::u32(body, i * 4);
         Some(match h.kind {
             CMD_GET_CAPSET_INFO => {
                 if left < 8 || resp_max < HDR + 16 {
@@ -917,7 +910,7 @@ impl Gpu {
                     return Some(RESP_ERR_INVALID_PARAMETER);
                 }
                 let rect = Rect::decode(body);
-                let v = |i: usize| u32_at(body, 16 + i * 4);
+                let v = |i: usize| le::u32(body, 16 + i * 4);
                 if v(0) != 0 {
                     return Some(RESP_ERR_INVALID_SCANOUT_ID);
                 }
@@ -971,9 +964,9 @@ impl Gpu {
         if left < 32 {
             return RESP_ERR_INVALID_PARAMETER;
         }
-        let a = |i: usize| u32_at(body, i * 4);
+        let a = |i: usize| le::u32(body, i * 4);
         let (res, mem, flags, n) = (a(0), a(1), a(2), a(3)); // resource, blob_mem, blob_flags, nr_entries
-        let (blob_id, size) = (u64_at(body, 16), u64_at(body, 24));
+        let (blob_id, size) = (le::u64(body, 16), le::u64(body, 24));
         if res == 0 || c.find(res).is_some() || c.blob(res).is_some() {
             return RESP_ERR_INVALID_RESOURCE_ID;
         }
@@ -1043,7 +1036,7 @@ impl Gpu {
                 return status;
             }
         }
-        let a = |i: usize| u32_at(body, i * 4);
+        let a = |i: usize| le::u32(body, i * 4);
         match h.kind {
             CMD_GET_DISPLAY_INFO => {
                 if resp_max < HDR + 16 * 24 {
@@ -1137,7 +1130,7 @@ impl Gpu {
                     return RESP_ERR_INVALID_PARAMETER;
                 }
                 let rect = Rect::decode(body);
-                let (offset, id) = (u64_at(body, 16), a(6));
+                let (offset, id) = (le::u64(body, 16), a(6));
                 let Some(i) = c.find(id) else { return RESP_ERR_INVALID_RESOURCE_ID };
                 let mut row = std::mem::take(&mut c.row);
                 let r = &mut c.res[i];

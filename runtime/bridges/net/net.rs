@@ -13,6 +13,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use xh_core::bytes::be;
 use xh_core::sys::{errno, strerror};
 
 /// The longest frame (Ethernet, no FCS).
@@ -65,9 +66,6 @@ pub trait NetBackend: Send + Sync {
 pub type NetOpen = Box<dyn FnOnce(&NetConfig, RxFn) -> Option<Box<dyn NetBackend>> + Send>;
 
 // ---- DHCP ---------------------------------------------------------------------------------------
-fn be16(p: &[u8]) -> u16 {
-    u16::from_be_bytes([p[0], p[1]])
-}
 
 fn checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = data.chunks(2).map(|w| u32::from(w[0]) << 8 | u32::from(*w.get(1).unwrap_or(&0))).sum();
@@ -84,7 +82,7 @@ const HOST_MAC: [u8; 6] = [0x02, 0x4f, 0x69, 0x4f, 0x53, 0x01];
 /// The DHCP reply to `frame` if it is a DHCPDISCOVER/REQUEST from the guest; None when the frame is not one.
 pub fn dhcp_reply(c: &NetConfig, frame: &[u8]) -> Option<Vec<u8>> {
     // Ethernet 14, IPv4 (IHL from the header), UDP 8, BOOTP 236, magic cookie 4, options.
-    if frame.len() < 14 + 20 + 8 + 240 || be16(&frame[12..]) != 0x0800 {
+    if frame.len() < 14 + 20 + 8 + 240 || be::u16(frame, 12) != 0x0800 {
         return None;
     }
     let ip = &frame[14..];
@@ -93,7 +91,7 @@ pub fn dhcp_reply(c: &NetConfig, frame: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let udp = &ip[ihl..];
-    if be16(udp) != 68 || be16(&udp[2..]) != 67 {
+    if be::u16(udp, 0) != 68 || be::u16(udp, 2) != 67 {
         return None;
     }
     let bootp = &udp[8..];

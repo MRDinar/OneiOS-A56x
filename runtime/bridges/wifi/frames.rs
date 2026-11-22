@@ -7,23 +7,11 @@
 use super::nl;
 use super::proto::*;
 use super::{CONTROL_TYPE, FRAME};
-
-fn be16(p: &[u8]) -> u16 {
-    u16::from_be_bytes([p[0], p[1]])
-}
-fn be32(p: &[u8]) -> u32 {
-    u32::from_be_bytes([p[0], p[1], p[2], p[3]])
-}
-fn put16(p: &mut [u8], v: u16) {
-    p[..2].copy_from_slice(&v.to_be_bytes());
-}
-fn put32(p: &mut [u8], v: u32) {
-    p[..4].copy_from_slice(&v.to_be_bytes());
-}
+use xh_core::bytes::be;
 
 pub fn ethertype(frame: &[u8]) -> u16 {
     if frame.len() >= 14 {
-        be16(&frame[12..])
+        be::u16(frame, 12)
     } else {
         0
     }
@@ -77,16 +65,16 @@ fn tcp_checksums(l3: &mut [u8], v6: bool, l3_len: usize, tcp_len: usize) {
     let mut sum = if v6 {
         add(0, &l3[8..40]) // source and destination
     } else {
-        put16(&mut l3[10..], 0);
+        be::put_u16(l3, 10, 0);
         let h = fold(add(0, &l3[..l3_len]));
-        put16(&mut l3[10..], h);
+        be::put_u16(l3, 10, h);
         add(0, &l3[12..20])
     };
     sum += 6 + tcp_len as u32; // protocol, TCP length
     let tcp = &mut l3[l3_len..l3_len + tcp_len];
-    put16(&mut tcp[16..], 0);
+    be::put_u16(tcp, 16, 0);
     let t = fold(add(sum, tcp));
-    put16(&mut tcp[16..], t);
+    be::put_u16(tcp, 16, t);
 }
 
 /// A frame for the guest: as it is when it fits the link and the receive path did not coalesce it; a coalesced TCP
@@ -128,8 +116,8 @@ pub fn segment(frame: &[u8], mss: u16, coalesced: bool, mut out: impl FnMut(&[u8
     }
     let mss = (mss as usize).min(FRAME - headers);
     let payload = &frame[headers..];
-    let seq = be32(&tcp[4..]);
-    let id = if v6 { 0 } else { be16(&l3[4..]) };
+    let seq = be::u32(tcp, 4);
+    let id = if v6 { 0 } else { be::u16(l3, 4) };
     let flags = tcp[13];
     let mut seg = [0u8; FRAME];
     let mut count = 0;
@@ -139,13 +127,13 @@ pub fn segment(frame: &[u8], mss: u16, coalesced: bool, mut out: impl FnMut(&[u8
         seg[headers..headers + part.len()].copy_from_slice(part);
         let o3 = &mut seg[14..];
         if v6 {
-            put16(&mut o3[4..], (tcp_hdr + part.len()) as u16);
+            be::put_u16(o3, 4, (tcp_hdr + part.len()) as u16);
         } else {
-            put16(&mut o3[2..], (l3_len + tcp_hdr + part.len()) as u16);
-            put16(&mut o3[4..], id.wrapping_add(count as u16));
+            be::put_u16(o3, 2, (l3_len + tcp_hdr + part.len()) as u16);
+            be::put_u16(o3, 4, id.wrapping_add(count as u16));
         }
         let ot = &mut o3[l3_len..];
-        put32(&mut ot[4..], seq.wrapping_add((n * mss) as u32));
+        be::put_u32(ot, 4, seq.wrapping_add((n * mss) as u32));
         ot[13] = if last { flags } else { flags & !0x09 }; // FIN and PSH on the last segment only
         tcp_checksums(o3, v6, l3_len, tcp_hdr + part.len());
         out(&seg[..headers + part.len()]);
@@ -193,14 +181,14 @@ pub fn dhcp(frame: &[u8]) -> Option<DhcpMsg> {
     }
     let udp = &ip[ihl..];
     let b = &udp[8..];
-    let (sport, dport) = (be16(udp), be16(&udp[2..]));
-    if !((sport == 68 && dport == 67) || (sport == 67 && dport == 68)) || be32(&b[236..]) != 0x6382_5363 {
+    let (sport, dport) = (be::u16(udp, 0), be::u16(udp, 2));
+    if !((sport == 68 && dport == 67) || (sport == 67 && dport == 68)) || be::u32(b, 236) != 0x6382_5363 {
         return None;
     }
     let mut m = DhcpMsg {
         ciaddr: b[12..16].try_into().expect("4 bytes"),
         yiaddr: b[16..20].try_into().expect("4 bytes"),
-        ip_broadcast: be32(&ip[16..]) == 0xffff_ffff,
+        ip_broadcast: be::u32(ip, 16) == 0xffff_ffff,
         ..Default::default()
     };
     if b[1] == 1 && b[2] == 6 {
@@ -424,7 +412,7 @@ pub(crate) mod tests {
         let n = f.len();
         let ip = &f[14..];
         let tcp_len = n - 34;
-        if be16(&ip[2..]) as usize != n - 14 {
+        if be::u16(ip, 2) as usize != n - 14 {
             return false;
         }
         sum_ok(sum16(0, &ip[..20])) && sum_ok(sum16(sum16(0, &ip[12..20]) + 6 + tcp_len as u32, &ip[20..20 + tcp_len]))
@@ -433,7 +421,7 @@ pub(crate) mod tests {
         let n = f.len();
         let ip = &f[14..];
         let tcp_len = n - 54;
-        if be16(&ip[4..]) as usize != tcp_len {
+        if be::u16(ip, 4) as usize != tcp_len {
             return false;
         }
         sum_ok(sum16(sum16(0, &ip[8..40]) + 6 + tcp_len as u32, &ip[40..40 + tcp_len]))

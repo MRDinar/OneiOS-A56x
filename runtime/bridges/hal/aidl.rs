@@ -12,6 +12,7 @@
 use super::binder::{self, Binder, Handler, Incoming, Looper, OpenError, Outgoing};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
+use xh_core::bytes::ne;
 
 pub const TYPE_BINDER: u32 = binder::uapi::TYPE_BINDER;
 pub const TYPE_HANDLE: u32 = binder::uapi::TYPE_HANDLE;
@@ -62,8 +63,8 @@ impl FlatObject {
         b
     }
     pub fn parse(b: &[u8]) -> FlatObject {
-        let w = |at: usize| u32::from_ne_bytes(b[at..at + 4].try_into().expect("4 bytes"));
-        let q = |at: usize| u64::from_ne_bytes(b[at..at + 8].try_into().expect("8 bytes"));
+        let w = |at: usize| ne::u32(b, at);
+        let q = |at: usize| ne::u64(b, at);
         FlatObject { kind: w(0), flags: w(4), binder_or_handle: q(8), cookie: q(16) }
     }
 }

@@ -11,6 +11,7 @@ use super::direct::Direct;
 use super::protocol::FrameRef;
 use super::{Rect, FORMAT_BGRX};
 use crate::sys::{Errno, Result};
+use xh_core::bytes::le;
 
 pub const TILES: u32 = 4;
 
@@ -139,11 +140,6 @@ fn hash_step(lane: u64, w: u64) -> u64 {
     lane.rotate_left(23).wrapping_mul(0x9e37_79b9_7f4a_7c15)
 }
 
-#[inline]
-fn word(p: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(p[at..at + 8].try_into().unwrap())
-}
-
 /// The hash of a tile of `pixels` B,G,R,X pixels at the start of p. Never 0 (0: no hash, a tile xnuhost drew or not
 /// read yet).
 pub fn hash_tile(p: &[u8], pixels: u32) -> u64 {
@@ -152,18 +148,18 @@ pub fn hash_tile(p: &[u8], pixels: u32) -> u64 {
     let mut i = 0;
     while i + 8 <= pixels {
         let at = i * 4;
-        a = hash_step(a, word(p, at));
-        b = hash_step(b, word(p, at + 8));
-        c = hash_step(c, word(p, at + 16));
-        e = hash_step(e, word(p, at + 24));
+        a = hash_step(a, le::u64(p, at));
+        b = hash_step(b, le::u64(p, at + 8));
+        c = hash_step(c, le::u64(p, at + 16));
+        e = hash_step(e, le::u64(p, at + 24));
         i += 8;
     }
     while i + 2 <= pixels {
-        a = hash_step(a, word(p, i * 4));
+        a = hash_step(a, le::u64(p, i * 4));
         i += 2;
     }
     if i < pixels {
-        b = hash_step(b, u32::from_le_bytes(p[i * 4..i * 4 + 4].try_into().unwrap()) as u64);
+        b = hash_step(b, le::u32(p, i * 4) as u64);
     }
     let mut h = a ^ b.wrapping_mul(3) ^ c.wrapping_mul(5) ^ e.wrapping_mul(7) ^ ((pixels as u64) << 48);
     h ^= h >> 31;

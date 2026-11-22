@@ -2,8 +2,9 @@
 //! Loader unit tests on generated fixtures (xnuloader::fixture): no Apple files. The cases of tests/test_loader.c,
 //! and the C Makefile's `xnuloader-inspect board 4 | xnuloader-inspect adt` check.
 
+use xh_core::bytes::le;
 use xnuloader::boot::{self, BootRequest};
-use xnuloader::fixture::{self, w32, w64, BASE};
+use xnuloader::fixture::{self, BASE};
 use xnuloader::machine::{self, Cluster, DeviceKind, Mac, Machine, CAMERA_FRONT, CAMERA_REAR};
 use xnuloader::machine::{
     BOARD_CPUFREQ, BOARD_GIC_DIST, BOARD_GIC_REDIST, BOARD_VIRTIO, BOARD_VIRTIO_SIZE, BOARD_VIRTIO_SPI,
@@ -34,9 +35,9 @@ fn macho() {
     assert_eq!(k.offset(BASE + 0x4000, 16), None); // zero-fill has no file bytes
 
     // arm64e with capability bits in the subtype's top byte
-    w32(&mut im, 8, 0x8000_0002);
+    le::put_u32(&mut im, 8, 0x8000_0002);
     assert_eq!(Kernel::parse(&im).unwrap().cpusubtype, 2);
-    w32(&mut im, 8, 0);
+    le::put_u32(&mut im, 8, 0);
 
     // DarwinBoot's rejected variants: (offset, 64-bit, value)
     let size = im.len() as u64;
@@ -55,9 +56,9 @@ fn macho() {
     for (off, wide, value) in bad {
         let saved: [u8; 8] = im[off..off + 8].try_into().unwrap();
         if wide {
-            w64(&mut im, off, value);
+            le::put_u64(&mut im, off, value);
         } else {
-            w32(&mut im, off, value as u32);
+            le::put_u32(&mut im, off, value as u32);
         }
         assert!(Kernel::parse(&im).is_err(), "variant at {off:#x} = {value:#x} parses");
         im[off..off + 8].copy_from_slice(&saved);
@@ -77,18 +78,18 @@ fn fileset() {
 
     let entry0 = 32 + 4 * 72 + 288;
     let saved = u64::from_le_bytes(im[entry0 + 8..entry0 + 16].try_into().unwrap());
-    w64(&mut im, entry0 + 8, BASE + 0x8000); // member header not mapped where the entry says
+    le::put_u64(&mut im, entry0 + 8, BASE + 0x8000); // member header not mapped where the entry says
     assert!(Kernel::parse(&im).is_err());
-    w64(&mut im, entry0 + 8, saved);
+    le::put_u64(&mut im, entry0 + 8, saved);
     im[entry0 + 32 + 15] = b'x'; // no com.apple.kernel
     assert!(Kernel::parse(&im).is_err());
     im[entry0 + 32 + 15] = b'l';
-    w32(&mut im, 0x4000 + 24, 0); // the kernel member lost MH_DYLIB_IN_CACHE
+    le::put_u32(&mut im, 0x4000 + 24, 0); // the kernel member lost MH_DYLIB_IN_CACHE
     assert!(Kernel::parse(&im).is_err());
-    w32(&mut im, 0x4000 + 24, 0x8000_0000);
-    w64(&mut im, 0x4000 + 32 + 144 + 272, BASE + 0x5004); // member entry differs
+    le::put_u32(&mut im, 0x4000 + 24, 0x8000_0000);
+    le::put_u64(&mut im, 0x4000 + 32 + 144 + 272, BASE + 0x5004); // member entry differs
     assert!(Kernel::parse(&im).is_err());
-    w64(&mut im, 0x4000 + 32 + 144 + 272, BASE + 0x5000);
+    le::put_u64(&mut im, 0x4000 + 32 + 144 + 272, BASE + 0x5000);
     assert!(Kernel::parse(&im).is_ok());
 }
 
@@ -126,10 +127,10 @@ fn adt() {
     bad.extend_from_slice(&[0; 8]);
     assert_eq!(Node::parse(&bad).unwrap_err().0, "bytes after the device tree"); // trailing bytes
     let mut bad = flat.clone();
-    w32(&mut bad, 8 + 32, 0x7fff_fff0);
+    le::put_u32(&mut bad, 8 + 32, 0x7fff_fff0);
     assert!(Node::parse(&bad).is_err()); // property past the tree
     let mut bad = flat.clone();
-    w32(&mut bad, 4, 0xff_ffff);
+    le::put_u32(&mut bad, 4, 0xff_ffff);
     assert!(Node::parse(&bad).is_err()); // child count past the tree
 }
 
@@ -403,15 +404,15 @@ fn machine_bridges_and_refusals() {
 fn sidecars() {
     let mut tc = fixture::trustcache(3);
     assert!(boot::trustcaches_valid(&tc));
-    w32(&mut tc, 8, 3);
+    le::put_u32(&mut tc, 8, 3);
     assert!(!boot::trustcaches_valid(&tc)); // version
-    w32(&mut tc, 8, 2);
-    w32(&mut tc, 28, 0xffff_ffff);
+    le::put_u32(&mut tc, 8, 2);
+    le::put_u32(&mut tc, 28, 0xffff_ffff);
     assert!(!boot::trustcaches_valid(&tc)); // count
-    w32(&mut tc, 28, 3);
-    w32(&mut tc, 4, 0xffff_fff0);
+    le::put_u32(&mut tc, 28, 3);
+    le::put_u32(&mut tc, 4, 0xffff_fff0);
     assert!(!boot::trustcaches_valid(&tc)); // offset
-    w32(&mut tc, 4, 8);
+    le::put_u32(&mut tc, 4, 8);
     tc[32 + 24..32 + 44].fill(0x05);
     assert!(!boot::trustcaches_valid(&tc)); // order
     assert!(!boot::trustcaches_valid(&tc[..4]));
@@ -419,12 +420,12 @@ fn sidecars() {
     // packed ramdisk: 16 pages logical, two extents
     let mut rd = vec![0u8; 32 + 2 * 16 + 2 * 4096];
     rd[..8].copy_from_slice(b"DBRDISK1");
-    w32(&mut rd, 8, 1);
-    w32(&mut rd, 12, 4096);
-    w64(&mut rd, 16, 16 * 4096);
-    w64(&mut rd, 24, 2);
+    le::put_u32(&mut rd, 8, 1);
+    le::put_u32(&mut rd, 12, 4096);
+    le::put_u64(&mut rd, 16, 16 * 4096);
+    le::put_u64(&mut rd, 24, 2);
     for (at, v) in [(32, 4096), (40, 4096), (48, 8 * 4096), (56, 4096)] {
-        w64(&mut rd, at, v);
+        le::put_u64(&mut rd, at, v);
     }
     rd[64..64 + 4096].fill(0xaa);
     rd[64 + 4096..].fill(0xbb);
@@ -433,9 +434,9 @@ fn sidecars() {
     let mut out = vec![0u8; l.expanded as usize];
     boot::ramdisk_copy(&mut out, &rd, l.packed);
     assert!(out[0] == 0 && out[4096] == 0xaa && out[8191] == 0xaa && out[8192] == 0 && out[8 * 4096] == 0xbb);
-    w64(&mut rd, 48, 4096); // overlapping extents
+    le::put_u64(&mut rd, 48, 4096); // overlapping extents
     assert!(boot::ramdisk_layout(&rd).is_none());
-    w64(&mut rd, 48, 8 * 4096);
+    le::put_u64(&mut rd, 48, 8 * 4096);
     assert!(boot::ramdisk_layout(&rd[..rd.len() - 1]).is_none());
     assert_eq!(boot::ramdisk_layout(b"plain disk"), Some(boot::RamdiskLayout { expanded: 10, packed: false }));
 }
@@ -487,7 +488,7 @@ fn place() {
             let f = words(&args[8..40]);
             assert!(args[0] == 2 && args[2] == 2);
             assert_eq!(f, [r.virt_base, r.phys_base, WINDOW as u64, r.phys_base + l.used]);
-            let word = |at: usize| u64::from_le_bytes(args[at..at + 8].try_into().unwrap());
+            let word = |at: usize| le::u64(args, at);
             assert_eq!(word(0x28), 0x9_0000_0000);
             assert_eq!(word(0x60), r.virt_base + (l.tree_pa - r.phys_base));
             assert_eq!(u32::from_le_bytes(args[0x68..0x6c].try_into().unwrap()) as u64, l.tree_size);
@@ -576,16 +577,16 @@ fn mkkernel_wraps_an_elf() {
     elf[..4].copy_from_slice(b"\x7fELF");
     elf[4] = 2; // ELFCLASS64
     elf[18..20].copy_from_slice(&183u16.to_le_bytes()); // EM_AARCH64
-    w64(&mut elf, 24, entry);
-    w64(&mut elf, 32, 64); // e_phoff
+    le::put_u64(&mut elf, 24, entry);
+    le::put_u64(&mut elf, 32, 64); // e_phoff
     elf[54..56].copy_from_slice(&56u16.to_le_bytes());
     elf[56..58].copy_from_slice(&1u16.to_le_bytes());
     let ph = 64;
-    w32(&mut elf, ph, 1); // PT_LOAD
-    w64(&mut elf, ph + 8, 0x1000);
-    w64(&mut elf, ph + 16, entry);
-    w64(&mut elf, ph + 32, 0x10);
-    w64(&mut elf, ph + 40, 0x5000);
+    le::put_u32(&mut elf, ph, 1); // PT_LOAD
+    le::put_u64(&mut elf, ph + 8, 0x1000);
+    le::put_u64(&mut elf, ph + 16, entry);
+    le::put_u64(&mut elf, ph + 32, 0x10);
+    le::put_u64(&mut elf, ph + 40, 0x5000);
     elf[0x1000..0x1010].copy_from_slice(&[0x1f, 0x20, 0x03, 0xd5].repeat(4)); // nop x4
 
     let dir = std::env::temp_dir().join(format!("mkkernel-{}", std::process::id()));

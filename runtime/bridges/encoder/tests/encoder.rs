@@ -16,6 +16,7 @@ use oneencoder::pod::Pod;
 use oneencoder::proto::*;
 use std::sync::Arc;
 use std::time::Duration;
+use xh_core::bytes::le;
 
 const W: u32 = 256;
 const H: u32 = 256;
@@ -136,7 +137,7 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
     let mut saw_eos = false;
     for _ in 0..6 {
         let Some((kind, _, ev)) = g.wait_event(Duration::from_secs(3)) else { break };
-        if kind == MEDIA_EVT_EVENT && u32::from_le_bytes(ev[8..12].try_into().unwrap()) == MEDIA_EVENT_EOS {
+        if kind == MEDIA_EVT_EVENT && le::u32(&ev, 8) == MEDIA_EVENT_EOS {
             saw_eos = true;
             break;
         }

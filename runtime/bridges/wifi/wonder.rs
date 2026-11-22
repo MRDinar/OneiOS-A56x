@@ -25,15 +25,12 @@ use crate::log::Level;
 use crate::{br_error, br_info, br_log};
 use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use xh_core::bytes::le;
 
 const APPLE_OUI: [u8; 3] = [0x00, 0x17, 0xf2];
 /// Every AWDL data frame's addr3 (OWL).
 pub const AWDL_BSSID: [u8; 6] = [0x00, 0x25, 0x00, 0xff, 0x94, 0x73];
 pub const AWDL_PEERS: usize = 16;
-
-fn le32(p: &[u8]) -> u32 {
-    u32::from_le_bytes([p[0], p[1], p[2], p[3]])
-}
 
 // ---- the frames ---------------------------------------------------------------------------------
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,7 +66,7 @@ pub fn radiotap_frame(f: &[u8]) -> Option<AwdlFrame> {
     if !(8..=n).contains(&rt) {
         return None;
     }
-    let present = le32(&f[4..]);
+    let present = le::u32(f, 4);
     let mut at = 8;
     let mut p = present;
     while p & 0x8000_0000 != 0 {
@@ -77,7 +74,7 @@ pub fn radiotap_frame(f: &[u8]) -> Option<AwdlFrame> {
         if at + 4 > rt {
             return None;
         }
-        p = le32(&f[at..]);
+        p = le::u32(f, at);
         at += 4;
     }
     // The first word's fields 0 to 5, in bit order, each aligned to its size from the header's start: TSFT (u64),

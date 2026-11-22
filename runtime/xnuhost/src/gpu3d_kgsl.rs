@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::os::fd::{AsFd, RawFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use xh_core::bytes::le;
 
 use drm2kgsl_sys as d2k;
 use policy::{Action, Class, Frame, Mode, Pages, Policy};
@@ -422,8 +423,8 @@ fn has_gem_submit(commands: &[u8]) -> bool {
     let mut at = 0;
     while at + 16 <= size {
         // vdrm_ccmd_req: cmd, len, seqno, rsp_off
-        let cmd = u32::from_le_bytes(commands[at..at + 4].try_into().unwrap());
-        let len = u32::from_le_bytes(commands[at + 4..at + 8].try_into().unwrap()) as usize;
+        let cmd = le::u32(commands, at);
+        let len = le::u32(commands, at + 4) as usize;
         if cmd == 7 {
             return true;
         }

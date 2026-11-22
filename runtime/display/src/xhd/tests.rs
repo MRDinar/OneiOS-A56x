@@ -7,6 +7,7 @@ use crate::pixels::{half_from_float, half_to_float, half_to_srgb8, srgb8_to_half
 use crate::sys::{self, Errno, Map};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
+use xh_core::bytes::le;
 
 fn err(e: i32) -> Errno {
     Errno(e)
@@ -743,7 +744,7 @@ fn test_slot_layout() {
     let s = Slot { seq: 1, offset: 2, stride: 3, width: 4, height: 5, nsegs: 6, x: 7, y: 8, w: 9, h: 10, format: 11 };
     let b = s.encode();
     assert_eq!(b.len(), 64);
-    assert_eq!(u32::from_le_bytes(b[48..52].try_into().unwrap()), 11);
+    assert_eq!(le::u32(&b, 48), 11);
     assert_eq!(Slot::decode(&b), s);
     assert_eq!(Seg::decode(&Seg { offset: 5, length: 6 }.encode()), Seg { offset: 5, length: 6 });
     assert_eq!(Message::parse(&Message::new(Kind::Frame, 1, 2, 3, 4).to_bytes()).unwrap().kind(), Some(Kind::Frame));

@@ -23,6 +23,7 @@ use onebridges::hal::hidl;
 use std::ffi::CStr;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
+use xh_core::bytes::ne;
 
 // ================================ the fake hwservicemanager + HAL (child) ================================
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,13 +97,6 @@ fn sread(buf: &mut [u8]) -> usize {
     }
 }
 
-fn word(b: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(b[at..at + 4].try_into().unwrap())
-}
-fn quad(b: &[u8], at: usize) -> u64 {
-    u64::from_ne_bytes(b[at..at + 8].try_into().unwrap())
-}
-
 /// Memory the driver gave or a pointer of ours: `len` bytes at `ptr`.
 fn mem<'a>(ptr: u64, len: usize) -> &'a [u8] {
     if len == 0 {
@@ -125,7 +119,7 @@ impl<'a> Rd<'a> {
     fn new(tr: &TransactionData) -> Rd<'a> {
         let d = mem(tr.buffer, tr.data_size as usize);
         let o = mem(tr.offsets, tr.offsets_size as usize);
-        Rd { d, pos: 0, off: (0..o.len() / 8).map(|i| quad(o, i * 8)).collect(), next: 0, bad: false }
+        Rd { d, pos: 0, off: (0..o.len() / 8).map(|i| ne::u64(o, i * 8)).collect(), next: 0, bad: false }
     }
     fn cstr(&mut self) -> &'a CStr {
         if self.bad || self.pos >= self.d.len() {
@@ -148,7 +142,7 @@ impl<'a> Rd<'a> {
             self.bad = true;
             return 0;
         }
-        let v = word(self.d, self.pos) as i32;
+        let v = ne::u32(self.d, self.pos) as i32;
         self.pos += 4;
         v
     }
@@ -183,7 +177,7 @@ impl<'a> Rd<'a> {
                 // libhwbinder: the parent's pointer at that offset is this buffer (the driver fixed it up)
                 let at = self.off[parent] as usize;
                 let p = hidl::BufferObject::parse(&self.d[at..at + 40]);
-                ok = ok && quad(mem(p.buffer + parent_offset as u64, 8), 0) == b.buffer;
+                ok = ok && ne::u64(mem(p.buffer + parent_offset as u64, 8), 0) == b.buffer;
             }
         }
         if !ok {
@@ -194,7 +188,7 @@ impl<'a> Rd<'a> {
     }
     fn vec(&mut self, string: bool) -> Option<&'a [u8]> {
         let (top_index, top) = self.buffer(16, None)?;
-        let size = word(mem(top.buffer, 16), 8) as usize;
+        let size = ne::u32(mem(top.buffer, 16), 8) as usize;
         let (_, child) = self.buffer(size + usize::from(string), Some((top_index, 0)))?;
         let data = mem(child.buffer, size + usize::from(string));
         if string && data[size] != 0 {
@@ -298,7 +292,7 @@ fn scall(cb: u32, code: u32, w: &Wr, check: Option<fn(&mut Rd<'_>) -> bool>) -> 
         let n = sread(&mut buf);
         let mut at = 0;
         while at + 4 <= n {
-            let cmd = word(&buf, at);
+            let cmd = ne::u32(&buf, at);
             at += 4;
             if cmd == BR_REPLY {
                 let tr = TransactionData::parse(&buf[at..at + 64]);
@@ -320,14 +314,14 @@ fn scall(cb: u32, code: u32, w: &Wr, check: Option<fn(&mut Rd<'_>) -> bool>) -> 
 
 fn check_chain(r: &mut Rd<'_>) -> bool {
     let Some((top, v)) = r.buffer(16, None) else { return false };
-    if word(mem(v.buffer, 16), 8) != 3 {
+    if ne::u32(mem(v.buffer, 16), 8) != 3 {
         return false;
     }
     let Some((array, a)) = r.buffer(3 * 16, Some((top, 0))) else { return false };
     let items = mem(a.buffer, 48);
     let want = [BT_CALLBACKS_1_1, BT_CALLBACKS_1_0, HIDL_BASE];
     for (i, w) in want.iter().enumerate() {
-        let size = word(items, i * 16 + 8) as usize;
+        let size = ne::u32(items, i * 16 + 8) as usize;
         let Some((_, b)) = r.buffer(size + 1, Some((array, i * 16))) else { return false };
         if mem(b.buffer, size + 1) != w.to_bytes_with_nul() {
             return false;
@@ -509,13 +503,13 @@ fn fake_hal(device: &str, mode: Mode, ready: i32) {
         let n = sread(&mut buf);
         let mut at = 0;
         while at + 4 <= n {
-            let cmd = word(&buf, at);
+            let cmd = ne::u32(&buf, at);
             at += 4;
             if cmd == BR_TRANSACTION {
                 serve(&TransactionData::parse(&buf[at..at + 64]));
             } else if cmd == BR_INCREFS || cmd == BR_ACQUIRE {
                 let done = if cmd == BR_INCREFS { BC_INCREFS_DONE } else { BC_ACQUIRE_DONE };
-                swrite(Commands::new().word(done).quad(quad(&buf, at)).quad(quad(&buf, at + 8)).as_bytes());
+                swrite(Commands::new().word(done).quad(ne::u64(&buf, at)).quad(ne::u64(&buf, at + 8)).as_bytes());
             }
             at += ioc_size(cmd);
         }

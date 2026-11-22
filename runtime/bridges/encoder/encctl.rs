@@ -19,6 +19,7 @@ use crate::proto::*;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use xh_core::bytes::le;
 use xh_core::mmio::MmioDevice;
 use xh_core::virtio::testing::{self, Driver, GuestRam, RING_BYTES};
 
@@ -132,7 +133,7 @@ impl Guest {
 
     pub fn open(&mut self) -> Option<u32> {
         let (_, resp, _) = self.command([MEDIA_CMD_OPEN, 0].as_bytes(), None, 16, None);
-        (Guest::status(&resp) == 0).then(|| u32::from_le_bytes(resp[8..12].try_into().unwrap()))
+        (Guest::status(&resp) == 0).then(|| le::u32(&resp, 8))
     }
 
     /// An ioctl with `payload` out and back (in place); its status.
@@ -165,8 +166,8 @@ impl Guest {
         if Guest::status(&resp) != 0 {
             return Err(MmapError::Status(Guest::status(&resp)));
         }
-        let at = u64::from_le_bytes(resp[8..16].try_into().unwrap());
-        let size = u64::from_le_bytes(resp[16..24].try_into().unwrap());
+        let at = le::u64(&resp, 8);
+        let size = le::u64(&resp, 16);
         let pool = POOL_BYTES as u64;
         if at > pool || size > pool - at {
             return Err(MmapError::NotInPool(at, size));
@@ -199,7 +200,7 @@ impl Guest {
                 if len >= 8 {
                     let pa = self.driver.desc_addr(MEDIA_QUEUE_EVENT, id % u32::from(QN));
                     let ev = self.events.read((pa - self.events.pa(0)) as usize, MEDIA_EVENT_BYTES as usize);
-                    let word = |i: usize| u32::from_le_bytes(ev[i..i + 4].try_into().unwrap());
+                    let word = |i: usize| le::u32(&ev, i);
                     return Some((word(0), word(4), ev));
                 }
             }

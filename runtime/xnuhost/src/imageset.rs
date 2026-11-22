@@ -14,6 +14,7 @@ use std::io;
 use std::os::unix::fs::FileExt;
 use std::sync::Mutex;
 
+use xh_core::bytes::le;
 use xnuloader::adt::Node;
 
 /// The files of a manifest xnuhost reads at most.
@@ -516,7 +517,10 @@ impl ImageSet {
                 .iter()
                 .find_map(|t| im4p_payload(&file, t))
                 .ok_or("a trust cache of the image set is not an IM4P trust cache")?;
-            if module.len() < 24 || le32(module) != 2 || module.len() as u64 != 24 + le32(&module[20..]) as u64 * 24 {
+            if module.len() < 24
+                || le::u32(module, 0) != 2
+                || module.len() as u64 != 24 + le::u32(module, 20) as u64 * 24
+            {
                 return Err("a trust cache's payload is not a version 2 module (compressed or another version)");
             }
             modules.push(module.to_vec());
@@ -575,14 +579,6 @@ impl ImageSet {
     }
 }
 
-fn le32(p: &[u8]) -> u32 {
-    u32::from_le_bytes(p[..4].try_into().expect("4 bytes"))
-}
-
-fn le64(p: &[u8]) -> u64 {
-    u64::from_le_bytes(p[..8].try_into().expect("8 bytes"))
-}
-
 // ---- chunk verification of a read-only image ----------------------------------------------------------------------
 
 /// A chunk that differs from its hash or cannot be read; a disk's failed read, write or flush (blk.rs).
@@ -610,11 +606,11 @@ impl Verify {
         }
         let list = set.listed(&file.hashes, 64 << 20)?;
         let size = list.len() as u64;
-        if size < 32 || &list[..8] != b"OIHL1\0\0\0" || le32(&list[12..]) != 1 {
+        if size < 32 || &list[..8] != b"OIHL1\0\0\0" || le::u32(&list, 12) != 1 {
             return Err("the chunk hash list is not oneios-hash-list-1 with SHA-256");
         }
-        let chunk = le32(&list[8..]);
-        let (image, count) = (le64(&list[16..]), le64(&list[24..]));
+        let chunk = le::u32(&list, 8);
+        let (image, count) = (le::u64(&list, 16), le::u64(&list, 24));
         if !(4096..=16 << 20).contains(&chunk)
             || chunk & 511 != 0
             || image != file.size

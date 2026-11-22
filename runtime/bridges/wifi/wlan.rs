@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use xh_core::bytes::ne;
 
 // ---- netlink and nl80211's numbers (linux/netlink.h, genetlink.h, nl80211.h; a test checks them) ----
 const NETLINK_GENERIC: i32 = 16;
@@ -156,7 +157,7 @@ fn messages(buf: &[u8]) -> impl Iterator<Item = (u16, u16, u32, &[u8])> {
         let m = &rest[..len];
         let kind = u16::from_ne_bytes([m[4], m[5]]);
         let flags = u16::from_ne_bytes([m[6], m[7]]);
-        let seq = u32::from_ne_bytes(m[8..12].try_into().expect("4 bytes"));
+        let seq = ne::u32(m, 8);
         let step = (len + 3) & !3;
         rest = if step >= rest.len() { &[] } else { &rest[step..] };
         Some((kind, flags, seq, m))

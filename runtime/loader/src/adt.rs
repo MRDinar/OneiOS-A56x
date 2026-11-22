@@ -11,6 +11,7 @@
 
 use crate::Error;
 use std::io::{self, Write};
+use xh_core::bytes::le;
 
 /// The property name field, NUL padded (31 characters at most).
 pub const NAME_MAX: usize = 32;
@@ -258,17 +259,13 @@ impl Node {
     }
 }
 
-fn read_u32(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
-}
-
 fn parse_node(data: &[u8], offset: &mut usize, depth: u32) -> Result<Node, Error> {
     let size = data.len();
     if depth > 64 || size - *offset < 8 {
         return Err(Error("device tree node truncated or too deep"));
     }
-    let nprops = read_u32(data, *offset) as usize;
-    let nchildren = read_u32(data, *offset + 4) as usize;
+    let nprops = le::u32(data, *offset) as usize;
+    let nchildren = le::u32(data, *offset + 4) as usize;
     *offset += 8;
     if nprops > (size - *offset) / 36 {
         return Err(Error("device tree property count runs past the tree"));
@@ -280,7 +277,7 @@ fn parse_node(data: &[u8], offset: &mut usize, depth: u32) -> Result<Node, Error
         let Some(name_end) = name_end.filter(|_| field.len() >= 36) else {
             return Err(Error("bad device tree property header"));
         };
-        let raw = read_u32(field, 32);
+        let raw = le::u32(field, 32);
         let length = (raw & 0x7fff_ffff) as usize;
         *offset += 36;
         if padded(length) > size - *offset {

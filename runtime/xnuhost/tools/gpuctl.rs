@@ -20,6 +20,7 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+use xh_core::bytes::le;
 
 use xnuhost::gpu3d::{
     self, Entry, Gpu3d, BLOB_FLAG_GUEST_HANDLE, BLOB_FLAG_MAPPABLE, BLOB_HOST3D, BLOB_HOST3D_GUEST, CAPSET_DRM,
@@ -613,7 +614,7 @@ impl Gpu {
         let mut rsp = vec![0u8; 8 + payload.len()];
         self.ccmd(ctx, req, Some(&mut rsp))?;
         payload.copy_from_slice(&rsp[8..]);
-        Ok(i32::from_le_bytes(rsp[4..8].try_into().unwrap()))
+        Ok(le::i32(&rsp, 4))
     }
 
     fn get_param(&mut self, ctx: u32, param: u32) -> Result<u64, i32> {
@@ -621,7 +622,7 @@ impl Gpu {
         p[0..4].copy_from_slice(&PIPE_3D0.to_le_bytes());
         p[4..8].copy_from_slice(&param.to_le_bytes());
         let r = self.ioctl_simple(ctx, IOCTL_GET_PARAM, &mut p)?;
-        let value = u64::from_le_bytes(p[8..16].try_into().unwrap());
+        let value = le::u64(&p, 8);
         if r != 0 {
             Err(r)
         } else {
@@ -684,8 +685,8 @@ fn open_renderer() -> Result<Gpu, Failed> {
         && size >= 72
         && gpu.capset(id, version, &mut bytes) == size as usize;
     step("the capset", ok, || format!("id {id} size {size}"))?;
-    let w = |i: usize| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
-    let q = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let w = |i: usize| le::u32(&bytes, i * 4);
+    let q = |at: usize| le::u64(&bytes, at);
     let (va_start, va_size, chip_id) = (q(32), q(40), q(64));
     println!(
         "capset: DRM (6), {} bytes: wire format {}, msm {}.{}, context type {}, chip 0x{:x}, gpu id {}, GPU addresses 0x{:x} + {} GiB, gmem {} KiB, priorities {}",
@@ -747,7 +748,7 @@ fn context_open(g: &mut Gpu, ctx: u32, shmem_res: u32) -> Result<(u64, u32), Fai
     let mut queue = [0u8; 12]; // flags, prio, id
     let r = g.ioctl_simple(ctx, IOCTL_SUBMITQUEUE_NEW, &mut queue);
     step("SUBMITQUEUE_NEW (a KGSL draw context)", r == Ok(0), || format!("{}", r.unwrap_or_else(|e| e)))?;
-    Ok((va_start, u32::from_le_bytes(queue[8..12].try_into().unwrap())))
+    Ok((va_start, le::u32(&queue, 8)))
 }
 
 /// A buffer object as a guest makes one: its own pages, announced with GEM_NEW at a GPU address of the context's

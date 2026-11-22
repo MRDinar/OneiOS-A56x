@@ -10,6 +10,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
+use xh_core::bytes::ne;
 
 pub const CAM_RING_MAGIC: &[u8; 8] = b"OCRING1\0";
 pub const CAM_RING_VERSION: u32 = 1;
@@ -220,7 +221,7 @@ impl RingReader {
         let mut header = [0u8; 32];
         // SAFETY: the first page is mapped (size >= 2 pages).
         unsafe { std::ptr::copy_nonoverlapping(at.as_ptr(), header.as_mut_ptr(), 32) };
-        let word = |o: usize| u32::from_ne_bytes(header[o..o + 4].try_into().unwrap());
+        let word = |o: usize| ne::u32(&header, o);
         let (version, slots, slot_bytes) = (word(OFF_VERSION), word(OFF_SLOTS), word(OFF_SLOT_BYTES));
         let map = Mapping { at, size, fd, slots, slot_bytes };
         if &header[..8] != CAM_RING_MAGIC

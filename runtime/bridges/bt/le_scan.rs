@@ -14,6 +14,8 @@
 //!
 //! Packets are HCI packets without the H4 indicator; the caller holds a lock around each call. C: bt/le_scan.{c,h}.
 
+use xh_core::bytes::le;
+
 /// Events to the guest per call at most.
 pub const UP_MAX: usize = 8;
 /// An event's largest size (code, length, 255 bytes).
@@ -56,10 +58,6 @@ impl EventStep {
     }
 }
 
-fn le16(p: &[u8]) -> u16 {
-    u16::from(p[0]) | u16::from(p[1]) << 8
-}
-
 /// 0x2041 -> 0x200b: own, filter, phys, then per PHY type, interval, window; the first PHY's values go on.
 fn legacy_params(c: &[u8]) -> Option<Vec<u8>> {
     if c.len() < 3 + 8 || c[2] < 8 || c[5] == 0 {
@@ -81,10 +79,10 @@ fn legacy_enable(c: &[u8]) -> Option<Vec<u8>> {
 /// status.
 fn answer_status(e: &[u8], op: u16) -> Option<u8> {
     let n = e.len();
-    if n >= 6 && e[0] == 0x0e && e[1] as usize + 2 == n && le16(&e[3..]) == op {
+    if n >= 6 && e[0] == 0x0e && e[1] as usize + 2 == n && le::u16(e, 3) == op {
         return Some(e[5]);
     }
-    if n >= 6 && e[0] == 0x0f && e[1] as usize + 2 == n && le16(&e[4..]) == op {
+    if n >= 6 && e[0] == 0x0f && e[1] as usize + 2 == n && le::u16(e, 4) == op {
         return Some(e[2]);
     }
     None
@@ -108,7 +106,7 @@ impl LeScan {
         if c.len() < 3 {
             return None;
         }
-        match le16(c) {
+        match le::u16(c, 0) {
             0x2001 if c.len() == 11 => {
                 // LE Set Event Mask: remembered; in legacy mode with reports on
                 self.mask = Some(c[3..11].try_into().expect("8 bytes"));

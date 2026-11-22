@@ -9,6 +9,7 @@ mod kgsl;
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Mutex;
+use xh_core::bytes::le;
 
 use kgsl::{stand, RANGE_OP_BIND, RANGE_OP_UNBIND, VA_BASE};
 use policy::{
@@ -128,8 +129,8 @@ fn renderer(profile: kgsl::Profile) -> Renderer {
     let n = gpu.capset(CAPSET_DRM, 0, &mut bytes);
     assert!(n >= 48);
     // wire_format, major, minor, patch, context_type, pad, has_cached_coherent, priorities; va start, size
-    let va_start = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
-    let va_size = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+    let va_start = le::u64(&bytes, 32);
+    let va_size = le::u64(&bytes, 40);
     Renderer { gpu, ram, _fd: fd, va_start, va_size }
 }
 

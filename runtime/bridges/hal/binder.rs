@@ -16,6 +16,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use xh_core::bytes::ne;
 
 /// The numbers of the binder UAPI (64-bit, protocol version 8). Checked against the C header by a test.
 pub mod uapi {
@@ -118,26 +119,19 @@ pub struct TransactionData {
     pub offsets: u64,
 }
 
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(b[at..at + 4].try_into().expect("4 bytes"))
-}
-fn u64_at(b: &[u8], at: usize) -> u64 {
-    u64::from_ne_bytes(b[at..at + 8].try_into().expect("8 bytes"))
-}
-
 impl TransactionData {
     pub fn parse(b: &[u8]) -> TransactionData {
         TransactionData {
-            target: u64_at(b, 0),
-            cookie: u64_at(b, 8),
-            code: u32_at(b, 16),
-            flags: u32_at(b, 20),
-            sender_pid: u32_at(b, 24) as i32,
-            sender_euid: u32_at(b, 28),
-            data_size: u64_at(b, 32),
-            offsets_size: u64_at(b, 40),
-            buffer: u64_at(b, 48),
-            offsets: u64_at(b, 56),
+            target: ne::u64(b, 0),
+            cookie: ne::u64(b, 8),
+            code: ne::u32(b, 16),
+            flags: ne::u32(b, 20),
+            sender_pid: ne::u32(b, 24) as i32,
+            sender_euid: ne::u32(b, 28),
+            data_size: ne::u64(b, 32),
+            offsets_size: ne::u64(b, 40),
+            buffer: ne::u64(b, 48),
+            offsets: ne::u64(b, 56),
         }
     }
 }
@@ -445,7 +439,7 @@ impl Binder {
         let got = &buffer[..bwr.read_consumed as usize];
         let mut at = 0;
         while at + 4 <= got.len() {
-            let cmd = u32_at(got, at);
+            let cmd = ne::u32(got, at);
             at += 4;
             let size = ioc_size(cmd);
             if size > got.len() - at {
@@ -455,7 +449,7 @@ impl Binder {
             match cmd {
                 BR_INCREFS | BR_ACQUIRE => {
                     let done = if cmd == BR_INCREFS { BC_INCREFS_DONE } else { BC_ACQUIRE_DONE };
-                    let _ = self.write_cmds(&Commands::new().word(done).quad(u64_at(body, 0)).quad(u64_at(body, 8)));
+                    let _ = self.write_cmds(&Commands::new().word(done).quad(ne::u64(body, 0)).quad(ne::u64(body, 8)));
                 }
                 BR_TRANSACTION_SEC_CTX | BR_TRANSACTION => {
                     handler.transaction(Incoming { binder: self, tr: TransactionData::parse(body), done: false });
@@ -473,7 +467,7 @@ impl Binder {
                     }
                 }
                 BR_DEAD_BINDER => {
-                    let cookie = u64_at(body, 0);
+                    let cookie = ne::u64(body, 0);
                     let _ = self.write_cmds(&Commands::new().word(BC_DEAD_BINDER_DONE).quad(cookie));
                     handler.dead(cookie);
                 }
@@ -571,7 +565,7 @@ impl Reply<'_> {
             return None;
         }
         let (data, _) = self.parts();
-        Some(if data.len() >= 4 { u32_at(data, 0) as i32 } else { -libc::EIO })
+        Some(if data.len() >= 4 { ne::u32(data, 0) as i32 } else { -libc::EIO })
     }
     /// The data and the offsets array (as bytes: 8 per object).
     pub fn parts(&self) -> (&[u8], &[u8]) {
@@ -757,10 +751,10 @@ mod tests {
         let c = Commands::new().acquire(7).watch(7, 0x1122_3344_5566_7788);
         let b = c.as_bytes();
         assert_eq!(b.len(), 16 + 16);
-        assert_eq!(u32_at(b, 0), BC_INCREFS);
-        assert_eq!(u32_at(b, 4), 7);
-        assert_eq!(u32_at(b, 8), BC_ACQUIRE);
-        assert_eq!(u32_at(b, 16), BC_REQUEST_DEATH_NOTIFICATION);
-        assert_eq!(u64_at(b, 24), 0x1122_3344_5566_7788);
+        assert_eq!(ne::u32(b, 0), BC_INCREFS);
+        assert_eq!(ne::u32(b, 4), 7);
+        assert_eq!(ne::u32(b, 8), BC_ACQUIRE);
+        assert_eq!(ne::u32(b, 16), BC_REQUEST_DEATH_NOTIFICATION);
+        assert_eq!(ne::u64(b, 24), 0x1122_3344_5566_7788);
     }
 }

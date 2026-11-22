@@ -10,6 +10,7 @@
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use xh_core::bytes::le;
 
 pub use drm2kgsl_sys::Errno;
 
@@ -30,11 +31,7 @@ impl Entry {
 
     /// The entry at the start of `b` (16 bytes, little-endian).
     pub fn decode(b: &[u8]) -> Entry {
-        Entry {
-            addr: u64::from_le_bytes(b[0..8].try_into().unwrap()),
-            length: u32::from_le_bytes(b[8..12].try_into().unwrap()),
-            pad: u32::from_le_bytes(b[12..16].try_into().unwrap()),
-        }
+        Entry { addr: le::u64(b, 0), length: le::u32(b, 8), pad: le::u32(b, 12) }
     }
 }
 

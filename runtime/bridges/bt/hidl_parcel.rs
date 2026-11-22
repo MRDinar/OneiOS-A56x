@@ -127,7 +127,7 @@ mod tests {
     fn hidl_ref(at: u64) -> (u64, u32) {
         // SAFETY: a scratch buffer of the parcel under test, alive for the call.
         let b = unsafe { std::slice::from_raw_parts(at as *const u8, HIDL_REF) };
-        (u64::from_ne_bytes(b[..8].try_into().unwrap()), u32::from_ne_bytes(b[8..12].try_into().unwrap()))
+        (xh_core::bytes::ne::u64(b, 0), xh_core::bytes::ne::u32(b, 8))
     }
     fn c_text(at: u64) -> &'static CStr {
         // SAFETY: a NUL-terminated constant the parcel points at.

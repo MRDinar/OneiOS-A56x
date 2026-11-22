@@ -26,6 +26,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::Duration;
+use xh_core::bytes::le;
 use xh_core::virtio::{Device, Info, Viov, Virtio};
 use xh_core::{loge, logi};
 
@@ -177,10 +178,6 @@ pub type MediaVirtio = Virtio<MediaDevice>;
 
 fn now_ms() -> u64 {
     xh_core::time::monotonic_ms()
-}
-
-fn rd32(p: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(p[at..at + 4].try_into().unwrap())
 }
 
 impl State {
@@ -353,7 +350,7 @@ impl MediaDevice {
                     return libc::EINVAL as u32;
                 }
                 let on = nr == MEDIA_VIDIOC_STREAMON;
-                match rd32(payload, 0) {
+                match le::u32(payload, 0) {
                     MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE => s.output_on = on,
                     MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE => s.capture_on = on,
                     _ => return libc::EINVAL as u32,
@@ -368,7 +365,7 @@ impl MediaDevice {
                 if len < 4 {
                     return libc::EINVAL as u32;
                 }
-                if rd32(payload, 0) == MEDIA_ENC_CMD_STOP && !s.draining {
+                if le::u32(payload, 0) == MEDIA_ENC_CMD_STOP && !s.draining {
                     if let Some(enc) = s.enc.as_mut() {
                         s.draining = true;
                         let _ = enc.drain();
@@ -385,7 +382,7 @@ impl MediaDevice {
                 if len < 48 {
                     return libc::EINVAL as u32;
                 }
-                let format = match (rd32(payload, 4), rd32(payload, 0)) {
+                let format = match (le::u32(payload, 4), le::u32(payload, 0)) {
                     (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 0) => MEDIA_PIXFMT_NV12,
                     (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 0) => MEDIA_PIXFMT_HEVC,
                     (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 1) => MEDIA_PIXFMT_H264,
@@ -485,7 +482,7 @@ impl MediaDevice {
         let mut cmd = [0u8; 20];
         let cmd_len = reads[0].len() as usize;
         reads[0].read_at(0, &mut cmd);
-        let op = rd32(&cmd, 0);
+        let op = le::u32(&cmd, 0);
         let mut st = self.state.borrow_mut();
         st.busy_until_ms = now_ms() + MEDIA_BUSY_MS; // a command: the worker looks at once, and often for a while
         self.wake.wake();
@@ -495,7 +492,7 @@ impl MediaDevice {
         // start-up check and the first encode.
         if op == MEDIA_CMD_CLOSE {
             if cmd_len >= 12 {
-                if let Some(s) = st.session(rd32(&cmd, 8)) {
+                if let Some(s) = st.session(le::u32(&cmd, 8)) {
                     s.enc = None; // closes the backend's session
                     s.used = false;
                 }
@@ -535,8 +532,8 @@ impl MediaDevice {
                 }
             }
             MEDIA_CMD_IOCTL if cmd_len >= 16 => {
-                let slot = st.sessions.iter().position(|s| s.used && s.id == rd32(&cmd, 8));
-                let nr = rd32(&cmd, 12);
+                let slot = st.sessions.iter().position(|s| s.used && s.id == le::u32(&cmd, 8));
+                let nr = le::u32(&cmd, 12);
                 let mut scratch = [0u8; std::mem::size_of::<MediaV4l2Format>()];
                 let len = reads.get(1).map_or(0, |out| out.read_at(0, &mut scratch));
                 let back = writes.get(1).map_or(0, |inp| (inp.len() as usize).min(scratch.len()));
@@ -553,8 +550,8 @@ impl MediaDevice {
                 8 + back as u32
             }
             MEDIA_CMD_MMAP if cmd_len >= 20 && cap >= 24 => {
-                let offset = u64::from(rd32(&cmd, 16));
-                let found = st.session(rd32(&cmd, 8)).and_then(|s| {
+                let offset = u64::from(le::u32(&cmd, 16));
+                let found = st.session(le::u32(&cmd, 8)).and_then(|s| {
                     s.output.iter().chain(s.capture.iter()).find(|b| b.offset == offset).map(|b| (offset, b.size))
                 });
                 // The answer is the buffer's place in the pool, not its address: the guest adds its media-host-pool
@@ -604,7 +601,7 @@ impl Device for MediaDevice {
                 let mut card = [0u8; 36];
                 card[..14].copy_from_slice(b"oneios-encoder");
                 let at = (offset - 8) as usize;
-                u32::from_le_bytes(card[at..at + 4].try_into().unwrap())
+                le::u32(&card, at)
             }
             _ => 0,
         }

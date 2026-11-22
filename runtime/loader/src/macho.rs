@@ -7,6 +7,7 @@
 //! caller's), a symbol lookup and a fileset entry list.
 
 use crate::Error;
+use xh_core::bytes::le;
 
 pub const MAX_SEGMENTS: usize = 64;
 pub const MAX_ENTRIES: usize = 1024;
@@ -74,14 +75,6 @@ pub struct Kernel {
     pub entries: Vec<FilesetEntry>,
 }
 
-fn u32_at(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
-}
-
-fn u64_at(data: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(data[at..at + 8].try_into().unwrap())
-}
-
 /// The text of a NUL-padded name field.
 fn field_name(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
@@ -100,27 +93,27 @@ fn parse_header(data: &[u8], header: usize) -> Result<Kernel, Error> {
     if header > size || size - header < 32 {
         fail!("file too small for a Mach-O header");
     }
-    if u32_at(data, header) != MH_MAGIC_64 {
+    if le::u32(data, header) != MH_MAGIC_64 {
         fail!("not a 64-bit Mach-O");
     }
-    if u32_at(data, header + 4) != CPU_TYPE_ARM64 {
+    if le::u32(data, header + 4) != CPU_TYPE_ARM64 {
         fail!("not an arm64 Mach-O");
     }
-    let subtype = u32_at(data, header + 8) & 0x00ff_ffff;
+    let subtype = le::u32(data, header + 8) & 0x00ff_ffff;
     if subtype != 0 && subtype != 2 {
         fail!("CPU subtype is neither arm64 nor arm64e");
     }
-    let kind = u32_at(data, header + 12);
+    let kind = le::u32(data, header + 12);
     if kind != MH_EXECUTE && !(header == 0 && kind == MH_FILESET) {
         fail!("not MH_EXECUTE or a top-level MH_FILESET");
     }
-    let commands_size = u32_at(data, header + 20) as usize;
+    let commands_size = le::u32(data, header + 20) as usize;
     if commands_size > size - header - 32 {
         fail!("load commands run past the file");
     }
 
     let mut k = Kernel { cpusubtype: subtype, fileset: kind == MH_FILESET, ..Kernel::default() };
-    let count = u32_at(data, header + 16);
+    let count = le::u32(data, header + 16);
     let end = header + 32 + commands_size;
     let mut offset = header + 32;
     let mut has_entry = false;
@@ -128,25 +121,25 @@ fn parse_header(data: &[u8], header: usize) -> Result<Kernel, Error> {
         if end - offset < 8 {
             fail!("truncated load command");
         }
-        let (command, length) = (u32_at(data, offset), u32_at(data, offset + 4) as usize);
+        let (command, length) = (le::u32(data, offset), le::u32(data, offset + 4) as usize);
         if length < 8 || length & 7 != 0 || length > end - offset {
             fail!("bad load command length");
         }
         if command == LC_SEGMENT_64 {
-            if length < 72 || u32_at(data, offset + 64) as usize > (length - 72) / 80 {
+            if length < 72 || le::u32(data, offset + 64) as usize > (length - 72) / 80 {
                 fail!("bad segment command");
             }
-            if u64_at(data, offset + 32) != 0 {
+            if le::u64(data, offset + 32) != 0 {
                 if k.segments.len() == MAX_SEGMENTS {
                     fail!("too many segments");
                 }
                 let s = Segment {
                     name: field_name(&data[offset + 8..offset + 24]),
-                    vmaddr: u64_at(data, offset + 24),
-                    vmsize: u64_at(data, offset + 32),
-                    fileoff: u64_at(data, offset + 40),
-                    filesize: u64_at(data, offset + 48),
-                    prot: u32_at(data, offset + 60),
+                    vmaddr: le::u64(data, offset + 24),
+                    vmsize: le::u64(data, offset + 32),
+                    fileoff: le::u64(data, offset + 40),
+                    filesize: le::u64(data, offset + 48),
+                    prot: le::u32(data, offset + 60),
                 };
                 if s.vmaddr > u64::MAX - s.vmsize
                     || s.filesize > s.vmsize
@@ -159,10 +152,10 @@ fn parse_header(data: &[u8], header: usize) -> Result<Kernel, Error> {
             }
         } else if command == LC_UNIXTHREAD {
             // ARM_THREAD_STATE64 (flavor 6, 68 words): pc is the 33rd 64-bit register.
-            if has_entry || length != 288 || u32_at(data, offset + 8) != 6 || u32_at(data, offset + 12) != 68 {
+            if has_entry || length != 288 || le::u32(data, offset + 8) != 6 || le::u32(data, offset + 12) != 68 {
                 fail!("bad or repeated LC_UNIXTHREAD");
             }
-            k.entry = u64_at(data, offset + 272);
+            k.entry = le::u64(data, offset + 272);
             has_entry = true;
         }
         offset += length;
@@ -207,16 +200,16 @@ impl Kernel {
             return Ok(k);
         }
         let size = data.len();
-        let end = 32 + u32_at(data, 20) as usize;
+        let end = 32 + le::u32(data, 20) as usize;
         let mut offset = 32;
         let mut found = false;
         while offset < end {
-            let length = u32_at(data, offset + 4) as usize;
-            if u32_at(data, offset) == LC_FILESET_ENTRY {
+            let length = le::u32(data, offset + 4) as usize;
+            if le::u32(data, offset) == LC_FILESET_ENTRY {
                 if length < 40 {
                     fail!("bad fileset entry");
                 }
-                let name = u32_at(data, offset + 24) as usize;
+                let name = le::u32(data, offset + 24) as usize;
                 if name < 32 || name >= length {
                     fail!("bad fileset entry name offset");
                 }
@@ -224,7 +217,7 @@ impl Kernel {
                     fail!("unterminated fileset entry name");
                 };
                 let name_bytes = &data[offset + name..offset + name + name_len];
-                let (vmaddr, header) = (u64_at(data, offset + 8), u64_at(data, offset + 16));
+                let (vmaddr, header) = (le::u64(data, offset + 8), le::u64(data, offset + 16));
                 if header > size as u64 || size as u64 - header < 32 || header & 7 != 0 {
                     fail!("fileset member header outside the file");
                 }
@@ -251,9 +244,9 @@ impl Kernel {
                         fail!("two com.apple.kernel entries");
                     }
                     let h = header as usize;
-                    if u32_at(data, h + 12) != MH_EXECUTE
-                        || u32_at(data, h + 8) != u32_at(data, 8)
-                        || u32_at(data, h + 24) & MH_DYLIB_IN_CACHE == 0
+                    if le::u32(data, h + 12) != MH_EXECUTE
+                        || le::u32(data, h + 8) != le::u32(data, 8)
+                        || le::u32(data, h + 24) & MH_DYLIB_IN_CACHE == 0
                     {
                         fail!("com.apple.kernel is not an MH_EXECUTE member of this collection");
                     }
@@ -298,10 +291,10 @@ fn inside(ch: &Segment, p: &Segment) -> bool {
 pub fn symbol(data: &[u8], header: u64, name: &str) -> Option<u64> {
     let size = data.len();
     let header = usize::try_from(header).ok()?;
-    if header > size || size - header < 32 || u32_at(data, header) != MH_MAGIC_64 {
+    if header > size || size - header < 32 || le::u32(data, header) != MH_MAGIC_64 {
         return None;
     }
-    let (count, bytes) = (u32_at(data, header + 16), u32_at(data, header + 20) as usize);
+    let (count, bytes) = (le::u32(data, header + 16), le::u32(data, header + 20) as usize);
     if bytes > size - header - 32 {
         return None;
     }
@@ -311,28 +304,28 @@ pub fn symbol(data: &[u8], header: u64, name: &str) -> Option<u64> {
         if end - offset < 8 {
             break;
         }
-        let (command, length) = (u32_at(data, offset), u32_at(data, offset + 4) as usize);
+        let (command, length) = (le::u32(data, offset), le::u32(data, offset + 4) as usize);
         if length < 8 || length > end - offset {
             return None;
         }
         if command == LC_SYMTAB && length >= 24 {
-            let symoff = u32_at(data, offset + 8) as usize;
-            let nsyms = u32_at(data, offset + 12) as usize;
-            let stroff = u32_at(data, offset + 16) as usize;
-            let strsize = u32_at(data, offset + 20) as usize;
+            let symoff = le::u32(data, offset + 8) as usize;
+            let nsyms = le::u32(data, offset + 12) as usize;
+            let stroff = le::u32(data, offset + 16) as usize;
+            let strsize = le::u32(data, offset + 20) as usize;
             if symoff > size || nsyms > (size - symoff) / 16 || stroff > size || strsize > size - stroff {
                 return None;
             }
             let want = name.as_bytes();
             let strings = &data[stroff..stroff + strsize];
             return data[symoff..symoff + nsyms * 16].chunks_exact(16).find_map(|n| {
-                let strx = u32_at(n, 0) as usize;
+                let strx = le::u32(n, 0) as usize;
                 // not a stab, defined in a section
                 if n[4] & 0xe0 != 0 || n[4] & 0x0e != 0x0e || strx >= strsize || strsize - strx <= want.len() {
                     return None;
                 }
                 let s = &strings[strx..strx + want.len() + 1];
-                (s[..want.len()] == *want && s[want.len()] == 0).then(|| u64_at(n, 8))
+                (s[..want.len()] == *want && s[want.len()] == 0).then(|| le::u64(n, 8))
             });
         }
         offset += length;

@@ -203,6 +203,7 @@ pub fn png_write(path: &str, rgb: &[u8], width: usize, height: usize) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xh_core::bytes::be;
 
     #[test]
     fn to_nv12() {
@@ -313,10 +314,6 @@ mod tests {
         }
     }
 
-    fn be32(p: &[u8]) -> u32 {
-        u32::from_be_bytes(p[..4].try_into().unwrap())
-    }
-
     #[test]
     fn png() {
         const W: usize = 301;
@@ -331,14 +328,14 @@ mod tests {
         let size = file.len();
         assert!(size > rgb.len() && &file[..8] == b"\x89PNG\r\n\x1a\n");
         // IHDR, one IDAT, IEND: lengths, types and CRCs.
-        assert!(be32(&file[8..]) == 13 && &file[12..16] == b"IHDR" && be32(&file[16..]) == W as u32);
-        assert!(be32(&file[20..]) == H as u32 && file[24] == 8 && file[25] == 2);
-        assert_eq!(be32(&file[29..]), crc32(0, &file[12..29]));
-        let idat = be32(&file[33..]) as usize;
+        assert!(be::u32(&file, 8) == 13 && &file[12..16] == b"IHDR" && be::u32(&file, 16) == W as u32);
+        assert!(be::u32(&file, 20) == H as u32 && file[24] == 8 && file[25] == 2);
+        assert_eq!(be::u32(&file, 29), crc32(0, &file[12..29]));
+        let idat = be::u32(&file, 33) as usize;
         assert!(&file[37..41] == b"IDAT" && 41 + idat + 4 + 12 == size);
-        assert_eq!(be32(&file[41 + idat..]), crc32(0, &file[37..41 + idat]));
-        assert!(be32(&file[size - 12..]) == 0 && &file[size - 8..size - 4] == b"IEND");
-        assert_eq!(be32(&file[size - 4..]), crc32(0, &file[size - 8..size - 4]));
+        assert_eq!(be::u32(&file, 41 + idat), crc32(0, &file[37..41 + idat]));
+        assert!(be::u32(&file, size - 12) == 0 && &file[size - 8..size - 4] == b"IEND");
+        assert_eq!(be::u32(&file, size - 4), crc32(0, &file[size - 8..size - 4]));
         // The zlib stream: stored blocks that add up to the filtered rows, and its Adler-32.
         let z = &file[41..41 + idat];
         let mut raw = Vec::new();
@@ -360,7 +357,7 @@ mod tests {
             a = (a + u32::from(v)) % 65521;
             b = (b + a) % 65521;
         }
-        assert_eq!(be32(&z[at..]), b << 16 | a);
+        assert_eq!(be::u32(z, at), b << 16 | a);
         for r in 0..H {
             let line = &raw[r * (W * 3 + 1)..][..W * 3 + 1];
             assert!(line[0] == 0 && line[1..] == rgb[r * W * 3..][..W * 3]);

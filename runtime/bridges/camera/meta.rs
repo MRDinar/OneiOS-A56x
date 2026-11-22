@@ -8,6 +8,7 @@
 //! (u64) }, then 16-byte entries { tag, count, offset-or-4-bytes, type, 3 reserved }: values of at most 4 bytes are
 //! in the entry, the others at data_start + offset.
 use crate::proto::{OcCamera, Role, OC_FACING_BACK, OC_FACING_EXTERNAL, OC_FACING_FRONT, OC_MAX_HEIGHT, OC_MAX_WIDTH};
+use xh_core::bytes::ne;
 
 pub const CAM_META_BYTE: u8 = 0;
 pub const CAM_META_INT32: u8 = 1;
@@ -82,20 +83,16 @@ impl Entry<'_> {
     }
 }
 
-fn rd32(buffer: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(buffer[at..at + 4].try_into().unwrap())
-}
-
 /// The entry of `tag`: (entry's offset, its values' offset, count, type).
 fn locate(buffer: &[u8], tag: u32) -> Result<(usize, usize, u32, u8), MetaError> {
     if buffer.len() < 48 {
         return Err(MetaError::Invalid);
     }
-    let total = rd32(buffer, 0) as usize;
-    let entries = rd32(buffer, 12) as usize;
-    let entries_start = rd32(buffer, 20) as usize;
-    let data_count = rd32(buffer, 24) as usize;
-    let data_start = rd32(buffer, 32) as usize;
+    let total = ne::u32(buffer, 0) as usize;
+    let entries = ne::u32(buffer, 12) as usize;
+    let entries_start = ne::u32(buffer, 20) as usize;
+    let data_count = ne::u32(buffer, 24) as usize;
+    let data_start = ne::u32(buffer, 32) as usize;
     if total > buffer.len()
         || entries_start > total
         || entries as u64 * 16 > (total - entries_start) as u64
@@ -106,10 +103,10 @@ fn locate(buffer: &[u8], tag: u32) -> Result<(usize, usize, u32, u8), MetaError>
     }
     for i in 0..entries {
         let at = entries_start + i * 16;
-        if rd32(buffer, at) != tag {
+        if ne::u32(buffer, at) != tag {
             continue;
         }
-        let n = rd32(buffer, at + 4);
+        let n = ne::u32(buffer, at + 4);
         let ty = buffer[at + 12];
         if ty > CAM_META_RATIONAL {
             return Err(MetaError::Invalid);
@@ -117,7 +114,7 @@ fn locate(buffer: &[u8], tag: u32) -> Result<(usize, usize, u32, u8), MetaError>
         let bytes = u64::from(n) * TYPE_SIZE[ty as usize];
         let mut values = at + 8;
         if bytes > 4 {
-            let offset = rd32(buffer, at + 8) as u64;
+            let offset = ne::u32(buffer, at + 8) as u64;
             if offset > data_count as u64 || bytes > data_count as u64 - offset {
                 return Err(MetaError::Invalid);
             }

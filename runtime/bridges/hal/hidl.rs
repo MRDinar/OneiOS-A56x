@@ -7,6 +7,7 @@
 use super::binder::{self, Outgoing};
 use std::ffi::CStr;
 use std::marker::PhantomData;
+use xh_core::bytes::ne;
 
 pub const TYPE_BINDER: u32 = binder::uapi::TYPE_BINDER;
 pub const TYPE_HANDLE: u32 = binder::uapi::TYPE_HANDLE;
@@ -45,13 +46,6 @@ pub struct BufferObject {
     pub parent_offset: u64,
 }
 
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(b[at..at + 4].try_into().expect("4 bytes"))
-}
-fn u64_at(b: &[u8], at: usize) -> u64 {
-    u64::from_ne_bytes(b[at..at + 8].try_into().expect("8 bytes"))
-}
-
 impl BufferObject {
     pub fn to_bytes(self) -> [u8; BUFFER_OBJECT] {
         let mut b = [0u8; BUFFER_OBJECT];
@@ -65,12 +59,12 @@ impl BufferObject {
     }
     pub fn parse(b: &[u8]) -> BufferObject {
         BufferObject {
-            kind: u32_at(b, 0),
-            flags: u32_at(b, 4),
-            buffer: u64_at(b, 8),
-            length: u64_at(b, 16),
-            parent: u64_at(b, 24),
-            parent_offset: u64_at(b, 32),
+            kind: ne::u32(b, 0),
+            flags: ne::u32(b, 4),
+            buffer: ne::u64(b, 8),
+            length: ne::u64(b, 16),
+            parent: ne::u64(b, 24),
+            parent_offset: ne::u64(b, 32),
         }
     }
 }
@@ -343,7 +337,7 @@ impl<'a> HidlReader<'a> {
             self.bad = true;
             return 0;
         }
-        let v = u32_at(self.data, self.position) as i32;
+        let v = ne::u32(self.data, self.position) as i32;
         self.position += 4;
         v
     }
@@ -382,7 +376,7 @@ impl<'a> HidlReader<'a> {
         }
         // SAFETY: top.buffer is a buffer of HIDL_REF bytes the parcel carries (HidlReader::new's contract).
         let r = unsafe { std::slice::from_raw_parts(top.buffer as *const u8, HIDL_REF) };
-        let (pointer, size) = (u64_at(r, 0), u32_at(r, 8));
+        let (pointer, size) = (ne::u64(r, 0), ne::u32(r, 8));
         if size as u64 != child.length || (size != 0 && pointer != child.buffer) {
             self.bad = true;
             return None;

@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use xh_core::bytes::le;
 use xh_core::virtio::{self, Device, Info, Viov, Virtio};
 
 const Q_CONTROL: u32 = 0;
@@ -50,10 +51,6 @@ pub struct SndDevice {
     pub tx_periods: AtomicU64,
     pub rx_periods: AtomicU64,
     pub rx_dropped: AtomicU64,
-}
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"))
 }
 
 /// The capture thread: a period from the backend into each receive buffer the guest posted.
@@ -171,11 +168,11 @@ impl SndDevice {
         if reply.len() < 4 || size < 4 {
             return Some(0);
         }
-        let code = u32_at(&request, 0);
+        let code = le::u32(&request, 0);
         let mut status = S_NOT_SUPP;
         let mut written = 4u32;
         if code == R_PCM_INFO && size >= 16 {
-            let (first, count, each) = (u32_at(&request, 4), u32_at(&request, 8), u32_at(&request, 12));
+            let (first, count, each) = (le::u32(&request, 4), le::u32(&request, 8), le::u32(&request, 12));
             if u64::from(first) + u64::from(count) > 2
                 || each < PCM_INFO
                 || u64::from(reply.len()) < 4 + u64::from(count) * u64::from(each)
@@ -197,7 +194,7 @@ impl SndDevice {
                 status = S_OK;
             }
         } else if code == R_PCM_SET_PARAMS && size >= SET_PARAMS {
-            let stream = u32_at(&request, 4);
+            let stream = le::u32(&request, 4);
             let (channels, format, rate) = (request[20], request[21], request[22]);
             let output = stream == 0;
             status = if stream > 1 || format != FMT_S16 || rate != RATE_48000 || channels != if output { 2 } else { 1 }
@@ -208,7 +205,7 @@ impl SndDevice {
                 S_OK
             };
         } else if (R_PCM_PREPARE..=R_PCM_STOP).contains(&code) && size >= 8 {
-            status = self.pcm_command(dev, code, u32_at(&request, 4));
+            status = self.pcm_command(dev, code, le::u32(&request, 4));
         }
         reply.write_at(0, &status.to_le_bytes());
         Some(written)
@@ -235,7 +232,7 @@ impl SndDevice {
                 if data.len() < skip {
                     return Some(0);
                 }
-                stream = u32_at(data, 0);
+                stream = le::u32(data, 0);
                 data = &data[skip..];
                 skip = 0;
             }

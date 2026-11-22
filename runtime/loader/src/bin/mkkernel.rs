@@ -2,6 +2,7 @@
 //! mkkernel ELF KERNEL.KC DISK: wraps the test kernel (a static AArch64 ELF, runtime/xnuhost/testkernel) as an
 //! MH_EXECUTE Mach-O the loader accepts, and writes the test disk. Nothing of Apple's is involved.
 use std::process::ExitCode;
+use xh_core::bytes::le;
 use xh_core::sys::error_text;
 use xnuloader::fixture;
 
@@ -16,33 +17,23 @@ struct Load {
     memsz: u64,
 }
 
-fn u16_at(d: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(d.get(at..at + 2)?.try_into().ok()?))
-}
-fn u32_at(d: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(d.get(at..at + 4)?.try_into().ok()?))
-}
-fn u64_at(d: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(d.get(at..at + 8)?.try_into().ok()?))
-}
-
 /// The entry and the PT_LOAD segments of an AArch64 ELF64; None if it is not one.
 fn read_elf(elf: &[u8]) -> Option<(u64, Vec<Load>)> {
-    if elf.len() < 64 || &elf[..4] != b"\x7fELF" || u16_at(elf, 18)? != EM_AARCH64 {
+    if elf.len() < 64 || &elf[..4] != b"\x7fELF" || le::try_u16(elf, 18)? != EM_AARCH64 {
         return None;
     }
-    let (entry, phoff, phnum) = (u64_at(elf, 24)?, u64_at(elf, 32)? as usize, u16_at(elf, 56)? as usize);
+    let (entry, phoff, phnum) = (le::try_u64(elf, 24)?, le::try_u64(elf, 32)? as usize, le::try_u16(elf, 56)? as usize);
     let mut loads = Vec::new();
     for i in 0..phnum {
         let ph = phoff + i * 56;
-        if u32_at(elf, ph)? != PT_LOAD {
+        if le::try_u32(elf, ph)? != PT_LOAD {
             continue;
         }
         loads.push(Load {
-            offset: u64_at(elf, ph + 8)?,
-            vaddr: u64_at(elf, ph + 16)?,
-            filesz: u64_at(elf, ph + 32)?,
-            memsz: u64_at(elf, ph + 40)?,
+            offset: le::try_u64(elf, ph + 8)?,
+            vaddr: le::try_u64(elf, ph + 16)?,
+            filesz: le::try_u64(elf, ph + 32)?,
+            memsz: le::try_u64(elf, ph + 40)?,
         });
     }
     Some((entry, loads))

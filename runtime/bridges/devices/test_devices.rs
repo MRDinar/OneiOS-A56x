@@ -16,6 +16,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xh_core::bytes::le;
 use xh_core::mmio::MmioDevice;
 use xh_core::virtio::testing::{install, Driver, GuestRam, RING_BYTES};
 
@@ -605,7 +606,7 @@ fn snd_device() {
     let (status, reply) = control(&mut g, &u32s(&[0x0100, 0, 2, 32]), 4 + 2 * 32);
     assert_eq!(status, 0x8000);
     assert!(reply[4 + 24] == 0 && reply[4 + 25] == 2 && reply[4 + 32 + 24] == 1 && reply[4 + 32 + 26] == 1); // stereo out, mono in
-    assert_eq!(u64::from_le_bytes(reply[12..20].try_into().unwrap()), 1 << 5);
+    assert_eq!(le::u64(&reply, 12), 1 << 5);
     let params = |stream: u32, channels: u8, rate: u8| {
         let mut p = u32s(&[0x0101, stream, 15360, 960, 0]);
         p.extend([channels, 5, rate, 0]);

@@ -6,14 +6,7 @@ use super::Rect;
 use crate::sys::{self, Errno, Map, Result};
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
-
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-
-fn u64_at(b: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
-}
+use xh_core::bytes::le;
 
 /// A slot of the direct table, as xnuhost writes it (struct xhd_slot, 64 bytes): the frame `seq`, rows of `stride`
 /// bytes from byte `offset` of the segments (the guest's pages as offsets into the RAM memfd, in the scanout's order),
@@ -41,17 +34,17 @@ impl Slot {
 
     pub fn decode(b: &[u8]) -> Slot {
         Slot {
-            seq: u64_at(b, 0),
-            offset: u64_at(b, 8),
-            stride: u32_at(b, 16),
-            width: u32_at(b, 20),
-            height: u32_at(b, 24),
-            nsegs: u32_at(b, 28),
-            x: u32_at(b, 32),
-            y: u32_at(b, 36),
-            w: u32_at(b, 40),
-            h: u32_at(b, 44),
-            format: u32_at(b, 48),
+            seq: le::u64(b, 0),
+            offset: le::u64(b, 8),
+            stride: le::u32(b, 16),
+            width: le::u32(b, 20),
+            height: le::u32(b, 24),
+            nsegs: le::u32(b, 28),
+            x: le::u32(b, 32),
+            y: le::u32(b, 36),
+            w: le::u32(b, 40),
+            h: le::u32(b, 44),
+            format: le::u32(b, 48),
         }
     }
 
@@ -83,7 +76,7 @@ impl Seg {
     pub const BYTES: usize = 16;
 
     pub fn decode(b: &[u8]) -> Seg {
-        Seg { offset: u64_at(b, 0), length: u64_at(b, 8) }
+        Seg { offset: le::u64(b, 0), length: le::u64(b, 8) }
     }
 
     pub fn encode(&self) -> [u8; Seg::BYTES] {
