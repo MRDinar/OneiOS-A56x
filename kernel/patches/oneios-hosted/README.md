@@ -1229,6 +1229,24 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0089-smp-scheduler-init-completed.patch (fix-hosted-smp-scheduler-init, 2026-11-23)
+
+The scheduler's completion step, `ml_cpu_init_completed`, never ran on this board: its only arm64 caller is
+AppleARMSMP (`iokit/Kernel/arm/AppleARMSMP.cpp`, under `USE_APPLEARMSMP`), which the hosted board (BCM2837's board
+config) does not build, and UniXNU's ArmCpu calls it only with `armcpu-edge=1`. So `sched_cpu_init_completed` never
+ran: no Edge default edges or per-pset limits, no realtime spill rules, `pcs_init_completed` false all session, and
+0085 (called at its end) did nothing: the phone boot of 2026-11-23 02:16 printed no `oneios-edge:` line, and the two E
+vCPUs were 0% idle while the six P vCPUs were 50-98% idle.
+
+What the patch changes (`osfmk/arm64/hosted/hosted_smp.c`, `osfmk/arm64/machine_routines.c`, `osfmk/kern/processor.c`,
+`XNU_HOSTED`): `ml_processor_register` counts the boots, and the last of the topology's CPUs starts a kernel thread that
+calls `ml_cpu_init_completed` once (a later call, ArmCpu's with `armcpu-edge=1`, is one log line);
+`cpu_boot_timeout_secs` is 10 s (a vCPU is a host thread). `oneios-smp-complete=0` is the old way. Lines:
+`oneios-smp: all N CPUs booted: ml_cpu_init_completed ...`, then 0085's `oneios-edge: E -> P migration and steal allowed`.
+
+Tested (2026-11-23): written by the fix-hosted-smp-scheduler-init helper; built and prelinked on the build laptop by the
+lead (below, when done). Not booted under qemu (the owner asked for a combined phone test boot first) or on the phone yet.
+
 ## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
 
 The fault: no haptic is felt. With 0078 audiomxd's haptic server starts and plays, and the Actuator device runs I/O,

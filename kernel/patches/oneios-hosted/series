@@ -394,3 +394,12 @@
 # Nothing when the name's folder is sealed (V54AP) or there is no unique-model. oneios-cmcapture-model=0: not done;
 # =NAME: another folder. README.md, "0088". Numbered 0088: 0087 was the last on main and on the open branches.
 0088-cmcapture-model-folder.patch
+# fix-hosted-smp-scheduler-init (2026-11-23): the scheduler's completion step. XNU's only arm64 caller of
+# ml_cpu_init_completed is AppleARMSMP (USE_APPLEARMSMP), which this board does not build; ArmCpu calls it only with
+# armcpu-edge=1. So sched_cpu_init_completed never ran: no Edge default edges or per-pset limits, no realtime spill
+# rules, pcs_init_completed false all session, and 0085 (called at its end) did nothing (the 2026-11-23 02:16 phone boot
+# printed no `oneios-edge:` line). Here ml_processor_register counts the boots and the last one starts a thread that
+# calls ml_cpu_init_completed (once: a second call, ArmCpu's, is a log line); cpu_boot_timeout_secs 10 s (a vCPU is a
+# host thread). oneios-smp-complete=0 is the old way. `oneios-smp:` lines, then 0085's `oneios-edge:`. README.md, "0089".
+# Numbered 0089 (0088 is the CMCapture model folder). Built and prelinked; not yet booted under qemu or on the phone.
+0089-smp-scheduler-init-completed.patch
