@@ -7,7 +7,7 @@
 //! written again) to see that the copy is whole.
 use crate::proto::{OcFrame, OC_FRAME_MAGIC};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 use xh_core::bytes::ne;
@@ -133,13 +133,7 @@ impl RingWriter {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
         let size = ring_size(slots, slot_bytes);
-        // SAFETY: a NUL-terminated name; the result is checked.
-        let raw = unsafe { libc::memfd_create(c"oneios-camera".as_ptr(), libc::MFD_CLOEXEC) };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a fresh descriptor that nothing else owns.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let fd = xh_core::fd::memfd(c"oneios-camera", libc::MFD_CLOEXEC)?;
         // SAFETY: our descriptor; the size is a plain number.
         if unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } != 0 {
             return Err(io::Error::last_os_error());
@@ -407,10 +401,7 @@ mod tests {
 
     #[test]
     fn not_a_ring() {
-        // SAFETY: a NUL-terminated name.
-        let raw = unsafe { libc::memfd_create(c"not-a-ring".as_ptr(), 0) };
-        // SAFETY: a fresh descriptor.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let fd = xh_core::fd::memfd(c"not-a-ring", 0).unwrap();
         let file = std::fs::File::from(fd);
         let attach = |file: &std::fs::File| {
             RingReader::attach(file.as_fd().try_clone_to_owned().unwrap()).err().and_then(|e| e.raw_os_error())

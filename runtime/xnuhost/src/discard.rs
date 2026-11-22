@@ -148,13 +148,7 @@ pub(crate) mod tests {
 
     impl TestRam {
         pub(crate) fn new(size: u64) -> Option<TestRam> {
-            // SAFETY: memfd_create with a static name; the result is checked.
-            let fd = unsafe { libc::memfd_create(c"xnuhost-test-ram".as_ptr(), libc::MFD_ALLOW_SEALING) };
-            if fd < 0 {
-                return None;
-            }
-            // SAFETY: fd was just created and is owned here.
-            let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+            let fd = xh_core::fd::memfd(c"xnuhost-test-ram", libc::MFD_ALLOW_SEALING).ok()?;
             // SAFETY: ftruncate and fcntl on our descriptor.
             let sized = unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } == 0;
             // SAFETY: as above.

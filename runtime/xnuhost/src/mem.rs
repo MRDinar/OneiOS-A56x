@@ -6,6 +6,7 @@
 //! The state (`g_mem`) is set once at the start and read everywhere (signal handlers included): atomics, read with
 //! [`state`].
 
+use std::os::fd::IntoRawFd;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering::Relaxed};
 use xh_core::sys::{errno, strerror};
@@ -126,14 +127,13 @@ pub fn create(size: u64) -> Result<(), SetupFailed> {
     // Inherited by the task factory: no CLOEXEC. Sealable, and sealed against shrinking once it has its size: udmabuf,
     // which turns the guest's pages into the dma-bufs the GPU imports (gpu3d), takes no other memfd. HEAD_ROOM more
     // than the RAM: the window starts `head` bytes into the file (map); the rest of that room is never touched.
-    // SAFETY: memfd_create with a static name.
-    let fd = unsafe {
-        libc::syscall(libc::SYS_memfd_create, c"xnuhost-ram".as_ptr(), 2u32 /* MFD_ALLOW_SEALING */)
-    } as i32;
-    if fd < 0 {
-        loge!("memfd_create: {}", strerror(errno()));
-        return Err(SetupFailed);
-    }
+    let fd = match xh_core::fd::memfd(c"xnuhost-ram", libc::MFD_ALLOW_SEALING) {
+        Ok(fd) => fd.into_raw_fd(),
+        Err(e) => {
+            loge!("memfd_create: {}", xh_core::sys::error_text(&e));
+            return Err(SetupFailed);
+        }
+    };
     // SAFETY: our new descriptor.
     if unsafe { libc::ftruncate(fd, (size + HEAD_ROOM) as libc::off_t) } != 0 {
         loge!("RAM of {} MiB: {}", size >> 20, strerror(errno()));

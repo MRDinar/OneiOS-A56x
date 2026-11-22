@@ -302,13 +302,7 @@ pub fn file_size(fd: BorrowedFd<'_>) -> Result<(i64, bool)> {
 /// A memfd of `bytes` (MFD_CLOEXEC).
 pub fn memfd(name: &str, bytes: usize) -> Result<OwnedFd> {
     let name = CString::new(name).map_err(|_| Errno(libc::EINVAL))?;
-    // SAFETY: name is a NUL-terminated string; the syscall takes it and a flag.
-    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), libc::MFD_CLOEXEC) };
-    if fd < 0 {
-        return Err(Errno::last());
-    }
-    // SAFETY: a new descriptor nobody else owns.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
+    let fd = xh_core::fd::memfd(&name, libc::MFD_CLOEXEC)?;
     // SAFETY: ftruncate takes no pointers.
     check(unsafe { libc::ftruncate(fd.as_raw_fd(), bytes as libc::off_t) })?;
     Ok(fd)

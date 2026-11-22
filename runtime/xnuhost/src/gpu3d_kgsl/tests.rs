@@ -7,7 +7,7 @@
 //! only the policy's scenarios run, on a stand-in for it; the memory scenarios need the real one.
 mod kgsl;
 
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Mutex;
 use xh_core::bytes::le;
 
@@ -98,12 +98,9 @@ struct Renderer {
 
 fn renderer(profile: kgsl::Profile) -> Renderer {
     kgsl::install(profile, std::env::var("XH_GPU_FAKE_UDMABUF").as_deref() == Ok("1"));
-    // SAFETY: a new sealable memfd of ours, sized and sealed against shrinking (udmabuf wants it).
-    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, c"test-ram".as_ptr(), 2u32) } as i32;
-    assert!(fd >= 0);
-    // SAFETY: ours.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: as above.
+    // A sealable memfd, sized and sealed against shrinking (udmabuf wants it).
+    let fd = xh_core::fd::memfd(c"test-ram", libc::MFD_ALLOW_SEALING).unwrap();
+    // SAFETY: sizes and seals our memfd.
     assert!(unsafe {
         libc::ftruncate(fd.as_raw_fd(), RAM_BYTES as i64) == 0 && libc::fcntl(fd.as_raw_fd(), 1033, 2) == 0
     });

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! File descriptor helpers the C runtime repeated: the O_NONBLOCK and FD_CLOEXEC switches, and system calls retried
-//! on EINTR.
+//! File descriptor helpers the C runtime repeated: the O_NONBLOCK and FD_CLOEXEC switches, system calls retried on
+//! EINTR, and memfds.
+use std::ffi::CStr;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 fn flags(fd: BorrowedFd<'_>, get: i32, set: i32, bit: i32, on: bool) -> io::Result<()> {
     let raw = fd.as_raw_fd();
@@ -43,6 +44,17 @@ pub fn retry<T: Copy + PartialOrd + Default>(mut call: impl FnMut() -> T) -> io:
     }
 }
 
+/// `memfd_create(name, flags)` (flags: `MFD_CLOEXEC`, `MFD_ALLOW_SEALING`): a new anonymous file, empty.
+pub fn memfd(name: &CStr, flags: libc::c_uint) -> io::Result<OwnedFd> {
+    // SAFETY: a NUL-terminated name and a flag word; the descriptor it returns is checked.
+    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a new descriptor that nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +76,9 @@ mod tests {
         // SAFETY: -1 is never a descriptor; read fails with EBADF.
         let e = retry(|| unsafe { libc::read(-1, b.as_mut_ptr().cast(), 1) }).unwrap_err();
         assert_eq!(e.raw_os_error(), Some(libc::EBADF));
+        let m = memfd(c"xh-core-test", libc::MFD_CLOEXEC).unwrap();
+        let f = std::fs::File::from(m);
+        f.set_len(8192).unwrap();
+        assert_eq!(f.metadata().unwrap().len(), 8192);
     }
 }
