@@ -28,6 +28,9 @@ path = "brightness/brightctl.rs"
 [[test]]
 name = "brightness_inspect"
 path = "brightness/test_inspect.rs"
+[[bin]]
+name = "batteryctl"
+path = "battery/batteryctl.rs"
 
 # bridges-net: wifi, bt, hal
 [[bin]]

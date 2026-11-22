@@ -209,7 +209,7 @@ impl Panel {
                         br_error!(
                             "brightness: touch: {} <- {state},{event}: {}",
                             touch.nodes[i].display(),
-                            errno_text(&e)
+                            xh_core::sys::error_text(&e)
                         );
                     }
                 }
@@ -501,7 +501,7 @@ impl Bright {
             br_error!(
                 "brightness: panel off: no writable backlight device under {}: {}",
                 dir.display(),
-                errno_text(&panel_error)
+                xh_core::sys::error_text(&panel_error)
             );
         }
 
@@ -748,15 +748,6 @@ fn writable(path: &Path) -> bool {
     let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
     // SAFETY: c is a NUL-terminated path that lives across the call.
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
-}
-
-/// strerror's text of an error, as the C lines had it.
-fn errno_text(e: &io::Error) -> String {
-    match e.raw_os_error() {
-        // SAFETY: strerror returns a pointer to a static (or thread-local) NUL-terminated string.
-        Some(n) => unsafe { std::ffi::CStr::from_ptr(libc::strerror(n)) }.to_string_lossy().into_owned(),
-        None => e.to_string(),
-    }
 }
 
 /// `text` cut to `max` bytes, as C's "%.Ns".
