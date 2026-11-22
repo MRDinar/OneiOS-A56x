@@ -7,10 +7,17 @@ Owner: fable-camera. The whole path: `docs/hardware.md` section 7. Kernel side: 
 ("The first phone run" below: the cause found in the sources, fixed, the fix not yet run on the phone). The HAL back
 end has never run. Facts from sources are marked [F], inference [I], what must be tried [U].
 
+The crate `onecamera` (Rust, in the runtime's workspace; `runtime/RUST.md`): a port of the C camera bridge, one module
+per C file, log lines byte for byte (2026-11-23). The phone runs below were of the C build; **the Rust camera has not
+run on a phone yet**.
+
 ```sh
-make test          # 131 host checks (ASan, UBSan); no phone, no Apple files
-make               # build/android/oneios-camera, camctl, libonecamera.a   (NDK r28c)
-tests/host.sh      # both; CI runs it
+cd runtime
+cargo test -p onecamera     # 27 unit tests, the helper process and the device (tests/camera.rs, 2), the headers
+                            # against a C probe (2) and the NDK's (1); no phone, no Apple files
+./build.sh STAGE            # STAGE/bin/oneios-camera and STAGE/bin/camctl (dynamic), with the rest of the runtime
+cargo build --release --target aarch64-linux-android -p onecamera --bins   # the two alone: target/aarch64-linux-android/release/
+tests/host.sh               # the whole workspace; CI runs it
 ```
 
 ## What it is
@@ -22,17 +29,19 @@ tests/host.sh      # both; CI runs it
  (helper process)  <-- START/STOP -- SOCK_SEQPACKET --  (virtio-mmio device)        -> userland/camera (IOSurfaces)
 ```
 
-| File | What |
+| Module | What |
 |---|---|
-| `helper.c` -> `oneios-camera` | the helper process: xnuhost is static, Android's camera libraries are shared, so (like `oneios-audio`) a small dynamic executable opens the camera. It holds a camera only between START and STOP |
-| `backend_ndk.c` | Camera2 NDK (`ACameraManager`, `AImageReader`, YUV_420_888) through cameraserver; starts the process's binder threads; a logical camera's hidden physical cameras (the telephotos) as physical streams; every callback counted and printed |
-| `backend_hal.c` | the provider HAL (`android.hardware.camera.provider.ICameraProvider/internal/0`, AIDL) called over binder the way cameraserver calls it: libbinder_ndk's C API, parcels written by hand to the AIDL files, our own gralloc buffers (`AHardwareBuffer`) |
-| `core.c` | one stream: the back end's picture converted to NV12 straight into the ring; the test back end (a moving picture) |
-| `ring.c` | the frame ring: a memfd, 4 places of 1920x1080 NV12, a lock per place so a reader never takes a torn frame |
-| `convert.c` | three-plane YUV to NV12 (planar, NV12 and NV21 layouts, row padding), NV12 to RGB/BGRA (BT.601 full range), PNG |
-| `meta.c` | Android's `camera_metadata` buffer read without its library; which camera is which lens; size and rate choice |
-| `link.c`, `virtio_camera.c` -> `libonecamera.a` | xnuhost's end: starts the helper, maps the ring read-only, and the `oneios,camera` device (commands answered at once; each frame copied once, ring to guest buffer) |
-| `camctl.c` | the phone test |
+| `helper.rs` -> `bin/oneios-camera.rs` -> `oneios-camera` | the helper process: xnuhost is static, Android's camera libraries are shared, so (like `oneios-audio`) a small dynamic executable opens the camera. It holds a camera only between START and STOP |
+| `backend_ndk.rs` | Camera2 NDK (`ACameraManager`, `AImageReader`, YUV_420_888) through cameraserver; starts the process's binder threads (`android.rs`); a logical camera's hidden physical cameras (the telephotos) as physical streams; every callback counted and printed |
+| `backend_hal.rs`, `backend_hal/ffi.rs` | the provider HAL (`android.hardware.camera.provider.ICameraProvider/internal/0`, AIDL) called over binder the way cameraserver calls it: libbinder_ndk's C API (`ffi.rs`), parcels written by hand to the AIDL files (over a `Parcel` trait, host-tested), our own gralloc buffers (`AHardwareBuffer`) |
+| `android.rs` | the platform symbols found with `dlsym` (`platform_symbol`), the binder thread pool (`binder_threads`) |
+| `core.rs` | one stream: the back end's picture converted to NV12 straight into the ring; the test back end (a moving picture) |
+| `ring.rs` | the frame ring: a memfd, 4 places of 1920x1080 NV12, a lock per place so a reader never takes a torn frame |
+| `convert.rs` | three-plane YUV to NV12 (planar, NV12 and NV21 layouts, row padding), NV12 to RGB/BGRA (BT.601 full range), PNG |
+| `meta.rs` | Android's `camera_metadata` buffer read without its library; which camera is which lens; size and rate choice |
+| `link.rs`, `virtio_camera.rs` | xnuhost's end (the library, linked statically into xnuhost): starts the helper, maps the ring read-only (`Camera::helper`, `list`, `start`, `stop`, `frame`, `close`), and the `oneios,camera` device on xh-core's virtio transport (commands answered at once; each frame copied once, ring to guest buffer) |
+| `camctl.rs` -> `bin/camctl.rs` -> `camctl` | the phone test |
+| `proto.rs`, `msg.rs` | the mirrors of `drivers/camera/oneios_camera_proto.h` and `oneios_camera_abi.h` (checked against the headers by `tests/headers.rs`), the socket's messages |
 
 A frame: NV12, at most 1920x1080, with the sensor's timestamp, a sequence number that rises by one per frame the
 camera made (a gap = frames nobody read), the camera's role and how it is turned. Selection: camera by role (`wide`,
@@ -89,7 +98,7 @@ What was read and ruled out as the cause [F the same branch, `services/camera/li
 - [I] Samsung's cameraserver may add a policy of its own for native clients. Nothing in the run points to it, and
   it cannot be read; the callbacks now print whatever it sends.
 
-**The fix (`backend_ndk.c`, `backend_hal.c: cam_binder_threads`):**
+**The fix (the C's `backend_ndk.c` and `backend_hal.c: cam_binder_threads`; in Rust `backend_ndk.rs` and `android.rs: binder_threads`):**
 
 - the binder thread pool is started before the camera manager is made (`ABinderProcess_setThreadPoolMaxThreadCount(4)`,
   `ABinderProcess_startThreadPool`: platform symbols of `libbinder_ndk`, found with `dlsym` as the HAL back end
@@ -138,16 +147,16 @@ Both are built; `auto` picks **the NDK while system_server runs, the provider HA
 - With One UI running the NDK is the polite way (cameraserver keeps its book, the privacy indicator shows), and it is
   the cross-check for the HAL back end: the same camera, the same picture.
 
-## Into xnuhost (done: `runtime/xnuhost/src/main.c`, `runtime/loader`)
+## Into xnuhost (done: `runtime/xnuhost/src/session/bridges.rs`, `runtime/loader`)
 
-`br_camera_helper("<runtime>/bin/oneios-camera", backend)` then `br_camera_create(base, spi, camera)` ->
-`XL_DEV_CAMERA`, node `/arm-io/camera`, compatible `oneios,camera`. `br_camera_close` at the stop. Environment:
+`Camera::helper("<runtime>/bin/oneios-camera", backend)` then `onecamera::virtio_camera::create(base, spi, Some(camera))` ->
+`XL_DEV_CAMERA`, node `/arm-io/camera`, compatible `oneios,camera`. `Camera::close` at the stop (explicit: the device holds the camera). Environment:
 `ONEIOS_CAMERA=0` leaves the device out; `ONEIOS_CAMERA_BACKEND=auto|ndk|hal|test`; `ONEIOS_CAMERA_VERBOSE=1`.
 `runtime/build.sh` stages `bin/oneios-camera` and `bin/camctl`. `test` gives the guest a moving picture with no camera.
 
 The device tree's camera nodes (2026-11-22, `docs/hardware.md` 7, "The camera nodes"): before it builds the tree,
-xnuhost waits for the helper's list with `br_camera_list(camera, list, OC_MAX_CAMERAS, 3000)` and tells the loader
-which roles there are (`xl_machine.cameras`: a back one, the front one). `br_camera_list` sleeps on a condition
+xnuhost waits for the helper's list with `camera.list(OC_MAX_CAMERAS, 3 s)` (`Bridges::describe_cameras`) and tells the loader
+which roles there are (`Machine::cameras`: a back one, the front one). `Camera::list` sleeps on a condition
 variable that the receive thread signals when the list (or the helper's end) comes; until then it was a 5 ms
 sleep-and-look loop. On the phone the list came 170 ms after the helper's start. Line: `camera: iOS is told of a rear
 camera and a front camera (3 cameras from the helper)`.
@@ -160,8 +169,8 @@ SIGKILL is enough for xnuhost; for the HAL see "In a session", point 4.
 ## On the phone: camctl (root, One UI running)
 
 ```sh
-cd /home/akshay/Documents/GitHub/OneiOS && make -C runtime/bridges/camera
-adb -s R5CX315X6FT push runtime/bridges/camera/build/android/camctl runtime/bridges/camera/build/android/oneios-camera /data/local/tmp/
+cd /home/akshay/Documents/GitHub/OneiOS && runtime/build.sh STAGE
+adb -s R5CX315X6FT push STAGE/bin/camctl STAGE/bin/oneios-camera /data/local/tmp/
 adb -s R5CX315X6FT shell chmod 755 /data/local/tmp/camctl /data/local/tmp/oneios-camera
 
 # 1. The cameras: by cameraserver, then by the HAL (the HAL lists more ids: every sensor and Samsung's hidden ones).
@@ -275,21 +284,11 @@ system_server (also surfaceflinger, audioserver and netd: the screen goes dark; 
 - Two cameras at once (one stream; iOS's dual-camera modes).
 - The microphone for video is the audio bridge's.
 
-## The Rust port (`onecamera`, branch `rust-runtime`; runtime/RUST.md)
+## The Rust port (`onecamera`, 2026-11-23; runtime/RUST.md)
 
-One Rust module per C file, beside the C until the lead switches `runtime/build.sh` to cargo: `ring.rs`,
-`convert.rs`, `meta.rs`, `core.rs` (with the test back end), `helper.rs` (`bin/oneios-camera`), `link.rs`
-(`Camera::helper`, `list`, `start`, `stop`, `frame`, `close`: `br_camera_*`), `virtio_camera.rs` (`create`:
-`br_camera_create`, on xh-core's virtio transport), `camctl.rs` (`bin/camctl`), `backend_ndk.rs`, `backend_hal.rs`
-(+ `backend_hal/ffi.rs`), `android.rs`; `proto.rs` mirrors `drivers/camera/oneios_camera_proto.h` and
-`oneios_camera_abi.h`, `msg.rs` the socket's messages. Log lines are the C's, byte for byte.
-
-```sh
-cd runtime
-CARGO_TARGET_DIR=target/media cargo test -p onecamera     # 27 unit tests, the helper process and the device (2),
-                                                          # the headers against a C probe (2) and the NDK's (1)
-CARGO_TARGET_DIR=target/media cargo build --release --target aarch64-linux-android -p onecamera --bins
-```
+One Rust module per C file (the table above; the C is gone from the tree): the C's `br_camera_*` calls are `link.rs`'s
+`Camera` methods, `br_camera_create` is `virtio_camera::create`. Log lines are the C's, byte for byte. The commands
+are at the top of this file.
 
 - The two programs are dynamic on Android: `build.rs` links libcamera2ndk, libmediandk, libbinder_ndk and
   libnativewindow into the bins only (`rustc-link-arg-bins`); xnuhost links the library statically and needs none of

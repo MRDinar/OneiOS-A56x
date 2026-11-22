@@ -10,14 +10,21 @@ panel. The phone's light sensor goes the other way.
 
 `brightctl inspect` is a *passive*, read-only sysfs probe and may run while One UI is up (it opens nodes
 `O_RDONLY`, never calls the bridge, and touches neither the touch IC nor ALS). The historical `brightctl info`
-**is not passive**: it calls `br_bright_open()`, which can write an initial brightness when sysfs reads zero.
+**is not passive**: it calls `Bright::open`, which can write an initial brightness when sysfs reads zero.
 A zero reading on a lit panel is unverified and unsafe for active testing. The fake-sysfs regression test
-`test_inspect.sh` checks node selection, the zero-brightness warning, and that no file changes.
+`test_inspect.rs` (`cargo test -p onebridges --test brightness_inspect`) checks node selection, the zero-brightness
+warning, and that no file changes.
 
 ```sh
-make test          # 81 checks: the curve, the fade, the sensor's events, a session and the touch IC on a fake sysfs
-make               # build/android/brightctl
+cd runtime
+cargo test -p onebridges brightness::   # 7 tests (the C's 81 checks): the curve, the fade, the sensor's events, a
+                                        # session and the touch IC on a fake sysfs, the guest's header numbers
+cargo test -p onebridges --test brightness_inspect   # inspect is read only
+./build.sh STAGE                        # STAGE/bin/brightctl for the phone, static (with every other runtime binary)
 ```
+
+The bridge is Rust (`mod.rs`, `session.rs`, `brightctl.rs`, `tests.rs`, `test_inspect.rs`), a port of the C
+`brightness.c`, `brightctl.c`, `test_brightness.c` and `test_inspect.sh` (2026-11-23).
 
 ## The route to the panel, and why
 
@@ -35,8 +42,8 @@ assumed: the node is found and its range is read at open.
 
 ## The two backends (hw-backend-backlight, 2026-11-15)
 
-`hw-backend=samsung|treble` or `hw-backend-backlight=...` (`bridges/hw_backend.h`, `docs/hardware.md` 7e) picks the
-form; `br_bright_options.backend` forces one (the tests). The open logs `hw: backlight: backend X (why)`.
+`hw-backend=samsung|treble` or `hw-backend-backlight=...` (`hw/hw_backend.rs`, `docs/hardware.md` 7e) picks the
+form; `brightness::Options.backend` forces one (the tests). The open logs `hw: backlight: backend X (why)`.
 
 | | samsung (the default, unchanged) | treble |
 |---|---|---|
@@ -46,9 +53,9 @@ form; `br_bright_options.backend` forces one (the tests). The open logs `hw: bac
 | Light sensor | evdev `als_rear` | not yet: the vendor-neutral one is the sensors HAL (an FMQ). One line; with `hw-backend-fallback=1` the samsung lookup |
 
 No treble name there: one line, `hw: backlight: treble: missing: no backlight class device ... under DIR; the bridge
-stays off (hw-backend-fallback=0)` and `br_bright_open` returns NULL (iOS gets no backlight service's level from us),
+stays off (hw-backend-fallback=0)` and `Bright::open` returns `None` (iOS gets no backlight service's level from us),
 or with `hw-backend-fallback=1` the whole samsung form. Both write the same node the same way, restore One UI's value
-at the close and grab nothing. Tests: `test_brightness.c`'s `test_treble` (both backends on one fake sysfs, a phone
+at the close and grab nothing. Tests: `tests.rs`'s `treble` (both backends on one fake sysfs, a phone
 with another name, the fallback, the process's setting), and the stand-in phone (`tools/oneios-tool/tests/phone/
 hw-backend.sh`: `brightctl info` and `levels` with `ONEIOS_HW_BACKEND=treble`).
 
@@ -66,12 +73,12 @@ hw-backend.sh`: `brightctl info` and `levels` with `ONEIOS_HW_BACKEND=treble`).
   Samsung's older trees, not read on this phone]. `ONEIOS_BRIGHT_MAX` sets the ceiling by hand; on a
   Galaxy S26 Ultra the host table (`docs/hardware.md` 7h) sets it to 2300, One UI's manual top there, unless it is set
   (xnuhost and `brightctl` alike; `ONEIOS_HOST_DEVICE=none` turns that off).
-- Fades (`FadePeriod`): the worker walks the level in 16 ms steps. `br_bright_set` never waits for the panel.
+- Fades (`FadePeriod`): the worker walks the level in 16 ms steps. `Bright::set` never waits for the panel.
 - iOS is told the top is 500 nits (`ONEIOS_BRIGHT_NITS`) [I]; it uses the number for its own model only.
 
 ## Start and restore
 
-`br_bright_open` reads One UI's value; `br_bright_close` (xnuhost's SIGTERM path) writes it back and takes at
+`Bright::open` reads One UI's value; `Bright::shutdown` (xnuhost's SIGTERM path) writes it back and takes at
 most 300 ms. It always writes it, even when the bridge's own last write was that value: the node may have been set
 outside the bridge during the session (`oneios-tool phone backlight set N`); until 2026-11-14 the close skipped it
 then, and only the fork's return (`control/base/backlight`) put One UI's value back. After a SIGKILL the panel keeps iOS's last level, at least the floor; One UI's system_server sets
@@ -101,12 +108,12 @@ xnuhost's evdev reader. The panel's worker writes:
 |---|---|
 | the bridge opens | (the backlight, only if One UI left 0), `2,0`, `2,1` |
 | a level of 0 (any source), the display on | the backlight's floor only: the IC stays awake |
-| iOS's display off (`br_bright_display(false)`) | `1,0`, `1,1`, then the backlight's floor; the level is kept |
+| iOS's display off (`Bright::display(false, _)`) | `1,0`, `1,1`, then the backlight's floor; the level is kept |
 | iOS's display on (every time, also a repeat) | the level from before the off (when nothing set another), then `2,0`, `2,1` |
-| a power-key press (`br_bright_key`) | `2,0`, `2,1`, whatever the IC is believed to be (an off that follows sleeps it again) |
+| a power-key press (`Bright::key`) | `2,0`, `2,1`, whatever the IC is believed to be (an off that follows sleeps it again) |
 | the bridge closes (SIGTERM) | One UI's value, `2,0`, `2,1` |
 
-Host-tested (`make test`, 81 checks): nits 0 with the display on (no sleep), a fade to 0 (no sleep), a display off
+Host-tested (`cargo test -p onebridges brightness::`: 7 tests, the C's 81 checks): nits 0 with the display on (no sleep), a fade to 0 (no sleep), a display off
 and on (sleep, then the level back and the wake), a repeated on (wake again), a power-key press after an off (wake),
 a level set while off, the close after an off (One UI's value and the IC on). `runtime/bridges/tests` checks the
 channel's `OB_BRIGHT_POWER`. Not run on the phone; whether backboardd calls `RequestPowerChange` at the lock in
@@ -122,7 +129,7 @@ this guest is what the next boot's `ONEIOS BACKLIGHT: display off: backboardd[N]
   `sec_e-pen`. It gets the touch IC's writes, in the same order and at the same times (open, display off and on,
   power key, close). Log: `brightness: pen: the S Pen's IC (PATH) woken (2,0 then 2,1); it sleeps and wakes with the touch
   IC`, or `brightness: pen: no writable .../sec_epen/enabled of sec_e-pen: ... left alone`. Without `ONEIOS_PEN_IC=1` the
-  pen's node is never written (pen=off is no change for One UI's pen). Host-tested (`test_touch`); not run on the phone
+  pen's node is never written (pen=off is no change for One UI's pen). Host-tested (`tests.rs` `touch`); not run on the phone
   yet. No such node: one log line, the panel
   works as before. A write that fails is logged (the first three) and nothing else changes.
 - The backlight itself is still never 0 (level 0 is the lowest setting, also for a display off), so "after the
@@ -156,8 +163,8 @@ on I2C, Samsung's rear flicker sensor (`drivers/optics/stk6d2x_sec.c`). Opened r
 
 ## Into xnuhost
 
-Done in `runtime/xnuhost/src/main.c`: `br_bright_open(NULL)` beside `br_haptic_open`, `.brightness` in
-`br_bridge_config`, `br_bright_close` at the stop. `devices/bridge_dev.c` serves the channel: the hello's bit,
+Done in `runtime/xnuhost/src/session/bridges.rs`: `Bright::open(&brightness::Options::from_env())` beside the haptic's open,
+`brightness` in `BridgeConfig`, `Bright::shutdown` at the stop. `devices/bridge_dev.rs` serves the channel: the hello's bit,
 `OB_BRIGHT_QUERY` -> `OB_BRIGHT_STATE`, `OB_BRIGHT_SET`, and `OB_BRIGHT_ALS` to the guest.
 
 It grabs no input device, has no realtime thread, writes nothing under `/sys/power`, starts no process.
@@ -170,8 +177,8 @@ sensor's `enable`, `/dev/input/event*` as today.
 As root, One UI running. Nothing is installed; the panel's value is restored at the end and on Ctrl-C.
 
 ```sh
-make -C runtime/bridges/brightness
-adb -s R5CX315X6FT push runtime/bridges/brightness/build/android/brightctl /data/local/tmp/brightctl
+runtime/build.sh STAGE        # or the one tool: runtime/bridges/README.md
+adb -s R5CX315X6FT push STAGE/bin/brightctl /data/local/tmp/brightctl
 adb -s R5CX315X6FT shell su -c 'chmod 0755 /data/local/tmp/brightctl'
 
 # 1. What is there: the node, its range, One UI's value, the light sensor

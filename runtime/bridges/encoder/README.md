@@ -14,28 +14,37 @@ given, `runtime/build.sh` stages `bin/oneios-encoder` (28,184 bytes) and `bin/en
 set's `encoder=auto` now applies (it was dropped before). **Not yet
 run on the phone** ("On the phone", below): that is the next step.
 
+The crate `oneencoder` (Rust, in the runtime's workspace; `runtime/RUST.md`): since 2026-11-23 a port of the C
+encoder bridge, one module per C file, log lines byte for byte. The test counts and sizes quoted above and below
+(173, 214 checks; 28,184 and 32,840 bytes) are of the C build; the Rust tests have the same cases.
+
 ```sh
-make test          # host tests (ASan, UBSan): the stand-in encoder alone, its streams through ffmpeg, and the device +
-                   #   socket + helper + stand-in over the real transport
-make               # build/android/{oneios-encoder, encctl, liboneencoder.a}   (NDK r28c)
+cd runtime
+cargo test -p oneencoder    # the stand-in's 16 streams (tests/standin.rs, and tests/decode.sh: ffmpeg decodes all 16 to
+                            # the picture given; skipped with a line without ffmpeg), the device through the helper
+                            # process and in-process (tests/encoder.rs), MediaCodec's session logic against a fake codec,
+                            # the NDK's numbers (tests/headers.rs)
+./build.sh STAGE            # STAGE/bin/oneios-encoder and STAGE/bin/encctl (dynamic), with the rest of the runtime
+cargo build --release --target aarch64-linux-android -p oneencoder --bins   # the two alone
 ```
 
 ## The parts
 
-| File | What |
+| Module | What |
 |---|---|
-| `media_proto.h` | the wire layout of the `droidvm,virtio-media` device: the commandq (OPEN/CLOSE/IOCTL/MMAP), the eventq (DQBUF/EVENT), and the V4L2 structs (`v4l2_buffer`, `v4l2_format`) as UniXNU-droidvm's `DroidVMVirtioMedia.c`/`DroidVMVTHost.cpp` read them |
-| `media_device.c` | xnuhost's stateful V4L2 **encoder** device on `xh_virtio_*`: OUTPUT = tightly packed NV12, CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. `liboneencoder.a` (static, into xnuhost) |
-| `encoder.h` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) and `br_encoder_create` |
-| `backend_helper.c` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`encoder_link.h`), buffers coded AUs for `poll()` |
-| `helper.c` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic |
-| `backend_ndk.c` | the real backend: the NDK's `AMediaCodec` (`video/hevc` → Codec2 `c2.qti.hevc.encoder`, `video/avc`), NV12 ByteBuffer input, Annex-B output. Still-image settings: one keyframe, constant quality. Both the `samsung` and `treble` hardware backends use this same path |
-| `backend_stub.c` | the **stand-in encoder** for a host with no MediaCodec (below). In `liboneencoder.a` too: xnuhost runs it in its own process on the PC |
-| `encctl.c` → `encctl` | the phone test: the whole host path in one process (direct MediaCodec, no helper), encoding a test pattern as root |
-| `tests/test_standin.c`, `tests/standin_reader.h`, `tests/decode.sh` | the stand-in's tests (below) |
-| `tests/test_encoder.c` | the device's test (below) |
+| `proto.rs` | the wire layout of the `droidvm,virtio-media` device: the commandq (OPEN/CLOSE/IOCTL/MMAP), the eventq (DQBUF/EVENT), and the V4L2 structs (`v4l2_buffer`, `v4l2_format`) as UniXNU-droidvm's `DroidVMVirtioMedia.c`/`DroidVMVTHost.cpp` read them (the C's `media_proto.h`; no C side any more: checked by `tests/encoder.rs`'s round trips) |
+| `media_device.rs` | xnuhost's stateful V4L2 **encoder** device on `xh_core::virtio` (`create`, `stats`): OUTPUT = tightly packed NV12, CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. Linked statically into xnuhost |
+| `backend.rs` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) as the `Backend` and `Session` traits (the C's `encoder.h`) |
+| `backend_helper.rs` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (`HelperBackend::new`; xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`link.rs`, the C's `encoder_link.h`), buffers coded AUs for `poll()` |
+| `helper.rs` → `bin/oneios-encoder.rs` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic |
+| `backend_ndk.rs` | the real backend: the NDK's `AMediaCodec` (`video/hevc` → Codec2 `c2.qti.hevc.encoder`, `video/avc`) behind a `Codec` trait, NV12 ByteBuffer input, Annex-B output. Still-image settings: one keyframe, constant quality. Both the `samsung` and `treble` hardware backends use this same path |
+| `backend_stub.rs` | the **stand-in encoder** (`StubBackend`) for a host with no MediaCodec (below). In the library too: xnuhost runs it in its own process on the PC |
+| `encctl.rs` → `bin/encctl.rs` → `encctl` | the phone test: the whole host path in one process (direct MediaCodec, no helper), encoding a test pattern as root; on a host the same path with the stand-in; and the in-process guest `Guest` the device test drives |
+| `tests/standin.rs`, `tests/standin_reader/`, `tests/decode.sh` | the stand-in's tests (below; the C's `test_standin.c`, `standin_reader.h`) |
+| `tests/encoder.rs` | the device's test (below; the C's `test_encoder.c`) |
+| `tests/headers.rs` | MediaCodec's numbers and `AMediaCodecBufferInfo`'s layout against the NDK's headers (a probe built with the NDK's clang, run under qemu-aarch64; skipped with a line without them) |
 
-## The stand-in encoder (`backend_stub.c`)
+## The stand-in encoder (`backend_stub.rs`)
 
 The PC has no MediaCodec, and the Android helper cannot run there. The stand-in compresses nothing, and what it
 writes is a real stream that a decoder decodes to the frame it was given:
@@ -52,13 +61,13 @@ writes is a real stream that a decoder decodes to the frame it was given:
   is the frame with fewer levels. The frame is padded to whole blocks and cropped by the conformance window.
 - Until 2026-11-15 the stand-in wrote NAL units of the right types around zeros and a marker (no decoder took it).
 
-**Tested [F, Linux PC, 2026-11-15]:** `make test` runs `test_standin` (173 checks: 16 streams, 64x64 to 1440x3120,
+**Tested [F, Linux PC, 2026-11-15, the C build]:** the C's `test_standin` (173 checks; now `cargo test -p oneencoder --test standin`, the same cases: 16 streams, 64x64 to 1440x3120,
 sizes that are not whole blocks, a black frame, a small buffer; the NAL order, the SPS's profile bytes, the first
 block's arithmetic-coded bytes `86 80` worked out by hand from the standard, every sample within the PCM step of the
 frame), then `tests/decode.sh`: **ffmpeg n9.0.2 decodes all 16 streams with no warning to exactly the picture given**
 (`cmp` of the raw 4:2:0 output with what the test expects; skipped with a line when there is no ffmpeg).
 
-## The device against the guest (`media_device.c`) — what the 2026-11-15 reading of the guest's code changed
+## The device against the guest (`media_device.rs`; fixed in the C's `media_device.c`) — what the 2026-11-15 reading of the guest's code changed
 
 The first host test's guest was written beside the device. Read against the real guest
 (`DroidVMVirtioMedia.c`), four things were wrong, each of which would have stopped the first encode on the phone:
@@ -79,7 +88,7 @@ device) and every millisecond while a session was open. Now: every millisecond f
 or the backend's last frame, every 50 ms while a session is open and quiet, and **not at all with no session**: it
 sleeps until a command or a kick.
 
-**Tested [F]:** `test_encoder`, 214 checks: the device driven over xnuhost's real transport (`virtio.c`) by a guest of
+**Tested [F]:** `test_encoder` (C, 214 checks; now `cargo test -p oneencoder --test encoder`, the same cases): the device driven over xnuhost's real transport (`xh_core::virtio`; the C's `virtio.c`) by a guest of
 plain memory that now does MMAP, CLOSE and ENUM_FMT **as `DroidVMVirtioMedia.c` does** (the place in the pool with
 the guest's bound, CLOSE with no answer buffer, the format lists), replaying `DroidVMVTHost`'s encoder sequence
 (OPEN, S_FMT HEVC+NV12, REQBUFS/QUERYBUF/MMAP, STREAMON, QBUF a NV12 test pattern, the coded DQBUF, ENCODER_CMD STOP →
@@ -91,7 +100,7 @@ assembly); the PC boot runs its start-up check (OPEN, ENUM_FMT, CLOSE), and a se
 
 ## Into xnuhost
 
-`liboneencoder.a` links into xnuhost (static). `main.c` carves the media pool (after the GPU pool, inside the 64 MiB
+The crate links into xnuhost (static). `runtime/xnuhost/src/session/bridges.rs` carves the media pool (after the GPU pool, inside the 64 MiB
 the hosted kernel lets a task map, `0024-gpu-pool.patch`), creates the device, and publishes `/arm-io/virtio-media-0`
 with `media-host-pool`; it adds `droidvm-vt-paravirt=1` to the guest's boot arguments when the device exists.
 
@@ -102,7 +111,7 @@ with `media-host-pool`; it adds `droidvm-vt-paravirt=1` to the guest's boot argu
 | `sim` | the stand-in always, also in a session (`encoder: the stand-in encoder (encoder=sim): ...`): iOS gets a hardware encoder whose pictures have few levels |
 
 The stand-in is never taken in a session on the phone unless `encoder=sim` asks for it. Ship
-`build/android/oneios-encoder` as `bin/oneios-encoder` (0755) in the runtime package (`runtime/build.sh` does).
+`oneios-encoder` as `bin/oneios-encoder` (0755) in the runtime package (`runtime/build.sh` does).
 
 ## CLAUDE.md's bridge rules
 
@@ -114,12 +123,12 @@ The stand-in is never taken in a session on the phone unless `encoder=sim` asks 
 
 ## On the phone
 
-The phone is not on this box. `runtime/build.sh STAGE` (or `make -C runtime/bridges/encoder`) on the Linux PC or the
+The phone is not on this box. `runtime/build.sh STAGE` (or `cargo build ... -p oneencoder --bins`, above) on the Linux PC or the
 Mac builds `bin/oneios-encoder` and `bin/encctl`; the runtime package carries both. Root through KernelSU, One UI
 running:
 
 ```sh
-adb push runtime/bridges/encoder/build/android/encctl runtime/bridges/encoder/build/android/oneios-encoder /data/local/tmp/
+adb push STAGE/bin/encctl STAGE/bin/oneios-encoder /data/local/tmp/
 adb shell su -c 'cd /data/local/tmp && ./encctl hevc'                          # HEVC 256x256 through c2.qti.hevc.encoder
 adb shell su -c 'cd /data/local/tmp && ./encctl h264 640 480'
 adb shell su -c 'cd /data/local/tmp && ./encctl hevc 512 512 /data/local/tmp/enc.hevc'   # the stream too
@@ -146,7 +155,7 @@ Then a session with `encoder=auto`. The OneOS app passes no `--set encoder=`, so
 image set: add the line `encoder=auto` to the phone's `image/overlay/userland/xnuhost.conf` (keep its other lines,
 `scale=` and `pen=` among them) and stage that file with the new `kernel.kc` and `kernel.kc.hashes`, at their paths in
 one folder, by `oneios-tool phone manifest DIR --stage` (the manifest lists the file, so it must be staged with its
-new entry). Until 2026-11-22 xnuhost read `encoder=` of the image set and then dropped it (`runtime/xnuhost/src/config.c`,
+new entry). Until 2026-11-22 xnuhost read `encoder=` of the image set and then dropped it (the C's `runtime/xnuhost/src/config.c`,
 `encoder_given`): only `--set encoder=auto` turned the encoder on. The lines that prove it are in
 `kernel/patches/oneios-hosted/codec/README.md` ("What a session on the phone must show").
 
@@ -154,23 +163,11 @@ new entry). Until 2026-11-22 xnuhost read `encoder=` of the image set and then d
 settings; that MediaCodec's unit for a frame at quality 90 fits width x height / 2 + 64 KiB (a larger one is dropped
 and counted, point 4 above).
 
-## The Rust port (`oneencoder`, branch `rust-runtime`; runtime/RUST.md)
+## The Rust port (`oneencoder`, 2026-11-23; runtime/RUST.md)
 
-One Rust module per C file, beside the C until the lead switches `runtime/build.sh` to cargo: `media_device.rs`
-(`create`: `br_encoder_create`, `stats`), `backend.rs` (encoder.h's interface as the `Backend` and `Session`
-traits), `backend_helper.rs` (`HelperBackend::new`: `br_encoder_backend_helper`), `backend_stub.rs` (`StubBackend`),
-`backend_ndk.rs` (MediaCodec behind a `Codec` trait), `helper.rs` (`bin/oneios-encoder`), `encctl.rs` (`bin/encctl`,
-and the in-process guest `Guest` the device test drives too); `proto.rs` mirrors `media_proto.h`, `link.rs`
-`encoder_link.h`. The helper spawn and the byte views are onecamera's.
-
-```sh
-cd runtime
-CARGO_TARGET_DIR=target/media cargo test -p oneencoder    # the stand-in's 16 streams (and tests/decode.sh: ffmpeg
-                                                          # decodes all 16 to the picture given), the device through
-                                                          # the helper process and in-process, MediaCodec's session
-                                                          # logic against a fake codec, the headers (C and NDK)
-CARGO_TARGET_DIR=target/media cargo build --release --target aarch64-linux-android -p oneencoder --bins
-```
+One Rust module per C file (the table above; the C is gone from the tree): the C's `br_encoder_create` is
+`media_device::create`, `br_encoder_backend_helper` is `HelperBackend::new`. The helper spawn and the byte views are
+onecamera's. The commands are at the top of this file.
 
 - On a host `encctl` runs the whole path with the stand-in (`encctl hevc 512 512 FILE` gives a stream ffmpeg
   decodes); on Android with MediaCodec, as before. Both programs are dynamic on Android (`build.rs` links libmediandk

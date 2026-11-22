@@ -25,7 +25,7 @@ path = "bin/oneios-camera.rs"
 name = "camctl"
 path = "bin/camctl.rs"
 
-# The helper process through xnuhost's end of it, and the virtio device on xh-core's transport (test_camera.c).
+# The helper process through xnuhost's end of it, and the virtio device on xh-core's transport (the C test_camera.c's cases).
 [[test]]
 name = "camera"
 path = "tests/camera.rs"
