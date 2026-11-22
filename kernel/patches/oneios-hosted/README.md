@@ -1229,7 +1229,7 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
-## 0084-edge-e-to-p-spill.patch (fix-launch-control-center-fitness, 2026-11-22)
+## 0085-edge-e-to-p-spill.patch (fix-launch-control-center-fitness, 2026-11-22)
 
 The owner's report (main `23561aa`, kernel 0082 + 0083 + codec): "we are close to 120 Hz but these laggy parts need
 fixes": app opening animations lag, Control Center is laggy, Fitness opens to a black screen. iOS's log of the same
@@ -1282,7 +1282,7 @@ coordinator phase did change: 1 ... is presenting onboarding: 1`). The services 
 on purpose. This patch takes the CPU part out (fitcored and healthd are default and utility threads); the network part
 stays until the guest is on Wi-Fi.
 
-Tested (Mac, 2026-11-23): `HOSTED_OUT=anim kernel/build-hosted.sh` applied the series with 0084 and built `xnu.macho` in
+Tested (Mac, 2026-11-23): `HOSTED_OUT=anim kernel/build-hosted.sh` applied the series with 0085 and built `xnu.macho` in
 447 s (25,646,672 bytes, sha256 `555a98d6...`; `_hosted_sched_edge_spill`, `_sched_edge_matrix_set` and the four
 `oneios-edge:` texts are in it; no warning in the new code); no reference kernel (it does not link since 0074, see 0083).
 `KERNEL=out/kernel/current-hosted-anim/xnu.macho OUT=out/kernel/anim-24A446 kernel/prelink/build.sh`: `kernel.kc`

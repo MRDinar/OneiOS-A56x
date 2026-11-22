@@ -924,8 +924,8 @@ background QoS; the `uclamp.max` 512 that stood here until 2026-11-16 also slowe
 is gone: newtodo's decision list). The same word is readable by host code on the vCPU
 (the GPU path: `xh_cpu_self()->cpu.perf_hint`, for fix-gpu-perf's per-context priority).
 The E cluster is DroidVMCpufreq's preferred cluster of every class but UI, above-UI and realtime, and XNU's Edge edges
-let nothing move from E to P: until hosted `0084` (2026-11-22) the `perf: cpuN:` lines showed vCPU 0-1 0% idle and
-vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0084` opens the E -> P edges (migration and steal;
+let nothing move from E to P: until hosted `0085` (2026-11-22) the `perf: cpuN:` lines showed vCPU 0-1 0% idle and
+vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0085` opens the E -> P edges (migration and steal;
 weight 0 to default, 64 utility, 1000 background, us of scheduling latency): on the phone the same lines should show
 vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line.
 

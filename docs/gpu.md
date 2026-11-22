@@ -258,8 +258,8 @@ render server's work needed the top; `over budget` is frames that took longer th
 A frame interval far above the GPU time is not the GPU's: on 2026-11-22 (s9) the render server drew at 43-82 ms intervals
 with 1.4-5.6 ms of GPU time at the top, because its render thread waits every frame for metal2vulkan's submission thread
 (`CA::OGL::MetalContext::flush` -> `dispatch_group_wait` in the plug-in), a default-class thread that the Edge scheduler
-kept on the two saturated E vCPUs; hosted `0084` lets it run on the P cores (kernel/patches/oneios-hosted/README.md,
-"0084"; xnuhost's `perf: cpuN:` lines show the clusters' load).
+kept on the two saturated E vCPUs; hosted `0085` lets it run on the P cores (kernel/patches/oneios-hosted/README.md,
+"0085"; xnuhost's `perf: cpuN:` lines show the clusters' load).
 **`gpu: 10 s fences over 100 ms`** (fix-gpu-widgets, a lasting line, only when there are any) names the processes whose
 fences took 100 ms or more from submission to retirement on the host in those 10 s (count, longest, class), and any
 whose oldest fence has been waiting that long now. Metal's runtime waits for a fence in slices of 100 ms and waits again

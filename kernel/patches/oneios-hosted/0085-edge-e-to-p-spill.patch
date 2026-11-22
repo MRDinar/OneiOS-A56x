@@ -6,7 +6,7 @@ diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
  }
  
 +/*
-+ * 0084 (fix-launch-control-center-fitness, 2026-11-22): the Edge scheduler's E -> P edges.
++ * 0085 (fix-launch-control-center-fitness, 2026-11-22): the Edge scheduler's E -> P edges.
 + *
 + * xnuhost gives the guest 2 E vCPUs (the A520s) and 6 P vCPUs (five A720s and the X4), each pinned to its own core.
 + * DroidVMCpufreq gives every thread group the E cluster as its preferred one, and the P cluster only for the UI,
@@ -120,7 +120,7 @@ diff --git a/osfmk/arm64/oneios_host.c b/osfmk/arm64/oneios_host.c
  	extern void hosted_user_backtrace_start(void);
  	hosted_user_backtrace_start();
 +	/*
-+	 * 0084: E -> P spill. DroidVMCpufreq (above) gives each thread group the E cluster with only the UI, above-UI and
++	 * 0085: E -> P spill. DroidVMCpufreq (above) gives each thread group the E cluster with only the UI, above-UI and
 +	 * realtime classes on P; without CLPC nothing opens the Edge scheduler's E -> P edges, so all other work stayed on
 +	 * the two E vCPUs (arm64/hosted/hosted_smp.c).
 +	 */

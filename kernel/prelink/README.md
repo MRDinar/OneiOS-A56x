@@ -154,7 +154,7 @@ reviewed records are unchanged. Built on the Linux PC from `origin/main` `fb4ec8
 92 functions on the stub, 9 data unpaired; 0 failures`, `prelink stubs-check` 666 good, 0 bad; again no pairing
 record was needed. With iOS 27's tile session in the staged host (2026-11-22, `HOSTED_OUT=codecfix`):
 `out/kernel/codecfix-24A446/kernel.kc` `852adb8be21b525d...` (96,845,824 bytes), audit 2712 paired, 92 on the stub, 9
-data unpaired, 0 failures, `prelink stubs-check` 666 good, 0 bad; no pairing record needed. With hosted 0084 (the Edge
+data unpaired, 0 failures, `prelink stubs-check` 666 good, 0 bad; no pairing record needed. With hosted 0085 (the Edge
 scheduler's E -> P edges, 2026-11-23, `HOSTED_OUT=anim`): `out/kernel/anim-24A446/kernel.kc` `7b1057e2e0f9908a...`
 (96,845,824 bytes), audit 2712 paired, 92 on the stub, 9 data unpaired, 0 failures, `prelink stubs-check` 666 good,
 0 bad; no pairing record needed.
