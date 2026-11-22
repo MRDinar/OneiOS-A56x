@@ -276,14 +276,14 @@ fn settings_choice_and_lines() {
     }
 
     // The process's settings and the log lines. Not configured: samsung, the default.
+    let settings = super::settings_lock();
     let log = Capture::start();
     let last = || log.lines().pop().unwrap();
-    hw_configure(&HwSettings::default());
     assert_eq!(select(Bridge::Battery, Backend::Unset), Backend::Samsung);
     assert_eq!(last(), (Level::Info, "hw: battery: backend samsung (the default)".to_owned()));
     let mut s = HwSettings::default();
     s.setting("hw-backend", "treble").unwrap();
-    hw_configure(&s);
+    settings.configure(&s);
     assert_eq!(select(Bridge::Thermal, Backend::Unset), Backend::Treble);
     assert_eq!(last().1, "hw: thermal: backend treble (hw-backend=treble)");
     assert!(!missing(Bridge::Thermal, "android.hardware.thermal.IThermal/default is not registered"));
@@ -297,12 +297,12 @@ fn settings_choice_and_lines() {
         )
     );
     s.setting("hw-backend-fallback", "1").unwrap();
-    hw_configure(&s);
+    settings.configure(&s);
     assert!(missing(Bridge::Haptics, "x"));
     assert_eq!(
         last(),
         (Level::Info, "hw: haptics: treble: missing: x; falling back to samsung (hw-backend-fallback=1)".to_owned())
     );
-    hw_configure(&HwSettings::default());
+    settings.configure(&HwSettings::default());
     assert!(select(Bridge::Haptics, Backend::Unset) == Backend::Samsung && !hw_current().fallback_allowed());
 }

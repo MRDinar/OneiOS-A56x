@@ -17,3 +17,5 @@ pub use hw_log::{missing, select};
 mod test_hw_backend;
 #[cfg(test)]
 pub(crate) mod testdir; // hw/test_hw_backend.c
+#[cfg(test)]
+pub(crate) use hw_backend::{settings_lock, SettingsGuard};

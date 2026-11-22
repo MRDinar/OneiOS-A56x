@@ -234,3 +234,31 @@ pub fn hw_current() -> HwSettings {
 pub fn fallback_allowed() -> bool {
     hw_current().fallback_allowed()
 }
+
+/// Tests that configure the process's settings, or open a bridge that reads them, hold this: cargo runs tests in
+/// parallel and the settings are the process's. It starts from the defaults and puts them back when dropped. Take it
+/// before a [`crate::log::Capture`], never after, so that two tests never wait on each other.
+#[cfg(test)]
+pub(crate) struct SettingsGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl SettingsGuard {
+    pub(crate) fn configure(&self, settings: &HwSettings) {
+        hw_configure(settings);
+    }
+}
+
+#[cfg(test)]
+impl Drop for SettingsGuard {
+    fn drop(&mut self) {
+        hw_configure(&HwSettings::default());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn settings_lock() -> SettingsGuard {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = SettingsGuard(LOCK.lock().unwrap_or_else(PoisonError::into_inner));
+    hw_configure(&HwSettings::default());
+    guard
+}
