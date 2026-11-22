@@ -13,16 +13,16 @@ and `out/`.
 
 | Tool | For | Notes |
 |---|---|---|
-| zstd, tmux, git, curl, patch | everything | `patch`: xnuhost's Makefile applies `runtime/xnuhost/drm2kgsl/patches` to a copy of drm2kgsl |
+| zstd, tmux, git, curl, patch | everything | `patch`: `runtime/xnuhost/drm2kgsl/build.rs` applies `runtime/xnuhost/drm2kgsl/patches` to a copy of drm2kgsl |
 | python3 | the kernel build only, for other projects' pinned scripts it runs (UniXNU's driver and its scripts, Droid-VM's `build-droidvm-gpu.py`, xnu-linux-toolchain's `iig`), and the Metal plug-in's (section 9). Nothing of this project is Python since 2026-11-21 | the host's |
-| Rust 1.88+ (`cargo`; rustup) | `tools/oneios-tool`: the kernel's board archives and build record (section 2), the kernel collection's build (section 3), the image tools and the phone workflow (section 10) | the build scripts run `cargo build --release --manifest-path tools/oneios-tool/Cargo.toml` when the binary is missing or older than its sources (`scripts/lib/oneios-tool.sh`); `ONEIOS_TOOL=PATH` names a built one. Built with 1.98.0; needs a C compiler (`sha2`'s `asm`). `runtime/package.sh` also builds it for the phone: `rustup target add aarch64-linux-android` (section 4) |
-| clang (stock, recent) | the kernel | the kernel build uses stock clang plus xnu-linux-toolchain's ld64 (set up by the kernel scripts, no root) |
+| Rust 1.88+ (`cargo`; rustup) with `rustfmt` and `clippy` | the runtime (section 4: the Cargo workspace `runtime/Cargo.toml`, [runtime/RUST.md](../runtime/RUST.md)); `tools/oneios-tool`: the kernel's board archives and build record (section 2), the kernel collection's build (section 3), the image tools and the phone workflow (section 10) | the build scripts run `cargo build --release --manifest-path tools/oneios-tool/Cargo.toml` when the binary is missing or older than its sources (`scripts/lib/oneios-tool.sh`); `ONEIOS_TOOL=PATH` names a built one. Built with 1.98.0; needs a C compiler (`sha2`'s `asm`). The runtime and `runtime/package.sh` (which also builds oneios-tool for the phone) need `rustup target add aarch64-linux-android aarch64-unknown-none` (the phone's programs; the bare-metal task stub and test kernel) and `rustup component add rustfmt clippy` (the host tests' `lint` part); CI installs the same (`.github/scripts/setup-build.sh`) |
+| clang (stock, recent) | the kernel; the host tests' build of drm2kgsl's C (`runtime/xnuhost/drm2kgsl/build.rs` takes `$CC`, else `cc`) | the kernel build uses stock clang plus xnu-linux-toolchain's ld64 (set up by the kernel scripts, no root) |
 | libdispatch with BlocksRuntime (Linux only) | the kernel's toolchain (cctools' ld64) | Arch: `libdispatch` (6.2.2 on the PC of 2026-11-12: `/usr/include/dispatch`, `/usr/lib/libdispatch.so`, `libBlocksRuntime.so`); Debian/Ubuntu: `libdispatch-dev libblocksruntime-dev`. Without it `kernel/linux/setup-toolchain.sh` stops and no kernel builds. Also git, cmake, make, flex, bison, autoconf, automake, pkg-config ([kernel/README.md](../kernel/README.md)) |
 | Android NDK 28.2 | xnuhost, the helpers, the phone tools | `$HOME/Android/Sdk/ndk/28.2.13676358` (Linux), `$HOME/Library/Android/sdk/ndk/28.2.13676358` (macOS), or `$NDK` / `$ANDROID_NDK_HOME` |
 | Android SDK build-tools (`d8`) and a JDK (`javac`) | the display helper's dex | the newest `build-tools/*/d8` beside the NDK's SDK; on a Mac the Homebrew JDK 17 (`brew install openjdk@17`), elsewhere `javac` from `PATH` |
 | Apple's `container` 1.7.1 (Mac only) | the runtime's host tests from a Mac | `brew install container`, then `container system start`; `runtime/host-tests.sh`, section 4 |
 | apfs-fuse (Linux only) | reading the volumes for the Data seed and the hook | github.com/sgan81/apfs-fuse; read-only, no root. On macOS `hdiutil` does it, no root (section 1) |
-| qemu-user (`qemu-aarch64`) | booting xnuhost and the kernel on the PC | |
+| qemu-user (`qemu-aarch64`) | booting xnuhost and the kernel on the PC; the test kernel's boots of the host tests (`runtime/xnuhost/check-arm64.sh`) | not needed on an arm64 Linux host |
 | mksh, dash (optional) | testing the phone scripts the way Android runs them | |
 | gh | releases | |
 | macOS: Xcode 27 with the iOS platform. Linux: xtool and an Xcode `.xip`. Both: rustup 1.98.0 with `rust-src`, meson, ninja, glslang, glslc, spirv-val, bison, flex, LLVM's `llvm-as`/`llvm-objcopy`/`llvm-ar`, python3 with PyYAML and mako (the Metal plug-in's external build scripts and Mesa's meson build: their Python, not ours) | iOS user-space code: the toolchain and the Metal plug-in | section 9; `scripts/setup/ios-toolchain.sh` says what is missing |
@@ -205,22 +205,63 @@ and why, and the original functions still on the panic stub. Details: [kernel/pr
 
 ## 4. The runtime (xnuhost, helpers, phone tools)
 
-Build hosts: a Linux x86_64 PC, or a Mac (Apple Silicon; macOS 27 tested). `runtime/host.mk`, which every runtime
-Makefile includes, picks the NDK's prebuilt tools by `uname -s` (`linux-x86_64` or `darwin-x86_64`; the darwin tools
-are universal binaries) and the NDK's default place; `NDK=` overrides it everywhere. The scripts use no GNU-only
-tool: sizes with `wc -c`, CPUs with `getconf _NPROCESSORS_ONLN`, checksums with `sha256sum` or `shasum -a 256`.
+The runtime is Rust (branch `rust-runtime`, 2026-11-23): the Cargo workspace `runtime/Cargo.toml`, with the task stub
+and the test kernel as two bare-metal workspaces of their own. [runtime/RUST.md](../runtime/RUST.md) is its guide: the
+crates and their programs, the conventions, how to build and test, and what stays C (the guest headers the kernel
+includes, drm2kgsl's pinned renderer and its glue). The C runtime, its Makefiles and `runtime/host.mk` were removed in
+the same port; the records below that name `make` targets or `.c` files are of that C tree.
+
+What has run: every workspace test passes and clippy is clean (`cargo clippy --workspace --all-targets -- -D warnings`),
+`runtime/xnuhost/check-arm64.sh check`'s three boots pass with the Rust xnuhost under qemu-aarch64, and the trap path
+was benchmarked against the C build under qemu (booter.md 2.6a). **No phone has run the Rust runtime yet.**
+
+Build hosts: a Linux x86_64 PC, or a Mac (Apple Silicon; macOS 27 tested). Needs rustup's stable toolchain with the
+targets `aarch64-linux-android` and `aarch64-unknown-none`, and `rustfmt` and `clippy` for the lint (section 0). Cargo
+links `aarch64-linux-android` with `runtime/ndk-cc` (`runtime/.cargo/config.toml`), the NDK's
+`aarch64-linux-android30-clang`, found as every runtime script finds the NDK: `$NDK`, else `$ANDROID_NDK_ROOT`, else
+`$ANDROID_NDK_HOME`, else the SDK's `ndk/28.2.13676358` (`$HOME/Android/Sdk` on Linux, `$HOME/Library/Android/sdk` on
+macOS; the prebuilt tools of `linux-x86_64` or `darwin-x86_64` by `uname -s`). The scripts use no GNU-only tool: sizes
+with `wc -c`, CPUs with `getconf _NPROCESSORS_ONLN`, checksums with `sha256sum` or `shasum -a 256`.
 
 ```sh
-runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static), the bridges' helpers, the display helper,
-                                  #    and the phone checks (gpuctl, bridgectl, wifictl, brightctl, batteryctl, thermalctl, displayctl, camctl);
-                                  #    then the NEEDED and symbol check of the stage (runtime/package/elf-check.sh, below)
+runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static, the task stub inside it), the bridges' helpers, the
+                                  #    display helper, and the phone checks (gpuctl, bridgectl, wifictl, brightctl,
+                                  #    batteryctl, thermalctl, displayctl, camctl, encctl); then the NEEDED and symbol
+                                  #    check of the stage (runtime/package/elf-check.sh, below)
 runtime/package.sh 0.1.0-dev      # -> out/release/oneios-runtime-0.1.0-dev-arm64.tar.zst + .sha256 + runtime.json,
                                   #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256
 runtime/package/elf-check.sh DIR  # can Android load every library and dynamic helper under DIR? (a stage, or one file)
 runtime/host-tests.sh             # every host test of the runtime, one summary line per part (below)
-runtime/build.sh --test           # Linux: the loader, xnuhost and display tests (xnuhost's with the Android binary on
-                                  #   qemu-aarch64); macOS: the same as runtime/host-tests.sh
+runtime/build.sh --test           # the same as runtime/host-tests.sh
+runtime/tests/host.sh             # what CI runs for the runtime: cargo test, fmt, clippy, check-arm64.sh smoke check
 ```
+
+`runtime/build.sh STAGE` runs `cargo build --release --locked --target aarch64-linux-android` twice: the static programs
+(`crt-static`; target dir `runtime/target/android-static`: `xnuhost` and `gpuctl` of the `xnuhost` crate; `bridgectl`,
+`wifictl`, `brightctl`, `batteryctl`, `thermalctl` of `onebridges`) and the dynamic ones that call Android's libraries
+(`runtime/target/android`: `oneios-audio` of `onebridges`, `oneios-camera` and `camctl` of `onecamera`,
+`oneios-encoder` and `encctl` of `oneencoder`), then `runtime/display/build-android.sh` (`oneios-display`,
+`displayctl`, `liboneios-display.so`, `oneios-display.dex`) and copies `runtime/bridges/net/oneios-net.sh`; every
+program is stripped with the NDK's `llvm-strip` into `STAGE/bin`. The two target dirs keep the two builds from
+rebuilding each other. `xnuhost`'s `build.rs` builds the task stub (`runtime/xnuhost/stub/build.sh`) and links its
+flat blob in; `drm2kgsl-sys`'s `build.rs` compiles the patched renderer from `external/virglrenderer` (below).
+
+For work on one crate (`cd runtime` first):
+
+```sh
+cargo test -p xh-core                           # one crate's tests (xnuloader, onebridges, onecamera, oneencoder,
+                                                #   oneios-display, xnuhost, drm2kgsl-sys, xnuhost-abi, ...)
+cargo test -p onebridges thermal                # the tests whose names contain "thermal"
+cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p onebridges --bin thermalctl -- report    # a phone check on this machine (Linux; reads its sysfs)
+cargo build --release --target aarch64-linux-android -p onebridges --bin brightctl \
+  --config 'target.aarch64-linux-android.rustflags=["-C","target-feature=+crt-static"]'   # one static phone program
+runtime/xnuhost/check-arm64.sh smoke check      # the static xnuhost under qemu-aarch64: the vCPU machinery, then the
+                                                #   test kernel's three boots (more below)
+```
+
+Several people building at once give each their own `CARGO_TARGET_DIR` (e.g. `runtime/target/NAME`), so cargo's lock
+never makes one wait for another.
 
 **`bin/oneios-tool`, the Rust tools for the phone** (2026-11-15). `runtime/package.sh` builds `tools/oneios-tool` for
 `aarch64-linux-android` (`cargo build --release --target aarch64-linux-android -p oneios-tool`, linked by the NDK's
@@ -238,23 +279,31 @@ the file beside it is the same; `.github/scripts/check-phone-tool.sh VERSION` do
 the phone: without it xnuhost and gpuctl build with the 2D GPU only and say so at run time ([releases.md](releases.md)).
 Since 2026-11-22 `runtime/build.sh STAGE` (and so `runtime/package.sh`) **refuses** to build a stage without it (`build:
 no GPU renderer: .../external/virglrenderer/src/drm/drm2kgsl is missing`, exit 1; when `external` is a link whose target
-is gone it says so); `XNUHOST_2D_ONLY=1` builds the 2D-only xnuhost on purpose, `VIRGL=DIR` names another checkout (the
-Makefile's variable). Ported from `YumikoHayamato/OneiOS` (b7efdea): there `external` was a link into a tmpfs that a
-reboot emptied, a runtime came out 2D-only without a word, and an S25 Ultra session drew iOS on the CPU. A 2D build's
-objects are not rebuilt with the renderer by `make` (the flags are not tracked): remove `runtime/xnuhost/build/android`
-after fetching it. `runtime/package/elf-check-test.sh` checks the refusal; it and `runtime/package/test.sh` build
-2D-only in a tree without the checkout (a fresh worktree), so their link and package checks still run there.
+is gone it says so); `XNUHOST_2D_ONLY=1` builds the 2D-only xnuhost on purpose, `VIRGL=DIR` names another checkout.
+Ported from `YumikoHayamato/OneiOS` (b7efdea): there `external` was a link into a tmpfs that a reboot emptied, a
+runtime came out 2D-only without a word, and an S25 Ultra session drew iOS on the CPU. Without the checkout
+`drm2kgsl-sys` builds without the renderer and says so with a cargo warning (`drm2kgsl_sys::AVAILABLE` is false); its
+`build.rs` applies `runtime/xnuhost/drm2kgsl/patches` in name order to a copy of the renderer's sources in cargo's
+`OUT_DIR` (the checkout is never changed). `runtime/package/elf-check-test.sh` checks the refusal; it and
+`runtime/package/test.sh` build 2D-only in a tree without the checkout (a fresh worktree), so their link and package
+checks still run there.
 
-`runtime/host-tests.sh` runs, and prints one line each for: `loader` (`make -C runtime/loader test`), `xnuhost`
-(`make -C runtime/xnuhost test`: the unit tests, drm2kgsl and its leak test with LeakSanitizer, the image set, and
-the Android xnuhost booting the test kernel), `display` (`make -C runtime/display test`), `bridges`
-(`runtime/bridges/tests/host.sh`: the unit tests, `test-binder`, brightness, battery), `camera`
-(`runtime/bridges/camera/tests/host.sh`), `links` (`runtime/package/elf-check-test.sh`: the link rule and the check
-of the next section) and `package` (`runtime/package/test.sh`); the last two when the NDK is there.
+`runtime/host-tests.sh` runs, and prints one line each for (`runtime/host-tests.sh`'s header has the details):
+
+| Part | What |
+|---|---|
+| `workspace` | `cd runtime && cargo test --workspace --locked`: every crate's tests. drm2kgsl's and the stand-in KGSL scenarios when `external/virglrenderer` is there (the memory ones need `/dev/udmabuf`); the binder tests on a binderfs in a user namespace (`runtime/bridges/hal/binderfs.rs`; they print "skipped" where the kernel has none); the encoder's stand-in streams decoded by `ffmpeg` when it is there |
+| `lint` | `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
+| `boot` | `runtime/xnuhost/check-arm64.sh smoke check` (when the NDK is there): the vCPU machinery alone, then the static Android xnuhost booting the Rust test kernel three times, under qemu-aarch64 on an x86_64 PC, as it is on an arm64 host |
+| `port` | `sh scripts/port/test-verify-host.sh` (the read-only phone preflight against stand-in phones) |
+| `links` | `runtime/package/elf-check-test.sh`, the link rule and the check of the next section (needs the NDK) |
+| `package` | `runtime/package/test.sh` (needs the NDK) |
+
 A part that ends with exit 0 but skipped something shows the first "skipped" line. The exit code is 1 when a part
-failed. Other host tests: `userland/tests/host.sh` (the guest helpers' C, built for this machine; CI runs every
-`*/tests/host.sh`). `scripts/image/tests/run.sh` (the Python image tool's tests) was deleted with that tool on
-2026-11-21.
+failed. `runtime/tests/host.sh` is the shorter set CI runs (CI runs every executable `*/tests/host.sh`): the
+`workspace` and `lint` parts and `check-arm64.sh smoke check` when the NDK and `qemu-aarch64` are there (skipped with a
+line otherwise). Other host tests: `userland/tests/host.sh` (the guest helpers' C, built for this machine).
+`scripts/image/tests/run.sh` (the Python image tool's tests) was deleted with that tool on 2026-11-21.
 
 ### Shared objects: the link rule and the NEEDED check
 
@@ -265,18 +314,19 @@ build passed, `app_process` said `dlopen failed: cannot locate symbol "ANativeWi
 by liboneios-display.so`, and the panel stayed on the OneOS splash (`f7bb1c3` linked `-lnativewindow`). Two things
 now stop such a file on the build machine:
 
-1. **The link rule.** `runtime/host.mk` has `ANDROID_SO_LDFLAGS := -Wl,-z,defs`, and every `-shared` link line of a
-   runtime Makefile carries `$(ANDROID_SO_LDFLAGS)`: a symbol that no library named on the line has is a link error
-   (`ld.lld: error: undefined symbol: ...`). The runtime builds one shared object, `liboneios-display.so`
-   (`runtime/display/Makefile`); a new one takes the same variable, and `runtime/package/elf-check-test.sh` fails
-   when a `-shared` line has none. Executables need no flag: lld fails on an undefined symbol in an executable by
-   default, a static one (xnuhost, the phone checks) and a dynamic one (`oneios-audio`, `oneios-camera`, `camctl`)
-   alike. The test links one of each with a missing symbol and expects the failure.
+1. **The link rule.** Every crate of the runtime built as a `cdylib` passes `-Wl,-z,defs` to its cdylib link from
+   its `build.rs` (`cargo:rustc-cdylib-link-arg=-Wl,-z,defs`): a symbol that no library named on the line has is a
+   link error (`ld.lld: error: undefined symbol: ...`). The runtime builds one shared object, `liboneios-display.so`
+   (`runtime/display/build.rs`, built by `runtime/display/build-android.sh`); a new one takes the same line, and
+   `runtime/package/elf-check-test.sh` fails when a cdylib crate's `build.rs` has none. Executables need no flag: lld
+   fails on an undefined symbol in an executable by default, a static one (xnuhost, the phone checks) and a dynamic
+   one (`oneios-audio`, `oneios-camera`, `camctl`) alike. The test links one of each with a missing symbol and expects
+   the failure.
 2. **The check**, `runtime/package/elf-check.sh [--api N] PATH...` (POSIX shell; the NDK's `llvm-readelf` and
    `llvm-nm`; `PATH` is a stage or one file). For every arm64 ELF file with a dynamic section:
    - each NEEDED library must be a stub of the NDK for API 30
      (`toolchains/llvm/prebuilt/<host>/sysroot/usr/lib/aarch64-linux-android/30/*.so`: the libraries every Android
-     of that level has; 30 is the level the runtime Makefiles compile for) or a library that is in the stage itself
+     of that level has; 30 is the level the runtime links for, `runtime/ndk-cc`) or a library that is in the stage itself
      (by its SONAME, or by its file name when that ends in `.so`);
    - each undefined dynamic symbol must be defined by one of the file's own NEEDED libraries, a versioned reference
      (`fopen@LIBC`) with that version. Weak references are not checked (Android loads a file with one unresolved).
@@ -297,16 +347,22 @@ now stop such a file on the build machine:
    lists it for API 30 is not found by it.
 
 `runtime/package/elf-check-test.sh` (the `links` part of `runtime/host-tests.sh`, and a step of CI) tests both, in a
-temporary folder: the display helper's library by its own Makefile rule with `1f7dd1f`'s libraries
-(`make DISPLAY_LIBS='-landroid -lm'`: the link fails on both symbols), the same without the rule's flags, which is
-`1f7dd1f`'s link (it links, and the check fails with the line above), and as the Makefile links it now (both
-pass); the same three with `runtime/package/elf-fault.c`, a test input that makes the same two calls and does not
-depend on the display helper's source; the executables; a NEEDED library that is no stub (refused alone, accepted
-when the stage ships it) and a symbol that nothing has; and a stage of `runtime/build.sh`, as built and with the
-faulty library in the display helper's place. `runtime/package/test.sh` adds the package's side: the two runs of
-the check in the log of a good package, and the refusal of a package with the faulty library.
+temporary folder: that every cdylib crate of the runtime passes `-z defs` from its `build.rs`; the display helper's
+library as `runtime/display/build-android.sh` builds it (`-z defs`, needs `libnativewindow.so`, the check passes);
+`runtime/package/elf-fault.rs`, a test input that makes `1f7dd1f`'s two calls, built with rustc and the NDK's clang as
+cargo links the runtime: with `libandroid` only and `-z defs` the link fails, without `-z defs` it links and the check
+fails and names `libnativewindow.so`, with `libnativewindow` both pass; the executables (a dynamic and a static one
+with a missing symbol fail to link); a NEEDED library that is no stub (refused alone, accepted when the stage ships it)
+and a symbol that nothing has; the refusal of a stage without `external/virglrenderer`; and a stage of
+`runtime/build.sh`, as built and with the faulty library in the display helper's place. `runtime/package/test.sh` adds
+the package's side: the two runs of the check in the log of a good package, and the refusal of a package with the
+faulty library.
 
-Checked on 2026-11-14 on the Linux PC of the next table (NDK 28.2.13676358), in a tree without
+The records below (2026-11-12 to 2026-11-15) are of the **C runtime** (its Makefiles, `make test`, `test-binder`,
+LeakSanitizer); their counts are checks of the C test programs, not of today's cargo tests. No such table has been
+written for the Rust workspace yet: what has run is in this section's first paragraphs.
+
+Checked on 2026-11-14 (the C runtime) on the Linux PC of the next table (NDK 28.2.13676358), in a tree without
 `external/virglrenderer` (xnuhost and gpuctl 2D-only, which changes nothing for this check: both are static). Not
 run on a Mac, and nothing of it has been on the phone (the phone's part is `f7bb1c3`'s library, loaded there by hand).
 
@@ -317,7 +373,7 @@ run on a Mac, and nothing of it has been on the phone (the phone's part is `f7bb
 | `runtime/package/test.sh` (`package`) | 22 tests passed (19 before: the check's two runs in a good package's log, the refusal of the faulty library with exit 3 and no package, and the symbol and `libnativewindow.so` named in it) |
 | `runtime/host-tests.sh`, the other parts | loader 160 checks; xnuhost 13840, display mode 0 failed, image set 37, `check-arm64` `TESTKERNEL: all passed` and the restart test (not run: drm2kgsl and its leak test, which a tree without `external/virglrenderer` does not build, and the udmabuf import: no access to `/dev/udmabuf`, as on 2026-11-12); display 111 and mode choice 10; bridges 289, wifi 162, `test-binder` 38 and 35, brightness 74, battery 65, thermal 64, audio helper 11105 (some timing checks not checked: the box had a load of 14-18 from other builds), Android build ok; camera 131, Android build ok. 0 failed in each. The first run here failed in `check-arm64` (the test kernel's timer and task checks, under qemu-aarch64 at that load, while the suite compiled its tests beside it); `check-arm64` alone and the whole suite again passed |
 
-Checked on 2026-11-12, Linux x86_64 CachyOS (kernel 7.3.1-1-cachyos with binderfs built in, 4 CPUs, 15 GiB; GCC
+Checked on 2026-11-12 (the C runtime), Linux x86_64 CachyOS (kernel 7.3.1-1-cachyos with binderfs built in, 4 CPUs, 15 GiB; GCC
 16.2.1, clang 23.1.4, GNU make 4.4.1, Python 3.14, NDK 28.2.13676358, build-tools 35.0.0, Temurin JDK 17,
 qemu-aarch64 11.1.3 user mode, no binfmt), `runtime/host-tests.sh` on a clean tree, then again after the changes
 below (the same counts):
@@ -340,38 +396,40 @@ own threads on time: when they ran more than 4 ms late (other builds on the same
 with a line `the host ran this test's threads up to N ms late: ... not checked`, and the count is lower (the run of 11,101 had 9 skipped, at a
 load of 17-22 on the 4-CPU PC: the box was never idle that day).
 
-`make -C runtime/xnuhost bench-arm64` also runs here, under qemu-aarch64 (about 2 s): its times are qemu's (null
-system call 19.8 us mean, `task_unmap` 16.6 us; about ten times the Mac's container) and the task layer has no seccomp
-filter under qemu-user (`svc #0x80` is rewritten by `text_fixup`), so they say only how a change moves a cost on the
-same box. The test kernel's histogram now has steps of `hz / 24 MHz` ticks on a counter faster than 24 MHz (qemu's is
-1 GHz): before, every p50/p90/p99 under qemu read 4095 ns, the table's last tick.
+The C build's `make -C runtime/xnuhost bench-arm64` (today `runtime/xnuhost/check-arm64.sh bench`) also ran here,
+under qemu-aarch64 (about 2 s): its times are qemu's (null system call 19.8 us mean, `task_unmap` 16.6 us; about ten
+times the Mac's container) and the task layer has no seccomp filter under qemu-user (`svc #0x80` is rewritten by
+`text_fixup`), so they say only how a change moves a cost on the same box. The test kernel's histogram has steps of
+`hz / 24 MHz` ticks on a counter faster than 24 MHz (qemu's is 1 GHz): before, every p50/p90/p99 under qemu read
+4095 ns, the table's last tick.
 
 ### The host tests from a Mac
 
-The host tests are Linux tests (binderfs, udmabuf, user namespaces, LeakSanitizer, glibc): `make test` refuses to
-start on macOS and names `runtime/host-tests.sh`. On a Mac that script:
+The host tests are Linux tests (binderfs, udmabuf, user namespaces, glibc): `runtime/tests/host.sh` refuses to start
+on macOS and names `runtime/host-tests.sh`. On a Mac that script:
 
-1. builds the Android parts with the Mac's NDK (`make -C runtime/loader android`, `runtime/xnuhost all
-   build/android/testkernel.elf`, `runtime/bridges all`, `runtime/bridges/camera all`, `runtime/display all`), so
-   the container needs no NDK;
-2. runs `runtime/host-tests.sh --suite` (with `STRICT=1 PREBUILT=1`) in an arm64 Ubuntu 24.04 container of Apple's `container` tool (each container
-   is its own small VM on Virtualization.framework). The image `oneios-hosttests:3` (no `python3` since 2026-11-21; `:2` had it) is built with `container build`
-   from the Containerfile inside the script the first time (gcc 13, clang 18, OpenJDK 17, zstd, patch, and the kernel
-   build's bc, bison, flex, libelf-dev, libssl-dev). The checkout is mounted at its own path (`-v ROOT:ROOT`); nothing
-   else of the Mac is. On arm64 the Android xnuhost runs as it is (static, bionic), so `check-arm64` boots the test
-   kernel without qemu. `PREBUILT=1` runs the xnuhost part as `make test -o build/android/xnuhost -o
-   build/android/testkernel.elf`: make keeps the Mac's binaries and does not walk their prerequisites (the bridges'
-   and camera's sub-makes, the gpu3d stamp), so nothing there can call the NDK the container does not have. Before,
-   a source that looked newer than its object over the mount made make call the NDK's clang in the container
-   (`aarch64-linux-android30-clang: No such file`, error 127 on `build/android/gpu3d.o`; reproduced on Linux with
-   `NDK=/nonexistent` and a touched source). A missing pre-built binary is a FAIL that names it. The fix is checked on
-   Linux (`NDK=/nonexistent PREBUILT=1 runtime/host-tests.sh --suite` after touching `src/gpu3d.c` and the bridges'
-   and camera's sources: every part passes, nothing asks for the NDK); not yet run on a Mac;
-3. runs `runtime/package/elf-check-test.sh` (the `links` part) and `runtime/package/test.sh` on the Mac (both need the NDK).
+1. builds the Android parts with the Mac's NDK (part `android-build`): the static xnuhost (`cargo build --release
+   --target aarch64-linux-android -p xnuhost --bin xnuhost`, crt-static, `runtime/target/host-tests-static`), the
+   test kernel (`runtime/xnuhost/testkernel/build.sh`) and its image (`cargo run -p xnuloader --bin mkkernel`), into
+   `out/host-tests/xnuhost` and `out/host-tests/testimage`, so the container needs no NDK;
+2. runs `runtime/host-tests.sh --suite` (with `STRICT=1 PREBUILT=1`, `CARGO_TARGET_DIR=runtime/target/host-tests-linux`)
+   in an arm64 Ubuntu 24.04 container of Apple's `container` tool (each container is its own small VM on
+   Virtualization.framework). The image `oneios-hosttests:4` is built with `container build` from the Containerfile
+   inside the script the first time (build-essential, clang, lld, OpenJDK 17, zstd, patch, ffmpeg, rustup's stable
+   Rust with rustfmt and clippy, and the kernel build's bc, bison, flex, libelf-dev, libssl-dev; `:4` added Rust on
+   2026-11-23, `:3` had the C toolchain only, `:2` also `python3`). The checkout is mounted at its own path
+   (`-v ROOT:ROOT`); nothing else of the Mac is. On arm64 the Android xnuhost runs as it is (static, bionic), so the
+   `boot` part runs `check-arm64.sh check` with `XNUHOST=` and `IMAGE=` set to the Mac's binaries, without qemu, and
+   builds nothing; a missing pre-built binary is a FAIL that names it. The links and package parts say "skipped (the
+   Mac runs them)" there;
+3. runs `runtime/package/elf-check-test.sh` (the `links` part) and `runtime/package/test.sh` on the Mac (both need the
+   NDK).
+
+The Rust form of this path has not been run on a Mac yet (written 2026-11-23); the C form was (the record below).
 
 **The container's kernel.** The default kernel of `container` (6.18.56) has no binderfs, no udmabuf and no modules
-(`# CONFIG_ANDROID_BINDER_IPC is not set`, `# CONFIG_UDMABUF is not set`, `# CONFIG_MODULES is not set`), so
-`test-binder`, drm2kgsl, the leak test and test_xnuhost's udmabuf checks could not run with it. The first run of
+(`# CONFIG_ANDROID_BINDER_IPC is not set`, `# CONFIG_UDMABUF is not set`, `# CONFIG_MODULES is not set`), so the
+binder tests, drm2kgsl's memory scenarios and the udmabuf checks could not run with it. The first run of
 `runtime/host-tests.sh` (or `runtime/host-tests.sh --kernel`, to make it again) builds one, in a container, about 15
 minutes on an M4 with 10 CPUs:
 
@@ -383,12 +441,14 @@ minutes on an M4 with 10 CPUs:
   (`container run --kernel`); `container system kernel set` is not used, and the default kernel of other containers
   does not change. `KERNEL=FILE` names another kernel.
 
-On this path a skipped `test-binder` or a missing `/dev/udmabuf` is a FAIL, not a skip.
+On this path (`STRICT=1`) a binder test skipped for want of a binderfs, or a missing `/dev/udmabuf`, is a FAIL, not a
+skip (the lines the harness-less binder tests print; a library test's skip line is captured by cargo).
 
 **Capabilities.** `--cap-drop ALL --cap-add SETFCAP`, nothing else, no privileged mode (`container` has none).
-`test-binder`'s `unshare -Urm` maps uid 0 in the new user namespace, and Linux allows that only with `CAP_SETFCAP`
-(with all capabilities dropped: `unshare: write failed /proc/self/uid_map: Operation not permitted`). The binderfs mount
-in that namespace and LeakSanitizer's ptrace of its own threads need nothing more; the container has no seccomp filter.
+The binder tests re-run themselves in a user namespace (`runtime/bridges/hal/binderfs.rs`) that maps uid 0, and Linux
+allows that only with `CAP_SETFCAP` (with all capabilities dropped the C tests' `unshare -Urm` said `unshare: write
+failed /proc/self/uid_map: Operation not permitted`). The binderfs mount in that namespace needs nothing more; the
+container has no seccomp filter.
 
 Once per Mac:
 
@@ -398,12 +458,13 @@ container system start --enable-kernel-install      # the services and the defau
 runtime/host-tests.sh                                # first run: the image (a few minutes) and the kernel (about 15)
 ```
 
-`IMAGE=`, `KERNEL=`, `JOBS=` (make jobs and the container's CPUs; default: the Mac's) and `MEMORY=` (default 8G)
-override the image, the kernel, the CPUs and the memory. The project uses neither docker nor colima any more.
+`IMAGE=`, `KERNEL=`, `JOBS=` (the container's CPUs; default: the Mac's), `MEMORY=` (default 8G) and `CARGO_TARGET_DIR`
+override the image, the kernel, the CPUs, the memory and cargo's target dir. The project uses neither docker nor colima
+any more.
 
-Checked on 2026-11-12, Mac (M4, 10 CPUs, macOS 27, Xcode 27.2, NDK 28.2.13676358, Homebrew JDK 17, `container` 1.7.1
-with the kernel above, 10 CPUs and 8 GiB, 4 KiB pages). The counts are the same as the first run on colima's VM
-(Ubuntu kernel 6.8.0-117 with binder_linux):
+Checked on 2026-11-12 with the **C runtime**, Mac (M4, 10 CPUs, macOS 27, Xcode 27.2, NDK 28.2.13676358, Homebrew JDK
+17, `container` 1.7.1 with the kernel above, 10 CPUs and 8 GiB, 4 KiB pages). The counts are the same as the first run
+on colima's VM (Ubuntu kernel 6.8.0-117 with binder_linux):
 
 | Part | Result |
 |---|---|
@@ -415,8 +476,8 @@ with the kernel above, 10 CPUs and 8 GiB, 4 KiB pages). The counts are the same 
 | camera | 131 checks, 0 failed |
 | package (on the Mac) | 19 tests passed (the Apple-file refusals among them) |
 
-What the port changed, and why (none of it changes a phone binary: every staged file had the same SHA-256 before and
-after):
+What the C runtime's move to the Mac changed, and why (2026-11-12; none of it changed a phone binary: every staged
+file had the same SHA-256 before and after; the file names are the C tree's):
 
 - On an arm64 Linux host, `__aarch64__` code that the x86_64 PC never compiled is compiled for the tests.
   `tests/test_xnuhost.c` is built with `-DXH_HOST_TEST`, so `cpu.c` and `task.c` take the stand-ins they had on
@@ -430,41 +491,47 @@ after):
   `EBUSY` ("fake hal: Device or resource busy", then `FAIL tests/test_hidl_binder.c:497`). A race in the test, not in
   the HAL client: the fake HAL now retries `EBUSY` for up to 2 s. Five runs in a row passed.
 - `check-arm64` runs the Android binary without qemu on an arm64 Linux host.
-- `make -C runtime/xnuhost bench-arm64` (in the container, after the Android build, with
-  `-o build/android/xnuhost -o build/android/testkernel.elf` as above; on a Linux PC under qemu-aarch64, above) runs the test kernel's benchmarks
-  of the trap path (boot argument `testkernel-bench`) and prints them with xnuhost's `perf:` report;
-  `BENCH_SET="--set cpu-pin=0 --set map-defer=0"` measures other settings, `BENCH_SCALE=2` doubles the loops
-  (`docs/booter.md` 2.6a has the numbers). Not part of `make test`.
-- `make -C runtime/xnuhost rpc-arm64` (fix-mach-rpc, 2026-11-15; the same runners) times the round trip of a synchronous
-  Mach message between two tasks as the hosted kernel makes it (two user stays, two IPIs, two wakes of an idle vCPU),
-  once per interrupt path: `RPC_MODES="0 1 2"` = ArmCpu's trapped GIC registers (the kernel before hosted 0081), host
-  calls (0081), one vCPU without an IPI (the floor). Each mode is its own run, with xnuhost's `perf:` lines and
-  `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips
-  (`docs/booter.md` 2.6d has the numbers). On the phone: the same command line, as the parallel test's (2.6c step 2).
-  Not part of `make test`.
-- The Rust xnuhost (branch `rust-runtime`, runtime/RUST.md): `runtime/xnuhost/check-arm64.sh [smoke|check|bench|parallel|rpc|ab|all]`
-  does what the four targets above did. It builds the static xnuhost (`cargo build --release --target aarch64-linux-android
-  -p xnuhost`, crt-static, `runtime/target/machine-static`), the test kernel (`testkernel/build.sh`) and its image (the
-  loader crate's `mkkernel`), then runs `testkernel/check-arm64.sh` (check: the same three boots and greps) and the
-  bench, parallel and rpc boots with the same settings (`BENCH_SET`, `PAR_CPUS`, `PAR_SET`, `RPC_MODES`, ...; logs in
-  `runtime/target/machine-check`). `XNUHOST=FILE IMAGE=DIR` boot another binary and image, e.g. the C one, for numbers
-  on the same host and load. `ab` compares two binaries: the bench and rpc boots of `XNUHOST` (default the Rust one it
-  builds) and `XNUHOST_B` (default the C one, `build/android/xnuhost`) in turn, `AB_ROUNDS` rounds (default 4), all on
-  the same host CPUs (`PIN=CPUS`, `taskset -c`; default one thread of each fastest core), then a table of each BENCH
-  line's mean over the rounds for both and B's difference in % (logs in `WORK/ab`). Single runs are no comparison: on
-  the i9-12900H laptop a boot's numbers moved 10-30% with the cores it landed on (P or E) and the load, while
-  alternated rounds on the same P cores agree within about 3%. `PIN=CPUS` also pins any other mode. `smoke` needs no kernel: `examples/machine_smoke.rs` runs a few instructions of
-  hand-written "kernel" on one vCPU through every seam (a trapped `mrs`, host calls, a UART store, an interrupt on a host
-  call's return, a timer signal diverted through frame_resume; then the task layer: the factory, a task, a thread, a page of user code
-  run to a system call, a fault filled by task_map and a brk) and prints `machine-smoke: passed` (passed under
-  qemu-aarch64 on the PC, 2026-11-23).
 - macOS's `tar` is bsdtar (no `--mtime`): `runtime/package.sh` writes the archive with `oneios-tool package archive`
   (`pack.py archive` until 2026-11-13), so GNU tar is not needed. For the same files it is byte-identical to GNU tar 1.35's `--format=ustar` archive (checked).
 - macOS's `wc -l` pads its count: `runtime/package/test.sh` strips it.
 
+### The test kernel's boots: `runtime/xnuhost/check-arm64.sh`
+
+`runtime/xnuhost/check-arm64.sh [smoke|check|bench|parallel|rpc|ab|all]...` (no argument: `check`) boots xnuhost under
+qemu-aarch64 on a PC, natively on an arm64 Linux host. It replaced the C Makefile's `check-arm64`, `bench-arm64`,
+`parallel-arm64` and `rpc-arm64` targets. Unless given one it builds the static xnuhost (`cargo build --release
+--target aarch64-linux-android -p xnuhost`, crt-static, target dir `runtime/target/machine-static`), the test kernel
+(`runtime/xnuhost/testkernel/build.sh`, a `no_std` program for `aarch64-unknown-none`) and its image (`cargo run -p
+xnuloader --bin mkkernel -- testkernel.elf kernel.kc os.img`); logs and the data store go to `WORK`
+(`runtime/target/machine-check`).
+
+| Mode | What |
+|---|---|
+| `smoke` | The vCPU machinery alone, no kernel image, no session (`runtime/xnuhost/examples/machine_smoke.rs`): a few instructions of hand-written "kernel" on one vCPU through every seam (a trapped `mrs`, host calls, a UART store, an interrupt on a host call's return, a timer signal diverted through frame_resume; then the task layer: the factory, a task, a thread, a page of user code run to a system call, a fault filled by task_map and a brk); prints `machine-smoke: passed`. Seconds |
+| `check` | The three boots of `runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK`: the normal boot (3 vCPUs, 256 MiB: `TESTKERNEL: all passed`), `ram=auto` with a made-up meminfo (4 GiB, 2.5 GiB available: 1024 or 1280 MiB, held and prefaulted, or the clean `mlock` fallback), the restart loop (exit 3 after 9 `TESTKERNEL: restart`) |
+| `bench` | The trap path's costs (boot argument `testkernel-bench`), printed with xnuhost's `perf:` report; `BENCH_SET="--set cpu-pin=0 --set map-defer=0"` measures other settings, `BENCH_SCALE=2` doubles the loops ([booter.md](booter.md) 2.6a has the numbers) |
+| `parallel` | N threads of one task, one per vCPU: the speed-up for 1, 2, 4 and 8 threads (`PAR_CPUS=8`, `PAR_SCALE`, `PAR_SET`; booter.md 2.6b) |
+| `rpc` | The round trip of a synchronous Mach message between two tasks as the hosted kernel makes it (two user stays, two IPIs, two wakes of an idle vCPU), once per interrupt path: `RPC_MODES="0 1 2"` = ArmCpu's trapped GIC registers (the kernel before hosted 0081), host calls (0081), one vCPU without an IPI (the floor); each mode its own run, with xnuhost's `perf:` lines and `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips (booter.md 2.6d). On the phone: the same command line, as the parallel test's (2.6c step 2) |
+| `ab` | Two binaries compared: the bench and rpc boots of `XNUHOST` (default the Rust one it builds) and `XNUHOST_B=FILE` in turn, `AB_ROUNDS` rounds (default 4), all on the same host CPUs (`PIN=CPUS`, `taskset -c`; default one thread of each fastest core), then a table of each BENCH line's mean over the rounds for both and B's difference in % (logs in `WORK/ab`). The script's default `XNUHOST_B` is the C build's path `build/android/xnuhost`, which the tree no longer has: name the other binary |
+| `all` | smoke, check, bench, parallel, rpc |
+
+`XNUHOST=FILE` and `IMAGE=DIR` boot another binary and image (for numbers on the same host and load), `QEMU=FILE`
+another qemu, `PIN=CPUS` pins any mode. Single runs are no comparison: on the i9-12900H laptop a boot's numbers moved
+10-30% with the cores they landed on (P or E) and the load, while alternated rounds on the same P cores agree within
+about 3%.
+
+Run with the Rust xnuhost under qemu-aarch64 on the PC (2026-11-23): `smoke` passed; `check`'s three boots passed
+(`TESTKERNEL: all passed` with 3 vCPUs, 256 MiB, PAC yes; `ram=auto` 1024 MiB held with the `mlock` fallback; the
+restart loop, 9 starts, exit 3); `ab` against the C build, pinned to the same six P cores, 6 rounds: level on every
+BENCH line before 8c56fa5, and after it (the stub copies the trap's registers by 8-byte words) the null system call
+9.95 us (C) against 6.48 (Rust), the rest in booter.md 2.6a. The bench and parallel modes are not part of the host
+tests.
+
 ## 5. Booting on the PC (qemu-aarch64)
 
 The Android binary runs on the PC under qemu's user-mode emulator; its system calls go to the PC's Linux kernel.
+The iOS boots recorded in this section were of the C xnuhost; the Rust xnuhost has booted the test kernel under qemu
+(section 4, `check-arm64.sh`), and no iOS boot of it, on the PC or the phone, is recorded yet.
 
 ```sh
 mkdir -p out/run/data out/run/session
@@ -515,7 +582,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   late"). On that 4-CPU PC under other agents' load configd reached the naming 13-26 minutes into the boot, so give
   such a boot `timeout` 4000 s or more; iOS's own log can be read from the running boot's `data.img`
   (`oneios-tool ioslog show ... --proc configd`), not always after a `timeout` kill.
-- Bluetooth on the PC: add `--set bluetooth=sim`: a stand-in controller (`runtime/bridges/bt/hci_sim.c`) behind the
+- Bluetooth on the PC: add `--set bluetooth=sim`: a stand-in controller (`runtime/bridges/bt/hci_sim.rs`) behind the
   bridge channel, with the bridges off; `/bluetooth` gets transport-encoding 1 as with the phone's HAL. xnuhost logs
   `bluetooth: on: a stand-in controller (bluetooth=sim)`, then `bluetooth: sim: the stand-in controller is on` when
   bluetoothd connects, and with `-v` each command (`bluetooth: sim: command 0x0c03, ...`). The guest's lines start
@@ -641,7 +708,8 @@ $T phone return                    # session/return.request, then waits for "One
 # only during a session (refused without one: these are One UI's then); xnuhost and iOS are not touched:
 $T phone display-restart           # the display helper again: ends the one control/display.pid names (SIGTERM, then SIGKILL),
                                    #   starts it with the switch script's own command, waits for "first frame posted"
-$T phone display-restart --lib runtime/display/build/android/liboneios-display.so --dex runtime/display/build/android/oneios-display.dex
+$T phone display-restart --lib out/display/bin/liboneios-display.so --dex out/display/lib/oneios-display.dex
+                                   #   (built by runtime/display/build-android.sh out/display; not stripped there)
                                    #   first a new library and/or dex into the staged runtime (sha256 printed for both sides,
                                    #   refused when the phone's copy differs; runtime.sha256 and runtime.ids follow)
 $T phone touch status              # /sys/class/sec/tsp/enabled: 1 on, 0 off
@@ -808,7 +876,7 @@ Each tool's README has its exact commands and what a pass looks like. **None of 
 **Which phone xnuhost thinks it is on:** `oneios-tool phone status` prints `host: NAME (...), matched by
 ro.product.model=...; defaults: ...` (or `host: unknown phone (...)`), and `bridgectl host` on the phone the same with the
 whole table; xnuhost's log has the line at its start. On another phone the defaults of its row in
-`runtime/bridges/hw/host_device.c` apply ([hardware.md](hardware.md) 7h); `--host-device none` (or
+`runtime/bridges/hw/host_device.rs` apply ([hardware.md](hardware.md) 7h); `--host-device none` (or
 `ONEIOS_HOST_DEVICE=none` for the ctl tools) runs today's defaults, `--host-device NAME` forces a row.
 
 **Galaxy S25 probe:** `tools/probe/s25-probe.sh` is a read-only script for the phone (root, One UI running): CPU,
