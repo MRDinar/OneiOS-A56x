@@ -612,6 +612,8 @@ $T phone stage image DIR           # kernel.kc, kernel.kc.hashes, manifest.json,
 $T phone sums                      # the staged files' sha256
 $T phone image-check               # the staged manifest.json lists the staged files (switch checks it first)
 $T phone manifest DIR --stage      # DIR's files (a new kernel.kc, kernel.kc.hashes) with the phone's manifest, their entries new
+$T phone addon out/userland/camera/H9ISP.gpuaddon   # a rebuilt plug-in without a new seed (hosted 0090): the sidecar, its CDHashes in owner-trust.json
+$T phone addon --remove            # the sidecar away again (the kernel's unions go back to the Data seed's folders)
 $T phone switch                    # oneios_root.sh switch <the installed app's versionCode> 1
 $T phone log --follow --markers    # kernel, launchd, backboardd, SpringBoard, the first frame, a panic, as they come
                                    #   (right after a switch it waits for this session's log: the switch replaces it ~40 s in)
@@ -701,6 +703,10 @@ restore the baseline (`phone-baseline.txt` next to that script) before you relea
    `oneios-tool phone manifest DIR --stage` makes it from the phone's and stages both; `phone image-check` checks. Never stage `data.seed` from the Mac's
    `out/image/24A446`: it differs from the phone's, and a new seed makes the Data store start over.
    `runtime-asis DIR` puts back a backed-up stage whose files were replaced by hand.
+   A rebuilt capture or Metal plug-in reaches the phone's Data store without a new seed as the boot addon (hosted 0090):
+   `oneios-tool ios addon OUT --camera out/userland/camera [--metal out/userland/NativeAdrenoMetal.bundle]`, then
+   `oneios-tool phone addon OUT` (the sidecar `image/kernel.kc.gpuaddon`, its CDHashes into `owner-trust.json`, a
+   manifest); the kernel writes it into the Data store at the next boot. `phone addon --remove` takes it away.
 2. **Start** (the app's own path, the same preflight and the tick):
 
    ```sh

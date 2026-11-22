@@ -114,10 +114,12 @@ static long long cpu_us(void)
 // flushes) are put over it. Unchanged, the frame is answered at once and nothing is locked or posted, so surfaceflinger
 // has nothing to compose and the panel's refresh rate can drop by itself. Changed, the layer's buffer is locked whole
 // and the helper fills what that buffer lacks from the snapshot (xhd.h, struct xhd_buffers: Surface's own copy-back
-// loses changes once the queue has three buffers or more). The answer ("done") goes after the post: xnuhost then
+// loses changes once the queue has three buffers or more). The answer ("done") goes as soon as a changed direct frame
+// is in the snapshot, before the buffer is locked and posted (since 2026-11-23; before, after the post): xnuhost then
 // answers the guest's flush, and the guest's display driver posts its next frame only after that answer (its frame in
-// flight lands first: DroidVMVirtioGpuDisplay.cpp). Half-float frames have no snapshot: the memfd is the picture, and
-// a direct frame is refused (xnuhost then copies the frames itself).
+// flight lands first: DroidVMVirtioGpuDisplay.cpp), so the guest's next frame is drawn while this one is posted. A
+// frame that only xnuhost's own pixels changed is still answered after the post. Half-float frames have no snapshot:
+// the memfd is the picture, and a direct frame is refused (xnuhost then copies the frames itself).
 
 // Pacing: the next buffer is only handed out when surfaceflinger has taken the last one, so
 // ANativeWindow_lock blocks to the panel's vsync, and every flush that came meanwhile is one post.
@@ -242,6 +244,15 @@ JNIEXPORT jint JNICALL Java_OneiOSDisplay_nRun(JNIEnv *env, jclass type, jlong h
       } else {
         xhd_rect_union(&changed, &got);
         st.rows_changed += got.h;
+        // A changed frame is in the snapshot now, the helper's own copy, and the post below fills from there: answered
+        // at once, so that the guest draws its next frame while this one waits for a buffer and is posted. Until
+        // 2026-11-23 the answer went after the post: the guest's next frame waited for ANativeWindow_lock (to the next
+        // vsync when the queue is full: "buffer wait mean 4.1 ms" on the phone, 2026-11-22) and the fill as well.
+        if (got.w) {
+          xhd_send_done(c->fd, direct->seq, 0);
+          direct->pending = 0;
+          direct_frames++; st.direct++;
+        }
       }
     }
     if (!changed.w && frames > 0) {

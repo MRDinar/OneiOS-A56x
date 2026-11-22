@@ -2793,6 +2793,46 @@ stream is `PortTypeFrontSuperWide` and takes the formats of "Front Ultra Wide Ca
 the phone only with a new seed; the back camera needs only the new xnuhost). Lines that prove it
 on the phone: `userland/camera/README.md`, "What the next session's logs must show".
 
+**The second 2026-11-23 boot (main 44d9c49; iOS's log on the laptop `rel-logs/ioslog-int2/ioslog.txt`, xnuhost's
+`rel-logs/boot-int2.log`): the VM fix worked, the back stream stayed, and the preview was still black.**
+`oneios-iokit: cameracaptured[51] sysctl kern.hv_vmm_present -> 0`, `Created 2 sources`, `device: streams asked for (1)`.
+Then five faults, each traced to its cause [F, read in the 24A446 shared cache with `ipsw dyld disass|xref`]:
+1. `failed to copy ModuleInfo (err=-12787)`, then `Fig assert: "( portType && sensorIDString )"` and `Unexpected sensor ID
+   ((null)) found for PortTypeBack`. `BWFigCaptureStream` asks `ModuleInfo` with requireSupported and answers -12787 itself
+   when our SupportedPropertiesDictionary does not list it; `+[FigCaptureCameraParameters sensorIDStringFromModuleInfo:]`
+   is `[NSString stringWithFormat:@"0x%04x", ModuleInfo[kFigCapturePropertyValue_SensorID ("sensorID")]]`, and
+   `csu_createMultiStreamSourceFormatsArrayAndAddAVCompressionSettingsAttribute` looks the camera's tables up by port type
+   and that string (V54's `CameraSetup.plist` `DefaultSensorIDs`: PortTypeBack `0x0903`, PortTypeFrontSuperWide `0x0914`).
+   **Fix:** the plug-in lists and answers `ModuleInfo` `{sensorID: N}`, N from `DefaultSensorIDs` of the stream's port.
+2. `failed to resolve format 'Video-FES-60'` (and every other name), then `Fig assert: "streamFormatDict"` and
+   `"pixelFormatIsSupported"` for each AVCaptureDevice format. `csu_resolveFormatIndexForNamedStreamFormat` (CMCapture
+   0x1b07b7644) compares a named format's SensorWidth/Height, Binned, HDR, FES with FESWidth/Height, MaxFrameRate,
+   SIFREnabled with its binning factor (SIFRBinningFactor, else 2 when binned), QuadraBinningFactor,
+   OptimizedForMidFrameSynchronization and SecureSigningFaceIDSupported with the stream format's SensorWidth/Height,
+   VideoIsBinned, SensorHDRMode, FrontEndScalerOutputWidth/Height, VideoMaxFrameRate, SIFREnabled, SIFRBinningFactor,
+   QuadraBinningFactor, OptimizedForMidFrameSynchronization and SensorSigningEnabled (first match wins, Experimental ones
+   skipped). Our formats had no FrontEndScalerOutput size and no SIFR factor, so none matched.
+   **Fix:** `userland/camera/oneios_camera_formats.c` makes those keys from each named format and from each companion
+   (`Photo[DepthCompanionFormat]`: the parent's keys with the companion's over them), and the plug-in runs CMCapture's rule
+   over its own list at each create (a lasting line, below). The outputs also list `x420` and `x422` (V54's 10-bit device
+   formats; filled by `oneios_camera_scale.c`); the default `420v`/`420f` were there.
+3. `native-metal: heap refused: ... UndefinedValue { ty: "MTLResourceOptions", raw: 6291968 }` (0x600200), then
+   `Fig assert: "_heap" ... Failed to allocate metal heap` (FigMetalAllocator.m:878). FigMetalAllocator's heaps set bits 21
+   and 22, which metal2vulkan refuses as not Metal's. **Fix** (our Metal plug-in, `docs/gpu.md` "What the camera needs"):
+   the frontend takes unknown option bits off, once said per set.
+4. `native-metal: missing NBLibrary newFunctionWithName:constantValues:pipelineLibrary:error: (answered nil)`, and
+   `Fig assert: "function" ... function is nil (FigMetalContext.m:565)`: CMImaging's `-[FigMetalContext
+   computePipelineStateFor:constants:additionalPipelineOptions:reflection:]` makes every compute function with that
+   selector. **Fix:** NBLibrary answers it (the pipeline library is not needed: the runtime compiles its own).
+5. cameracaptured `exited due to SIGSEGV` about 2 s after (3) and (4), 7 times in a few minutes (pids 51, 259, 271, 281,
+   ...), each restart opening the camera again. [I] the crash is the graph using the nil heap or function (no stack was
+   logged: the boot's `sheng-exc-name=` named only newfs_apfs); our plug-in's own code was not running then (its lines stop at `stopped (0
+   pictures given)`). The plug-in also opened the phone's camera at the vendor's stream reservation for its published
+   device (each cameracaptured start: `reading frames through AppleH9CamIn`, `no frame: Resource temporarily unavailable`);
+   **fix:** it opens the camera at the graph's Start only, and closes it when the streams are given back.
+The plug-in reaches the phone without a new seed since hosted 0090 (the boot addon, `oneios-tool phone addon`).
+Host-tested; the next boot's lines: `userland/camera/README.md`, "What the next session's logs must show".
+
 ### The model name stopped all audio: `OneiOSAP` and a link to V54 (fix-audio-camera-model, hosted 0088, 2026-11-23)
 
 **The fault (the same v0.1.16 session, iOS's log `ioslog2/ioslog.txt`, 20:21:48):** no sound, no volume and no haptics
@@ -2970,10 +3010,11 @@ identity; the identity's own `unique-model` kept unless `camera-model=` names on
 
 ### Missing, unknown
 
-- **The first session with cameracaptured outside the VM** (the phone check: `userland/camera/README.md`, "What the
-  next session's logs must show"): whether CMCapture now builds the Back Camera source, whether the 27 capture graph
-  takes the device as it is, and which properties it asks for that are not answered. (The 2026-11-23 session showed
-  that the plist and the nodes are right: the source list stopped only at the dropped back stream.)
+- **The first session with the sensor IDs, the resolved formats and the two Metal fixes** (the phone check:
+  `userland/camera/README.md`, "What the next session's logs must show"): whether the graph builds and starts the
+  stream, whether cameracaptured still crashes (boot with `sheng-exc-name=newfs_apfs,cameracaptured`: the kernel then
+  logs its exceptions' pc, lr, far and return addresses for `oneios-tool sym`), and which
+  properties it asks for that are not answered (`WhiteBalanceGain` was asked and is not listed).
 - [U] on the phone: the capture again with the fix, the telephotos, the diagnostic run if no frame arrives
   (`runtime/bridges/camera/README.md`, "On the phone" and "When no frame arrives"), and "In a
   session" (the HAL back end with system_server stopped; whether Samsung's HAL takes a plain YCbCr_420_888 stream

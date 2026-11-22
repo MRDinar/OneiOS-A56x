@@ -233,7 +233,7 @@ static void *reader_main(void *arg)
     pthread_mutex_unlock(&client_lock);
     answer(done, n);
     if (report && (frames || timeouts || copies))
-      LOGI("display: 10 s: %llu frames copied by the helper from guest RAM (posted to in the layer: mean %.1f ms, max %.1f ms), "
+      LOGI("display: 10 s: %llu frames copied by the helper from guest RAM (its answer: mean %.1f ms, max %.1f ms; since 2026-11-23 the helper answers once the frame is in its snapshot, before its post), "
            "%llu not answered within %d ms, %llu flushes of xnuhost's own copy", (unsigned long long)frames,
            frames ? total / 1000.0 / frames : 0.0, max / 1000.0, (unsigned long long)timeouts, DIRECT_TIMEOUT_MS, (unsigned long long)copies);
   }

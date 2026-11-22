@@ -152,6 +152,20 @@ pub enum Command {
         #[arg(long)]
         stage: bool,
     },
+    /// Stage a boot addon (`ios addon`'s: the Metal plug-in, the capture plug-in) as image/kernel.kc.gpuaddon with the
+    /// phone's owner-trust.json plus its CDHashes and a manifest for both: the kernel writes it into the Data store at the
+    /// next boot (hosted 0031, 0090), no new seed. --remove: no addon at the next boot
+    Addon {
+        /// The addon (NGPUADD2)
+        #[arg(required_unless_present = "remove")]
+        file: Option<String>,
+        /// Its CDHashes, `CDHASH NAME` lines (default: FILE.cdhashes)
+        #[arg(long)]
+        cdhashes: Option<String>,
+        /// Take the staged addon away (owner-trust.json is left as it is)
+        #[arg(long, conflicts_with_all = ["file", "cdhashes"])]
+        remove: bool,
+    },
     /// Copy the Data store (data.img) from the phone in chunks, each checked against the phone's sha256, zero runs
     /// as holes; a copy that stopped goes on where it stopped (OUT.part, OUT.part.progress); no session may be open
     PullData {
@@ -365,6 +379,11 @@ pub fn main(cli: Cli) -> i32 {
             phone::image_check(&adb).map(|n| println!("image: manifest.json and the {n} files it lists agree"))
         }),
         Command::Manifest { dir, out, stage } => Adb::connect(serial).and_then(|adb| phone::manifest_cmd(&adb, &dir, out.as_deref(), stage)),
+        Command::Addon { file, cdhashes, remove } => Adb::connect(serial).and_then(|adb| match (remove, file) {
+            (true, _) => phone::addon_remove(&adb),
+            (false, Some(f)) => phone::addon_cmd(&adb, &f, cdhashes.as_deref()),
+            (false, None) => Err(anyhow::anyhow!("phone addon FILE, or phone addon --remove")),
+        }),
         Command::PullLog { out_dir, boot, keep } => Adb::connect(serial).and_then(|adb| pulllog::pull_log(&adb, &out_dir, &boot, keep)),
         Command::PullData { out, chunk, retries, backoff, stall, verify, restart, ioslog } => Adb::connect(serial).and_then(|adb| {
             // Ctrl-C ends the chunk that is being copied and says how to go on; the chunks done stay

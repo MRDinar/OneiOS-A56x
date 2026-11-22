@@ -319,20 +319,21 @@ static void test_xcall(uint64_t task, uint64_t code_va)
   __atomic_store_n(&worker.go, 1, __ATOMIC_RELEASE);
   H->ipi(C0, 1, 6);
   unsigned taken = 0, rounds = 20;
-  uint64_t worst = 0;
+  uint64_t worst = 0, total = 0;
   for (unsigned i = 0; i < rounds; i++) {
     for (uint64_t t = now(); now() - t < hz / 50;) {}            // 20 ms: vCPU 1 is in the hand-off's futex wait
     __atomic_and_fetch(&sgi_seen, ~(1u << 7), __ATOMIC_SEQ_CST);
     uint64_t sent = now();
     H->ipi(C0, 1, 7);
     while (!(__atomic_load_n(&sgi_seen, __ATOMIC_ACQUIRE) & 1u << 7) && now() - sent < hz) {}
-    if (__atomic_load_n(&sgi_seen, __ATOMIC_ACQUIRE) & 1u << 7) { taken++; if (now() - sent > worst) worst = now() - sent; }
+    if (__atomic_load_n(&sgi_seen, __ATOMIC_ACQUIRE) & 1u << 7) { uint64_t took = now() - sent; taken++; total += took; if (took > worst) worst = took; }
   }
   *flag = 1;                                                      // the thread leaves its loop and stops at brk
   uint64_t start = now();
   while (__atomic_load_n(&worker.done, __ATOMIC_ACQUIRE) != 1 && now() - start < hz * 5) {}
   __atomic_store_n(&worker.armed, 0, __ATOMIC_RELEASE);
-  put("  cross-call to a vCPU in the hand-off: taken "); hex(taken); put(" of 20, slowest (us) "); hex(worst * 1000000 / hz); put("\n");
+  put("  cross-call to a vCPU in the hand-off: taken "); hex(taken); put(" of 20, slowest (us) "); hex(worst * 1000000 / hz);
+  put(", mean (us) "); hex(taken ? total * 1000000 / hz / taken : 0); put(" (hex)\n");
   check(taken == rounds && worst < hz / 2, "cross-call: an SGI to a vCPU whose thread spins in user code is taken each time, within 500 ms");
   check(worker.done == 1 && worker.kind == XH_TRAP_BRK, "cross-call: the thread then ends its loop (brk)");
   check(H->thread_destroy(C0, b) == 0 && H->task_unmap(C0, task, flag_va, 0x4000) == 0, "cross-call: the thread destroyed, the word unmapped");

@@ -310,6 +310,16 @@ pub fn image_script(dir: &str) -> Result<String> {
     let mut script = format!("set -e; cd {STAGE}\n");
     for p in local_files(dir)? {
         plain(&p, "the file name")?;
+        if SIDECARS.contains(&p.as_str()) {
+            // a sidecar may be new: it is made, and its lines are added to the lists when they have none
+            script += &format!("f=image/{p}\n");
+            script += &format!("cp {TMP}/{p} \"$f.part\" && chown root:root \"$f.part\" && chmod 0644 \"$f.part\" && mv -f \"$f.part\" \"$f\"\n");
+            script += "s=$(sha256sum \"$f\" | cut -d' ' -f1); i=$(stat -c '%d:%i:%s:%Y' \"$f\")\n";
+            script += &format!("awk -v p='{p}' -v s=\"$s\" '$2 == p {{ print s \"  \" p; d = 1; next }} {{ print }} END {{ if (!d) print s \"  \" p }}' image.sha256 > image.sha256.new && mv -f image.sha256.new image.sha256\n");
+            script += &format!("awk -v p='{p}' -v i=\"$i\" '$2 == p {{ print i \" \" p; d = 1; next }} {{ print }} END {{ if (!d) print i \" \" p }}' image.ids > image.ids.new && mv -f image.ids.new image.ids\n");
+            script += "echo \"staged $s  $f (a sidecar of the kernel collection)\"\n";
+            continue;
+        }
         script += &format!("f=image/{p}; [ -f \"$f\" ] || {{ echo \"not staged: $f\"; exit 1; }}\n");
         script += &format!("cp {TMP}/{p} \"$f.part\" && chown root:root \"$f.part\" && chmod 0644 \"$f.part\" && mv -f \"$f.part\" \"$f\"\n");
         script += "s=$(sha256sum \"$f\" | cut -d' ' -f1); i=$(stat -c '%d:%i:%s:%Y' \"$f\")\n";
@@ -437,7 +447,7 @@ pub fn manifest_for(adb: &Adb, dir: &str) -> Result<(String, Vec<String>)> {
         bail!("{dir} has no file of the image set (kernel.kc, kernel.kc.hashes, ... at their paths)");
     }
     let listed: Vec<String> = manifest_entries(&manifest)?.into_iter().map(|e| e.0).collect();
-    if let Some(p) = local.iter().find(|p| !listed.contains(p)) {
+    if let Some(p) = local.iter().find(|p| !listed.contains(p) && !SIDECARS.contains(&p.as_str())) {
         bail!("{p} is not a file of the phone's image set (its manifest.json does not list it)");
     }
     let problems = manifest_problems(&manifest, &sums, &local)?;
@@ -497,6 +507,97 @@ pub fn manifest_cmd(adb: &Adb, dir: &str, out: Option<&str>, stage_too: bool) ->
     Ok(())
 }
 
+// ---------------------------------------------------------------- the boot addon (hosted 0031, 0090)
+
+/// The kernel collection's sidecars that may be staged beside the set although its manifest.json does not list them:
+/// xnuhost reads `<kernel>.<suffix>` beside the kernel itself (docs/booter.md). Only the boot addon: what it carries
+/// runs only with its CDHashes in owner-trust.json, which the manifest does list.
+pub const SIDECARS: &[&str] = &["kernel.kc.gpuaddon"];
+
+/// The CDHashes of a `CDHASH NAME` list (`ios addon`'s OUTPUT.cdhashes; `image tweaks cdhash` lines too).
+pub fn cdhash_list(text: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let word = line.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if word.len() != 40 || !word.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("{line:?}: not a CDHash line (40 hex digits, then the name)");
+        }
+        out.push(word);
+    }
+    Ok(out)
+}
+
+/// owner-trust.json's text with `add` in its "cdhashes" list (sorted, each once; every other key kept), and how many
+/// were new.
+pub fn owner_trust_with(text: &str, add: &[String]) -> Result<(String, usize)> {
+    let mut trust = json::parse(text).map_err(|e| anyhow!("owner-trust.json: {e}"))?;
+    let mut all: Vec<String> = trust
+        .get("cdhashes")
+        .and_then(|c| c.as_list())
+        .ok_or_else(|| anyhow!("owner-trust.json has no \"cdhashes\" list"))?
+        .iter()
+        .map(|v| v.as_str().map(str::to_ascii_lowercase).ok_or_else(|| anyhow!("owner-trust.json: a CDHash that is not a string")))
+        .collect::<Result<_>>()?;
+    let before = all.len();
+    all.extend(add.iter().cloned());
+    all.sort();
+    all.dedup();
+    let new = all.len() - before.min(all.len());
+    trust.set("cdhashes", json::Value::List(all.into_iter().map(json::Value::str).collect()));
+    Ok((json::dumps(&trust, Some(2), false) + "\n", new))
+}
+
+/// `phone addon FILE [--cdhashes LIST]`: the boot addon (`ios addon`'s) staged as image/kernel.kc.gpuaddon, with the
+/// phone's overlay/userland/owner-trust.json plus the addon's CDHashes (LIST, default FILE.cdhashes) and a manifest
+/// for both; the kernel writes the addon into the Data store at the next boot (hosted 0031, 0090).
+pub fn addon_cmd(adb: &Adb, file: &str, cdhashes: Option<&str>) -> Result<()> {
+    adb.need_root()?;
+    adb.refuse_in_session()?;
+    let blob = fs::read(file).with_context(|| file.to_string())?;
+    if blob.get(..8) != Some(b"NGPUADD2".as_slice()) {
+        bail!("{file}: not a boot addon (NGPUADD2): make one with oneios-tool ios addon");
+    }
+    if blob.len() > 64 << 20 {
+        bail!("{file}: {} bytes, over xnuhost's 64 MiB limit for the sidecar", blob.len());
+    }
+    let list = cdhashes.map(str::to_string).unwrap_or_else(|| format!("{file}.cdhashes"));
+    let add = cdhash_list(&fs::read_to_string(&list).with_context(|| format!("{list} (the addon's CDHashes: ios addon writes it)"))?)?;
+    let trust_path = "overlay/userland/owner-trust.json";
+    let (manifest, _) = phone_image_record(adb)?;
+    if !manifest_entries(&manifest)?.iter().any(|e| e.0 == trust_path) {
+        bail!("the phone's image set lists no {trust_path}: the addon's code would not be trusted");
+    }
+    let text = adb.root_ok(&format!("cat {STAGE}/image/{trust_path}\n"), "reading the staged owner-trust.json")?;
+    let (trust, new) = owner_trust_with(&text, &add)?;
+    let part = std::env::temp_dir().join(format!("oneios-addon-stage-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&part);
+    fs::create_dir_all(part.join("overlay/userland"))?;
+    fs::write(part.join("kernel.kc.gpuaddon"), &blob)?;
+    fs::write(part.join(trust_path), &trust)?;
+    println!("addon: {file} ({} bytes) as image/kernel.kc.gpuaddon; owner-trust.json: {} CDHashes of the addon, {new} new", blob.len(), add.len());
+    let r = manifest_cmd(adb, &part.display().to_string(), None, true);
+    let _ = fs::remove_dir_all(&part);
+    r
+}
+
+/// `phone addon --remove`: no boot addon at the next boot (the Data store keeps what an addon wrote, and the
+/// kernel's unions go back to the seed's folders). owner-trust.json is left as it is.
+pub fn addon_remove(adb: &Adb) -> Result<()> {
+    adb.need_root()?;
+    adb.refuse_in_session()?;
+    let mut script = format!("set -e; cd {STAGE}\n");
+    for p in SIDECARS {
+        script += &format!("if [ -f image/{p} ]; then rm -f image/{p}; echo \"removed image/{p}\"; else echo \"no image/{p}\"; fi\n");
+        script += &format!("awk -v p='{p}' '$2 != p' image.sha256 > image.sha256.new && mv -f image.sha256.new image.sha256\n");
+        script += &format!("awk -v p='{p}' '$2 != p' image.ids > image.ids.new && mv -f image.ids.new image.ids\n");
+    }
+    script += "chmod 0600 image.sha256 image.ids; sync\n";
+    print!("{}", adb.root_ok(&script, "removing the boot addon")?);
+    let n = image_check(adb)?;
+    println!("image: manifest.json and the {n} files it lists agree");
+    Ok(())
+}
+
 // ---------------------------------------------------------------- sparse-write (pull-data: pull.rs)
 
 fn progress_line(start: Instant, last: &mut Instant, size: u64, data: u64, total: Option<u64>) {
@@ -522,4 +623,37 @@ pub fn sparse_write(out: &str, gunzip: bool, expect: Option<u64>) -> Result<()> 
         bail!("{out}: {} bytes came, {expect} were expected", w.size);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod addon_tests {
+    use super::{cdhash_list, image_script, owner_trust_with};
+
+    #[test]
+    fn cdhash_lines_and_the_trust_file() {
+        let a = "3927e183aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let b = "0000000000000000000000000000000000000001";
+        assert_eq!(cdhash_list(&format!("{a} camera/MediaCapture/H9ISP.mediacapture\n\n# x\n{} y\n", b.to_uppercase())).unwrap(), [a, b]);
+        assert!(cdhash_list("nothex camera\n").is_err());
+        let (text, new) = owner_trust_with(&format!("{{\"cdhashes\": [\"{b}\"], \"files\": [], \"schema\": 1}}"), &[a.into(), b.into()]).unwrap();
+        assert_eq!(new, 1);
+        assert_eq!(text, format!("{{\n  \"cdhashes\": [\n    \"{b}\",\n    \"{a}\"\n  ],\n  \"files\": [],\n  \"schema\": 1\n}}\n"));
+        assert_eq!(owner_trust_with(&text, &[a.into()]).unwrap().1, 0);
+        assert!(owner_trust_with("{\"files\": []}", &[]).is_err());
+    }
+
+    #[test]
+    fn a_sidecar_may_be_staged_new() {
+        let dir = std::env::temp_dir().join(format!("oneios-phone-sidecar-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("overlay/userland")).unwrap();
+        std::fs::write(dir.join("kernel.kc.gpuaddon"), b"NGPUADD2").unwrap();
+        std::fs::write(dir.join("overlay/userland/owner-trust.json"), b"{}").unwrap();
+        let s = image_script(&dir.display().to_string()).unwrap();
+        // the sidecar: no "not staged" refusal, its lines added when missing; every other file as before
+        assert!(!s.contains("not staged: $f\"; exit 1; }\ncp /data/local/tmp/oneios-stage-tmp/kernel.kc.gpuaddon"));
+        assert!(s.contains("f=image/kernel.kc.gpuaddon\n"));
+        assert!(s.contains("END { if (!d) print s \"  \" p }"));
+        assert!(s.contains("f=image/overlay/userland/owner-trust.json; [ -f \"$f\" ] || { echo \"not staged: $f\"; exit 1; }"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
