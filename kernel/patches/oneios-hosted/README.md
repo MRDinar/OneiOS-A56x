@@ -1229,6 +1229,124 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0089-smp-scheduler-init-completed.patch (fix-hosted-smp-scheduler-init, 2026-11-23)
+
+The fault: 0085's E -> P spill did nothing on the phone. From `oneios_board_late_start` it printed `oneios-edge: not all
+CPUs are up yet: the edges stay XNU's`, long after all 8 vCPUs had entered the kernel; moved to the end of
+`sched_cpu_init_completed` (main `6376994`), it printed nothing at all (the boot of 2026-11-23 02:16).
+
+Cause: `sched_cpu_init_completed` never ran. XNU calls it through `ml_cpu_init_completed` once every CPU has been
+registered (`ml_processor_register`) and booted (`processor_boot`). Its only arm64 caller is AppleARMSMP
+(`iokit/Kernel/arm/AppleARMSMP.cpp`, all under `USE_APPLEARMSMP`), which this board (BCM2837's board config) does not
+build. Here UniXNU's ArmCpu registers each vCPU, and `ml_processor_register` boots it itself (its `!USE_APPLEARMSMP`
+branch). ArmCpu calls `ml_cpu_init_completed` only with its boot-arg `armcpu-edge=1`, which nothing sets (its
+`processor_start` call is a no-op in this XNU, `processor_start_from_kext`). Apple's AppleARMPlatform imports the
+function too, but its CPU driver does not run here. So `pcs_init_completed` stayed false all session, and the whole
+completion step never ran: the Edge scheduler's default edges and each pset's `max_parallel_cores` and
+`max_parallel_clusters` (`sched_edge_cpu_init_completed`), the realtime spill rules (`rt_init_completed`), the wait for
+every CPU (`check_all_cpus_are_done_starting`), the `sched_update_powered_cores` thread, and 0085 at its end.
+
+What the patch changes (`XNU_HOSTED`):
+
+- `osfmk/arm64/machine_routines.c` `ml_processor_register`: after its `processor_boot`, `hosted_cpu_booted(processor)`
+  (`osfmk/arm64/hosted/hosted_smp.c`) counts the boots. The last of `ml_get_topology_info()->num_cpus` starts a kernel
+  thread (`oneios_cpu_init_completed`, `MAXPRI_KERNEL`) that calls `ml_cpu_init_completed`, as AppleARMSMP does after
+  its `processor_boot` loop. A thread, not the caller: the caller is ArmCpu's start, which after `ml_processor_register`
+  still sets the IOCPU's number and state, and the step waits for every vCPU to reach `processor_up`. It is not
+  called when `machine_info.logical_cpu_max` differs from that count (`sched_cpu_init_completed` asserts that every one
+  of `logical_cpu_max` CPUs is online), and not with `oneios-smp-complete=0` (the old way).
+- `ml_cpu_init_completed`: exactly once. `hosted_cpu_init_completed_first` lets the first call through; a later one
+  (ArmCpu's, with `armcpu-edge=1`) is one log line instead of the scheduler's `sched_cpu_init_completed called twice`
+  panic.
+- `osfmk/kern/processor.c`: `cpu_boot_timeout_secs` 10 s instead of 1. The completion step now waits for each vCPU
+  (`processor_wait_for_start`) and panics on a timeout, as on an iPhone; a vCPU is a host thread that xnuhost makes at
+  PSCI CPU_ON and One UI's scheduler runs beside its own load (under qemu-user, an emulated one). The boot-arg still
+  sets it.
+
+The assertions of the step hold here: all 8 processors are booted before it (the count), each is in
+`pcs_effective.pcs_online_cores` once it ran `processor_up` (the wait comes before the asserts), `ml_cpu_can_exit` is
+false for every CPU without `USE_APPLEARMSMP` (so `pcs_required_online_system` is all of them: no vCPU is ever powered
+down), and no `processor_boot` comes after (`processor.c` asserts `!sched_is_cpu_init_completed()` there).
+`sched_edge_config_verify` is advisory on this board (UniXNU's patch). What else changes once `pcs_init_completed` is
+true: `sched_override_available_cores_for_sleep` no longer panics ("Attempting to sleep before all CPUS are
+registered"), and the recommended cores are masked with the (full) powerdown-recommended set.
+
+Lines: `oneios-smp: all 8 CPUs booted (the last cpu N): ml_cpu_init_completed (the scheduler's completion step) on
+its own thread`, then 0085's `oneios-edge: E -> P migration and steal allowed on ...`, then `oneios-smp: the
+scheduler's completion step done in M ms (every CPU running; pcs_init_completed 1)`. M is the margin against the
+10 s timeout. A second call: `oneios-smp: ml_cpu_init_completed called again ...`.
+
+Not folded into 0085: it is its own cause (the completion step), and it changes more than the spill (the Edge
+defaults, the realtime rules, the powered-cores thread, the sleep path); 0085 stays the spill alone.
+
+Tested (build laptop, 2026-11-23): written by the fix-hosted-smp-scheduler-init helper as 0088, renumbered 0089 (0088 is the
+CMCapture model folder). `HOSTED_OUT=combo3 ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0089: 174 patches, `xnu.macho`
+sha256 `ae21dcbf...`, releasable; the prelink: `kernel.kc` sha256 `988c2a7b...`, audit 2711 paired, 93 on the stub, 0
+failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `oneios-smp:` strings are in the kernel.
+Not booted under qemu (the owner asked for the combined phone boot first); staged on the phone 2026-11-23 for that boot.
+
+On the phone (2026-11-23 03:28, kernel `988c2a7b`): `oneios-smp: all 8 CPUs booted ...`, `oneios-edge: E -> P migration
+and steal allowed on 6 edges ...`, `oneios-smp: the scheduler's completion step done in 10 ms (... pcs_init_completed
+1)`. vCPU 2-7 carried work (22-38% idle where they were 80-99%), and the threads went back and forth between the
+clusters: 0091.
+
+## 0091-edge-no-pullback-ipi-counts.patch (fix-fps-scheduler-migration, 2026-11-23)
+
+The fault: with 0089, page switches felt slower than in the boots before, and the host did far more work for the same
+screens. xnuhost's lines of the 2026-11-23 03:28 boot against the boot before (0085 inactive), per 30 s: task traps
+48.8k/s against 17-18k/s, `release: N iOS threads put with another vCPU's core (sched_setaffinity)` 70,200 against
+about 15,000, `kick` 24,419 (mean 136 us, p99 3.7 ms) against about 950, vCPU futex sleeps 1.33 million against
+about 130,000; the host at 567-711% of 800 with the SoC at 95 C (thermal "heavy" for 85 s). The work itself spread as
+0085 meant (every `oneios-cpu:` line "all 800%" while apps started, the RPC round trip 645 us against 55,786 us, a woken
+thread's wait for its IPI 4.2 ms against 345 ms); the moves and kicks did not have to.
+
+Cause (`osfmk/kern/sched_clutch.c`, read in this tree): once the completion step has run, the Edge scheduler takes a
+spilled thread back to its preferred cluster at once, in three places. An E CPU that goes idle and finds a P CPU
+running a thread that prefers E sends that CPU a rebalance IPI (`sched_edge_balance`, from `processor_idle`; until it
+does, `sched_edge_processor_idle` returns no thread instead of stealing); a P CPU's `csw_check` preempts such a thread
+when the E cluster's load metric is 0 (`sched_edge_thread_avoid_processor`: "compaction") or when any cluster of its
+preferred type has that load ("running rebalance"). With two E vCPUs that go idle and busy thousands of times a
+second and 0085's weight 0 sending the threads to P again, a thread rarely ran twice on the same vCPU: 70,200 moves
+against about 131,000 dispatches in the same 30 s (the `wake:` line's 52,376 plus 78,772 others). On an iPhone the IPI
+and the move cost about a microsecond; here an IPI to a busy vCPU is a kick of the iOS thread it runs (a signal; the
+`kick` line), each move a `sched_setaffinity` of that thread to the new vCPU's core (`release:`), and the thread
+lands on an A520, about half an A720's speed.
+
+What the patch changes (`XNU_HOSTED`; `oneios-edge-pullback=0`, the default):
+
+- `sched_edge_balance`: an E CPU going idle sends no rebalance IPI; it counts the case when a spilled thread was there
+  to take (`sched_edge_foreign_running_thread_available`, the lock-free scan XNU itself uses).
+- `sched_edge_processor_idle`: an E CPU then goes on to steal by the edges' weights (XNU's P -> E edge: 64 us of
+  scheduling latency, steal allowed) instead of returning no thread for the rebalance.
+- `sched_edge_thread_avoid_processor`: a thread that prefers E, running on a P CPU, is not preempted by the
+  compaction and running-rebalance rules; it runs until it blocks or its quantum ends, and its next wake-up places it
+  by the edges again (E when E has room). The rules above them (a bound thread, an edge that no longer allows it, the
+  shared-resource policies, realtime, stir-the-pot) are unchanged.
+- A thread that prefers P and runs on E (the UI's threads when P was full) is still pulled to an idle P CPU: only
+  the move from a P CPU to an E CPU is left out.
+- `sched_ipi_action` (`osfmk/kern/sched_prim.c`): each IPI the scheduler sends is counted by its event (bound thread,
+  preempt, SMT rebalance, spill, rebalance, realtime preempt) and by whether the CPU was idle or busy.
+- `oneios-edge-pullback=1` is XNU's way (the IPIs and preemptions are made, and counted).
+
+The line, every perf period (`osfmk/arm64/hosted/hosted_smp.c` `hosted_edge_report`, after 0081's): `oneios-perf:
+0091: spilled threads kept on P: N pull-back IPIs not sent, M preemptions not made; pull-back IPIs sent K
+(oneios-edge-pullback=0); scheduler IPIs to idle/busy CPUs: preempt a/b, spill a/b, rebalance a/b, realtime a/b, bound
+a/b, other a/b`. The busy counts are the kicks the scheduler asked for; xnuhost's `kick` and `perf:   queue:` lines say
+what they cost.
+
+Not changed: 0085's weights (default and higher at 0: the spill that took the RPC round trip from 56 ms to 0.6 ms),
+the steal of an idle P CPU from E, the UI's P preference. An A/B without a rebuild: `oneios-edge-pullback=1` against
+the default in two boots with the same screens.
+
+Tested (build laptop, 2026-11-23): `HOSTED_OUT=fps ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0089 and 0091 (no 0090 in this tree), `xnu.macho`
+sha256 `9a9e0a3c...`; the prelink: `kernel.kc` sha256 `ca1606e5a804383c426cc486756622779398d999699f583164434eca746fe966`, audit 2711
+paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `0091:`
+line and the `oneios-edge-pullback` boot-arg are in the kernel. `git apply --check` in a tree of 0001-0089 with the camera
+helper's 0090 applied (`t3/camera-preview-stream-fix`, `0090-camera-plugin-boot-addon.patch`, only `bsd/kern/kern_exec.c`):
+0091 applies after it. Numbered 0091 for that 0090. Not booted under qemu or on the phone yet. On the phone:
+the `0091:` line (pull-backs not sent; preempt IPIs to busy CPUs), and xnuhost's `release:` and `kick` lines back near
+the boot before 0089 (about 15,000 moves and 950 kicks in 30 s) while `perf: cpuN:` still shows vCPU 2-7 busy.
+
 ## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
 
 The fault: no haptic is felt. With 0078 audiomxd's haptic server starts and plays, and the Actuator device runs I/O,
@@ -1297,7 +1415,8 @@ What the patch changes (`osfmk/arm64/hosted/hosted_smp.c` `hosted_sched_edge_spi
 of `sched_cpu_init_completed` in `osfmk/kern/sched_prim.c`, `XNU_HOSTED`): once all CPUs are up
 (`sched_is_cpu_init_completed`; until 2026-11-23 the call was in `oneios_board_late_start`, which on the phone ran before
 that point: the boot of 2026-11-23 logged `oneios-edge: not all CPUs are up yet: the edges stay XNU's`, so the edges
-were never opened), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
+were never opened; and on this board `sched_cpu_init_completed` itself ran only since 0089, so the 02:16 boot with
+the call there printed nothing), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
 fixed-priority, foreground, user-initiated and default buckets at weight 0, utility at 64 and background at 1000. The
 weight is compared with the clusters' load, their average scheduling latency in us (0 with an idle CPU): a thread goes
 to P when P has an idle CPU or waits less, background only when E's threads wait a millisecond longer (RunningBoard
@@ -1409,6 +1528,69 @@ store's boot without 0083 (21:28): key taps in Spotlight 30 (0 before); Spotligh
 0.50 s (27, 86.4 s, the longest 13.78 s before); `oneios-cpu` Spotlight 72% and 55% while typing, then off the list
 (103-107% all the time before). Still in the log, for later: `Keyboard screen not found for window (null)` 21 times at
 Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s).
+
+## 0090-camera-plugin-boot-addon.patch (fix-camera-preview-stream, 2026-11-23)
+
+- **Why.** The capture plug-in lived only in the Data seed (`/private/var/oneios/addons/MediaCapture`, 0056), so a
+  rebuilt plug-in reached the phone only with a new seed, which starts the Data store over. The phone boot of 2026-11-23
+  ran the old plug-in for that reason. UniXNU already writes a boot addon into the Data volume before launchd
+  (`native_gpu_addon_install`: the `kernel.kc.gpuaddon` sidecar, format NGPUADD2, every file under `/private/var/ngpu`
+  whose content or mode differs), but 0056 never looked there, and 0031 switched the Metal plug-in's folder to
+  `/private/var/ngpu/addons` for any addon at all.
+- **What.** (`bsd/kern/kern_exec.c`) The install loop counts the files that are on the volume after it (written or
+  already equal) by top folder: `addons/` (the Metal plug-in) and `camera/` (the capture plug-in). 0031's union takes
+  `/private/var/ngpu/addons` only when the addon carried Metal files; 0056's takes `/private/var/ngpu/camera/MediaCapture`
+  when it carried camera files, else the seed's folders, as before. Nothing of Apple's is written. The plug-in's CDHash
+  must be in the image's `overlay/userland/owner-trust.json` (xnuhost's owner trust module), as the seed's must.
+- **Tools.** `oneios-tool ios addon OUT --camera out/userland/camera [--metal out/userland/NativeAdrenoMetal.bundle]`
+  writes the sidecar and `OUT.cdhashes`; `oneios-tool phone addon OUT` stages it as `image/kernel.kc.gpuaddon` with the
+  phone's `owner-trust.json` plus those CDHashes and a manifest for both (`phone addon --remove` takes the sidecar away).
+- **Log.** `oneios-camera-addon: boot addon: N files (-1 none), C of the capture plug-in (camera/), M of the Metal
+  plug-in (addons/)`, then 0056's line, whose source is `/private/var/ngpu/camera/MediaCapture` with such an addon.
+  0031's `oneios-gpu-addon: ... over /System/Library/Extensions` keeps `/private/var/oneios/addons/Extensions` for a
+  camera-only addon.
+- **Off.** Without the sidecar nothing changes. `oneios-camera-plugin=0` and `sheng-gpu-addon=0` as for 0056.
+
+Numbered 0090: 0089 was the last number on main (2026-11-23); the frame-rate helper's 0091 applies after it.
+Tested (the build laptop, 2026-11-23): `HOSTED_OUT=cam2 ONEIOS_CRYPTO=original kernel/build-hosted.sh` applied the series
+with 0090 (no fuzz, no compiler warning from the kernel sources) and built `xnu.macho` (sha256 `3ebbc5637e4ee3de...`; both
+new strings in it). `KERNEL=out/kernel/current-hosted-cam2/xnu.macho OUT=out/kernel/cam2-24A446 kernel/prelink/build.sh`:
+`kernel.kc` 96,239,616 bytes, sha256 `c50ca941a445b494...` (`kernel.kc.hashes` `61096d9322aa59d1...`), audit 2,711 paired,
+93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet.
+
+## 0088-cmcapture-model-folder.patch (fix-audio-camera-model, 2026-11-23)
+
+The v0.1.16 boot had no sound, no volume and no haptics: VirtualAudio never started (`Precondition failure:
+webcamRecordingDSPList && "Need valid DSPConfig for webcam recording"`, `VA Init Status: 1`). The cause was the camera's
+model name: with `/product unique-model` "V54AP" (9ae1f0c, so that CMCapture finds `CMCapture.framework/V54/`)
+AVFCapture's AVGestalt finds V54 in its table of 41 iPhone models and answers its webcam key true in audiomxd, and
+VirtualAudio's RoutingSettings_N71 then builds a webcam subport with no DSP list (input processing is off here).
+`docs/hardware.md` 7, "The model name stopped all audio", has the code read in the shared cache.
+
+The loader now gives "OneiOSAP" (xnuhost's `camera-model=`, `docs/booter.md`), in no AVGestalt table; CMCapture's
+folder for it is `OneiOS` (the name less "AP"). The patch (`bsd/kern/kern_exec.c`, `oneios_cmcapture_model`, in
+`native_gpu_addon_prepare` after 0078's `oneios_audio_tunings`): it reads `/product unique-model` from the device tree,
+takes the name less "AP" (letters and digits only), and when `CMCapture.framework/NAME/AVCaptureSession.plist` is not
+there it makes `/private/var/oneios/addons/CMCapture` (and its parents) with one link `NAME -> V54` (made when missing;
+an entry that is there is left alone) and shows that folder over `/System/Library/PrivateFrameworks/CMCapture.framework`
+read-only: `native_gpu_addon_mount`, the union mount of 0031, 0056 and 0078 (scratch 0xa00, as theirs: they are done by
+then). Stage 4 proves the sealed `V54/AVCaptureSession.plist` is still seen through the union, stage 5 that
+`NAME/AVCaptureSession.plist` is. Nothing of Apple's is copied.
+- A name whose folder is sealed (`camera-model=V54AP`: `V54`): `... is there already ...: nothing mounted`.
+- No `unique-model` (no camera listed): `no /product unique-model (no camera): nothing to do`.
+- `oneios-cmcapture-model=0`: off; `=NAME`: the link points at `CMCapture.framework/NAME` instead of `V54`.
+- One line: `oneios-cmcapture-model: /private/var/oneios/addons/CMCapture over
+  /System/Library/PrivateFrameworks/CMCapture.framework: OneiOS -> V54 (link made 0), stage 5, status 0 (stage 5 status
+  0: mounted, V54's tables visible as OneiOS's)`.
+
+Numbered 0088: 0087 was the last number on main and on every open branch (`git branch -r`, 2026-11-23).
+Tested (the build laptop, 2026-11-23): `HOSTED_OUT=cammodel ONEIOS_CRYPTO=original HOSTED_SERIES=<this series>
+kernel/build-hosted.sh` applied the series with 0088 (no fuzz, no warning in `kern_exec.c`) and built `xnu.macho` in 636 s
+(sha256 `84eb830f9608db41...`; the `oneios-cmcapture-model:` strings are in it). `KERNEL=out/kernel/current-hosted-cammodel/xnu.macho
+OUT=out/kernel/cammodel-24A446 kernel/prelink/build.sh` gave `kernel.kc` 96,272,384 bytes, sha256 `71d7db1449994d58...`
+(`kernel.kc.hashes` `22a4e86ed7bdbbae...`), audit 2,711 paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good,
+0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet. The phone check: `docs/hardware.md` 7, "The model name stopped all
+audio".
 
 ## 0087-bluetoothd-hci-transport.patch (fix-ios-bluetooth-power, 2026-11-23)
 

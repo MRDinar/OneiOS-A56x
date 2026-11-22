@@ -42,8 +42,14 @@ expect() {
 
 phone SM-S928U e3q SM8650 pineapple kgsl;  expect 0 "profile ok (s24-ultra)" "the S24 Ultra passes"
 grep -qF "kgsl chipid: 0x44050000" "$T/out" && grep -qF "udmabuf list_limit: 1024" "$T/out" && grep -qF "cpus: 2" "$T/out" || fail "S24 facts"
+# Every other S24 Ultra model number (runtime/bridges/hw/host_device.c's record): the same check, the same profile.
+for m in SM-S928B SM-S928U1 SM-S928W SM-S928N SM-S9280; do
+  phone "$m" e3q SM8650 pineapple kgsl;    expect 0 "profile ok (s24-ultra)" "the S24 Ultra $m passes"
+done
 phone SM-S938B pa3q SM8750 sun kgsl;       expect 0 "profile ok (s25-ultra)" "the S25 Ultra passes"
 phone SM-S931B pa1q SM8750 sun kgsl;       expect 0 "profile ok (s25)" "the base S25 passes"
+phone SM-S948B m3q SM8850 canoe kgsl;      expect 0 "profile ok (s26-ultra)" "the S26 Ultra passes"
+phone SM-S948B m1q SM8850 canoe kgsl;      expect 2 "device=m1q (expected m3q)" "an S26 Ultra model with another codename is refused"
 phone SM-A566E a56x s5e8855 s5e8855 amdgpu; expect 0 "amdgpu render node: /dev/dri/renderD128" "the A56 passes, with its render node"
 grep -qF "profile ok (a56)" "$T/out" || fail "A56 profile line"
 phone SM-A566E a56x s5e8855 s5e8855 none;  expect 0 "amdgpu render node: none" "an A56 without the render node says so"

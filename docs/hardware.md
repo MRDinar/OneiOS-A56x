@@ -140,7 +140,8 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
   vCPUs (0% idle on the phone) while the six P vCPUs were 85-99% idle. Hosted `0085` opens E -> P migration and steal
   once all CPUs are up: weight 0 for fixed-priority to default, 64 for utility, 1000 for background (us of
   scheduling latency); `oneios-edge-spill=0|1|2`, one `oneios-edge:` line (kernel/patches/oneios-hosted/README.md,
-  "0085").
+  "0085"). It runs at the end of the scheduler's completion step (`sched_cpu_init_completed`), which on this board
+  nothing called until hosted `0089` (2026-11-23: the last `ml_processor_register` starts it; `oneios-smp:` lines).
 - `l2-cache-size`, `l3-cache-size` of a cpu node are read by XNU when present.
 
 ### The bridge (`runtime/bridges/cpu/topology.rs`)
@@ -2663,6 +2664,15 @@ in iOS's log no `Volume Mode is HardwareOnly but physical device does not suppor
 curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
 up to the phone's full loudness. Back in One UI: the media volume as it was.
 
+### No audio at all in v0.1.16: VirtualAudio never started (fix-audio-camera-model, 2026-11-23; built, not on the phone)
+
+The camera's model name of 2026-11-22 (`/product unique-model` "V54AP") made AVFCapture's AVGestalt answer V54's
+webcam key in audiomxd; VirtualAudio then built a webcam subport with no DSP list, its precondition failed and it
+never started: no Speaker, no volume, no haptics (the Actuator is a VirtualAudio device too). Cause, fix (the name
+"OneiOSAP" and hosted 0088's link `CMCapture.framework/OneiOS -> V54`; `camera-model=V54AP` the old name) and the
+phone lines: section 7, "The model name stopped all audio". `oneios-tool ioslog health` says in its `audio` line
+whether VirtualAudio started (`started 1`) and which precondition failed.
+
 ### Missing, unknown
 
 - **Not run yet in a test cycle of mine:** `owner-hide-vmm=audiomxd,com.apple.WebKit.GPU` (VirtualAudio's Null device
@@ -2719,8 +2729,140 @@ writes `unique-model` "V54AP" and the camera nodes (below, "The camera nodes"), 
 MobileGestalt's cache once when the tree changes (until 0084 the kernel removed it at every boot; `docs/userland.md`,
 "MobileGestalt's cache follows the tree"). The same answer is MobileGestalt's `HWModelDescriptionForAnalytics`,
 `...ForAudio`, `...ForPowerPerf` and `...ForAutomatedTesting` (one table entry each, all reading `unique-model`):
-those were NULL before and are "V54AP" now, with the cameras only. [U] who reads them (a search of the shared cache
+those were NULL before and are "V54AP" from 2026-11-22, "OneiOSAP" from 2026-11-23 (below), with the cameras only. [U] who reads them (a search of the shared cache
 for their importers stopped at its 10 minute limit); audio's tunings are found by HWModelStr (`oneios,xnuhost`, 0078).
+
+**The 2026-11-23 session (runtime 0.1.16, hosted to 0087; `out/session-logs/2026-11-23/boot-0.1.16`): the Camera
+icon shows and the app opens, the preview is black; CMCapture dropped the back stream because it runs in a VM.**
+The nodes and `unique-model` worked: CMCapture read `V54/AVCaptureSession.plist` and made the device with both
+streams. Then `-[BWFigCaptureStream initWithFigCaptureStream:...]` for `Back` was followed at once by `-[BWFigCaptureStream
+dealloc]` for `Back`, and every source lookup failed: `unable to find a stream with port type PortTypeBack` (and
+`PortTypeFrontSuperWide` for the front devices), `Fig assert: "err == 0 " at bail (BWFigCaptureDeviceVendor.m:1362)
+- (err=-12780)`, `Failed to open streams for device Back Camera, this device will be disabled` (and the same for each
+device of the plist). So no stream was asked for (`virtio: 60 s: ... camera#0 q0 +1`) and no frame came.
+**Cause** [F, read in the 24A446 shared cache]: `-[BWFigCaptureDevice initWithFigCaptureDevice:deviceID:]` (0x1b041bc50)
+takes the "external camera replaces built-in" path when `FigCaptureExternalCameraReplacesBuiltIn` is true, and that
+is `FigCaptureIsRunningInVirtualization`: `sysctlbyname("kern.hv_vmm_present")` not 0. On that path it removes every
+stream whose port is Back, BackTelephoto or BackSuperWide and keeps the front one. Our guest is a VM to iOS
+(`/defaults vmm-present` = 1; bluetoothd needs it, section 4). Every caller of the two checks is in cameracaptured
+(`_createDevice`, the vendor's init, `_copyStreamsForUnderlyingSourceAttributes`, `captureSourceServer_handleCopySourcesMessage`,
+`csu_createVideoCaptureSourceInfoForCaptureDeviceFromModelSpecificPlist`, `CMIOExtensionFigCaptureStreamCreate`).
+A second fault was behind it: V54's front devices ("Front Ultra Wide Camera", "Front Camera") want a
+`PortTypeFrontSuperWide` stream, and ours was `PortTypeFront`.
+**Fix (2026-11-23, host-tested, not run on the phone):** xnuhost adds `cameracaptured` to the boot arguments'
+`owner-hide-vmm=` (the kernel's per-process `kern.hv_vmm_present` switch, Droid-VM-UniXNU's patch, in our kernel
+since 2026-11-11) when the camera helper lists a camera; only cameracaptured is told it is not in a VM, bluetoothd
+and the rest keep the VM. `camera-vm=show` in `xnuhost.conf` turns it off (`docs/booter.md`). The plug-in's front
+stream is `PortTypeFrontSuperWide` and takes the formats of "Front Ultra Wide Camera" by name (a new plug-in: it reaches
+the phone only with a new seed; the back camera needs only the new xnuhost). Lines that prove it
+on the phone: `userland/camera/README.md`, "What the next session's logs must show".
+
+**The second 2026-11-23 boot (main 44d9c49; iOS's log on the laptop `rel-logs/ioslog-int2/ioslog.txt`, xnuhost's
+`rel-logs/boot-int2.log`): the VM fix worked, the back stream stayed, and the preview was still black.**
+`oneios-iokit: cameracaptured[51] sysctl kern.hv_vmm_present -> 0`, `Created 2 sources`, `device: streams asked for (1)`.
+Then five faults, each traced to its cause [F, read in the 24A446 shared cache with `ipsw dyld disass|xref`]:
+1. `failed to copy ModuleInfo (err=-12787)`, then `Fig assert: "( portType && sensorIDString )"` and `Unexpected sensor ID
+   ((null)) found for PortTypeBack`. `BWFigCaptureStream` asks `ModuleInfo` with requireSupported and answers -12787 itself
+   when our SupportedPropertiesDictionary does not list it; `+[FigCaptureCameraParameters sensorIDStringFromModuleInfo:]`
+   is `[NSString stringWithFormat:@"0x%04x", ModuleInfo[kFigCapturePropertyValue_SensorID ("sensorID")]]`, and
+   `csu_createMultiStreamSourceFormatsArrayAndAddAVCompressionSettingsAttribute` looks the camera's tables up by port type
+   and that string (V54's `CameraSetup.plist` `DefaultSensorIDs`: PortTypeBack `0x0903`, PortTypeFrontSuperWide `0x0914`).
+   **Fix:** the plug-in lists and answers `ModuleInfo` `{sensorID: N}`, N from `DefaultSensorIDs` of the stream's port.
+2. `failed to resolve format 'Video-FES-60'` (and every other name), then `Fig assert: "streamFormatDict"` and
+   `"pixelFormatIsSupported"` for each AVCaptureDevice format. `csu_resolveFormatIndexForNamedStreamFormat` (CMCapture
+   0x1b07b7644) compares a named format's SensorWidth/Height, Binned, HDR, FES with FESWidth/Height, MaxFrameRate,
+   SIFREnabled with its binning factor (SIFRBinningFactor, else 2 when binned), QuadraBinningFactor,
+   OptimizedForMidFrameSynchronization and SecureSigningFaceIDSupported with the stream format's SensorWidth/Height,
+   VideoIsBinned, SensorHDRMode, FrontEndScalerOutputWidth/Height, VideoMaxFrameRate, SIFREnabled, SIFRBinningFactor,
+   QuadraBinningFactor, OptimizedForMidFrameSynchronization and SensorSigningEnabled (first match wins, Experimental ones
+   skipped). Our formats had no FrontEndScalerOutput size and no SIFR factor, so none matched.
+   **Fix:** `userland/camera/oneios_camera_formats.c` makes those keys from each named format and from each companion
+   (`Photo[DepthCompanionFormat]`: the parent's keys with the companion's over them), and the plug-in runs CMCapture's rule
+   over its own list at each create (a lasting line, below). The outputs also list `x420` and `x422` (V54's 10-bit device
+   formats; filled by `oneios_camera_scale.c`); the default `420v`/`420f` were there.
+3. `native-metal: heap refused: ... UndefinedValue { ty: "MTLResourceOptions", raw: 6291968 }` (0x600200), then
+   `Fig assert: "_heap" ... Failed to allocate metal heap` (FigMetalAllocator.m:878). FigMetalAllocator's heaps set bits 21
+   and 22, which metal2vulkan refuses as not Metal's. **Fix** (our Metal plug-in, `docs/gpu.md` "What the camera needs"):
+   the frontend takes unknown option bits off, once said per set.
+4. `native-metal: missing NBLibrary newFunctionWithName:constantValues:pipelineLibrary:error: (answered nil)`, and
+   `Fig assert: "function" ... function is nil (FigMetalContext.m:565)`: CMImaging's `-[FigMetalContext
+   computePipelineStateFor:constants:additionalPipelineOptions:reflection:]` makes every compute function with that
+   selector. **Fix:** NBLibrary answers it (the pipeline library is not needed: the runtime compiles its own).
+5. cameracaptured `exited due to SIGSEGV` about 2 s after (3) and (4), 7 times in a few minutes (pids 51, 259, 271, 281,
+   ...), each restart opening the camera again. [I] the crash is the graph using the nil heap or function (no stack was
+   logged: the boot's `sheng-exc-name=` named only newfs_apfs); our plug-in's own code was not running then (its lines stop at `stopped (0
+   pictures given)`). The plug-in also opened the phone's camera at the vendor's stream reservation for its published
+   device (each cameracaptured start: `reading frames through AppleH9CamIn`, `no frame: Resource temporarily unavailable`);
+   **fix:** it opens the camera at the graph's Start only, and closes it when the streams are given back.
+The plug-in reaches the phone without a new seed since hosted 0090 (the boot addon, `oneios-tool phone addon`).
+Host-tested; the next boot's lines: `userland/camera/README.md`, "What the next session's logs must show".
+
+### The model name stopped all audio: `OneiOSAP` and a link to V54 (fix-audio-camera-model, hosted 0088, 2026-11-23)
+
+**The fault (the same v0.1.16 session, iOS's log `ioslog2/ioslog.txt`, 20:21:48):** no sound, no volume and no haptics
+for the whole session. audiomxd logged `RoutingSettings_N71.cpp:1195 Creating subport config for webcam recording`,
+then `PRECONDITION FAILURE (std::logic_error)`, `Precondition failure: webcamRecordingDSPList && "Need valid DSPConfig for
+webcam recording"`, `VA Init Status: 1`, no `Ending Deferred Initialization`, no VAD device and no Speaker port, and
+`VirtualAudio PlugIn is not initialized yet` 1618 times. The 2026-11-22 boots (s6-s9b, before 9ae1f0c) have no
+webcam line, `Ending Deferred Initialization` and `VA Init Status: 0`.
+
+**Cause [F, read in 24A446's VirtualAudio.plugin and shared cache on the laptop]:** RoutingSettings_N71 makes the
+webcam subport only when `AVGestaltGetBoolAnswer(AVGQ3J3FEVOOCNOKKTK3XQPUQ47DYY)` is true, and its DSP list exists
+only with input processing on (this guest logs `Input processing disabled`). AVFCapture's `AVGestaltGetDeviceFeatures`
+looks up `FigCaptureGetModelSpecificName()` in its table of 41 models (each entry a `-` separated list of names:
+`D93-D94`, `V53-V54`, `J517-J517x-J518-...`; `componentsSeparatedByString:` and `containsObject:`), and the webcam
+key is 1 in every entry. That name is MobileGestalt's `HWModelDescriptionForCamera` less a trailing "AP" (or "DEV";
+"v64s" becomes "V64s"): `___FigCaptureGetModelSpecificName_block_invoke`. Before 9ae1f0c the name was NULL (no
+entry: false); 9ae1f0c's `unique-model` "V54AP" gave "V54", found in `V53-V54`.
+
+**Fix (built and host-tested on the laptop, not run on the phone):**
+- The loader's `/product unique-model` with the cameras is `XL_CAMERA_MODEL` "OneiOSAP"
+  (`runtime/loader/src/machine.c`), in no entry of either table, so AVGestalt answers every key as with no name and
+  VirtualAudio builds no webcam subport. xnuhost's **`camera-model=NAME`** (`xnuhost.conf` or `--set`; 3-15 letters and
+  digits ending in "AP"; `docs/booter.md`) chooses another: `camera-model=V54AP` is the name of 9ae1f0c, for an A/B
+  boot. The name is part of the identity of hosted 0084, so a change of the setting makes MobileGestalt's cache again
+  once in an existing Data store. One xnuhost line: `camera: unique-model OneiOSAP (camera-model=): CMCapture's tables
+  through the kernel's link to V54, AVGestalt has no entry (VirtualAudio builds no webcam subport)`.
+- CMCapture still reads V54's tables: its folder for "OneiOSAP" is `CMCapture.framework/OneiOS`
+  (`fcmss_createPropertyListForModelAndBundleIdentifier`: the bundle `com.apple.CMCapture`, the model's folder, then
+  the plist; there is no `Default` folder on the image, `image apfs-ls` of `os.img`). Hosted 0088 makes
+  `/private/var/oneios/addons/CMCapture/OneiOS -> V54` before launchd and shows that folder over
+  `/System/Library/PrivateFrameworks/CMCapture.framework` read-only (0031's union mount, as 0056 and 0078). The name
+  comes from the tree's `/product unique-model`, so the kernel follows `camera-model=`; a name whose folder is sealed
+  (`V54AP`) or no `unique-model` (no camera): nothing is made or mounted. `oneios-cmcapture-model=0` turns it off,
+  `=NAME` links another folder. Kernel line: `oneios-cmcapture-model: /private/var/oneios/addons/CMCapture over
+  /System/Library/PrivateFrameworks/CMCapture.framework: OneiOS -> V54 (link made 0), stage 5, status 0`.
+- `oneios-tool ioslog health` has an `audio` line: `started` (`Ending Deferred Initialization`), `webcam`, `failed
+  at` and `failed` (the precondition's file:line and text, as names), `status` (`VA Init Status` not 0), `not ready`.
+- Tested on the build laptop (2026-11-23): the loader's tests (196 checks), `runtime/host-tests.sh` (all nine parts;
+  xnuhost 14,283 checks with `camera-model=` from `--set` and from the image set's `xnuhost.conf`, the bad names refused),
+  `cargo test` of `oneios-ioslog` and `oneios-tool` (the `audio` kind on the hand-written lines of the v0.1.16 boot and a
+  good start), `tests/phone/run.sh` and `tests/cycle/run.sh` (ALL OK), `runtime/build.sh` (`bin/xnuhost` sha256
+  `dc4f7e17e2ce6b4f...`), the kernel with 0088 (`kernel.kc` sha256 `71d7db1449994d58...`, audit 0 failures, stubs 666
+  good; `kernel/patches/oneios-hosted/README.md`, "0088"). Not run on the phone.
+
+**What the camera loses with a name in no table, as far as the code shows [F, the same reading]:**
+- AVFCapture's AVGestalt (the app side: `avgestalt_buildDataBase`) has no entry: every one of its per-model answers
+  (bool, integer and float tables, hashed key names) takes its default, as before 9ae1f0c. The block sets a few
+  keys itself after the lookup (one to false, the Continuity Camera key by platform); those do not depend on the name.
+- CMCapture's own `CMCaptureGestalt` (`cmcapturegestalt_buildDataBase`, in cameracaptured) has the same 41-entry table
+  and also finds no entry: its per-model answers take their defaults. [U] which of them (hashed names) the back stream,
+  the photo path or the formats need: the v0.1.16 boot (V54AP, both tables answered) did not get as far as a frame.
+- Functions that compare the name with other models (`BWDeviceModelIsV6x`, `BWDeviceModelIsV68`, ...) answer false for
+  both names. The VM regexp alias (`FigCaptureResolveAliasedModelSpecificName`, `VM\d\d\d\d`) is for other names.
+- Not lost: the per-model plists (`AVCaptureSession.plist`, `CameraSetup.plist`, the IQ tunings and module configs of
+  `V54/`), all read through the link.
+- VirtualAudio's own camera checks (`FigCaptureMicrophoneInterferenceMitigationIsSupported`) go by `MGGetProductType`
+  and the platform, not by the name. [U] who reads `HWModelDescriptionForAudio` (the same answer): VirtualAudio calls
+  no MobileGestalt model key, and a search of the shared cache for callers of its MobileGestalt function found none
+  (the calls go through stubs, so not a proof).
+
+The phone's proof (A/B with `camera-model=V54AP`): in iOS's log no `Creating subport config for webcam recording`
+before `Ending Deferred Initialization`, `VA Init Status: 0`, a Speaker port, `Reconfiguring volume curve with dB
+range {-64, 0}` (`ioslog health`: `audio ... started 1, webcam 0`); in xnuhost's log `oneios-audio: ... frames in` above
+0 when a sound plays, `DroidVMAudio: speaker volume N of 128` at a key press, `ONEIOS HAPTIC: counters: ... StartIO`
+above 0 after a haptic; the kernel's `oneios-cmcapture-model: ... stage 5, status 0`; and for the camera the back stream
+still opens (`ONEIOS CAMERA: ... streams asked for`, the `camera#0` count on the `virtio: 60 s` line).
 
 ### The phone [F]
 
@@ -2785,7 +2927,7 @@ with no error.
 | xnuhost: the helper's socket and ring, the `oneios,camera` virtio device (`/arm-io/camera`, `DeviceKind::Camera`) | `runtime/bridges/camera` (the crate `onecamera`, linked statically), `runtime/xnuhost/src/session/bridges.rs` | linked into xnuhost; the device tested on xnuhost's transport against a guest of plain memory |
 | Kernel: the transport and `/dev/oneios-camera` (the `NCFRAME1` layout of iOSPlus10's and HakiOS's node, NV12); `AppleH9CamIn` and its user client (the same session) | `drivers/camera` | compiles with the kernel's records, in the `HOSTED_OUT=cam` kernel; 37 host checks of the pure parts; on the phone (2026-11-12) the transport came up with 3 cameras; the service not run |
 | Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | on the phone (2026-11-22): mounted, `stage 5, status 0` |
-| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); placed in the seed by the image hook (a new seed) |
+| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); 2026-11-23: the back stream dropped in a VM and the front port wrong (fixed above, not run); placed in the seed by the image hook (a new seed) |
 
 - **Route on the host** [F AOSP android15-release for the reason, I for Samsung's build]: the provider HAL directly
   when system_server is gone, Camera2 NDK through cameraserver while One UI runs (`auto`). cameraserver refuses every
@@ -2819,7 +2961,7 @@ Values are the iPhone18,2's (`out/kernel-inputs/24A446/devicetree.bin`, `xnuload
 | `/arm-io/isp` `camera-rear` | u32 1 | a back camera is listed (wide, ultra-wide or a telephoto) | `rear-facing-camera`; `still-camera` (Camera.app's `SBAppTags`) |
 | `/arm-io/isp` `camera-front` | u32 1 | the front camera is listed | `front-facing-camera`; `still-camera` |
 | `/product/camera` | empty node | either | `video-camera` (presence) |
-| `/product` `unique-model` | "V54AP" | either, without an identity tree | `HWModelDescriptionForCamera`: CMCapture's model folder `V54` |
+| `/product` `unique-model` | "OneiOSAP" (`camera-model=`; "V54AP" from 2026-11-22 to 2026-11-23) | either; `camera-model=` wins over an identity tree's own | `HWModelDescriptionForCamera`: CMCapture's model folder `OneiOS`, hosted 0088's link to `V54` (the model name stopped all audio, above) |
 
 Left out on purpose: `/arm-io/isp`'s other properties (`compatible "isp,isp-generic-ex|isp,s5l8960x"`, `reg`, the
 exclave services: no driver may match the node); `/product/camera`'s feature flags (the iPhone's has about 80: `flash`,
@@ -2827,15 +2969,16 @@ exclave services: no driver may match the node); `/product/camera`'s feature fla
 ...), because the plug-in gives two streams of at most 1920x1080 and no torch: a flag the plug-in cannot honour would
 make the Camera app offer a mode with no device behind it. The ultra-wide and the telephotos get their flags with
 their streams. The S24 Ultra defaults are unchanged (the nodes follow the camera device, which follows the helper).
-Host test: `runtime/loader/tests/loader.rs` `machine_cameras_and_identity` (the C's `test_loader.c`; no nodes without the device; both, rear only, front only with an
-identity; the identity's own `unique-model` kept; the identity hash; 193 checks in the C).
+Host test: `runtime/loader/tests/loader.rs` `machine_cameras_and_identity` (no nodes without the device; both, rear only, front only with an
+identity; the identity's own `unique-model` kept unless `camera-model=` names one; `camera-model=V54AP` and its other identity; the identity hash).
 
 ### Missing, unknown
 
-- **The first session with the nodes and 0084** (the phone check: `userland/camera/README.md`, "What the next
-  session's logs must show"): whether CMCapture builds its sources from V54's plist with this device, whether the
-  27 capture graph takes the device as it is, and which properties it asks for that are not answered. The camera
-  permission prompt is after that.
+- **The first session with the sensor IDs, the resolved formats and the two Metal fixes** (the phone check:
+  `userland/camera/README.md`, "What the next session's logs must show"): whether the graph builds and starts the
+  stream, whether cameracaptured still crashes (boot with `sheng-exc-name=newfs_apfs,cameracaptured`: the kernel then
+  logs its exceptions' pc, lr, far and return addresses for `oneios-tool sym`), and which
+  properties it asks for that are not answered (`WhiteBalanceGain` was asked and is not listed).
 - [U] on the phone: the capture again with the fix, the telephotos, the diagnostic run if no frame arrives
   (`runtime/bridges/camera/README.md`, "On the phone" and "When no frame arrives"), and "In a
   session" (the HAL back end with system_server stopped; whether Samsung's HAL takes a plain YCbCr_420_888 stream
@@ -3720,12 +3863,27 @@ adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
   `oneios-gpu-pixels: WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`) [I: that iOS 27 saves
   one as HEIC]. `oneios-tool ioslog checks` counts these failure lines in its `heic` row: 0 is the proof.
 
+**The freeze of 2026-11-23 (v0.1.16, two boots).** The helper backend's open waited for the helper's reply with no
+limit, on the vCPU that answered the guest's `VIDIOC_STREAMON`, with the virtio-media device held. The helper never
+answered (MediaCodec's open did not come back in it; where it waits is not known yet), so that vCPU took no interrupt
+for 80-90 s, a stackshot's cross-call panicked the guest (`Debugger synch pending on cpu 1`), and xnuhost's main loop
+waited for the same device and never ended the session ([booter.md](booter.md) 2.9c). Fixed in
+`backend_helper.c`: the HELLO and each write 1 s, an open's reply 2.5 s; a helper that misses one is killed with a
+line that says where it waited (`encoder: the helper (pid N) did not answer an open in 2500 ms (state S, waiting in
+WCHAN): killed (1 of 2); the next open starts a new one`), the next open starts a new helper, and after two hangs the
+encoder is off for the session (`encoder: the helper hung 2 times: no more helpers this session (VideoToolbox keeps
+its software encoder)`). Host-tested (`test_hung_helper`); not yet on the phone. **Left:** the open still runs on the
+vCPU (up to 2.5 s of a deaf vCPU, under the 5 s `debug-ack`); moving it to the device's worker would make STREAMON
+return before the session is open, which the guest's V4L2 path does not expect today. Why MediaCodec's open hangs in
+the helper is the next thing to find from the new line.
+
 ## 7h. The host device (host-device, 2026-11-21)
 
 One tree for every known host phone: xnuhost finds which phone it runs on at its start and takes that phone's
 defaults from one compiled-in table, `runtime/bridges/hw/host_device.rs` (its API: `onebridges::hw::host_*`).
-The table is the source of truth: the host profile files (`profiles/host-galaxy-s25-ultra-sm8750.toml`,
-`profiles/host-galaxy-s25-sm8750.toml`) are records for the port docs and are read by no code. The bridges' ctl tools (`brightctl`, `batteryctl`, `thermalctl`,
+The table is the source of truth: the host profile files (`profiles/host-galaxy-s24-ultra-sm8650.toml`, one for every S24 Ultra model number,
+the SM-S928W too; `profiles/host-galaxy-s25-ultra-sm8750.toml`, `profiles/host-galaxy-s25-sm8750.toml`, `profiles/host-galaxy-s26-ultra-sm8850.toml`) are records for
+the port docs and are read by no code (the runtime package carries them in `lib/profiles/`, beside the IPSW profiles). The bridges' ctl tools (`brightctl`, `batteryctl`, `thermalctl`,
 `bridgectl`) and `oneios-tool phone status` use the same table.
 
 **What is read** (once, read only): the properties `ro.product.model`, `ro.product.device`, `ro.board.platform`,
@@ -3749,11 +3907,22 @@ environment variable that is set) > the table's default > the built-in default.
 
 | Name | Matched by | Defaults it changes | Why, and what is not set |
 |---|---|---|---|
-| `galaxy-s24-ultra` | `SM-S928*`, `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
-| `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.rs`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
+| `galaxy-s24-ultra` | `SM-S928*` (every S24 Ultra model number: below), `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
+| `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.c`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
 | `galaxy-s25` | `SM-S931*`, `pa1q`, `SM8750`, `sun` [F] (the `S931BXXUCDZIF` vendor_boot DT compatible list) | `panel-fallback=1080x2340@120`, `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] a 1080x2340 panel (xaxaapple/s25ver's device profile and `xnuhost.h`), and the shipped dtbo names it `PA1_S6E3FAE_AMB616FL03` with modes at 120/80/60/48/30/24/10 Hz: only the mode assumed where the panel cannot be read, a panel that is read still wins; without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush (port-forks-gap). The same dtbo has the touch (`stm,stm_ts_spi`, `samsung,ss_touch`) and haptics (`cirrus,cs40l26a`) nodes [F]. Otherwise as the S25 Ultra; its runtime node names and Bluetooth HAL (HIDL or AIDL) are [U]. The SoC rule as the S25 Ultra's [I] (same SM8750): the thresholds come from this phone's own trips, read at the start and logged |
-| `galaxy-s26-ultra` | `SM-S948*`, SoC `SM8850` (codename and platform [U], not matched) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/tests.rs`, `sm8850_manual_brightness_cap`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
+| `galaxy-s26-ultra` | `SM-S948*`, `m3q`, SoC `SM8850`, platform `canoe` [F] (YMGPwcca/OneiOS: the fork's SM-S948B, `S948BXXS4BZIG`; codename and platform since 2026-11-23, `docs/s26.md`) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/test_brightness.c`, `test_sm8850_manual_brightness_cap`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
 | `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d`, `panel-fallback=1080x2340@120` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). The panel: 1080x2340 [F] (the fork's `docs/a56-guide.md`), as for the S25. Touch, haptics, battery and thermal names [U]: samsung stays |
+
+**The S24 Ultra's models.** One entry for every model number, matched by `ro.product.model`'s prefix (record: `profiles/host-galaxy-s24-ultra-sm8650.toml`; host-tested for
+each one below: `runtime/bridges/hw/test_hw_backend.rs`, `host.rs`, `scripts/port/test-verify-host.sh`, `tools/oneios-tool/tests/phone/run.sh`):
+
+| Model | Market | What is known |
+|---|---|---|
+| SM-S928B | Europe, Asia (global) | [F] the owner's phone: e3q, SM8650, platform pineapple; every session in this tree |
+| SM-S928U, SM-S928U1 | US carrier, US unlocked | e3q, SM8650 [I] (one hardware family); not booted with iOS |
+| SM-S928W | Canada (CSC XAC) | The same path as the B in the runtime and in the OneOS fork (its profile `s-ultra-8650`, the iOS 27 card, the switch's own check, the custom-ROM rule since fork 0.4.89: host-tested there too). the US carrier model's bootloader and vendor partition under its own firmware: `ro.bootloader` `S928USQU6EZIF`, `ro.product.vendor.model` `SM-S928U`, firmware `S928WVLU6EZIF` [F per the OneOS fork's public issue 128, a stock phone, 2026-11-10]. Nothing in the runtime reads either, so its own model matches. e3q, SM8650, pineapple [I]; its side keys, panel, touch and pen nodes, backlight path, thermal zones and HAL instance names [U] (the B's are kept: same hardware [I]). Root: KernelSU as on the B; whether its bootloader can be unlocked is [U] (the user's own matter). Not booted with iOS |
+| SM-S928N, SM-S9280 | Korea, China | e3q, SM8650 [I]; not booted with iOS |
+| SC-52E, SCG26 | Japan (docomo, au) | not `SM-S928`, codename [U]: they get this entry by their SoC (`SM8650`, the SoC's entry, no defaults either); the OneOS fork's profile (`SM-S928*` and `e3q` and `SM8650`, all three) does not match them, so its iOS 27 card warns them as another phone (not refused) |
 
 Which keys an entry may hold: xnuhost settings that `config.rs` merges as device defaults (`gpu`, `hw-backend*`; an
 entry with another key makes xnuhost refuse to start, and the test `config::tests::host_device` forces every entry and checks each default
@@ -3782,7 +3951,7 @@ bad name, a missing file, the environment's defaults taken and kept, the ctl too
 `host-device=none`; the A56's `gpu=2d` under the command line and the image set; the image set's `host-device=none`;
 every entry forced); the stand-in phone (`tools/oneios-tool/tests/phone/hw-backend.sh`: `brightctl` on an S26 Ultra's
 panel, 1..2300 of 12750 detected, 1..12750 with `none` or the S24's properties, a set `ONEIOS_BRIGHT_MAX` kept; `run.sh`:
-`phone status`'s host line for each phone). **Not run on a phone**: the first phone start shows the line above; on the
+`phone status`'s host line for each phone). 2026-11-23, on the build laptop: every S24 Ultra model number above (SM-S928B, U, U1, W, N, 0; the W with its US vendor model and bootloader) in `test_hw_backend.c`, `host.rs`, `test-verify-host.sh` and `run.sh`. **Not run on a phone**: the first phone start shows the line above; on the
 S24 Ultra it must say `galaxy-s24-ultra ... defaults: none (today's)`.
 
 ## 8. Sources

@@ -472,6 +472,66 @@ sees beyond that is the virtio round trip and the guest's own wake-ups. The rend
 **Session rules** (`docs/booter.md` 2.9): nothing new outside the process. KGSL contexts, the VBO and the dma-bufs
 are descriptors of xnuhost and go with it at SIGKILL; drm2kgsl's fence threads are ordinary threads.
 
+### 2.5 One frame end to end, and the way to 120 fps (fix-fps-scheduler-migration, 2026-11-23)
+
+At 120 Hz a frame has 8.3 ms. The numbers below are from the phone's boot of 2026-11-23 03:28 (main `b99dcfe` with
+SM-S928W, kernel `988c2a7b`: hosted 0084-0089, 0085's spill active), xnuhost's own lines, unless another source is
+named. "Active" is the 10 s periods with page switches (30023-30047 in that log), "still" the clock-only periods
+after them (about 100 frames in 10 s).
+
+| Step of a frame | Line | Still | Active |
+|---|---|---|---|
+| frame interval of the render server | `gpu: 10 s level: ... frame interval` | 95-99 ms (only the clock) | 13.7-23.4 ms (43-73 fps) |
+| GPU time of a frame at the top clock | `gpu: 10 s level: ... GPU time at the top` | 1.4-1.7 ms | 2.3-8.2 ms |
+| the render server's fence, submit -> retired | `gpu: 10 s host: backboardd fences` | 1.6 ms (max 2-4 ms) | 7.6-11.9 ms (max 34-90 ms) |
+| metal2vulkan's submit call in drm2kgsl | `... submit calls mean` | 49-51 us | 23-48 us |
+| the display helper's answer to a frame | `display: 10 s: ... (posted to in the layer: mean` | 5.1-5.2 ms | 8.2-9.1 ms (max 30-40 ms) |
+| the same, split (an older helper, 2026-11-22 `kbd-debug/display-s3.log`, still screen) | `oneios-display: 10 s: ...` | guest pages read 5.5 ms, buffer wait 4.1 ms, copy 0.2 ms | not logged |
+| the render server's own CPU | `oneios-top: backboardd` (30 s) | 28% | 158%, 98,068 vm_faults (4.1 s in vm_fault), 158,612 own unmaps |
+| the host | `thermal: 30 s` | 567% of 800 | 711% of 800, SoC 95 C ("heavy" for 85 s) |
+
+The boot before (kernel `81b85dd4`, 0085 not active) had the same GPU figures (fences 5.9-13.4 ms active, 1.6 ms
+still) and active frame intervals of 15-35 ms; the GPU is not where the newest boot lost time. What the frame waits
+for, in order:
+
+1. **The display helper's answer (fixed here).** The guest's display driver posts its next frame only after xnuhost
+   answers its flush (`DroidVMVirtioGpuDisplay.cpp`), and xnuhost answers when the helper says `done`. Until this
+   change the helper said it after `ANativeWindow_lock` (which waits for a free buffer, to the panel's vsync when the
+   queue is full), the fill and the post, though the frame was in the helper's own snapshot before all three. The helper
+   now answers as soon as a changed frame is in its snapshot (`runtime/display/src/jni.c`; `runtime/display/README.md`,
+   "Frames"). What it removes from the guest's path: the buffer wait (4.1 ms mean in the 2026-11-22 log) and the fill.
+   What stays: the read of the guest's pages into the snapshot (5.5 ms then). Phone lines that prove it: xnuhost's
+   `display: 10 s: ... (its answer: mean X ms ...)` against the 5.1-9.1 ms above, and the helper's `oneios-display:
+   10 s: ... guest pages read ... buffer wait ...` (`phone pull-log` or `control/display.log`): the answer should be
+   about the read.
+2. **The read itself: a CPU copy of up to 18 MB a frame** (1440x3120x4; the helper hashes each tile and copies the
+   changed ones). 5.5 ms of one core for a still screen, more when the host is busy (8-9 ms active above, with every
+   core taken). The fix is not a faster copy but none: a GPU copy into the layer's buffer (KGSL can import both the
+   compositor's surface, a udmabuf of guest pages it has already, and the gralloc buffer, a dma-buf), or a scanout
+   of the guest's surface itself. Not done; it needs the gralloc buffer's dma-buf on xnuhost's side (the helper is
+   another process: the fd over `display.sock`) and a KGSL blit of drm2kgsl's. [guess: a blit of 18 MB at the GPU's
+   bandwidth is well under 1 ms.]
+3. **The fence path under load.** Active, the render server's fences took 7.6-11.9 ms from submission to retirement
+   for 2.3-8.2 ms of GPU time: the rest is other contexts' work ahead on the GPU and the host's way back (KGSL's
+   timestamp wake, drm2kgsl's fence thread, the guest's interrupt, backboardd's wake), on a host with every core busy.
+   Next: split the line into queue wait, GPU run and the way back (a lasting part of `gpu: 10 s host`), then act on
+   the largest.
+4. **The render server's faults.** 98,068 vm_faults (4,114 ms in vm_fault) and 158,612 unmaps of its own in the 30 s
+   in which it drew 767 frames (167 + 279 + 321 in the `gpu: 10 s level` lines): about 128 faults, 207 unmaps and 5.4
+   ms of fault time per frame, spread over its threads (how much of it is on the render thread's path is not known).
+   This is the largest CPU cost per frame in these lines. Next: find which mappings it makes and drops per frame
+   (`oneios-tool log stacks`, the 0080 `oneios-top` line; an IOSurface mapped and unmapped per frame is a guess) and keep
+   them mapped.
+5. **The host's CPU time.** With 0085 and 0089 all eight vCPUs carry iOS's work, so the display helper and xnuhost's
+   GPU threads share the cores with it; at 711% and a 95 C SoC the phone also slows its clocks. Hosted `0091` and
+   xnuhost's direct kick (`docs/booter.md` 2.6a, "The kick") remove the host work of the thread moves and of the
+   kicks (70,200 moves and 24,419 kicks in that 30 s period, 136 us each). Phone lines: `perf:   release:`, `kick`,
+   `perf:   queue: ... (N of them by a kick of the iOS thread ...)` and the kernel's `oneios-perf:   0091:` line.
+
+The order to work in, by the size of each cost per frame against the 8.3 ms: 4 (5.4 ms of faults), 2 (5.5 ms of copy
+on the CPU), 3 (5-9 ms of fence time beyond the GPU's work), then 5. 1 and the host work of 5 are done in this change
+(not yet booted on the phone).
+
 ## 3. Tests on the PC
 
 `cd runtime && cargo test -p xnuhost -p drm2kgsl-sys` (also part of `runtime/host-tests.sh` and `runtime/build.sh
@@ -745,6 +805,40 @@ server's phase lines), whole; before 0039 each character was an `oneios-gpu-open
 `MetalPluginName`, the first twelve, with counts: who asked for a Metal device. A process that asked and has no line in
 `oneios-gpu-clients` got no device (the list did not name it, the open was refused, or the device failed: its
 `oneios-gpu-text` line says which).
+
+**The boot addon carries more than the Metal plug-in (hosted 0090, 2026-11-23).** `oneios-tool ios addon OUT --metal
+out/userland/NativeAdrenoMetal.bundle --camera out/userland/camera` writes one sidecar with both (`addons/...` and
+`camera/MediaCapture/H9ISP.mediacapture`) and `OUT.cdhashes`; `oneios-tool phone addon OUT` stages it as
+`image/kernel.kc.gpuaddon` with the phone's `owner-trust.json` plus those CDHashes. 0031 now takes
+`/private/var/ngpu/addons` only when the addon has files under `addons/` (before 0090: any addon), so a camera-only addon
+leaves the seed's Metal plug-in in place; `oneios-camera-addon: boot addon: N files (-1 none), C of the capture plug-in
+(camera/), M of the Metal plug-in (addons/)` says what this boot's addon held. `phone addon --remove` takes it away.
+
+**What the camera needs (fix-camera-preview-stream, 2026-11-23).** cameracaptured's capture graph (CMCapture,
+CMImaging) is a Metal client; on the phone (main 44d9c49) two answers of the frontend at b0d6a07 stopped it, and
+cameracaptured crashed (SIGSEGV) about 2 s later, again at each restart. Both are fixed as text edits of the staged
+frontend (`oneios-tool ios metal-stage-edit`, `frontend_camera_edits` in `crates/oneios-ios/src/metal.rs`; build.sh's
+stage step prints one `metal: staged ...` line for each):
+- `native-metal: heap refused: resource options: ... UndefinedValue { ty: "MTLResourceOptions", raw: 6291968 }`, then
+  `Fig assert: "_heap" ... Failed to allocate metal heap` (FigMetalAllocator.m:878): FigMetalAllocator's heaps set bits
+  21 and 22 (0x600000 over `0x200`, tracked), which metal2vulkan's `ResourceOptions::from_raw` refuses (it takes only
+  bits 0-9 and the private bit 24). The frontend now takes such bits off for heaps, heap buffers, buffers, no-copy
+  buffers, texture descriptors and heap size queries (`nbKnownOptions`), and says each new set once:
+  `native-metal: heap options 0x600200: bits 0x600000 are not Metal's known ones; made without them`. [U] what the
+  two bits ask Apple's driver for; the heap works without them.
+- `native-metal: missing NBLibrary newFunctionWithName:constantValues:pipelineLibrary:error: (answered nil)` and
+  `Fig assert: "function" ... function is nil` (FigMetalContext.m:565): CMImaging's `-[FigMetalContext
+  computePipelineStateFor:constants:additionalPipelineOptions:reflection:]` (read in the 24A446 cache) makes each compute
+  function with that selector when it has a pipeline library. NBLibrary answers it (and its `completionHandler:` form)
+  with the function `newFunctionWithName:constantValues:error:` makes; the pipeline library is not used.
+Tested: the edits' unit test (`cargo test -p oneios-ios`), and on the build laptop `userland/metal/build.sh` staged all ten
+edits (one `metal: staged ...` line each). **Not built yet:** the laptop's Mesa step stops before the frontend is
+compiled, in `ir3_lexer.c` (`use of undeclared identifier 'Dl_info'`, `disk_cache.h:86`): the laptop's flex 2.6.10 writes
+`#define _POSIX_C_SOURCE 1` into the lexer, and Darwin's `dlfcn.h` then hides `Dl_info` and `dladdr` (`_DARWIN_C_SOURCE`
+would show them). Not caused by these edits; the Metal bundle with them still has to be built (that fix, or the
+Mac's Xcode path), then `oneios-tool ios addon OUT --metal ... --camera ...` and `phone addon OUT`.
+The stage step also stopped at once in a fresh `METAL_WORK` (the Turnip trace patch was applied before the Mesa
+clone); `build.sh` applies it after the clone now.
 
 Reading them, in order: `oneios-gpu-addon` stage 5 means iOS can see the plug-in; `oneios-gpu-plugin` is dyld loading it (no
 line: nobody tried, or the vnode had no name; an error on the first line is the trust cache, on the second AMFI's library

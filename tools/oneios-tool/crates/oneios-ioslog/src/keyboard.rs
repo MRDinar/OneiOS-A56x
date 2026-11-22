@@ -37,6 +37,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "hangs",
@@ -46,6 +47,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "",
         who: &[],
         over: 1.0,
+        texts_in_line: false,
     },
     Kind {
         name: "asset-lock",
@@ -55,6 +57,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "asset sets",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "asset-query",
@@ -64,6 +67,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "asset types",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "language-model",
@@ -77,6 +81,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "kb-screen",
@@ -86,6 +91,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "kb-placement",
@@ -95,6 +101,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "text-input",
@@ -104,6 +111,7 @@ pub const KEYBOARD: &[Kind] = &[
         names: "",
         who: &[],
         over: 0.0,
+        texts_in_line: false,
     },
 ];
 

@@ -99,6 +99,18 @@ pub enum Command {
     },
     /// userland/metal/build.sh's `addon`: the bundle as the kernel.kc.gpuaddon sidecar (NGPUADD2)
     Gpuaddon { bundle: PathBuf, output: PathBuf },
+    /// The boot addon (the kernel.kc.gpuaddon sidecar, NGPUADD2) with the Metal plug-in (addons/, hosted 0031), the
+    /// capture plug-in (camera/, hosted 0090) or both, and OUTPUT.cdhashes (its Mach-O files' CDHashes, for the
+    /// image's owner-trust.json; `phone addon OUTPUT` stages both)
+    Addon {
+        output: PathBuf,
+        /// NativeAdrenoMetal.bundle (userland/metal/build.sh's)
+        #[arg(long)]
+        metal: Option<PathBuf>,
+        /// userland/camera/build.sh's output folder (or its H9ISP.mediacapture)
+        #[arg(long)]
+        camera: Option<PathBuf>,
+    },
 }
 
 /// This checkout: IOS_REPO or ONEIOS_REPO, else the folder above the current one (or the tool's binary) that has
@@ -137,6 +149,7 @@ fn run(command: Command) -> anyhow::Result<i32> {
         Command::MetalStageEdit { root, hooks, jobs, knows } => metal::stage_edit(&root, &hooks, &jobs, knows == "1").map(|()| 0),
         Command::MetalRecord { root, bundle, record, hooks, target } => metal::record(&root, &bundle, &record, &hooks, &target).map(|()| 0),
         Command::Gpuaddon { bundle, output } => metal::gpuaddon(&bundle, &output).map(|()| 0),
+        Command::Addon { output, metal, camera } => metal::addon(&output, metal.as_deref(), camera.as_deref()).map(|()| 0),
     }
 }
 
@@ -147,7 +160,7 @@ pub fn main(command: Command) -> i32 {
         Command::MachoCheck { .. } => "macho-check",
         Command::Tbds { .. } => "tbds",
         Command::TbdDiff { .. } => "tbd-diff",
-        Command::MetalStageEdit { .. } | Command::MetalRecord { .. } | Command::Gpuaddon { .. } => "metal",
+        Command::MetalStageEdit { .. } | Command::MetalRecord { .. } | Command::Gpuaddon { .. } | Command::Addon { .. } => "metal",
     };
     match run(command) {
         Ok(n) => n,

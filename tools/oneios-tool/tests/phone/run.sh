@@ -6,14 +6,14 @@
 # What it checks: one phone only (none, several, --serial, ANDROID_SERIAL, a phone that is not ready); root is
 # asked for first and its absence said; status; `stage runtime|runtime-asis|image` and `sums` against
 # scripts/phone/stage.sh on a second, equal stand-in phone (the same output, the same stage afterwards); the
-# refusals while a session is open; status's host phone line (crates/oneios-phone/src/host.rs: the S24 Ultra, S26 Ultra,
+# refusals while a session is open; status's host phone line (crates/oneios-phone/src/host.rs: the S24 Ultra (B, and the W with its US vendor model), S26 Ultra,
 # A56, S25 Ultra, an unknown phone, soc0's machine; the stand-in's getprop reads .fake/props); switch (the versionCode is the installed app's) and a refused preflight;
 # return (the restore line, no session, a return that hangs); the session's own commands (session-cmds.sh:
 # display-restart with --lib and --dex, touch status and wake, backlight status and set, each refused without a
 # session, and the return after them); `phone wifi p2p|wonder` (wifi.sh: the stand-in wifictl, the refused arguments, the
 # report and its summary, the streamed lines, --save); `procs`, the process list with CPU and RAM on a made-up /proc (procs.sh);
 # the bridges' hardware backends, samsung and treble (hw-backend.sh); pull-data (the copy is the phone's file, sparse;
-# a size that does not match; --ioslog, and `ioslog health` without SOURCE on a stage, as on the phone itself); sparse-write. The session check's command is the phone's, byte for byte, and a pid
+# a size that does not match; --ioslog, and `ioslog health` without SOURCE on a stage, as on the phone itself); sparse-write; `phone addon` (the boot addon, its CDHashes in owner-trust.json, --remove). The session check's command is the phone's, byte for byte, and a pid
 # that is not an xnuhost's is no session. Every case ends the stand-in session it left (end_case), and at the
 # end, a failure or Ctrl-C none is left running (lib.sh's traps).
 # With the OneOS fork's checkout at hand (lib.sh's fork_dir: the one `oneios-tool app dir` finds from this checkout:
@@ -71,6 +71,8 @@ else echo "skipped status (no fork root script)"; fi
 # would log, from getprop and soc0 (with or without the fork's root script: the line comes before it)
 hs() { sh -c "'$TOOL' phone status 2>&1; true"; }
 check "status: host S24 Ultra (the default stand-in)" 0 "^host: galaxy-s24-ultra \(Galaxy S24 Ultra \(SM-S928, SM8650\)\), matched by ro.product.model=SM-S928B; defaults: none \(today's\)$" hs
+printf '[ro.product.model]: [SM-S928W]\n[ro.product.vendor.model]: [SM-S928U]\n[ro.bootloader]: [S928USQU6EZIF]\n[ro.product.device]: [e3q]\n[ro.board.platform]: [pineapple]\n[ro.soc.model]: [SM8650]\n' > "$P/.fake/props"
+check "status: host S24 Ultra SM-S928W (Canada, the US vendor model)" 0 "^host: galaxy-s24-ultra \(Galaxy S24 Ultra \(SM-S928, SM8650\)\), matched by ro.product.model=SM-S928W; defaults: none \(today's\)$" hs
 printf '[ro.product.model]: [SM-S948B]\n[ro.soc.model]: [SM8850]\n' > "$P/.fake/props"
 check "status: host S26 Ultra" 0 "^host: galaxy-s26-ultra .*matched by ro.product.model=SM-S948B; defaults: ONEIOS_BRIGHT_MAX=2300$" hs
 printf '[ro.product.model]: [SM-A566E]\n[ro.product.device]: [a56x]\n[ro.soc.model]: [s5e8855]\n' > "$P/.fake/props"
@@ -156,6 +158,31 @@ phone manifest "$I" --out "$W/manifest.json" > /dev/null 2>&1
 check "manifest DIR --stage: the files and their manifest, then the check" 0 "image: manifest.json and the 4 files it lists agree" phone manifest "$I" --stage
 check "image-check: the set agrees again" 0 "image: manifest.json and the 4 files it lists agree" phone image-check
 
+# ---- phone addon (hosted 0090): a boot addon beside the set, its CDHashes in owner-trust.json; on a copy of the phone
+# whose set lists an owner-trust.json, as a real set does
+PA=$W/phone-addon; cp -a "$P" "$PA"; SA=$PA/data/local/tmp/oneios
+echo '{"cdhashes": ["0000000000000000000000000000000000000001"], "files": [], "schema": 1}' > "$SA/image/overlay/userland/owner-trust.json"
+"$TOOL" json set "$SA/image/manifest.json" . "{\"format\":1,\"build\":\"24A446\",\"files\":[$(file_entries "$SA/image" data.seed kernel.kc kernel.kc.hashes overlay/userland/owner-trust.json overlay/userland/xnuhost.conf)]}"
+(cd "$SA/image" && : > ../image.sha256 && : > ../image.ids && for f in kernel.kc kernel.kc.hashes manifest.json data.seed overlay/userland/owner-trust.json overlay/userland/xnuhost.conf; do
+  sha256sum "$f" >> ../image.sha256; echo "$(stat -c '%d:%i:%s:%Y' "$f") $f" >> ../image.ids; done)
+cam=$W/camera-out; mkdir -p "$cam"; echo "a capture plug-in (stand-in)" > "$cam/H9ISP.mediacapture"
+"$TOOL" ios addon "$W/cam.gpuaddon" --camera "$cam" > /dev/null
+echo "3927e183aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa camera/MediaCapture/H9ISP.mediacapture" > "$W/cam.gpuaddon.cdhashes"
+pa() { FAKE_PHONE=$PA "$TOOL" phone "$@"; }
+check "addon: staged with the new CDHash, the set agrees" 0 "image: manifest.json and the 5 files it lists agree" sh -c "FAKE_PHONE='$PA' '$TOOL' phone addon '$W/cam.gpuaddon' 2>&1"
+cmp -s "$W/cam.gpuaddon" "$SA/image/kernel.kc.gpuaddon" && grep -q "  kernel.kc.gpuaddon$" "$SA/image.sha256" && grep -q " kernel.kc.gpuaddon$" "$SA/image.ids" \
+  && ok "addon: image/kernel.kc.gpuaddon and its two list lines" || bad "addon: the sidecar" "$(tail -n 3 "$SA/image.sha256" | tr '\n' '|')"
+OT=$SA/image/overlay/userland/owner-trust.json
+[ "$("$TOOL" json len "$OT" cdhashes)" = 2 ] && [ "$("$TOOL" json get "$OT" cdhashes.0)" = 0000000000000000000000000000000000000001 ] \
+  && [ "$("$TOOL" json get "$OT" cdhashes.1)" = 3927e183aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ] \
+  && [ "$("$TOOL" json get "$SA/image/overlay/userland/owner-trust.json" schema)" = 1 ] && ok "addon: owner-trust.json has the old and the new CDHash, its other keys kept" || bad "addon: owner-trust.json"
+check "addon: again, nothing new" 0 "1 CDHashes of the addon, 0 new" pa addon "$W/cam.gpuaddon"
+[ "$(grep -c "  kernel.kc.gpuaddon$" "$SA/image.sha256")" = 1 ] && ok "addon: staged twice, one list line" || bad "addon: staged twice"
+check "addon: a file that is not an addon is refused" 1 "not a boot addon" pa addon "$cam/H9ISP.mediacapture"
+check "addon --remove: gone, the set agrees" 0 "image: manifest.json and the 5 files it lists agree" pa addon --remove
+[ ! -e "$SA/image/kernel.kc.gpuaddon" ] && ! grep -q "kernel.kc.gpuaddon" "$SA/image.sha256" "$SA/image.ids" && ok "addon --remove: the file and its lines" || bad "addon --remove"
+check "addon: a set without owner-trust.json is refused" 1 "lists no overlay/userland/owner-trust.json" phone addon "$W/cam.gpuaddon"
+
 # ---- the app's one process on this stage (tests/phone/serve.sh): its local forms against the adb forms
 . "$HERE/serve.sh"; serve_checks_closed
 
@@ -226,11 +253,12 @@ check "ioslog health without SOURCE: the stage's own data.img is the one read" 1
 check "ioslog health without SOURCE, on a stage without a store" 1 "no SOURCE, and no staged Data store at $W/none/data/data.img" "$TOOL" ioslog health --stage "$W/none"
 mkdir -p "$W/stage2/data" "$W/stage2/session"; cp "$HT" "$W/stage2/data/data.img"
 out=$("$TOOL" ioslog health --stage "$W/stage2" 2> "$W/health.err"); st=$?
-[ $st = 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 8 ] && printf '%s\n' "$out" | head -n 1 | grep -q "^$W/stage2/data/data.img: .*, 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)$" \
-  && ok "ioslog health without SOURCE: the head and one line per kind (7 kinds)" || bad "ioslog health without SOURCE" "status $st: $(printf '%s' "$out" | head -n 2 | tr '\n' '|') $(head -n 2 "$W/health.err")"
+[ $st = 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 9 ] && printf '%s\n' "$out" | head -n 1 | grep -q "^$W/stage2/data/data.img: .*, 42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)$" \
+  && ok "ioslog health without SOURCE: the head and one line per kind (8 kinds)" || bad "ioslog health without SOURCE" "status $st: $(printf '%s' "$out" | head -n 2 | tr '\n' '|') $(head -n 2 "$W/health.err")"
 miss=""; for want in "^hangs +8  109\.7 s in all, longest 61\.27 s \(Preferences\), 5 over 1 s; Preferences 4 \(64\.9 s, longest 61\.27 s, 2 over 1 s\), SpringBoard 2 \(40\.1 s, longest 39\.34 s, 1 over 1 s\), MobileSafari 2 " \
   "^watchdog +5  chronod 3, SpringBoard 1, backboardd 1; named: com\.example\.clock\.widget 2, com\.example\.weather\.widget 2$" "^xpc-timeouts +4  SpringBoard 3, Preferences 1; services: com\.example\.photos\.service 2, com\.example\.settings\.service 1$" \
-  "^jetsam +4  MobileSafari 2, Preferences 1, nfcd 1$" "^crashes +3  chronod 2, Preferences 1$" "^stuck-idle +3  profiled 2, coreauthd 1$" "^encode-fail +3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation \[-12782\] 2, -16993 1$"; do
+  "^jetsam +4  MobileSafari 2, Preferences 1, nfcd 1$" "^crashes +3  chronod 2, Preferences 1$" "^stuck-idle +3  profiled 2, coreauthd 1$" "^encode-fail +3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation \[-12782\] 2, -16993 1$" \
+  "^audio +6  started 0, webcam 1, failed at 1, failed 1, status 1, not ready 2; audiomxd 6; failures: RoutingSettings_N71\.cpp:1196 1, "; do
   printf '%s\n' "$out" | grep -Eq "$want" || miss="$miss /$want/"; done
 [ -z "$miss" ] && ok "ioslog health: the counts of the hand-written log, per kind and process" || bad "ioslog health: the counts" "missing:$miss"
 [ ! -s "$W/health.err" ] && ok "ioslog health: no session, nothing on stderr" || bad "ioslog health: stderr without a session" "$(head -n 2 "$W/health.err")"

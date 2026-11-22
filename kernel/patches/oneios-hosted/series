@@ -385,3 +385,41 @@
 # transport: H4 over /dev/btwake and com.apple.uart.sk.bluetooth, the phone's controller. One `oneios-bt:` line per exec;
 # oneios-bt-hci=0 is the old way. README.md, "0087"; docs/hardware.md 4.
 0087-bluetoothd-hci-transport.patch
+# fix-audio-camera-model (2026-11-23): no sound, no volume, no haptics in the v0.1.16 boot: with /product unique-model
+# "V54AP" (9ae1f0c, for CMCapture's V54 tables) AVFCapture's AVGestalt answers V54's webcam key true in audiomxd, and
+# VirtualAudio's RoutingSettings_N71 builds a webcam subport with no DSP list (input processing is off here): its
+# precondition fails, "VA Init Status: 1", VirtualAudio never starts. xnuhost's loader now gives "OneiOSAP" (in no
+# AVGestalt table; camera-model=V54AP the old name), and before launchd /private/var/oneios/addons/CMCapture gets a link
+# OneiOS -> V54 shown over CMCapture.framework read-only (0031's union mount), so CMCapture still reads V54's tables.
+# Nothing when the name's folder is sealed (V54AP) or there is no unique-model. oneios-cmcapture-model=0: not done;
+# =NAME: another folder. README.md, "0088". Numbered 0088: 0087 was the last on main and on the open branches.
+0088-cmcapture-model-folder.patch
+# fix-hosted-smp-scheduler-init (2026-11-23): the scheduler's completion step. XNU's only arm64 caller of
+# ml_cpu_init_completed is AppleARMSMP (USE_APPLEARMSMP), which this board does not build; ArmCpu calls it only with
+# armcpu-edge=1. So sched_cpu_init_completed never ran: no Edge default edges or per-pset limits, no realtime spill
+# rules, pcs_init_completed false all session, and 0085 (called at its end) did nothing (the 2026-11-23 02:16 phone boot
+# printed no `oneios-edge:` line). Here ml_processor_register counts the boots and the last one starts a thread that
+# calls ml_cpu_init_completed (once: a second call, ArmCpu's, is a log line); cpu_boot_timeout_secs 10 s (a vCPU is a
+# host thread). oneios-smp-complete=0 is the old way. `oneios-smp:` lines, then 0085's `oneios-edge:`. README.md, "0089".
+# Numbered 0089 (0088 is the CMCapture model folder). Built and prelinked; not yet booted under qemu or on the phone.
+0089-smp-scheduler-init-completed.patch
+# fix-camera-preview-stream (2026-11-23): a rebuilt capture plug-in reaches an existing Data store. The boot addon
+# (kernel.kc.gpuaddon, UniXNU's NGPUADD2 sidecar that native_gpu_addon_install writes into /private/var/ngpu) may now
+# carry camera/MediaCapture/H9ISP.mediacapture (oneios-tool ios addon --camera; staged with oneios-tool phone addon):
+# 0056 then shows /private/var/ngpu/camera/MediaCapture over /System/Library/MediaCapture instead of the seed's folder.
+# The files are counted by top folder, so 0031's Extensions union takes /private/var/ngpu/addons only when the addon
+# carries the Metal plug-in (before: any addon at all), and the seed's Metal plug-in stays with a camera-only addon.
+# One `oneios-camera-addon: boot addon:` line. README.md, "0090". Numbered 0090: 0089 was the last on main.
+0090-camera-plugin-boot-addon.patch
+# fix-fps-scheduler-migration (2026-11-23): no pull-back of a spilled thread from P to E. With 0089 the completion step
+# runs, so 0085's spill works and so do XNU's rules that take a spilled thread back to E at once: an E CPU going idle
+# sends a rebalance IPI to the P CPU that runs it (sched_edge_balance), and a P CPU preempts it when E's load is 0
+# (sched_edge_thread_avoid_processor: compaction, running rebalance). On the phone (2026-11-23 03:28, kernel 988c2a7b)
+# xnuhost counted 70,200 threads moved to another vCPU's core and 24,419 kicks in 30 s (14,824 and 931 before 0089):
+# each IPI to a busy vCPU is a signal to its iOS thread, each move a sched_setaffinity and a slower core. Now a thread
+# that prefers E and runs on P stays until it blocks or its quantum ends; an idle E CPU steals by the edges instead; a
+# P-preferring thread on E is still pulled to an idle P CPU. oneios-edge-pullback=1 is XNU's way. One `oneios-perf:
+# 0091:` line per perf period: the pull-backs not made and made, and the scheduler's IPIs by reason to idle and busy
+# CPUs. Numbered 0091: 0090 is the camera helper's boot addon (t3/camera-preview-stream-fix); the two touch no file in common.
+# Applies after the camera 0090 (git apply --check). Built and prelinked (kernel.kc ca1606e5); not booted yet. README.md, "0091".
+0091-edge-no-pullback-ipi-counts.patch

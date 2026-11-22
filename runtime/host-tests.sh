@@ -20,7 +20,7 @@
 #             booting the Rust test kernel three times (the normal boot, ram=auto, the restart loop) under qemu-aarch64 on
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
-#             Ultra, S25, A56, and refusals)
+#             Ultra, S25, S26 Ultra, A56, and refusals)
 #   links     runtime/package/elf-check-test.sh, when the NDK is there (on a Mac: on the Mac, after the container): the
 #             link rule of Android shared objects (-z defs) and runtime/package/elf-check.sh, on a library linked without
 #             it (must fail) and on a stage of runtime/build.sh

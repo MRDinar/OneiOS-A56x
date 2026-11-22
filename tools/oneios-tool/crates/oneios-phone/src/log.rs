@@ -53,6 +53,12 @@ extern "C" fn on_signal(_: libc::c_int) {
 
 /// From now on Ctrl-C (and SIGTERM) only sets a flag and ends the adb child that is being read: the loops here
 /// and in `cycle` see the flag and finish cleanly (the saved file is whole, the way back is taken).
+/// A guest panic line whose `panic(` lost its first letters in the console (`anic(cpu 0 caller 0x...`), as
+/// `oneios_common::panic_head` reads it: after xnuhost's `] guest ` frame.
+fn guest_panic(line: &str) -> bool {
+    line.find("] guest ").is_some_and(|at| oneios_common::panic_head(&line[at + "] guest ".len()..]).is_some())
+}
+
 pub fn catch_stop() {
     // Safety: the handler only stores to atomics and calls kill.
     unsafe {
@@ -78,7 +84,7 @@ pub fn sleep_or_stop(time: Duration) -> bool {
 
 /// The named filters: the prefixes of docs/booter.md, docs/hardware.md, docs/gpu.md and the hosted patches' README.
 pub const NAMED: [(&str, &str); 7] = [
-    ("panic", r"panic\(|xnuhost !!|xnuhost E |kernel fault|sheng-exc|sheng-exit|crashed: |killed\] exiting|stopping: |xnuhost I exit "),
+    ("panic", r"panic\(|\] guest +(anic|nic|ic|c)?\(cpu [0-9]+ caller 0x|guest panic: |xnuhost !!|xnuhost E |kernel fault|sheng-exc|sheng-exit|crashed: |killed\] exiting|stopping: |xnuhost I exit "),
     ("display", r"oneios-display|sheng-vsync|ONEIOS BACKLIGHT|oneios-swap|ONEIOS ALS|displayctl|brightctl"),
     ("gpu", r"oneios-gpu|sheng-gpu|oneios-adreno|kgsl"),
     ("wifi", r"ONEIOS WIFI|oneios-wifi|sheng-wifi|oneios-net|wifictl"),
@@ -120,7 +126,7 @@ pub struct Markers {
 
 impl Markers {
     pub fn line(&mut self, line: &str) -> Option<Mark> {
-        let mark = if line.contains("panic(cpu") {
+        let mark = if line.contains("panic(cpu") || guest_panic(line) {
             Some(Mark::Panic)
         } else if line.contains("xnuhost I stopping: ") || line.contains("xnuhost I exit ") || line.contains("the guest asked for a restart") || line.contains("xnuhost !! ") || line.contains("without getting ready") {
             Some(Mark::End)
@@ -537,6 +543,11 @@ mod tests {
         assert_eq!(marks[6], Some(Mark::End));
         assert_eq!(marks[8], Some(Mark::Stage("backboardd")));
         assert!(!m.ready());
+        // A panic whose `p` the console lost (the phone, 2026-11-23) is a panic too; running text is not.
+        assert_eq!(m.line("[ 24469.789] guest     anic(cpu 0 caller 0xfffffff00ade5440): DebuggerXCallEnter>Debugger synch pending on cpu 1"), Some(Mark::Panic));
+        assert!(!guest_panic("[ 1.0] guest     the mechanic(cpu 0 caller 0x1)"));
+        let filter = Regex::new(NAMED.iter().find(|(n, _)| *n == "panic").map(|(_, r)| *r).unwrap_or("")).unwrap();
+        assert!(filter.is_match("[ 24469.789] guest     anic(cpu 0 caller 0xfffffff00ade5440): x"));
     }
 
     #[test]

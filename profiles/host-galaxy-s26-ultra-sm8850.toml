@@ -1,0 +1,72 @@
+# Host profile for OneiOS on the Galaxy S26 Ultra (Snapdragon 8 Elite Gen 5 for Galaxy). Not Apple's IPSW profile.
+# A record for the port docs; no code reads it. What xnuhost does differently on this phone comes from its row in
+# runtime/bridges/hw/host_device.c (galaxy-s26-ultra, the source of truth: docs/hardware.md 7h). The guest image stays
+# profiles/ios-27.0.1-iPhone18,2.toml. The port record is docs/s26.md.
+#
+# [F] values below were read on a phone by one fork: YMGPwcca/OneiOS (branches feat/oneios-sm8850-m3q and
+# feat/sm8850-full-bridges-takeover, its docs/SM8850_PORT.md, docs/SM8850_LIVE_STATUS_2026-11-20.md and
+# docs/SM8850_WATCHDOG_ACCEPTANCE.md; the read-only checks of 2026-11-16 to 2026-11-22 on its SM-S948B) and its
+# OneOS fork YMGPwcca/OneOS (docs/oneios-watchdog-recovery.md). Nothing here was re-run by this tree: there is no S26
+# here. Marks as in docs/s25.md: [F] read on a phone or in a source, [I] inferred, [U] unknown.
+
+[host]
+label = "Galaxy S26 Ultra"
+model_prefix = "SM-S948"
+codename = "m3q"         # [F]
+soc = "SM8850"
+platform = "canoe"       # [F] the fork's measured target line: "Qualcomm SM8850 (canoe)"
+oneos_profile_id = "s-ultra-8850"
+form = "bar"
+
+[firmware]
+build = "S948BXXS4BZIG"
+android = "17"
+one_ui = "9.0"
+kernel = "6.12.69-android16-6, 4 KiB pages"   # [F] 6.12.69-android16-6-pb4d3caf-abogkiS948BXXS4BZIG-4k
+root = "KernelSU (the fork's phone), SELinux enforcing"
+
+[cpu]
+# [F] 8x Oryon, every MIDR 0x510f0021 (implementer 0x51): cpu0-5 capacity 741 (384000..3628800 kHz), cpu6-7
+# capacity 1024 (768000..4742400 kHz). The CPU bridge's Oryon rule (runtime/bridges/cpu/topology.c) plans
+# 2 E (cpu4-5, lent) + 6 P vCPUs, as on the S25 (stand-in: test_bridges.c, the SM8850 fixture).
+nvcpu_default = 8
+
+[gpu]
+chip_name = "Adreno 840"                        # [F] Mesa's table for the host's chip id
+chip_id = "0x44050a00"                          # [F]
+kgsl_device = "/dev/kgsl-3d0"
+path = "virtio-gpu 3D -> drm2kgsl -> KGSL (same stack as the S24); the Adreno 830 wait-timestamp default applies"
+udmabuf = "gpuctl large: 96 MiB in 2 udmabufs, 1100 pages in 2 udmabufs, no fault [F]"
+status = "the fork's root-only run drew iOS 27 frames with the 3D GPU (its docs/SM8850_FULL_IOS_10MIN.md); not through this tree's switch"
+
+[display]
+# [F] SurfaceFlinger: internal panel 1440x3120, 600 dpi, 120 Hz (modes 1440x3120, 1080x2340, 720x1560, all 120 Hz),
+# panel max luminance 1275 nits (its capability report). The display helper's report gives the mode.
+native_resolution = "1440x3120"
+refresh_hz = 120
+oneios_display = "oneios-display + surfaceflinger layer (displayctl test: PASS on the fork's phone, 2026-11-16)"
+
+[input]
+# [F] evdev on the fork's phone. xnuhost never grabs a key device on any phone (input.c); the touch screen is chosen by
+# INPUT_PROP_DIRECT and the sec_touchscreen name (a wearable's virtual direct touchscreen is not taken).
+touch = "sec_touchscreen (event8, direct, 10 slots, MT 0..4095)"
+touchpad = "sec_touchpad (event9, MT, not direct: not taken)"
+pen = "sec_e-pen (event12): 0x140 (getevent's BTN_DIGI, the kernel's BTN_TOOL_PEN), BTN_TOUCH, BTN_STYLUS, x 0..7330, y 0..15881, pressure 0..4095, distance 0..255, tilt -63..63"
+volume_up = "gpio-keys (event0)"
+power = "pmic_pwrkey (event4)"
+volume_down = "pmic_resin (event5)"
+haptics = "sec_vibrator_inputff (event7: FF periodic, sine, custom, gain; no rumble), a cs40l26 at I2C 53-0040"
+wearable = "a paired band showed a direct virtual touchscreen (event14) and a consumer-control device with volume keys (event13)"
+
+[sensors]
+battery = "samsung backend: PASS (batteryctl, read only)"
+backlight = "panel0-backlight, max_brightness 12750; One UI's manual top (screen_brightness 255) wrote 2300: ONEIOS_BRIGHT_MAX=2300 (the table)"
+thermal = "30 zones of interest; cpu-hw-trip-0 and cpu-hw-trip-1 read 105000 always (pseudo zones: thermal.c excludes cpu-hw-trip-*); the kernel's own SoC trips [U]"
+vibrator_hal = "AIDL android.hardware.vibrator.IVibrator/default v3, capabilities 0x3c (no perform callback); perform(HEAVY_CLICK, STRONG) a clear tick, CLICK weak"
+wifi = "AIDL supplicant ISupplicant/default; wifictl status and scan: PASS (read only)"
+watchdog = "system_server holds /dev/watchdog (10:130); /dev/watchdog0 is 242:0; modules watchdog, softdog, qcom_soc_wdt, qcom_wdt_core, sec_qc_qcom_wdt_core; sysfs identity/state/timeout not readable; a magic close of /dev/watchdog after the framework stop got EBUSY. Which driver is behind the node, its timeout and its stop rule [U]"
+
+[switch]
+stage = "/data/local/tmp/oneios"
+session_abi = 1
+status = "the OneOS app's switch was never run on an S26 Ultra (the fork's app refused it); the return to One UI in place is not verified on this phone"

@@ -103,8 +103,12 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   direct frames (the default; `--no-direct` asks xnuhost for the old way) the helper says so in its `panel` report,
   xnuhost hands it guest RAM and a table of frame descriptions (`XHDM`), and a `frame` message (`XHDS`) makes the
   helper read that frame's rows straight from the guest's pages (the compositor's surface, scattered over RAM; the
-  table has its segments) into its snapshot, then fill and post a buffer and answer `done` (`XHDA`), which is when
-  xnuhost answers the guest's flush. xnuhost copies nothing then. The memfd stays for what xnuhost still draws itself
+  table has its segments) into its snapshot and answer `done` (`XHDA`) at once, which is when xnuhost answers the
+  guest's flush; then it fills and posts a buffer from the snapshot. Until 2026-11-23 `done` went after the post, so
+  the guest's next frame also waited for `ANativeWindow_lock` (a free buffer: to the panel's vsync when the queue is
+  full, "buffer wait mean 4.1 ms" on the phone, 2026-11-22) and the fill; now it is drawn while the helper posts
+  (`docs/gpu.md` 2.5). xnuhost copies nothing then. A frame that only xnuhost's own pixels changed is answered after
+  its post, as before. The memfd stays for what xnuhost still draws itself
   (the boot console, 2D resources): it is put into the snapshot too. A frame that cannot be read (a slot reused, a
   segment outside RAM, no snapshot: half-float frames or no memory for it) is answered with the failure flag and
   xnuhost copies the frames itself from then on. The guest flushes its whole surface every frame, so the helper finds

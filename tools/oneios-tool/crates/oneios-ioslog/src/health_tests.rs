@@ -26,7 +26,7 @@ fn the_table() {
     // every text and name compiles, and the names are one word each and differ
     Counter::new(0).unwrap();
     let names: Vec<&str> = KINDS.iter().map(|k| k.name).collect();
-    assert_eq!(names, ["hangs", "watchdog", "xpc-timeouts", "jetsam", "crashes", "stuck-idle", "encode-fail"]);
+    assert_eq!(names, ["hangs", "watchdog", "xpc-timeouts", "jetsam", "crashes", "stuck-idle", "encode-fail", "audio"]);
     for kind in KINDS {
         assert!(!kind.texts.is_empty() && !kind.what.is_empty() && !kind.name.contains(' '), "{}", kind.name);
         // a kind filed by the name in its lines needs a way to find it; one filed by the logger that also names
@@ -39,8 +39,8 @@ fn the_table() {
 #[test]
 fn the_fixture() {
     let r = report(FIXTURE);
-    assert_eq!(r.entries, 36);
-    assert_eq!(r.head(), "health.txt: the entries of a text file (ioslog show's), 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)");
+    assert_eq!(r.entries, 42);
+    assert_eq!(r.head(), "health.txt: the entries of a text file (ioslog show's), 42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)");
 
     // hangs: by the process that hung, with the seconds
     let hangs = kind(&r, "hangs");
@@ -106,6 +106,7 @@ fn the_lines() {
             "crashes            3  chronod 2, Preferences 1",
             "stuck-idle         3  profiled 2, coreauthd 1",
             "encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation [-12782] 2, -16993 1",
+            "audio              6  started 0, webcam 1, failed at 1, failed 1, status 1, not ready 2; audiomxd 6; failures: RoutingSettings_N71.cpp:1196 1, webcamRecordingDSPList && \"Need valid DSPConfig for webcam recording\" 1",
         ]
     );
     // the report: the head, a line per kind; with the details the indented lines below each
@@ -131,7 +132,7 @@ fn the_lines() {
 fn nothing_found() {
     let r = report("2026-11-15 09:00:00.000000Z SpringBoard[30] Default [com.apple.SpringBoard:Common] a quiet boot\n");
     assert_eq!(r.entries, 1);
-    assert_eq!(r.summary(TOP), ["hangs              0", "watchdog           0", "xpc-timeouts       0", "jetsam             0", "crashes            0", "stuck-idle         0", "encode-fail        0"]);
+    assert_eq!(r.summary(TOP), ["hangs              0", "watchdog           0", "xpc-timeouts       0", "jetsam             0", "crashes            0", "stuck-idle         0", "encode-fail        0", "audio              0  started 0, webcam 0, failed at 0, failed 0, status 0, not ready 0"]);
     assert!(r.text(TOP, true).contains("hangs              0\n    counts: HangTracer's"));
     // no entry at all: the head says so, and has no times
     let r = report("not a line of ioslog show\n");
@@ -182,7 +183,7 @@ fn the_sources() {
     assert!(is_text(text) && !is_text(dir.to_str().unwrap()) && !is_text("/nonexistent/log.txt"));
     // a text file: every entry, whatever `last` or `all`; a boot by its UUID cannot be chosen
     let r = read(text, &How::default(), "last", 0).unwrap();
-    assert_eq!((r.entries, kind(&r, "hangs").all.count), (36, 8));
+    assert_eq!((r.entries, kind(&r, "hangs").all.count), (42, 8));
     assert!(read(text, &How::default(), "all", 0).is_ok());
     let e = read(text, &How::default(), "9A6A", 0).err().unwrap().to_string();
     assert!(e.ends_with("a text file names no boots; choose the boot when the file is written (ioslog show --boot 9A6A)"), "{e}");
@@ -194,7 +195,7 @@ fn the_sources() {
     let out = dir.join("ioslog-health.txt");
     let lines = write(text, &out).unwrap();
     assert_eq!(lines.len(), 1 + KINDS.len());
-    assert!(lines[0].ends_with("36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)") && lines[1].starts_with("hangs              8  109.7 s in all"));
+    assert!(lines[0].ends_with("42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)") && lines[1].starts_with("hangs              8  109.7 s in all"));
     let saved = std::fs::read_to_string(&out).unwrap();
     assert_eq!(summary_of(&saved), lines[1..]);
     assert!(saved.contains("\n    texts: initial call 2 (SpringBoard 2), default 1 (SpringBoard 1), timeout 1 (Preferences 1)\n"));
@@ -231,4 +232,21 @@ fn an_encode_error_of_more_words_is_named_whole() {
         "2026-11-22 17:01:46.087480Z chronod[85] Error [com.apple.imageio:chronod] writeImageAtIndex:1313: *** CMPhotoCompressionSessionAddImage: err = unknown error [-12900]    (codec: 'hvc1')\n",
         "2026-11-22 17:01:46.193904Z chronod[85] Error [com.apple.imageio:chronod] writeImageAtIndex:1313: *** CMPhotoCompressionSessionAddImage: err = -16993 in the session (codec: 'hvc1') [-1]\n"));
     assert_eq!(counts(&kind(&r, "encode-fail").names), [("-16993", 1), ("unknown error [-12900]", 1)]);
+}
+
+#[test]
+fn audio_start() {
+    // the fixture's failed start (the v0.1.16 boot's lines): no `started`, the precondition's place and text named
+    let r = report(FIXTURE);
+    let audio = kind(&r, "audio");
+    assert_eq!(audio.texts, [0, 1, 1, 1, 1, 2]);
+    assert_eq!(counts(&audio.loggers), [("audiomxd", 6)]);
+    assert_eq!(counts(&audio.names), [("RoutingSettings_N71.cpp:1196", 1), ("webcamRecordingDSPList && \"Need valid DSPConfig for webcam recording\"", 1)]);
+    // a good start (s9b, 2026-11-22): `started` 1, and `VA Init Status: 0` is not a failure
+    let r = report(concat!(
+        "2026-11-22 17:54:43.249503Z audiomxd[103] Default [com.apple.coreaudio:va_vaplug]    VirtualAudio_PlugIn.mm:2021  ***** Beginning Deferred Initialization *****\n",
+        "2026-11-22 17:54:43.274267Z audiomxd[103] Default [com.apple.coreaudio:va_vaplug]    VirtualAudio_PlugIn.mm:2197  ***** Ending Deferred Initialization *****\n",
+        "2026-11-22 17:54:43.274282Z audiomxd[103] Default [com.apple.coreaudio:va_vaplug]    VirtualAudio_PlugIn.mm:2220  VA Init Status: 0\n",
+    ));
+    assert_eq!(r.line(kind(&r, "audio"), TOP), "audio              1  started 1, webcam 0, failed at 0, failed 0, status 0, not ready 0; audiomxd 1");
 }

@@ -701,6 +701,7 @@ oneios-tool ios codesign ARGS...                         # `codesign` for the Me
 oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS   # userland/metal/build.sh stage: the staged copy's changes
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
 oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2)
+oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon with the Metal and/or the capture plug-in, and OUTPUT.cdhashes (hosted 0090)
 ```
 
 | Command | Was | Needs | Compared with the script (Linux PC, 2026-11-21) |
@@ -712,6 +713,7 @@ oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the k
 | `metal-stage-edit` | build.sh `stage`'s inline Python | nothing | on copies of the pinned Droid-VM-UniXNU and NativeMetal trees, with and without the clang-23 warning: the same staged tree (`diff -r`) and the same lines; a hooks file of another revision is refused with the same message |
 | `metal-record` | build.sh `finish`'s inline Python | scripts/ios/env.sh's variables | the same record and lines on the bundle in `out/userland`, but for its `check` text (`ios macho-check`) |
 | `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream) |
+| `addon` | nothing (new, 2026-11-23) | `image tweaks cdhash`'s Mach-O reader (oneios-tweaks) | new: its Metal part is `gpuaddon`'s byte for byte (unit test); the capture plug-in goes to `camera/MediaCapture/H9ISP.mediacapture`, which hosted 0090 mounts; `OUTPUT.cdhashes` has one `CDHASH NAME` line for each Mach-O file in it, for `phone addon`. `userland/camera/build.sh` makes `H9ISP.gpuaddon` with it |
 
 `tbds` writes TBD v4 as the 24A446 stubs were laid out (one item per line); weak definitions and thread-local
 variables in their own lists (the `ipsw` stubs had them in `symbols`), an Objective-C class in `objc-classes` when
@@ -774,7 +776,7 @@ oneios-tool ioslog boots SOURCE                       # the boots: UUID, start, 
 oneios-tool ioslog checks SOURCE [--boot last|all|UUID] [--examples N]
 oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [--examples N] [-o FILE] [--stage DIR]
                                                       # hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck
-                                                      # idle demotions, encode failures: one line per kind ("health" below)
+                                                      # idle demotions, encode failures, VirtualAudio's start: one line per kind ("health" below)
 oneios-tool ioslog keyboard [SOURCE] [the same options as health]
                                                       # the keyboard's path: key taps by app, hangs, asset locks and
                                                       # queries, language models, keyboard layouts ("keyboard" below)
@@ -852,7 +854,7 @@ oneios-tool ioslog health                                  # on the phone itself
 Its output for the tests' log (`tests/ioslog/health.txt`, **written by hand, not a session**):
 
 ```
-tests/ioslog/health.txt: the entries of a text file (ioslog show's), 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)
+tests/ioslog/health.txt: the entries of a text file (ioslog show's), 42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)
 hangs              8  109.7 s in all, longest 61.27 s (Preferences), 5 over 1 s; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), SpringBoard 2 (40.1 s, longest 39.34 s, 1 over 1 s), MobileSafari 2 (4.8 s, longest 3.50 s, 2 over 1 s)
 watchdog           5  chronod 3, SpringBoard 1, backboardd 1; named: com.example.clock.widget 2, com.example.weather.widget 2
 xpc-timeouts       4  SpringBoard 3, Preferences 1; services: com.example.photos.service 2, com.example.settings.service 1
@@ -860,6 +862,7 @@ jetsam             4  MobileSafari 2, Preferences 1, nfcd 1
 crashes            3  chronod 2, Preferences 1
 stuck-idle         3  profiled 2, coreauthd 1
 encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation [-12782] 2, -16993 1
+audio              6  started 0, webcam 1, failed at 1, failed 1, status 1, not ready 2; audiomxd 6; failures: RoutingSettings_N71.cpp:1196 1, webcamRecordingDSPList && "Need valid DSPConfig for webcam recording" 1
 ```
 
 - **The head:** the source (for an image with its volume, as the other commands name it), the boot (`boot UUID`,
@@ -869,7 +872,9 @@ encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_Unsup
   L s (PROCESS), N over 1 s`; the processes, the largest count first (`NAME COUNT`; for hangs `NAME COUNT (T s,
   longest L s, N over 1 s)`; beyond `--top N`, default 5: `and N more with COUNT`); and for a kind filed by the
   process that logged the line, when its lines name something: `named:`, `services:` or `errors:` and those names.
-  A kind with no line is `NAME 0`. The lines are not indented; everything else below the head is.
+  A kind whose texts are steps of one thing (`audio`) gives each text's count first (`started 0, webcam 1, ...`), so
+  that a step that never came shows as 0. A kind with no line is `NAME 0` (with those counts for such a kind). The lines are not indented;
+  everything else below the head is.
 - **`--detail`** adds, indented under each kind: `counts:` what the kind means; `first T, last T`; `texts:` each
   text's count (for a kind of several texts filed by the logger also who logged it: `extension 3 (chronod 3)`);
   `by process:` every process; the names; `logged by:` for the kernel's kinds; and `e.g.` example lines
@@ -906,9 +911,10 @@ The kinds are one table, `KINDS` in `crates/oneios-ioslog/src/health.rs`:
 | `crashes` | the kernel's `NAME[PID] Corpse allowed N of 5` (`corpse`), `NAME[PID] Corpse failure, too many` (`too many corpses`) | the process the line names | |
 | `stuck-idle` | `timed out stuck process` (`memorystatus_perform_idle_demotion() timed out stuck process PID [NAME], moving to idle band`) | the process the line names | |
 | `encode-fail` | `CMPhotoCompressionSessionAddImage ... err =` | the process that logged the line | `errors:` what follows `err =`: a name of up to three words with its number (`kCMBaseObjectError_UnsupportedOperation [-12782]`, `unknown error [-12900]`), else one word (`-16993`). Until 2026-11-22 a name of more words was cut to its first (`unknown`) |
+| `audio` | VirtualAudio's start in audiomxd (2026-11-23: no sound, volume or haptics in the v0.1.16 boot): `Ending Deferred Initialization` (`started`; 0: VirtualAudio never started), `Creating subport config for webcam recording` (`webcam`: made only when AVFCapture's AVGestalt answers its webcam key, `docs/hardware.md` 7), `FILE:LINE  PRECONDITION FAILURE` (`failed at`), `Precondition failure: TEXT` (`failed`), `VA Init Status: N` with N not 0 (`status`), `VirtualAudio PlugIn is not initialized yet` (`not ready`: each call refused after a failed start) | the process that logged the line (audiomxd) | `failures:` the file and line of a failed precondition and its text; the line gives each text's count (`texts_in_line`) |
 
 **To add a kind, add a row** (name, what it means, the texts, `By::Logger` or `By::Named`, what the names are, the
-expressions that find a name, the "over" limit) and its lines to `tests/ioslog/health.txt` with their numbers in
+expressions that find a name, the "over" limit, whether the line gives each text's count) and its lines to `tests/ioslog/health.txt` with their numbers in
 `health_tests.rs`: the counter, the report, `cycle` and `summary.md` take the table as it is. A text may hold the
 named groups `s` (a number of seconds: the kind then gets a total, a longest and an "over" count) and `who` (the
 process, extension or service the line names).
@@ -947,7 +953,7 @@ new). The stand-in suites, `tests/phone/modes.sh` (with origin/main at `fb4ec88`
 ok, no stand-in session left. The ten new phone checks: `pull-data --ioslog` on the stand-in's `data.img`, which
 is no APFS store (it ends at `ioslog boots`, the copy stays, no `ioslog-health.txt`); `ioslog health` without
 SOURCE (the stage's own `data.img` is the one read; a stage without a store is refused by name; on a stage whose
-`data.img` is the hand-written log: the head and seven lines, the counts per kind and process, nothing on stderr;
+`data.img` is the hand-written log: the head and eight lines (seven before `audio`, 2026-11-23), the counts per kind and process, nothing on stderr;
 `--top 1 -o FILE`); beside a stand-in session (it reads, and says on stderr that the store is being written; a pid
 file of a process that is gone is no session). The five new cycle checks: `cycle --only collect` in a folder that
 holds the hand-written log as `ioslog.txt` (the head and seven lines printed; `ioslog-health.txt` with the
@@ -1637,7 +1643,7 @@ all where this kernel's symbols land.
 
 | Address | From | Rule |
 |---|---|---|
-| in the collection | `panic(cpu N caller 0x...)`, the `frame 0x...` lines (`hosted_panic` prints them `- vm_kernel_slide`) | the fileset's `LC_FILESET_ENTRY` members and each member's `LC_SEGMENT_64`s are read; the smallest segment that holds the address gives member and segment (every kext lists the shared `__LINKEDIT`: the first member has it) |
+| in the collection | `panic(cpu N caller 0x...)` (also a head whose first letters the console lost: `anic(cpu 0 caller 0x...)`, the phone's panic of 2026-11-23; `oneios_common::panic_head` takes `anic`, `nic`, `ic`, `c` or none before `(cpu N caller 0x` at the start of a guest line, and `panic(cpu ` anywhere. `log summary`, `log timeline`, `phone log --panic` and the cycle's panic marker use the same rule), the `frame 0x...` lines (`hosted_panic` prints them `- vm_kernel_slide`) | the fileset's `LC_FILESET_ENTRY` members and each member's `LC_SEGMENT_64`s are read; the smallest segment that holds the address gives member and segment (every kext lists the shared `__LINKEDIT`: the first member has it) |
 | in `com.apple.kernel` | the same | **xnu.macho address = address - (the segment's vmaddr in the collection - the same segment's vmaddr in xnu.macho), per segment.** The prelink places each segment on its own: here `__TEXT` moves by `0x180000`, `__DATA_CONST` by `0xc24000`, `__TEXT_EXEC` and `__KLD` by `0x386c000`, `__DATA` by `0x3a28000` (`sym kernel index` prints all ten). A symbol moves with the segment of its section (`n_sect`), not of its address: an end label sits on the next segment's first address, and `__LAST` has no size |
 | of the running kernel (the "physical aperture") | the fault's `pc` and `lr`, in the panic's text and in its register dump | **collection address = running address - slide** (modulo 2^64), **slide = RAM - link base**. xnuhost maps the guest's RAM once, at `0x2000000000 + (link base mod 2 MiB)` (`runtime/xnuhost/src/mem.rs`, retried 16 GiB higher), copies every segment of the collection to `RAM + (vmaddr - link base)` (`runtime/loader/src/boot.rs`; link base = the lowest vmaddr of the collection's own segments, `macho.rs`) and runs it there with physical = virtual (`docs/booter.md` 2.2). The log has all three numbers: `kernel: ... link base 0xfffffff007004000` and `memory: N MiB at 0x2000004000, physical = virtual (slide 0x2ff9000000)`. So `pc 0x200454c094` is `0xfffffff00b54c094`, the panic's first `frame` line, and `lr 0x2003ff1038` is `0xfffffff00aff1038`, `0x7138` bytes after the `tcp_input` frame. `--slide HEX` gives the slide for addresses by hand or a log cut before its `memory:` line; the tool warns when the log's slide is not RAM - link base or its link base is not this collection's |
 | anything else | | said in the line (`not in the collection (A to B); as an address of the running kernel (slide S) it is X: not in it either`), never dropped |
@@ -1899,6 +1905,8 @@ oneios-tool phone log --list                  # the logs by name, with sizes
 oneios-tool phone sums                        # sha256 of the staged kernel.kc, its hash list, manifest.json, data.seed's line, xnuhost.conf, the runtime
 oneios-tool phone image-check                 # the staged manifest.json against the staged files (image.sha256), as xnuhost will (read only)
 oneios-tool phone manifest DIR [--out FILE] [--stage]   # the phone's manifest.json with DIR's files' entries set to theirs
+oneios-tool phone addon FILE [--cdhashes LIST]   # a boot addon (ios addon) as image/kernel.kc.gpuaddon, owner-trust.json plus its CDHashes, a manifest
+oneios-tool phone addon --remove              # no boot addon at the next boot (owner-trust.json is left as it is)
 oneios-tool phone switch [--version-code N]   # busybox setsid sh oneios_root.sh switch <the installed app's versionCode> 1
 oneios-tool phone return [--timeout 180] [--note TEXT]   # session/return.request, then waits for "One UI restored"
 # only during a session (refused without one; "The session's own commands" below):
@@ -1993,7 +2001,13 @@ What each does:
   files set to their SHA-256 and size. Every other entry must already list the staged file, and a file of DIR
   that the manifest does not list is refused. Printed, `--out FILE`, or `--stage`: DIR's files and the manifest
   staged together, then `image-check`. Run on the phone: the manifest it replaced by hand that night (21 entries,
-  all equal to `image.sha256`).
+  all equal to `image.sha256`). The kernel's boot addon `kernel.kc.gpuaddon` is the one file DIR may hold that the
+  manifest does not list (xnuhost reads a sidecar beside the kernel itself): it is staged new, its lines added.
+- `addon FILE` (2026-11-23, hosted 0090): `ios addon`'s sidecar staged as `image/kernel.kc.gpuaddon` with the phone's
+  `overlay/userland/owner-trust.json` plus the CDHashes of `FILE.cdhashes` (`--cdhashes LIST`; sorted, each once, every
+  other key kept) and a manifest for both, through `manifest --stage`. Refused: a file that is not NGPUADD2, one over
+  64 MiB, a set whose manifest lists no owner-trust.json. `--remove` deletes the sidecar and its lines. Tested on the
+  stand-in phone (`tests/phone/run.sh`, "phone addon"); not run on the phone yet.
 - `switch` reads the versionCode from `dumpsys package com.fahadali.oneos` (not a fixed 115; `--version-code`
   for a phone without the app). A refusal of the preflight (`@@REFUSED ...`) is printed and is exit status 1. If
   `setsid` lets adb go before the script answers, the new `epoch` line of `switch.log` is the proof it started.

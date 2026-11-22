@@ -197,7 +197,7 @@ pub fn report(log: &Log) -> String {
                         if first("launchd") {
                             row(r, format!("launchd's first line: {}", short(t, 100)));
                         }
-                    } else if t.starts_with("panic(") {
+                    } else if t.starts_with("panic(") || oneios_common::panic_head(t).is_some() {
                         row(r, format!("PANIC: {}", short(t, 160)));
                     } else if let Some(rest) = t.strip_prefix("sheng-exc: ") {
                         if rest.contains("] exception ") {

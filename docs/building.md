@@ -697,6 +697,8 @@ $T phone stage image DIR           # kernel.kc, kernel.kc.hashes, manifest.json,
 $T phone sums                      # the staged files' sha256
 $T phone image-check               # the staged manifest.json lists the staged files (switch checks it first)
 $T phone manifest DIR --stage      # DIR's files (a new kernel.kc, kernel.kc.hashes) with the phone's manifest, their entries new
+$T phone addon out/userland/camera/H9ISP.gpuaddon   # a rebuilt plug-in without a new seed (hosted 0090): the sidecar, its CDHashes in owner-trust.json
+$T phone addon --remove            # the sidecar away again (the kernel's unions go back to the Data seed's folders)
 $T phone switch                    # oneios_root.sh switch <the installed app's versionCode> 1
 $T phone log --follow --markers    # kernel, launchd, backboardd, SpringBoard, the first frame, a panic, as they come
                                    #   (right after a switch it waits for this session's log: the switch replaces it ~40 s in)
@@ -759,7 +761,7 @@ $T cycle --only return,collect --name NAME                 # end a session that 
 | `watch` | Reads `session/xnuhost.log`'s new lines every 2 s, and after a switch only once the file changed at or after the phone's second of the switch (until the switch replaces it, about 40 s in, it is the last session's: its first-frame line made the watch say "ready after 0 s", 2026-11-12) and prints each marker once with its time: xnuhost, kernel, darwin, bsd-root, init, launchd, backboardd, SpringBoard, ready (the first frame), PANIC, end. On a panic, when the session ends by itself, or after `--ready-timeout` (300 s) without the first frame: straight to the return, and the cycle's status is 1 |
 | `hold` | `--hold S` seconds, else until Ctrl-C. Ctrl-C returns, unless `--stay`, which leaves the session open (end it with `phone return` or `cycle --only return,collect`). A panic or the session's own end during the hold returns |
 | `return` | `session/return.request`, then waits (180 s) for `One UI restored` in what `return.log` gained |
-| `collect` | `out/session-logs/DATE/NAME/`: `xnuhost.log`, the last 2000 lines of `switch.log` and `return.log`, `return.outcome`, `sums.txt`, and `summary.md` (versions, hashes, each step's time and result, the markers with their times, the panics, the way back). `--pull-data` adds the Data store's copy and `ioslog` (boots, checks, health). **`ioslog-health.txt`** (iOS's own counts of the last boot: hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions, encode failures; `oneios-tool ioslog health`, section 10) is written from the folder's `data.img` (this run's `--pull-data`, or an earlier run's of the same `--name`), else from an `ioslog.txt` in the folder (iOS's log as text, `ioslog show ... -o`); its head and one line per kind are printed and go into `summary.md`; a folder with neither gets a line that says so. The summary's result line names every step its Steps table has as failed (`every step that ran ended well` only when none did), and a failed `collect` ends the cycle with status 1. A run that did not watch (`--only return,collect` after `--only stage,switch,watch` with the same `--name`) reads the markers from the saved `xnuhost.log` (this folder's copy, else the phone's `session/xnuhost.log`) and says so |
+| `collect` | `out/session-logs/DATE/NAME/`: `xnuhost.log`, the last 2000 lines of `switch.log` and `return.log`, `return.outcome`, `sums.txt`, and `summary.md` (versions, hashes, each step's time and result, the markers with their times, the panics, the way back). `--pull-data` adds the Data store's copy and `ioslog` (boots, checks, health). **`ioslog-health.txt`** (iOS's own counts of the last boot: hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions, encode failures, VirtualAudio's start; `oneios-tool ioslog health`, section 10) is written from the folder's `data.img` (this run's `--pull-data`, or an earlier run's of the same `--name`), else from an `ioslog.txt` in the folder (iOS's log as text, `ioslog show ... -o`); its head and one line per kind are printed and go into `summary.md`; a folder with neither gets a line that says so. The summary's result line names every step its Steps table has as failed (`every step that ran ended well` only when none did), and a failed `collect` ends the cycle with status 1. A run that did not watch (`--only return,collect` after `--only stage,switch,watch` with the same `--name`) reads the markers from the saved `xnuhost.log` (this folder's copy, else the phone's `session/xnuhost.log`) and says so |
 
 A cycle takes one phone lock (`out/phone.lock` of the main checkout, also from a worktree) and refuses when
 another cycle holds it. That lock is this tool's own: **the coordinator's `phone-lock.sh` is still the lock between
@@ -787,6 +789,10 @@ restore the baseline (`phone-baseline.txt` next to that script) before you relea
    `oneios-tool phone manifest DIR --stage` makes it from the phone's and stages both; `phone image-check` checks. Never stage `data.seed` from the Mac's
    `out/image/24A446`: it differs from the phone's, and a new seed makes the Data store start over.
    `runtime-asis DIR` puts back a backed-up stage whose files were replaced by hand.
+   A rebuilt capture or Metal plug-in reaches the phone's Data store without a new seed as the boot addon (hosted 0090):
+   `oneios-tool ios addon OUT --camera out/userland/camera [--metal out/userland/NativeAdrenoMetal.bundle]`, then
+   `oneios-tool phone addon OUT` (the sidecar `image/kernel.kc.gpuaddon`, its CDHashes into `owner-trust.json`, a
+   manifest); the kernel writes it into the Data store at the next boot. `phone addon --remove` takes it away.
 2. **Start** (the app's own path, the same preflight and the tick):
 
    ```sh
@@ -886,12 +892,12 @@ kernel config, KGSL, panel, touch, haptics, battery, Bluetooth HAL kind, SELinux
 tools/probe/s25-probe.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/s25-probe.sh'`; it prints the
 path of `oneios-s25-probe-<time>.tar.gz`. What each file decides: [s25.md](s25.md).
 
-**Galaxy S25 Ultra, S25, A56:** `scripts/port/verify-host.sh` is the read-only gate before any of the above on a
+**Galaxy S25 Ultra, S25, S26 Ultra, A56:** `scripts/port/verify-host.sh` is the read-only gate before any of the above on a
 phone other than the S24 Ultra (root, One UI running): it accepts `SM-S928`/`e3q`/`SM8650` (S24 Ultra),
-`SM-S938`/`pa3q`/`SM8750` (S25 Ultra), `SM-S931`/`pa1q`/`SM8750` (S25) and `SM-A566`/`a56x`/`s5e8855` (A56), the
+`SM-S938`/`pa3q`/`SM8750` (S25 Ultra), `SM-S931`/`pa1q`/`SM8750` (S25), `SM-S948`/`m3q`/`SM8850` (S26 Ultra, since 2026-11-23: [s26.md](s26.md)) and `SM-A566`/`a56x`/`s5e8855` (A56), the
 model, codename and SoC as one row (an S24 model on an SM8750 is refused), prints the KGSL chip id (the A56: its amdgpu
 render node, 2D only in this tree) and udmabuf limits, and exits 2 otherwise. Host test against stand-in phones:
-`sh scripts/port/test-verify-host.sh` (10 cases; part `port` of `runtime/host-tests.sh`).
+`sh scripts/port/test-verify-host.sh` (17 cases; part `port` of `runtime/host-tests.sh`).
 `adb push scripts/port/verify-host.sh /data/local/tmp/` then `adb shell su -c 'sh /data/local/tmp/verify-host.sh'`.
 The Ultra's host record is `profiles/host-galaxy-s25-ultra-sm8750.toml`; its bring-up deltas (Adreno 830 fence
 default, `virgl_fence_table_init`) are in [s25.md](s25.md), "Galaxy S25 Ultra". While a session runs, the guest's
@@ -927,7 +933,7 @@ git -C app switch oneios                   # to work on the fork in app/: a bran
 
 `--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
 `app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). Recorded now: `726b66a` (2026-11-23: fork `oneios` with `0cd45ad`, the boot screen's bar, and `2ef79b6`, CI signs with the shared key, merged into the upstream merge; the merged tree's Gradle tests on the build laptop: 701, 0 failures) on `6abbf5b` (2026-11-22: upstream OneOS 0.5.32 to 0.5.35 merged, `925a978`, version 0.5.65 (194); the core:root tests take `head -c 0` on a Mac; before it `43fc1b3`: upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
+app`). Recorded now: `ff2e4a6` (2026-11-23: fork branch `sm8850-support` on `5568231`, for `oneios`: the tribalfs packages from their three GitHub Packages registries with the environment's token first, JitPack never asked for them (YMGPwcca/OneOS `ab28274`, `590b4a6`); an early return writes the shmem THP mode back too, which the switch now writes only under its stop lock (part of their `403d8b4`); the Galaxy S26 Ultra warned with what is known, not refused (their refusal not taken: `docs/s26.md`); Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 706, 0 failures) on `5568231` (2026-11-23: fork branch `s928w-support` on `726b66a`, for `oneios`: every S24 Ultra model number, the Canadian SM-S928W with its US bootloader and vendor model too, gets the SM-S928B's iOS 27 card, gate and switch, host-tested in `OneiosTest`, `ProfilesTest` and `OneiosScriptTest`; Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 703, 0 failures) on `726b66a` (2026-11-23: fork `oneios` with `0cd45ad`, the boot screen's bar, and `2ef79b6`, CI signs with the shared key, merged into the upstream merge; the merged tree's Gradle tests on the build laptop: 701, 0 failures) on `6abbf5b` (2026-11-22: upstream OneOS 0.5.32 to 0.5.35 merged, `925a978`, version 0.5.65 (194); the core:root tests take `head -c 0` on a Mac; before it `43fc1b3`: upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
 the pairing files without Python, kb format 2, 2026-11-22; the shared debug key; a quick status that names its steps and stops after 20 s without root, the setup steps on iOS 27's page, clearer runtime and image choices, live hardware-check output; a check blocked by another job waits visibly). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
 --remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
 `git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
@@ -1245,7 +1251,8 @@ oneios-tool ioslog show data.img --boot last --proc backboardd      # text; -f c
                                                                     #   guest's clock (--library-times: the decoder's, 52x slow at 19.2 MHz)
 oneios-tool ioslog checks data.img                                  # counts of the known problems' lines, last boot
 oneios-tool ioslog health data.img [--detail] [-o FILE]             # the last boot's hangs, watchdog kills, XPC timeouts, jetsam
-                                                                    #   kills, crashes, stuck idle demotions, encode failures:
+                                                                    #   kills, crashes, stuck idle demotions, encode failures,
+                                                                    #   VirtualAudio's start (audio):
                                                                     #   one line per kind (count, total, longest, top processes)
 oneios-tool ioslog health                                           # on the phone itself, as root: the staged data/data.img
 oneios-tool ioslog keyboard data.img [--detail] [-o FILE]           # the keyboard's path: key taps by app (downs, ups), hangs,
@@ -1258,7 +1265,9 @@ oneios-tool image apfs-checkpoints data.img                         # the store'
 `ioslog health` gives the numbers that tell lag and heat apart, the same way for every session (the owner's request,
 2026-11-15): HangTracer's `Hang detected: N s` per process (count, total seconds, the longest, how many over 1 s),
 watchdog kills, XPC timeouts per client and service, the kernel's jetsam kills, crashes (the kernel's corpse lines),
-memorystatus' `timed out stuck process`, and `CMPhotoCompressionSessionAddImage ... err =`. A count is a number of
+memorystatus' `timed out stuck process`, `CMPhotoCompressionSessionAddImage ... err =`, and (since 2026-11-23) VirtualAudio's
+start in audiomxd: `started` (`Ending Deferred Initialization`; 0 means no sound, volume or haptics all session), its
+webcam subport, the precondition that failed (file:line and text), `VA Init Status` and the calls refused after it. A count is a number of
 log lines. `cycle`'s `collect` and `phone pull-data --ioslog` write the report with its details to
 `ioslog-health.txt` and print its lines (section 6). The kinds are one table in
 `tools/oneios-tool/crates/oneios-ioslog/src/health.rs` (`KINDS`): a new kind is a new row. The command, its output,
@@ -1285,7 +1294,7 @@ oneios-tool log summary xnuhost.log --last 60       # the rows of the boot's las
 oneios-tool log timeline xnuhost.log                # the same stages among every milestone, in the log's order
 ```
 
-A kernel panic of a session (`panic(cpu N caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in
+A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in
 the `kernel.kc` that ran and the `xnu.macho` it was prelinked from: member and segment, function + offset,
 file:line and inlined frames. The first call for a pair of files builds an index under `out/ksym-index/` (2 to 9 s);
 later calls take milliseconds:

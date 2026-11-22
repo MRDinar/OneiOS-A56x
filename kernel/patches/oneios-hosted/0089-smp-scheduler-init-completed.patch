@@ -1,0 +1,154 @@
+diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
+--- a/osfmk/arm64/hosted/hosted_smp.c
++++ b/osfmk/arm64/hosted/hosted_smp.c
+@@ -237,5 +237,93 @@
+ 	/* an SMP kernel has one processor set: nothing to spill to */
+ }
+ #endif /* CONFIG_SCHED_EDGE */
++
++/*
++ * 0089 (fix-hosted-smp-scheduler-init, 2026-11-23): the scheduler's completion step, ml_cpu_init_completed.
++ *
++ * XNU calls it once every CPU has been registered (ml_processor_register) and booted (processor_boot): it is
++ * sched_cpu_init_completed, which runs the scheduler's cpu_init_completed (the Edge scheduler's default edges between
++ * clusters, each pset's max_parallel_cores and max_parallel_clusters, the P and non-P core maps), rt_init_completed
++ * (the realtime spill rules), waits for every CPU to be running, starts the sched_update_powered_cores thread and
++ * sets pcs_init_completed. Its only arm64 caller is AppleARMSMP (iokit/Kernel/arm/AppleARMSMP.cpp, under
++ * USE_APPLEARMSMP), which this board (BCM2837's board config) does not build: UniXNU's ArmCpu registers each vCPU, and
++ * ml_processor_register boots it (its !USE_APPLEARMSMP branch). ArmCpu calls ml_cpu_init_completed itself only with
++ * its boot-arg armcpu-edge=1, which nothing sets. So the step never ran: pcs_init_completed stayed false all session,
++ * the edges were never set (0085's E -> P spill, which needs them, printed "not all CPUs are up yet" from
++ * oneios_board_late_start and then, called from the end of sched_cpu_init_completed, nothing at all; the 2026-11-23
++ * 02:16 phone boot), and the E vCPUs were 0% idle while the P vCPUs were 50-98% idle.
++ *
++ * Here: ml_processor_register counts the boots (hosted_cpu_booted), and the last of the topology's CPUs starts a
++ * kernel thread that calls ml_cpu_init_completed, as AppleARMSMP does after its processor_boot loop. A thread, not the
++ * caller: the caller is ArmCpu's start, which after ml_processor_register still sets the IOCPU's number and state, and
++ * the step waits for every vCPU to reach processor_up (up to cpu_boot_timeout_secs each, 10 s on this kernel, 0089's
++ * processor.c hunk). Exactly once: hosted_cpu_init_completed_first lets the first call through and turns any later
++ * one (ArmCpu's, with armcpu-edge=1) into one log line. oneios-smp-complete=0 is the old way (the step never runs).
++ * Lines: `oneios-smp: all N CPUs booted: ml_cpu_init_completed (the scheduler's completion step) ...`, then 0085's
++ * `oneios-edge: ...`.
++ */
++#include <kern/clock.h>
++#include <kern/machine.h>
++#include <mach/machine.h>
++#include <kern/thread.h>
++
++static TUNABLE(uint32_t, hosted_smp_complete, "oneios-smp-complete", 1);
++static uint32_t hosted_cpus_booted;
++static bool hosted_cpu_init_completed_done;
++
++bool hosted_cpu_init_completed_first(void);
++void hosted_cpu_booted(processor_t processor);
++
++bool
++hosted_cpu_init_completed_first(void)
++{
++	if (os_atomic_cmpxchg(&hosted_cpu_init_completed_done, false, true, relaxed)) {
++		return true;
++	}
++	printf("oneios-smp: ml_cpu_init_completed called again (ArmCpu's armcpu-edge=1?): the scheduler's completion step "
++	    "has run once already, nothing done\n");
++	return false;
++}
+ 
++static void
++hosted_cpu_init_completed_thread(void *param __unused, wait_result_t wr __unused)
++{
++	uint64_t t0 = mach_absolute_time(), ns = 0;
++
++	ml_cpu_init_completed();
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	printf("oneios-smp: the scheduler's completion step done in %llu ms (every CPU running; pcs_init_completed %d)\n",
++	    ns / NSEC_PER_MSEC, sched_is_cpu_init_completed());
++}
++
++void
++hosted_cpu_booted(processor_t processor)
++{
++	const uint32_t n = ml_get_topology_info()->num_cpus;
++	const uint32_t booted = os_atomic_inc(&hosted_cpus_booted, relaxed);
++	thread_t thread = THREAD_NULL;
++
++	if (booted != n) {
++		return;
++	}
++	if (hosted_smp_complete == 0) {
++		printf("oneios-smp: all %u CPUs booted; ml_cpu_init_completed not called (oneios-smp-complete=0, the old way: "
++		    "no Edge defaults, no E -> P spill)\n", n);
++		return;
++	}
++	if ((uint32_t)machine_info.logical_cpu_max != n) {
++		/* sched_cpu_init_completed asserts that every one of logical_cpu_max CPUs is online */
++		printf("oneios-smp: all %u CPUs booted but logical_cpu_max is %d: ml_cpu_init_completed not called\n",
++		    n, machine_info.logical_cpu_max);
++		return;
++	}
++	printf("oneios-smp: all %u CPUs booted (the last cpu %d): ml_cpu_init_completed (the scheduler's completion step) "
++	    "on its own thread\n", n, processor->cpu_id);
++	if (kernel_thread_start_priority(hosted_cpu_init_completed_thread, NULL, MAXPRI_KERNEL, &thread) != KERN_SUCCESS) {
++		panic("oneios-smp: no thread for ml_cpu_init_completed");
++	}
++	thread_set_thread_name(thread, "oneios_cpu_init_completed");
++	thread_deallocate(thread);
++}
++
+ #endif /* XNU_HOSTED */
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -772,6 +772,16 @@
+ void
+ ml_cpu_init_completed(void)
+ {
++#if XNU_HOSTED
++	/*
++	 * 0089: the hosted board calls this once, from hosted_cpu_booted (hosted_smp.c). A second call (ArmCpu's own, with
++	 * its boot-arg armcpu-edge=1) returns here instead of the scheduler's "sched_cpu_init_completed called twice" panic.
++	 */
++	extern bool hosted_cpu_init_completed_first(void);
++	if (!hosted_cpu_init_completed_first()) {
++		return;
++	}
++#endif /* XNU_HOSTED */
+ 	sched_cpu_init_completed();
+ }
+ 
+@@ -1803,6 +1813,14 @@
+ 	 * subsequent registerInterrupt operations and unblock the other cores.
+ 	 */
+ 	processor_boot(processor);
++#if XNU_HOSTED
++	/*
++	 * 0089: on this board nothing else calls ml_cpu_init_completed (only AppleARMSMP does, after its own
++	 * processor_boot loop): count the boots here, and the last one starts the scheduler's completion step.
++	 */
++	extern void hosted_cpu_booted(processor_t processor);
++	hosted_cpu_booted(processor);
++#endif /* XNU_HOSTED */
+ #endif /* !USE_APPLEARMSMP */
+ 
+ 	return KERN_SUCCESS;
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -1027,8 +1027,18 @@
+ /*
+  * Now that we're enforcing all CPUs actually boot, we may need a way to
+  * relax the timeout.
++ */
++#if XNU_HOSTED
++/*
++ * 0089: 10 seconds. A vCPU is a host thread that xnuhost makes at PSCI CPU_ON and One UI's scheduler runs beside its
++ * own load (under qemu-user on the PC, an emulated one). Since 0089 the scheduler's completion step waits here for
++ * every vCPU at boot (check_all_cpus_are_done_starting) and panics on a timeout, as on an iPhone; a hardware core's
++ * 1 second is a host thread's bad moment. The boot-arg still sets it.
+  */
++TUNABLE(uint32_t, cpu_boot_timeout_secs, "cpu_boot_timeout_secs", 10);
++#else /* !XNU_HOSTED */
+ TUNABLE(uint32_t, cpu_boot_timeout_secs, "cpu_boot_timeout_secs", 1); /* seconds, default to 1 second */
++#endif /* XNU_HOSTED */
+ 
+ static const char *
+     processor_start_panic_strings[] = {

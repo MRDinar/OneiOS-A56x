@@ -64,7 +64,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | --- | --- | --- |
 | `--image DIR` | required | the image set (`docs/image-format.md`) |
 | `--kernel FILE` | `DIR/kernel.kc`, else `DIR/kernel.macho` | the kernel collection: `MH_FILESET`, or an `MH_EXECUTE` kernel |
-| `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
+| `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks. `.gpuaddon` is the boot addon the kernel writes into the Data store: the Metal plug-in (`addons/`) and, since hosted 0090, the capture plug-in (`camera/`); `oneios-tool ios addon` makes it, `phone addon` stages it (the manifest need not list it) |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2; [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
 | `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `boot-args-add`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
@@ -92,6 +92,8 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--hw-backend samsung\|treble` (`hw-backend=`, also in `xnuhost.conf`) | `samsung` (or the host phone's entry's, [hardware.md](hardware.md) 7h; none sets one yet) | which form of the phone's hardware every bridge uses: today's Samsung paths, or the vendor-neutral Treble interfaces (AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths). One line per bridge says which and why (`hw: battery: backend treble (hw-backend=treble)`). [hardware.md](hardware.md) 7e has the audit table |
 | `--hw-backend-BRIDGE samsung\|treble` (`hw-backend-backlight=`, `-battery`, `-thermal`, `-haptics`, `-touch`, `-keys`, `-audio`, `-camera`, `-wifi`, `-bluetooth`, `-display`) | unset (`hw-backend`'s) | one bridge's backend, over `hw-backend`; an unknown bridge name is refused |
 | `--hw-backend-fallback 0\|1` (`hw-backend-fallback=`) | 0 | a treble bridge whose interface is missing: 0 the bridge stays off, 1 it uses its samsung form; either way one line says what was missing |
+| `--set camera-vm=hide\|show` (`camera-vm=`, also in `xnuhost.conf`; 2026-11-23) | `hide` | `hide`: when the camera helper lists a camera, xnuhost adds `cameracaptured` to the first `owner-hide-vmm=` word of the boot arguments (or makes the word), so the kernel answers `kern.hv_vmm_present` 0 to cameracaptured alone: 24A446's CMCapture drops every back stream in a VM ([hardware.md](hardware.md) 7). One line: `camera: cameracaptured is not told of the VM (owner-hide-vmm gets it\|has it): ...`; an error line when the boot arguments or the kernel's 127 characters for the list have no room. `show`: cameracaptured sees the VM (the back cameras dropped), as before 2026-11-23 |
+| `--set camera-model=NAME` (`camera-model=`, also in `xnuhost.conf`; 2026-11-23) | `OneiOSAP` | `/product unique-model` when the camera helper lists a camera (MobileGestalt's `HWModelDescriptionForCamera`; CMCapture's per-model folder is NAME less "AP"). 3-15 letters and digits ending in "AP", else refused. `OneiOSAP` is in no table of AVFCapture's AVGestalt, so VirtualAudio starts, and hosted 0088 shows `CMCapture.framework/OneiOS` as a link to the sealed `V54`; `V54AP` (the iPhone's, the name from 2026-11-22) makes VirtualAudio's webcam subport stop all audio, for an A/B boot only ([hardware.md](hardware.md) 7, "The model name stopped all audio"). A change makes MobileGestalt's cache again once (the identity, hosted 0084). One line: `camera: unique-model NAME (camera-model=): ...` |
 | `--set haptics-native-impacts=0\|1` (`haptics-native-impacts=`, also in `xnuhost.conf`) | unset | iOS's short taps as the vibrator HAL's own presets (TICK, CLICK, HEAVY_CLICK) instead of 20 ms motor starts, both halves with one setting: 1 asks the haptics bridge for them and adds `oneios_native_impacts=1` after the boot arguments (kept whole); refused (exit 2) without `hw-backend-haptics=treble`, with `hw-backend-fallback=1`, with `haptics=off\|sim` or the bridges off, or when the boot arguments say `oneios_native_impacts=` otherwise. 0: off, whatever the environment says. Unset: `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` in xnuhost's environment decides, as before (the OneOS fork passes none). [hardware.md](hardware.md) 5, "Native impacts". Default off on every phone; host-tested only |
 | `--host-device auto\|none\|NAME` (`host-device=`, also in `xnuhost.conf`) | `auto` | the host phone ([hardware.md](hardware.md) 7h): `auto` reads `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (fallbacks: `/sys/devices/soc0/machine`, `/proc/device-tree/compatible`) and takes the matching entry of `runtime/bridges/hw/host_device.rs` (`galaxy-s24-ultra`, `galaxy-s25-ultra`, `galaxy-s25`, `galaxy-s26-ultra`, `galaxy-a56`); `none`: no entry; a name forces that entry; another name is refused (exit 2). The entry's defaults go under the command line and the image set. One line at the start: `host: NAME (...), matched by ro.product.model=...; read: ...; defaults: ...` (or `host: unknown phone (read: ...): today's defaults`) |
 | `--host-props FILE`, `--host-root DIR` (`host-props=`, `host-root=`) | the property area, `/` | a getprop dump read instead of the property area (`[key]: [value]` or `key=value` lines; an unreadable file is refused), and a folder for `/` of the sysfs and proc fallbacks: host tests, or a PC replaying a phone's `adb shell getprop` |
@@ -210,15 +212,18 @@ A port of DarwinBoot with no firmware under it (C until 2026-11-23, now the crat
   **The cameras (2026-11-22, `Machine::cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
   `camera-rear` = 1 when the camera helper lists a back camera (wide, ultra-wide or a telephoto) and `camera-front` = 1
   when it lists the front one (u32, the iPhone18,2's values; no `compatible`, no `device_type`: no driver matches it),
-  an empty `/product/camera`, and without an identity tree `/product unique-model` = `V54AP` (an identity tree's own
-  value stays). What 24A446's libMobileGestalt reads them for: `rear-facing-camera` = isp `camera-rear`,
+  an empty `/product/camera`, and `/product unique-model` = `xl_machine.unique_model` (xnuhost's `camera-model=`,
+  default `XL_CAMERA_MODEL` "OneiOSAP"; NULL: an identity tree's own value, else "OneiOSAP"; "V54AP" from 2026-11-22 to
+  2026-11-23, which stopped all audio: [hardware.md](hardware.md) 7). What 24A446's libMobileGestalt reads them for: `rear-facing-camera` = isp `camera-rear`,
   `front-facing-camera` = isp `camera-front`, `still-camera` (Camera.app's `SBAppTags`; SpringBoard shows the app
   only with it) = either, `video-camera` = `/product/camera` is there, and `HWModelDescriptionForCamera` (also
   `...ForAnalytics`, `...ForAudio`, `...ForPowerPerf`, `...ForAutomatedTesting`: the same answer) = `unique-model`,
-  which CMCapture takes less "AP" as the folder of its per-model tables (`CMCapture.framework/V54/`). xnuhost waits
+  which CMCapture takes less "AP" as the folder of its per-model tables (`CMCapture.framework/OneiOS/`: hosted
+  0088's link to the sealed `V54/`). xnuhost waits
   for the helper's list before it builds the tree, asleep on the bridge's condition variable, at most 3 s (the phone:
   170 ms after the helper's start); `camera: iOS is told of a rear camera and a front camera (3 cameras from the
   helper)`. Without the camera device, or with an empty list, the tree is as before.
+  With a camera listed xnuhost also hides the VM from cameracaptured (`camera-vm=`, the options table).
   **`/chosen oneios-identity` (`machine::identity`, 2026-11-22):** 8 bytes, FNV-1a 64 of what MobileGestalt can
   read that stays the same from boot to boot: the root's own properties, the `/product`, `/arm-io`, `/buttons` and
   `/bluetooth` subtrees, `/chosen`'s own properties and `/chosen/xnuhost`'s `display-*` ones; not `random-seed`,
@@ -816,6 +821,28 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
 - **Spins (`spin-host`, `spin-task`, microseconds, default 0).** Each side may spin before it sleeps. With each thread
   on its own core this halves nothing that pinning does not already remove, and on a shared core it costs the spin
   every time (below), so both are off.
+- **The kick (direct since 2026-11-23, fix-fps-scheduler-migration).** A vCPU that waits in `thread_run` for the iOS
+  thread it released sleeps in the hand-off's futex on that thread's core (`cpu-pin`). When another thread raised its
+  interrupt line (an IPI, a device), `xh_cpu_line` signalled the vCPU's thread (`SIG_KICK`): that thread had to be woken
+  and scheduled on the busy core, ahead of the iOS thread it shares the core with, only to send the iOS thread the kick
+  (`tgkill`, `KICK_SIGNAL`); the iOS thread's handler then handed the trap back. On the phone (2026-11-23 03:28, every
+  vCPU busy after hosted 0089) that was 24,419 kicks in 30 s, mean 136 us, p99 3.7 ms (the `kick` line). Now the raiser
+  kicks the iOS thread itself (`task.c` `xh_tasks_kick`): `thread_run` publishes the released thread (pid, tid) and a
+  word `v->run_word` = release number << 1 before the release, and whoever sets the word's bit 0 first (a raiser, by
+  compare-and-swap, or the vCPU's own loop for its timer) sends the one kick of that release; the vCPU's thread is not
+  woken until the thread's trap comes back. The release numbers are never reused, so a raiser whose word changed under
+  it (the thread came back, another was released) sends nothing and signals the vCPU as before. A kick that lands
+  after its thread came back waits in the stub's handler (it blocks every signal) and is a spurious interrupt trap at
+  that thread's next release, which the kernel takes as an interrupt with nothing pending. A refused `tgkill` puts the
+  bit back and falls back to the vCPU's signal. The `perf:   queue:` line says how many raises kicked directly (`N
+  signalled or woken (M of them by a kick of the iOS thread they wait for, sent by the raiser)`), and the `kick` line
+  now runs from the raiser's kick.
+  Tested (build laptop, 2026-11-23): `runtime/host-tests.sh` (xnuhost tests 14296 checks, 0 failed; check-arm64's test
+  kernel `all passed`, its `test_xcall` 20 of 20 SGIs taken by a vCPU whose thread spins in user code). An A/B of
+  `test_xcall` under qemu-aarch64, old kick (main `44d9c49`) against the direct one, alternated, 3 runs each on a
+  laptop with a load of 14-22 from other jobs: mean 115/104, 591/539, 1617/275 us, slowest 444/337, 2262/3251,
+  4954/1489 us. qemu's times and that load make it a check that nothing got slower, not a measurement of the phone;
+  the phone's is the `kick` line (mean 136 us, p99 3.7 ms before).
 
 **Measured** with the C tree's `make bench-arm64` (today `runtime/xnuhost/check-arm64.sh bench`; the test kernel's loops on vCPU 0, one iOS thread; native arm64 Linux 6.18 in the
 Mac's container, an M4 with 8 CPUs; the counter is 24 MHz, so a tick is 42 ns). Means, p50 in brackets, 40,000 null
@@ -990,7 +1017,14 @@ The E cluster is DroidVMCpufreq's preferred cluster of every class but UI, above
 let nothing move from E to P: until hosted `0085` (2026-11-22) the `perf: cpuN:` lines showed vCPU 0-1 0% idle and
 vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0085` opens the E -> P edges (migration and steal;
 weight 0 to default, 64 utility, 1000 background, us of scheduling latency): on the phone the same lines should show
-vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line.
+vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line. It needs hosted `0089` (2026-11-23): on this board
+nothing called `ml_cpu_init_completed`, so the scheduler's completion step (and 0085 at its end) never ran; 0089 calls it
+once the last vCPU is booted (`oneios-smp:` lines). With the completion step XNU's own rules ran too: an E vCPU
+going idle sent a rebalance IPI to the P vCPU running a spilled thread, and a P vCPU preempted it when the E cluster's
+load was 0, so threads went back and forth on most dispatches (2026-11-23 03:28: `release:` 70,200 moves and `kick`
+24,419 in 30 s, against 14,824 and 931 before 0089). Hosted `0091` keeps a thread that prefers E on the P vCPU it
+spilled to until it blocks or its quantum ends (`oneios-edge-pullback=1` is XNU's way; the kernel's `oneios-perf:
+0091:` line counts what it kept and the scheduler's IPIs by reason, to idle and to busy vCPUs).
 
 **The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
 `sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's
@@ -1290,15 +1324,17 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   scanout in B,G,R,X/A is then `frame {"XHDS", slot, seq low, seq high, 0}`: that slot of the table (4 of them) has
   the frame's offset, stride, size, changed rectangle and its segments as RAM memfd offsets, and the helper copies
   the rows from the guest's pages straight into the layer's buffer. xnuhost copies nothing. The guest's flush is
-  answered when the helper sends `done {"XHDA", seq low, seq high, flags, 0}` after posting the buffer, so the guest
+  answered when the helper sends `done {"XHDA", seq low, seq high, flags, 0}`: once the frame is in the helper's own
+  snapshot, before it posts the buffer (since 2026-11-23; after the post before, `docs/gpu.md` 2.5), so the guest
   does not draw into a surface that is still being read (`virtio_gpu.rs` holds the reply on the fence list, as the
   display's: ctx 0). A helper that does not answer within 100 ms is answered for. One that leaves, or a newer
   helper, has its frames answered at once. `done` flags bit 0 (a frame it could not copy) turns direct frames off
   for that helper. 2D resources, a scanout outside RAM or of another format, and a helper without the flag use the
   memfd copy as before. `display-direct=0` (command line or `xnuhost.conf`) turns direct frames off for xnuhost.
-  Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (posted to in
-  the layer: mean X ms, max Y ms), T not answered within 100 ms, C flushes of xnuhost's own copy`. The segments'
-  offsets are offsets in the RAM memfd, counted from the file's offset 0: the session (`src/session/board.rs`; `main.c` in the C) gives `display::set_ram` the
+  Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (its
+  answer: mean X ms, max Y ms; ...), T not answered within 100 ms, C flushes of xnuhost's own copy` (until 2026-11-23
+  "posted to in the layer: mean X ms", the same measure: the frame sent to the helper's `done`). The segments'
+  offsets are offsets in the RAM memfd, counted from the file's offset 0: the session (`src/session/board.rs`) gives `display::set_ram` the
   address of offset 0 (`fd_phys`, `src/mem.rs`) and the file's length up to the window's end (`head + size`).
   The window starts `head` bytes into the file (16 KiB on the phone, fix-ram-hugepages), so it is not
   `phys`. Until 2026-11-22 the C `main.c` passed `g_mem.phys`: the helper read every page of a frame 16 KiB too
@@ -1528,6 +1564,71 @@ the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is ki
 SESSION/wifi.state` puts them back). With `wifi=tap`, the tap's routing rules and iptables chains stay until
 `oneios-net.sh down` (the tap itself goes with the process).
 
+### 2.9c A host call that does not come back, and a stop the main loop does not see (fix-debugger-crosscall-panic, 2026-11-23)
+
+**The fault.** Two phone boots of v0.1.16 (kernels `776f6c56613a` and `81b85dd4`, 2026-11-23) froze about 6 minutes
+in, the same way. The guest panicked: `panic(cpu 0 caller ...): DebuggerXCallEnter>Debugger synch pending on cpu 1`
+(the second boot: `cpu 1 ... on cpu 2`). A user process took a stackshot (`stack_snapshot_with_config`: spindump,
+ReportCrash), the debugger's cross-call went to every CPU, one vCPU did not answer within `debug-ack` (about 5 s,
+hosted 0017), and a stackshot does not go on without every CPU, so the kernel panicked. The panicking vCPU called
+`halt` and waited in `pause()` (its wchan `sigsuspend`), six vCPUs spun in the debugger's wait loops (690% of 800),
+and xnuhost never exited: the session stayed frozen until the user's chord.
+
+**The cause** (from the logs, `out/session-logs/2026-11-23/boot-0.1.16/` and `boot-edge/`). The vCPU that did not
+answer (wchan `futex_wait_queue`) was not in the hand-off to an iOS thread: it was inside a host call, in the
+virtio-media device's handler. The guest's `VIDIOC_STREAMON` opened an encoder session; `maybe_open_encoder` called
+the helper backend's open on the vCPU, with the device's lock held; `helper_open` started `oneios-encoder` (its
+receive thread is the thread named after the vCPU that waits in `read()` / `unix_stream_read_generic`: the encoder's
+socket is xnuhost's only `SOCK_STREAM` one), sent the OPEN and waited in `pthread_cond_wait` with no limit. The helper
+never answered (MediaCodec's open did not come back in it: why is not known yet; the next boot's `encoder: the
+helper ... (state ..., waiting in ...)` line says where it waits). A vCPU in a host call takes no interrupt, so that
+vCPU stayed deaf for 80-90 s, until the stackshot. Meanwhile xnuhost's main loop reached its 60 s virtio report,
+which took every device's lock in turn and waited for ever in the media device's: its 30 s and 60 s lines (`perf:`,
+`memory:`, `tasks:`, `virtio:`) end at 24391 s in the first boot and 25871 s in the second, 78 s and 92 s before the
+panic. So the main loop never saw the halt's stop either.
+
+**The fixes.**
+
+- The encoder's helper backend never waits for the helper without a limit (`runtime/bridges/encoder/README.md`): the
+  HELLO and each write 1 s, an open's reply 2.5 s (under `debug-ack`). A helper that misses one is killed and the next
+  open starts a new one (twice a session at most; then VideoToolbox keeps its software encoder). The stop kills the
+  helper.
+- `xh_virtio_health` never waits for a device's lock (`pthread_mutex_trylock`): a device held for 2 s or longer by
+  one request is said once per hold, with the vCPU in its handler, and again when it is free: `virtio media#0: held
+  by a request on queue 0 for 78 s (cpu1 in its handler): the guest's next access to the device waits for it` /
+  `virtio media#0: free again: the request that held it ended after N s` (a device thread's `xh_virtio_lock`: `held
+  by a device thread for N s`). One clock read (the vDSO's) per queue notify.
+- **The stop watch** (`main.c`): a thread, started before the vCPUs, waits for `xh_stop`. When the main loop has not
+  left its loop 3 s after the stop, it says `stopping: the main loop did not take the stop (WHY) in 3000 ms: it waits
+  in STEP; the stop path runs from the stop watch` (STEP: the loop's step, e.g. `the virtio report`), logs where each
+  vCPU is (the SIGQUIT lines), and runs the stop path from another thread; only one thread runs it (`end_session`).
+  When the stop path has not ended 60 s after the stop: `stopping: the stop path did not end in 60 s (it is at:
+  STEP): exit N now` and `_exit(N)`. So a guest panic always ends the session with exit 4, its log written, and the
+  fork's way back runs.
+- The halt host call says a panic: `guest panic: the kernel halted on cpu0 (code 0, panic()): ending the session`
+  (codes: 0 `panic()`, 1 a start-up check, 2 a fatal kernel fault, 3 a panic while panicking).
+- The hand-off's kick (section 2.6) was sent once and its result not looked at. A vCPU whose iOS thread is not back
+  200 ms after the kick now sends it again at each futex step while its line is up; a refused `tgkill` (a full queue of
+  real-time signals) is said once (`tasks: the kick of pid N tid T (vCPU K's interrupt) was refused: ...`), and the
+  perf line counts the second kicks (`kicks of iOS threads sent again N (not back 200 ms after the first)`). Not seen
+  in these boots; it keeps a lost kick from leaving a vCPU deaf the same way.
+
+**Tests** (build laptop): `make -C runtime/xnuhost test` (`test_health_held`: a handler that blocks on another
+thread; the report comes back, says `held by a request on queue 0 ... (cpu1 in its handler)` once, and `free again`
+after; and check-arm64's test kernel, `test_xcall`: vCPU 1 hands off to an iOS thread that spins in user code and
+never traps, so it waits in the hand-off's futex as the phone's vCPUs did; vCPU 0 sends it SGI 7 as the debugger's
+cross-call does, 20 times, and each must be taken within 500 ms: `cross-call to a vCPU in the hand-off: taken 0x14 of
+20, slowest (us) 0x...`), `make -C runtime/bridges/encoder test` (`test_hung_helper`: the stand-in's open hangs in the helper process
+(`ONEIOS_ENCODER_STUB_HANG_OPEN`); the open comes back in its limit, the helper is killed, a new one works, after two
+hangs no helper starts). Results on the build laptop, 2026-11-23: `xnuhost tests: 14269 checks, 0 failed`, `TESTKERNEL: all
+passed` under qemu-aarch64 with `cross-call to a vCPU in the hand-off: taken 0x14 of 20, slowest (us) 0x146` (326 us),
+`test_encoder: 218/218 checks passed`, `runtime/host-tests.sh` exit 0, the oneios-tool crates' tests 0 failed. The stop
+watch and the second kick have no host test of their own (a host test that stops
+the process would need a fork of xnuhost's main; not done). **Phone:** the lines to look for in the next boot that
+opens an encoder session are `encoder: helper ... (pid N)`, then either `encoder: session N: HEVC ...` or `encoder:
+the helper (pid N) did not answer an open in 2500 ms (...): killed (1 of 2)`, and never a `virtio media#0: held by`
+line longer than 2-3 s.
+
 ### 2.9a The USB gadget in the log (`src/usb.rs`, 2026-11-13)
 
 xnuhost never opens, writes or binds anything of USB, the USB gadget, configfs, Type-C or power supplies but
@@ -1607,7 +1708,7 @@ before this change.
 | Wi-Fi | `wifi: ...` (each step), guest `ONEIOS WIFI: 60 s: ...` | per event; 60 s | present | present |
 | audio | `audio: on: helper ...`, the helper's `oneios-audio: speaker open/running/closed ...` | per event | present | present |
 | haptics | `haptics: on: ...`; `haptics: counters: ...` at 16, 32, ... effects and at the stop | stop | partial: nothing during a session that ended by a kill | `haptics: 60 s: +N requests (+N vibrate, +N stop, +N impacts), +N played, +N failed` (60 s, when moved) |
-| camera | `camera: helper ...`, `camera: the helper has N cameras`, `camera: iOS is told of ...` (the tree's camera nodes); the helper's counters at its stop | once | start only | unchanged |
+| camera | `camera: helper ...`, `camera: the helper has N cameras`, `camera: iOS is told of ...` (the tree's camera nodes), `camera: cameracaptured is not told of the VM ...`; the helper's counters at its stop | once | start only | unchanged |
 | video encoder | `encoder:` and the helper's lines when iOS uses it | per event | none in these logs (not used) | unchanged |
 | Bluetooth | `bluetooth: on: ...` | once | start only | unchanged |
 | battery | `battery: on: ... read every 3000 ms while iOS listens`; the host's battery in `thermal: 30 s` | once; 30 s | start only | unchanged |

@@ -1,7 +1,7 @@
 //! `ioslog health`: the counts of a boot that tell lag and heat apart, from iOS's own log (the owner's request,
 //! 2026-11-15): HangTracer's hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, memorystatus' stuck idle
-//! demotions and CMPhoto encode failures. One line per kind: its count, where the lines carry seconds their total
-//! and the longest, and the top processes.
+//! demotions, CMPhoto encode failures and (2026-11-23) VirtualAudio's start in audiomxd. One line per kind: its count,
+//! where the lines carry seconds their total and the longest, and the top processes.
 //!
 //! **A count is a number of log lines.** One event may be logged more than once (RunningBoard's exit status is
 //! logged by every process that watches the one that ended), so compare a count with the same count of another
@@ -53,6 +53,9 @@ pub struct Kind {
     pub who: &'static [&'static str],
     /// With `s`: lines over this many seconds are counted apart (0: not).
     pub over: f64,
+    /// The summary line also gives each text's count (`started 0, failed 1, ...`): for a kind whose texts are
+    /// steps of one thing, where a 0 is the news.
+    pub texts_in_line: bool,
 }
 
 /// RunningBoard's name of a process at the start of its lines: `[osservice<com.apple.chronod>:87]`,
@@ -72,6 +75,7 @@ pub const KINDS: &[Kind] = &[
         names: "",
         who: &[],
         over: 1.0,
+        texts_in_line: false,
     },
     Kind {
         name: "watchdog",
@@ -85,6 +89,7 @@ pub const KINDS: &[Kind] = &[
         names: "named",
         who: &[RUNNINGBOARD_NAME, DNS_NAME],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "xpc-timeouts",
@@ -94,6 +99,7 @@ pub const KINDS: &[Kind] = &[
         names: "services",
         who: &[DNS_NAME],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "jetsam",
@@ -103,6 +109,7 @@ pub const KINDS: &[Kind] = &[
         names: "",
         who: &[r"memorystatus: killing\w* (?:pid |process )?\d+ \[(?P<who>[^\]]+)\]"],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "crashes",
@@ -112,6 +119,7 @@ pub const KINDS: &[Kind] = &[
         names: "",
         who: &[r"(?P<who>[^\s\[]+)\[\d+\] Corpse "],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "stuck-idle",
@@ -121,6 +129,7 @@ pub const KINDS: &[Kind] = &[
         names: "",
         who: &[r"stuck process \d+ \[(?P<who>[^\]]+)\]"],
         over: 0.0,
+        texts_in_line: false,
     },
     Kind {
         name: "encode-fail",
@@ -132,6 +141,24 @@ pub const KINDS: &[Kind] = &[
         // `unknown error [-12900]`), else the one word (`-16993`)
         who: &[r"\berr ?= ?(?P<who>[^\s,;)\[]+(?: [^\s,;)\[]+){0,2} \[-?\d+\]|[^\s,;)]+)"],
         over: 0.0,
+        texts_in_line: false,
+    },
+    Kind {
+        name: "audio",
+        what: "VirtualAudio's start in audiomxd (the plug-in of every speaker, microphone and the Actuator's haptics): `started` its `Ending Deferred Initialization` (0 in a boot: no audio device, no sound, no volume, no haptics), `webcam` its `Creating subport config for webcam recording` (made only when AVGestalt answers the webcam key: hardware.md 7), `failed at` and `failed` a Core Audio precondition that failed (the file and line, then its text, as the names), `status` a `VA Init Status` other than 0, `not ready` each call refused with `VirtualAudio PlugIn is not initialized yet`; by the process that logged the line",
+        texts: &[
+            ("started", r"Ending Deferred Initialization"),
+            ("webcam", r"Creating subport config for webcam recording"),
+            ("failed at", r"(?P<who>[A-Za-z0-9_+.-]+\.(?:cpp|mm|h|c):\d+)\s+PRECONDITION FAILURE"),
+            ("failed", r"Precondition failure: (?P<who>[^\n]+?)(?: \(:\d+\))?\.?(?:\n|$)"),
+            ("status", r"VA Init Status: [1-9]"),
+            ("not ready", r"VirtualAudio PlugIn is not initialized yet"),
+        ],
+        by: By::Logger,
+        names: "failures",
+        who: &[],
+        over: 0.0,
+        texts_in_line: true,
     },
 ];
 
@@ -390,6 +417,9 @@ impl Report {
     /// One kind's line: `NAME COUNT  TOTAL, LONGEST, OVER; the top processes; the names in the lines`.
     pub fn line(&self, count: &Count, top: usize) -> String {
         let mut parts = Vec::new();
+        if count.kind.texts_in_line {
+            parts.push(count.kind.texts.iter().zip(&count.texts).map(|((name, _), n)| format!("{name} {n}")).collect::<Vec<_>>().join(", "));
+        }
         if count.all.count > 0 {
             if count.timed() {
                 let over = if count.kind.over > 0.0 { format!(", {} over {} s", count.all.over, plain(count.kind.over)) } else { String::new() };
