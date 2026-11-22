@@ -9,17 +9,21 @@
 //!      delivers the interrupt (kctx.rs) to the upcall, which acks, cancels and EOIs it;
 //!   5. timer_set(now + about 15 ms) and a spin: the timer's signal diverts the loop into the upcall (divert, the
 //!      trampoline) and frame_resume (rt_sigreturn) puts the loop back;
-//!   6. wfi for good (SIGILL, the idle loop).
+//!   6. masked again, step 7 (Rust in kernel context): text_fixup, task_create, thread_create, task_map of a page of
+//!      user code, and thread_run three times: a system call (svc #0x80: seccomp, or text_fixup's mark under qemu),
+//!      a fault on a page not mapped yet (filled by a task_map), a brk; thread_destroy, task_destroy;
+//!   8. wfi for good (SIGILL, the idle loop).
 //!
 //! Prints "machine-smoke: passed" and exits 0, or what failed and exits 1. Times are qemu's under qemu-aarch64.
 
 #[cfg(all(target_arch = "aarch64", any(target_os = "linux", target_os = "android")))]
 mod smoke {
+    use std::ffi::c_void;
     use std::mem::offset_of;
     use std::sync::atomic::{AtomicU64, Ordering::*};
     use std::time::{Duration, Instant};
-    use xnuhost::{cpu, gic, hostcalls, mem, uart};
-    use xnuhost_abi::{XhCpu, XhVector, XH_INTID_VTIMER};
+    use xnuhost::{config, cpu, gic, hostcalls, mem, task, uart};
+    use xnuhost_abi::*;
 
     /// What the kernel and the host share (u64 slots).
     #[repr(C)]
@@ -33,6 +37,99 @@ mod smoke {
         intid: AtomicU64,        // 64: the last acknowledged INTID
         set_upcalls: AtomicU64,  // 72: set_upcalls' result
         vector: AtomicU64,       // 80: the vector, for the upcall
+        tasks: Tasks,            // 88: step 7
+    }
+
+    /// Step 7, the task layer: a task, a thread, a page of user code (a system call, a load from a page not yet mapped,
+    /// a brk), run three times.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Tasks {
+        code_host: AtomicU64, // in: the user code's page in the RAM window (host address = physical address)
+        data_phys: AtomicU64, // in: the page the fault gets
+        fixups: AtomicU64,    // text_fixup's count
+        failed_at: AtomicU64, // 0, or the step + 1 whose host call failed
+        rc: AtomicU64,        // its result
+        kinds: [AtomicU64; 3],
+        svc: AtomicU64,
+        x16: AtomicU64,
+        pc: AtomicU64,
+        far: AtomicU64,
+        access: AtomicU64,
+        x0: AtomicU64,
+    }
+
+    /// The user code: `mov x16, #42; svc #0x80; ldr x0, [x1]; brk #0`.
+    const USER_CODE: [u32; 4] = [0xd280_0550, 0xd400_1001, 0xf940_0020, 0xd420_0000];
+    const USER_VA: u64 = 0x1_0000_0000;
+    const DATA_VA: u64 = 0x2_0000_0000;
+    const PAGE: u64 = 0x4000;
+
+    /// Step 7 in kernel context (the kernel's TPIDR_EL0 and stack): only host calls through the vector, raw loads and
+    /// stores; nothing that panics or touches a thread-local.
+    unsafe extern "C" fn machine_smoke_tasks(shared: *const Shared, vector: *const XhVector, cpu: *mut XhCpu) {
+        // SAFETY: the kernel's arguments: the shared block and the vector, both live for the process.
+        let (t, v) = unsafe { (&(*shared).tasks, &*vector) };
+        macro_rules! call {
+            ($f:ident $(, $a:expr)*) => {
+                // SAFETY: every entry of the vector is set (hostcalls.rs builds it whole).
+                unsafe { (v.$f.unwrap_unchecked())(cpu $(, $a)*) }
+            };
+        }
+        let fail = |step: u64, rc: i64| {
+            t.failed_at.store(step + 1, Release);
+            t.rc.store(rc as u64, Release);
+        };
+        t.fixups.store(u64::from(call!(text_fixup, t.code_host.load(Relaxed) as *mut c_void, PAGE)), Relaxed);
+        let (mut task, mut thread) = (0u64, 0u64);
+        let rc = call!(task_create, &mut task);
+        if rc != 0 {
+            return fail(0, rc);
+        }
+        let rc = call!(thread_create, task, &mut thread);
+        if rc != 0 {
+            return fail(1, rc);
+        }
+        let rc = call!(task_map, task, USER_VA, PAGE, XH_PROT_READ | XH_PROT_EXEC, t.code_host.load(Relaxed));
+        if rc != 0 {
+            return fail(2, rc);
+        }
+        let mut state = XhUserState { pc: USER_VA, ..XhUserState::default() };
+        state.x[1] = DATA_VA;
+        let mut trap = XhTrap::default();
+        for (i, kind) in t.kinds.iter().enumerate() {
+            let rc = call!(thread_run, thread, &mut state, &mut trap);
+            if rc != 0 {
+                return fail(3 + i as u64, rc);
+            }
+            kind.store(u64::from(trap.kind), Relaxed);
+            match trap.kind {
+                XH_TRAP_SYSCALL => {
+                    t.svc.store(u64::from(trap.svc), Relaxed);
+                    t.x16.store(state.x[16], Relaxed);
+                    t.pc.store(state.pc, Relaxed);
+                }
+                XH_TRAP_FAULT => {
+                    t.far.store(trap.far, Relaxed);
+                    t.access.store(u64::from(trap.access), Relaxed);
+                    // the kernel fills the fault: the data page, then the same instruction again
+                    let rc =
+                        call!(task_map, task, DATA_VA, PAGE, XH_PROT_READ | XH_PROT_WRITE, t.data_phys.load(Relaxed));
+                    if rc != 0 {
+                        return fail(6, rc);
+                    }
+                }
+                _ => t.x0.store(state.x[0], Relaxed),
+            }
+        }
+        let rc = call!(thread_destroy, thread);
+        if rc != 0 {
+            return fail(7, rc);
+        }
+        let rc = call!(task_destroy, task);
+        if rc != 0 {
+            fail(8, rc);
+        }
     }
 
     core::arch::global_asm!(
@@ -87,9 +184,15 @@ mod smoke {
         "ldr x3, [x19, #56]",
         "cmp x3, #2",
         "b.lo 1b",
+        "mov w3, #1", // 7, masked (as a hosted kernel makes its host calls)
+        "str w3, [x21, #{masked}]",
+        "mov x0, x19",
+        "mov x1, x20",
+        "mov x2, x21",
+        "bl {tasks}",
         "mov x3, #1",
         "str x3, [x19, #24]",
-        "2:", // 6
+        "2:", // 8
         "wfi",
         "b 2b",
         "9:",
@@ -134,6 +237,7 @@ mod smoke {
         irq_eoi = const offset_of!(XhVector, irq_eoi),
         timer_set = const offset_of!(XhVector, timer_set),
         vtimer = const XH_INTID_VTIMER,
+        tasks = sym machine_smoke_tasks,
     );
     extern "C" {
         fn machine_smoke_kernel();
@@ -142,13 +246,34 @@ mod smoke {
 
     pub fn run() -> Result<(), String> {
         const IO: u64 = 0x900_0000;
+        const RAM: u64 = 16 << 20;
+        // The RAM memfd, then the task factory (before any other thread, before the RAM is mapped), then the window.
+        mem::create(RAM).map_err(|e| format!("mem::create: {e}"))?;
+        task::init(&config::Config::new()).map_err(|e| format!("task::init: {e}"))?;
+        mem::map(0, false).map_err(|e| format!("mem::map: {e}"))?;
+        let m = mem::state();
         hostcalls::update_info(|i| {
             i.abi = xnuhost_abi::XH_ABI_VERSION;
             i.ncpu = 1;
             // SAFETY: no arguments.
             i.host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u32;
             i.timebase_hz = cpu::counter_hz();
+            i.ram_phys = m.phys;
+            i.ram_virt = m.host as u64;
+            i.ram_size = RAM;
+            i.user_va_min = 0x1_0000_0000;
+            i.user_va_limit = task::va_limit();
+            if task::available() {
+                i.features |= XH_FEATURE_TASKS;
+            }
         });
+        // the user code at 1 MiB into the RAM, the fault's page at 2 MiB
+        let (code, data) = (m.phys + (1 << 20), m.phys + (2 << 20));
+        // SAFETY: both pages are inside the RAM window just mapped, and nothing else uses them yet.
+        unsafe {
+            std::ptr::copy_nonoverlapping(USER_CODE.as_ptr(), code as *mut u32, USER_CODE.len());
+            *(data as *mut u64) = 0x77_6f72_6b73;
+        }
         gic::init(1, 0x800_0000, 0x80a_0000);
         mem::io(IO, 0x1_0000).map_err(|e| format!("the I/O aperture: {e}"))?;
         uart::init(IO);
@@ -165,6 +290,7 @@ mod smoke {
             intid: AtomicU64::new(0),
             set_upcalls: AtomicU64::new(u64::MAX),
             vector: AtomicU64::new(0),
+            tasks: Tasks { code_host: AtomicU64::new(code), data_phys: AtomicU64::new(data), ..Tasks::default() },
         }));
         let vector = hostcalls::vector().ok_or("no vector on this target")?;
         cpu::start(
@@ -217,6 +343,39 @@ mod smoke {
         }
         if v.stat.irqs.get() < 1 {
             failed.push("the timer signal's divert");
+        }
+        let t = &shared.tasks;
+        let kinds: Vec<u64> = t.kinds.iter().map(|k| k.load(Acquire)).collect();
+        println!(
+            "machine-smoke: tasks: {} (seccomp {}), text_fixup {}, failed at {} (rc {}), traps {:?}: svc 0x{:x} x16 {} pc 0x{:x}; \
+             far 0x{:x} access {}; x0 0x{:x}",
+            if task::available() { "available" } else { "not available" },
+            task::seccomp(),
+            t.fixups.load(Acquire),
+            t.failed_at.load(Acquire),
+            t.rc.load(Acquire) as i64,
+            kinds,
+            t.svc.load(Acquire),
+            t.x16.load(Acquire),
+            t.pc.load(Acquire),
+            t.far.load(Acquire),
+            t.access.load(Acquire),
+            t.x0.load(Acquire)
+        );
+        if t.failed_at.load(Acquire) != 0 {
+            failed.push("a task host call");
+        }
+        if kinds != [u64::from(XH_TRAP_SYSCALL), u64::from(XH_TRAP_FAULT), u64::from(XH_TRAP_BRK)] {
+            failed.push("the three traps");
+        }
+        if t.svc.load(Acquire) != 0x80 || t.x16.load(Acquire) != 42 || t.pc.load(Acquire) != USER_VA + 8 {
+            failed.push("the system call's trap");
+        }
+        if t.far.load(Acquire) != DATA_VA || t.access.load(Acquire) != u64::from(XH_PROT_READ) {
+            failed.push("the fault's trap");
+        }
+        if t.x0.load(Acquire) != 0x77_6f72_6b73 {
+            failed.push("the load after the fault was filled");
         }
         if failed.is_empty() {
             Ok(())

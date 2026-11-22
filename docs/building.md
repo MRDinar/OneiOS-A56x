@@ -450,7 +450,8 @@ after):
   `runtime/target/machine-check`). `XNUHOST=FILE IMAGE=DIR` boot another binary and image, e.g. the C one, for numbers
   on the same host and load. `smoke` needs no kernel: `examples/machine_smoke.rs` runs a few instructions of
   hand-written "kernel" on one vCPU through every seam (a trapped `mrs`, host calls, a UART store, an interrupt on a host
-  call's return, a timer signal diverted through frame_resume) and prints `machine-smoke: passed` (passed under
+  call's return, a timer signal diverted through frame_resume; then the task layer: the factory, a task, a thread, a page of user code
+  run to a system call, a fault filled by task_map and a brk) and prints `machine-smoke: passed` (passed under
   qemu-aarch64 on the PC, 2026-11-23).
 - macOS's `tar` is bsdtar (no `--mtime`): `runtime/package.sh` writes the archive with `oneios-tool package archive`
   (`pack.py archive` until 2026-11-13), so GNU tar is not needed. For the same files it is byte-identical to GNU tar 1.35's `--format=ustar` archive (checked).
