@@ -52,6 +52,19 @@ fn s<'a>(v: &'a serde_json::Value, key: &str) -> Result<&'a str> {
     v.get(key).and_then(|x| x.as_str()).ok_or_else(|| anyhow!("the hooks file: no string {key:?} in {v}"))
 }
 
+/// The line of build-turnip-darwin.py that writes the meson cross file's compile and link arguments.
+const TURNIP_CROSS_ARGS: &str = r"''.join('%s = %r\n' % (k, flags) for k in ('c_args', 'cpp_args', 'objc_args', 'c_link_args',";
+/// The same line with `-D_DARWIN_C_SOURCE` in the three compile arguments (not the link ones).
+const TURNIP_CROSS_ARGS_DARWIN: &str =
+    r"''.join('%s = %r\n' % (k, flags + ([] if 'link' in k else ['-D_DARWIN_C_SOURCE'])) for k in ('c_args', 'cpp_args', 'objc_args', 'c_link_args',";
+/// Why. flex 2.6.10 (Arch, 2026-11) writes `#define _POSIX_C_SOURCE 1` into every scanner it makes (for
+/// fileno()); flex 2.6.4 (macOS's /usr/bin/flex, and the laptop's until 2026-11) does not. With _POSIX_C_SOURCE and
+/// no _DARWIN_C_SOURCE, Darwin's sys/cdefs.h lowers __DARWIN_C_LEVEL, and dlfcn.h hides Dl_info and dladdr, which
+/// Mesa's disk_cache.h (included by ir3_lexer.c) uses. _DARWIN_C_SOURCE keeps the full Darwin level: what every
+/// file that defines no POSIX level gets anyway, so the other files compile as before.
+const TURNIP_CROSS_ARGS_WHY: &str =
+    "Mesa's cross c/cpp/objc args get -D_DARWIN_C_SOURCE (flex 2.6.10's scanners define _POSIX_C_SOURCE, which hides Darwin's Dl_info from ir3_lexer.c)";
+
 /// `ios metal-stage-edit ROOT HOOKS JOBS KNOWS`: what build.sh's `stage` changes in the staged copy ROOT.
 pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<()> {
     let hooks: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(hooks).with_context(|| hooks.display().to_string())?).with_context(|| hooks.display().to_string())?;
@@ -76,6 +89,7 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<
                 "meson's build-machine compiler is the host's clang (on a Mac xcrun's clang is both)",
             ),
             ("'-j6'", format!("'-j{jobs}'"), "ninja jobs"),
+            (TURNIP_CROSS_ARGS, TURNIP_CROSS_ARGS_DARWIN.into(), TURNIP_CROSS_ARGS_WHY),
         ],
     )?;
     edit(
@@ -565,6 +579,22 @@ mod tests {
             ]
         );
         assert_eq!(files[1].2, vec![7u8; 100_000]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mesa_cross_compile_args_get_darwin_c_source() {
+        // the upstream line as Droid-VM-UniXNU's build-turnip-darwin.py has it
+        let dir = std::env::temp_dir().join(format!("oneios-ios-turnip-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("s")).unwrap();
+        let line = "        ''.join('%s = %r\\n' % (k, flags) for k in ('c_args', 'cpp_args', 'objc_args', 'c_link_args', 'cpp_link_args',\n";
+        std::fs::write(dir.join("s/t.py"), line).unwrap();
+        edit(&dir, "s/t.py", &[(TURNIP_CROSS_ARGS, TURNIP_CROSS_ARGS_DARWIN.into(), TURNIP_CROSS_ARGS_WHY)]).unwrap();
+        let text = std::fs::read_to_string(dir.join("s/t.py")).unwrap();
+        assert!(text.contains("(k, flags + ([] if 'link' in k else ['-D_DARWIN_C_SOURCE'])) for k in ('c_args',"));
+        assert!(text.ends_with("'cpp_link_args',\n"));
+        // a second stage of the same copy finds no upstream line: refused, as every other edit
+        assert!(edit(&dir, "s/t.py", &[(TURNIP_CROSS_ARGS, TURNIP_CROSS_ARGS_DARWIN.into(), TURNIP_CROSS_ARGS_WHY)]).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
