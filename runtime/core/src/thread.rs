@@ -9,11 +9,7 @@ use std::thread::{Builder, JoinHandle};
 pub const NAME_MAX: usize = 15;
 
 fn short(name: &str) -> String {
-    let mut end = name.len().min(NAME_MAX);
-    while !name.is_char_boundary(end) {
-        end -= 1;
-    }
-    name[..end].to_owned()
+    crate::text::truncate(name, NAME_MAX).to_owned()
 }
 
 /// Starts `f` on a thread named `name` (cut to [`NAME_MAX`] bytes).
@@ -42,8 +38,7 @@ pub fn name() -> String {
     let mut buf = [0u8; 16];
     // SAFETY: PR_GET_NAME writes at most 16 bytes, NUL-terminated, into the buffer.
     unsafe { libc::prctl(libc::PR_GET_NAME, buf.as_mut_ptr()) };
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).into_owned()
+    crate::text::nul_text(&buf)
 }
 
 #[cfg(test)]

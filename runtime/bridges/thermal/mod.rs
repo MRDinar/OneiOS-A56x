@@ -338,13 +338,11 @@ pub(crate) fn deci_text(v: i32) -> String {
 
 /// Up to `max` bytes of a file without its trailing newlines and spaces; None when it cannot be read or is empty.
 fn read_line(path: &str, max: usize) -> Option<String> {
-    use std::io::Read;
-    let mut buf = vec![0; max];
-    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
-    if n == 0 {
+    let buf = xh_core::fs::read_bytes(path, max).ok()?;
+    if buf.is_empty() {
         return None;
     }
-    Some(String::from_utf8_lossy(&buf[..n]).trim_end_matches(['\n', ' ']).to_owned())
+    Some(String::from_utf8_lossy(&buf).trim_end_matches(['\n', ' ']).to_owned())
 }
 
 /// C's strtoll of base 10 on a prefix: leading white space, a sign, the digits; None without digits or past 64 bits.

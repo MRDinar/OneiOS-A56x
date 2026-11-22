@@ -463,7 +463,7 @@ impl Machine {
             // The device's board name first: libMobileGestalt reads the first entry as the hardware model, and
             // CoreMotion, the audio server and MediaExperience key their per-board tables on it.
             if let Some(p) = i.get("compatible") {
-                let n = p.value.iter().position(|b| *b == 0).unwrap_or(p.value.len());
+                let n = xh_core::text::until_nul(&p.value).len();
                 if n != 0 && n + 1 < 160 - 32 {
                     compatible.extend_from_slice(&p.value[..n]);
                     compatible.push(0);

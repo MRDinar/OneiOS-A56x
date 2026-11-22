@@ -86,8 +86,7 @@ pub fn iftype_name(kind: u32) -> &'static str {
 
 /// A name attribute as C's "%.*s" into a buffer of max + 1: up to its first NUL, at most `max` bytes.
 fn c_text(data: &[u8], max: usize) -> String {
-    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len()).min(max);
-    String::from_utf8_lossy(&data[..end]).into_owned()
+    xh_core::text::nul_text(&data[..data.len().min(max)])
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

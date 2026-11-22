@@ -50,10 +50,8 @@ pub fn controller_ok(name: &str) -> bool {
 
 /// The first line of a small named file, without its line break; "" when it cannot be read.
 fn read_line(path: &str) -> String {
-    use std::io::Read;
-    let mut buf = [0u8; 63];
-    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
-    let text = String::from_utf8_lossy(&buf[..n]);
+    let buf = xh_core::fs::read_bytes(path, 63).unwrap_or_default();
+    let text = String::from_utf8_lossy(&buf);
     text.split(['\r', '\n']).next().unwrap_or("").to_owned()
 }
 
@@ -85,13 +83,7 @@ impl UsbWatch {
                 continue; // unchanged: the value read before
             }
             let mut value = src.as_deref_mut().and_then(|s| s.value(i, name)).unwrap_or_default();
-            if value.len() >= VALUE_MAX {
-                let mut end = VALUE_MAX - 1;
-                while !value.is_char_boundary(end) {
-                    end -= 1;
-                }
-                value.truncate(end);
-            }
+            xh_core::text::truncate_string(&mut value, VALUE_MAX - 1);
             self.value[i] = value;
             self.serial[i] = serial;
             self.known[i] = true;

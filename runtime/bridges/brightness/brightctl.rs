@@ -21,10 +21,8 @@ use std::time::Duration;
 /// Inspect only: never opens the bridge, which can set an initial brightness, touch the IC and turn on ALS when One
 /// UI left sysfs at zero. The value of DIR/NAME/FIELD: a whole number (white space after it only), else None.
 fn panel_read_u32(dir: &Path, name: &str, field: &str) -> Option<u32> {
-    use std::io::Read;
-    let mut text = [0u8; 63];
-    let n = std::fs::File::open(dir.join(name).join(field)).ok()?.read(&mut text).ok()?;
-    let text = std::str::from_utf8(&text[..n]).ok()?;
+    let bytes = xh_core::fs::read_bytes(dir.join(name).join(field), 63).ok()?;
+    let (n, text) = (bytes.len(), std::str::from_utf8(&bytes).ok()?);
     let t = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
     let t = t.strip_prefix('+').unwrap_or(t);
     let digits = t.bytes().take_while(u8::is_ascii_digit).count();

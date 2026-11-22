@@ -16,6 +16,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use xh_core::text::truncate;
 use xh_core::time::monotonic_ms;
 use xh_core::{loge, logi};
 use xnuhost_abi::{XH_HALT_OFF, XH_HALT_PANIC, XH_HALT_RESTART, XH_HALT_RETURN};
@@ -55,21 +56,12 @@ pub struct StopRequest {
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STOP: Mutex<Option<StopRequest>> = Mutex::new(None);
 
-/// `text` cut to at most `max` bytes (at a character boundary).
-fn clip(text: &str, max: usize) -> &str {
-    let mut end = max.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
 /// xh_stop: asks the machine to stop (any thread; returns). Only the first request is kept.
 pub fn stop(reason: u32, code: u32, why: &str) {
     let mut s = STOP.lock().unwrap_or_else(|e| e.into_inner());
     if s.is_none() {
         // what C kept of it: 95 bytes
-        *s = Some(StopRequest { reason, code, why: clip(why, 95).to_owned() });
+        *s = Some(StopRequest { reason, code, why: truncate(why, 95).to_owned() });
         STOP_REQUESTED.store(true, Ordering::Release);
     }
 }
@@ -608,7 +600,6 @@ mod tests {
 
     #[test]
     fn stop_keeps_the_first() {
-        assert!(clip("abcdef", 3) == "abc" && clip("ab", 3) == "ab" && clip("aé", 2) == "a");
         let long = "x".repeat(200);
         stop(XH_HALT_PANIC, 7, &long);
         stop(XH_HALT_OFF, 0, "later");

@@ -243,11 +243,7 @@ fn scan_ticks(scan_ns: i64, now_ns: i64, now_counter: u64, hz: u64) -> u32 {
 
 /// At most `max` bytes of `s`, cut at a character boundary (C's snprintf into a char array of max + 1).
 pub(crate) fn clip(s: &str, max: usize) -> String {
-    let mut end = s.len().min(max);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_owned()
+    xh_core::text::truncate(s, max).to_owned()
 }
 
 /// ms with one decimal, as the C's "%lld.%lld".
@@ -548,8 +544,7 @@ pub(crate) mod evdev {
     pub fn name(fd: RawFd) -> String {
         let mut b = [0u8; 64];
         call(fd, ior(b'E', 0x06, 63), b.as_mut_ptr().cast());
-        let end = b.iter().position(|&c| c == 0).unwrap_or(63);
-        String::from_utf8_lossy(&b[..end]).into_owned()
+        xh_core::text::nul_text(&b[..63])
     }
 
     /// EVIOCGBIT(ev): the event type's code bits.

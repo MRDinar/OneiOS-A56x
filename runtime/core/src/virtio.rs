@@ -448,7 +448,7 @@ impl<D: Device> Virtio<D> {
         let index = reg.count.get(name).copied().unwrap_or(0);
         let kind = name.strip_prefix("virtio-").unwrap_or(if name.is_empty() { "?" } else { name });
         let mut label = format!("{kind}#{index}");
-        clip_to(&mut label, 23); // C's char label[24]
+        crate::text::truncate_string(&mut label, 23); // C's char label[24]
         let dev = Arc::new(Virtio {
             lock: RecursiveMutex::new(),
             state: RefCell::new(State::default()),
@@ -816,16 +816,6 @@ fn set_half(value: &mut u64, high: bool, half: u32) {
         if high { (*value & 0xffff_ffff) | u64::from(half) << 32 } else { (*value & !0xffff_ffff) | u64::from(half) };
 }
 
-fn clip_to(s: &mut String, max: usize) {
-    if s.len() > max {
-        let mut end = max;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        s.truncate(end);
-    }
-}
-
 impl<D: Device> MmioDevice for Virtio<D> {
     fn mmio_read(&self, offset: u64, size: u32) -> u64 {
         Virtio::mmio_read(self, offset, size)
@@ -984,7 +974,7 @@ impl Registry {
                 REPORT_MS / 1000
             };
             let mut line = format!("virtio: {span} s: {sum}{bads}");
-            clip_to(&mut line, 1023);
+            crate::text::truncate_string(&mut line, 1023);
             out(&line);
         }
         reg.bad_shown = bad;

@@ -413,8 +413,7 @@ fn p2p(args: &[String]) -> i32 {
             let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else { continue };
             // the program's path, up to its first NUL
             let cmd = &cmd[..cmd.len().min(255)];
-            let cmd =
-                String::from_utf8_lossy(&cmd[..cmd.iter().position(|&b| b == 0).unwrap_or(cmd.len())]).into_owned();
+            let cmd = xh_core::text::nul_text(cmd);
             if !cmd.is_empty() && p2p_hint(&cmd) {
                 println!("process: {pid} {cmd}");
             }

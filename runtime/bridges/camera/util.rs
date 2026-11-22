@@ -5,17 +5,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 pub use xh_core::sys::strerror;
 
-/// `text` cut to at most `max` bytes, at a character boundary (C's snprintf into a buffer of `max + 1`).
-pub fn truncate(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
+/// `text` cut to at most `max` bytes, at a character boundary (xh-core's).
+pub use xh_core::text::truncate;
 
 static VERBOSE: AtomicU8 = AtomicU8::new(0);
 

@@ -22,7 +22,7 @@
 
 use super::hw_backend::HwSettings;
 use crate::log::truncate;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 
 /// PROP_VALUE_MAX: a property's value is at most 91 bytes.
 pub const HOST_VALUE: usize = 92;
@@ -250,11 +250,7 @@ fn props_from_bionic(f: &mut HostFacts) {
 /// A small file under root: at most `size - 1` bytes, NULs (a device tree's string list) as ',' when `list`, the line
 /// break dropped. "" when absent.
 fn read_small(root: &str, rel: &str, size: usize, list: bool) -> String {
-    let Ok(file) = std::fs::File::open(format!("{root}{rel}")) else { return String::new() };
-    let mut bytes = Vec::with_capacity(size);
-    if file.take(size as u64 - 1).read_to_end(&mut bytes).is_err() {
-        return String::new();
-    }
+    let Ok(mut bytes) = xh_core::fs::read_bytes(format!("{root}{rel}"), size - 1) else { return String::new() };
     while bytes.last().is_some_and(|b| matches!(b, 0 | b'\n' | b'\r')) {
         bytes.pop();
     }

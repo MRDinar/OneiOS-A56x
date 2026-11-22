@@ -21,15 +21,6 @@ use xh_core::virtio::Viov;
 use crate::config::DiskConfig;
 use crate::imageset::Verify;
 
-/// `text` cut to at most `max` bytes (at a character boundary).
-fn clip(text: &mut String, max: usize) {
-    let mut end = max.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-}
-
 /// sparse: costs what the guest writes
 const DATA_DEFAULT_BYTES: u64 = 32 << 30;
 /// the disks the reports list at most
@@ -160,7 +151,7 @@ impl Blk {
         }
         let base = config.path.rsplit('/').next().unwrap_or(&config.path);
         let mut label = if config.data_store { "data" } else { base }.to_owned();
-        clip(&mut label, 23); // C's char label[24]
+        xh_core::text::truncate_string(&mut label, 23); // C's char label[24]
         let b = Arc::new(Blk {
             file,
             bytes,

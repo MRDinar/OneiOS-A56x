@@ -272,10 +272,9 @@ impl Net {
             return None;
         }
         let n = Net::open_fd(c, fd, rx).ok()?;
-        let end = request.name.iter().position(|&b| b == 0).unwrap_or(16);
         crate::br_info!(
             "net: on: tap {} (run net/oneios-net.sh up to route it)",
-            String::from_utf8_lossy(&request.name[..end])
+            xh_core::text::nul_text(&request.name)
         );
         Some(n)
     }

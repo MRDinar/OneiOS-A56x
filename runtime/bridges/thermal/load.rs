@@ -43,9 +43,7 @@ pub struct HostLoad {
 
 /// Up to `max` bytes of root/rel; None when it cannot be read or is empty.
 fn read_text(root: &str, rel: &str, max: usize) -> Option<String> {
-    use std::io::Read;
-    let mut buf = Vec::with_capacity(max);
-    std::fs::File::open(format!("{root}{rel}")).ok()?.take(max as u64).read_to_end(&mut buf).ok()?;
+    let buf = xh_core::fs::read_bytes(format!("{root}{rel}"), max).ok()?;
     (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
 }
 

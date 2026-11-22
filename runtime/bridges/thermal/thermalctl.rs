@@ -23,11 +23,8 @@ fn root() -> String {
 
 /// C's strtoll of the first 63 bytes of a file; `fallback` when it cannot be read or has no number.
 fn read_ll(path: &str, fallback: i64) -> i64 {
-    use std::io::Read;
-    let mut text = [0u8; 63];
-    let Ok(mut f) = std::fs::File::open(path) else { return fallback };
-    match f.read(&mut text) {
-        Ok(n) if n > 0 => thermal::strtoll(&String::from_utf8_lossy(&text[..n])).unwrap_or(fallback),
+    match xh_core::fs::read_bytes(path, 63) {
+        Ok(text) if !text.is_empty() => thermal::strtoll(&String::from_utf8_lossy(&text)).unwrap_or(fallback),
         _ => fallback,
     }
 }

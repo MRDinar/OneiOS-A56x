@@ -21,17 +21,8 @@ pub fn log(level: Level, line: &str) {
     }
 }
 
-/// `text` cut to at most `max` bytes, at a character boundary (C's snprintf into a buffer of `max + 1`).
-pub fn truncate(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
+/// `text` cut to at most `max` bytes, at a character boundary (xh-core's).
+pub use xh_core::text::truncate;
 
 /// `br_log!(level, "format", args...)`.
 #[macro_export]

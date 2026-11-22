@@ -733,12 +733,11 @@ fn read_u32(path: &Path) -> io::Result<u32> {
 
 /// Up to `max` bytes of a file, one read; empty is an error.
 fn read_head(path: &Path, max: usize) -> io::Result<String> {
-    let mut buf = vec![0; max];
-    let n = File::open(path)?.read(&mut buf)?;
-    if n == 0 {
+    let buf = xh_core::fs::read_bytes(path, max)?;
+    if buf.is_empty() {
         return Err(io::Error::from_raw_os_error(libc::ENODATA));
     }
-    Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// One write of `text` to an existing file.
@@ -836,8 +835,7 @@ fn evdev_name(file: &File) -> Option<String> {
     let mut name = [0u8; 80];
     // SAFETY: EVIOCGNAME(len) writes at most name.len() bytes into the buffer, which lives across the call.
     unsafe { ioctl::ioctl(file.as_raw_fd(), ioctl::ior(b'E', 0x06, name.len()), name.as_mut_ptr()) }.ok()?;
-    let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
-    Some(String::from_utf8_lossy(&name[..end]).into_owned())
+    Some(xh_core::text::nul_text(&name))
 }
 
 /// The first <dir>/event* whose name is `name`: opened read only, non-blocking, and never grabbed.

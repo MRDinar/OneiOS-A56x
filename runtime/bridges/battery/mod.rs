@@ -181,10 +181,8 @@ impl Sample {
 
 /// DIR/SUPPLY/NAME without its trailing white space (at most `max` bytes); None when it cannot be read.
 fn read_text(dir: &str, supply: &str, name: &str, max: usize) -> Option<String> {
-    use std::io::Read;
-    let mut buf = vec![0; max];
-    let n = std::fs::File::open(format!("{dir}/{supply}/{name}")).ok()?.read(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf[..n]);
+    let buf = xh_core::fs::read_bytes(format!("{dir}/{supply}/{name}"), max).ok()?;
+    let text = String::from_utf8_lossy(&buf);
     Some(text.trim_end_matches(['\n', ' ', '\r', '\t']).to_owned())
 }
 

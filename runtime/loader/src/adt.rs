@@ -41,8 +41,7 @@ impl Prop {
         if *last != 0 {
             return None;
         }
-        let end = text.iter().position(|b| *b == 0).unwrap_or(text.len());
-        std::str::from_utf8(&text[..end]).ok()
+        std::str::from_utf8(xh_core::text::until_nul(text)).ok()
     }
 
     /// The name as text (lossy: names are ASCII in every tree the loader meets).

@@ -11,8 +11,9 @@
 //! - [`pixels`]: the display protocol's pixel formats and conversions (pixels.h).
 //! - Helpers several crates need: [`bytes`] (numbers in byte buffers, per byte order), [`fs`] (small sysfs and /proc
 //!   files, meminfo-style values), [`parse`] (numbers and sizes as strtoull, strtol, atoi and xh_parse_size),
-//!   [`thread`] (named threads), [`fd`] (O_NONBLOCK, FD_CLOEXEC, EINTR), [`sys`] (errno, its texts, [`sys::Errno`],
-//!   the page size), [`ioctl`] (the numbers and the call), [`time`] (the monotonic clock).
+//!   [`text`] (C's fixed-size cuts, C strings in buffers), [`thread`] (named threads), [`fd`] (O_NONBLOCK,
+//!   FD_CLOEXEC, EINTR), [`sys`] (errno, its texts, [`sys::Errno`], the page size), [`ioctl`] (the numbers and the
+//!   call), [`time`] (the monotonic clock).
 pub mod bytes;
 pub mod fd;
 pub mod fs;
@@ -25,6 +26,7 @@ pub mod parse;
 pub mod pixels;
 pub mod regs;
 pub mod sys;
+pub mod text;
 pub mod thread;
 pub mod time;
 pub mod virtio;

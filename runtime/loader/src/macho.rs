@@ -75,12 +75,6 @@ pub struct Kernel {
     pub entries: Vec<FilesetEntry>,
 }
 
-/// The text of a NUL-padded name field.
-fn field_name(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
-}
-
 macro_rules! fail {
     ($text:literal) => {
         return Err(Error($text))
@@ -134,7 +128,7 @@ fn parse_header(data: &[u8], header: usize) -> Result<Kernel, Error> {
                     fail!("too many segments");
                 }
                 let s = Segment {
-                    name: field_name(&data[offset + 8..offset + 24]),
+                    name: xh_core::text::nul_text(&data[offset + 8..offset + 24]),
                     vmaddr: le::u64(data, offset + 24),
                     vmsize: le::u64(data, offset + 32),
                     fileoff: le::u64(data, offset + 40),

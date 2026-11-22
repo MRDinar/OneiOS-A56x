@@ -765,8 +765,7 @@ impl Backend for HalBackend {
             if out.len() >= max.min(CAM_MAX_LIST) {
                 break;
             }
-            let name =
-                String::from_utf8_lossy(&name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())]).into_owned();
+            let name = xh_core::text::nul_text(name);
             let id = camera_id(&name).to_owned();
             let Some(reply) =
                 call(self.provider as *mut AIBinder, PROVIDER_GET_DEVICE, "getCameraDeviceInterface", |p| {

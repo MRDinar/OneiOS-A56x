@@ -171,13 +171,12 @@ fn haptic_inspect() -> i32 {
             let mut dev = [0u8; 128];
             // SAFETY: EVIOCGNAME fills at most dev.len() bytes.
             let _ = unsafe { ioctl(fd, ior(0x06, dev.len()), dev.as_mut_ptr()) };
-            let end = dev.iter().position(|&b| b == 0).unwrap_or(dev.len());
             let mut effects: i32 = -1;
             // SAFETY: EVIOCGEFFECTS writes one int.
             let effects_ok = unsafe { ioctl(fd, ior(0x84, 4), &mut effects) }.is_ok();
             println!(
                 "haptic-inspect: {path} \"{}\" FF_PERIODIC=1 FF_SINE=1 FF_CUSTOM={} FF_GAIN={} max_effects={effects}{}",
-                String::from_utf8_lossy(&dev[..end]),
+                xh_core::text::nul_text(&dev),
                 u8::from(bit(FF_CUSTOM)),
                 u8::from(bit(FF_GAIN)),
                 if !effects_ok { " (query unavailable)" } else { "" }

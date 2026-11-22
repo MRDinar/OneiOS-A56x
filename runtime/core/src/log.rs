@@ -183,14 +183,7 @@ fn emit(tag: &str, text: &[u8]) {
 
 /// Cuts `text` to [`LINE_MAX`] bytes at a character boundary.
 fn clip(text: &str) -> &str {
-    if text.len() <= LINE_MAX {
-        return text;
-    }
-    let mut end = LINE_MAX;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    crate::text::truncate(text, LINE_MAX)
 }
 
 /// Logs one line (what the macros call).

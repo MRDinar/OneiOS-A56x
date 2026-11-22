@@ -569,8 +569,7 @@ fn has_periodic(fd: &OwnedFd) -> bool {
 fn device_name(fd: &OwnedFd) -> String {
     let mut name = [0u8; 80];
     let _ = ioctl(fd, eviocgname(name.len()), name.as_mut_ptr());
-    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-    String::from_utf8_lossy(&name[..end]).into_owned()
+    xh_core::text::nul_text(&name)
 }
 
 /// The evdev backend's device search: the node path of the first device whose EV_FF bits have FF_PERIODIC and
