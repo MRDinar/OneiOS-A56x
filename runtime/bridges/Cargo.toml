@@ -36,3 +36,6 @@ path = "battery/batteryctl.rs"
 [[bin]]
 name = "fake-hal"
 path = "tests/fake_hal.rs"
+[[bin]]
+name = "thermalctl"
+path = "thermal/thermalctl.rs"
