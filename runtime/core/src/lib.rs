@@ -9,13 +9,19 @@
 //! - [`virtio`]: the virtio-mmio transport (split queues, the device trait, the queue health report) and its test
 //!   driver ([`virtio::testing`]).
 //! - [`pixels`]: the display protocol's pixel formats and conversions (pixels.h).
-//! - [`sys`], [`time`]: small system helpers (errno texts, the monotonic clock).
+//! - Helpers several crates need: [`fs`] (small sysfs and /proc files, meminfo-style values), [`parse`] (numbers and
+//!   sizes as strtoull and xh_parse_size), [`thread`] (named threads), [`fd`] (O_NONBLOCK, FD_CLOEXEC, EINTR),
+//!   [`sys`] (errno texts), [`time`] (the monotonic clock).
+pub mod fd;
+pub mod fs;
 pub mod hooks;
 pub mod insn;
 pub mod log;
 pub mod mmio;
+pub mod parse;
 pub mod pixels;
 pub mod regs;
 pub mod sys;
+pub mod thread;
 pub mod time;
 pub mod virtio;
