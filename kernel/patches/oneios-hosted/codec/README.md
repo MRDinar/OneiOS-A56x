@@ -32,7 +32,7 @@ paravirtualization service, exactly as the Metal and camera plug-ins are iOS-sid
 
 | File | What |
 |---|---|
-| `DroidVMVirtioMedia.c` | the virtio-media transport (V4L2 stateful codec over virtio-mmio): `/arm-io/virtio-media-0`, `media-host-pool`. The device is xnuhost's (`runtime/bridges/encoder/media_device.c`), not crosvm's. Unchanged, `-DDROIDVM_DEVICE_DYNAMIC=1`, Mach universe, as its iPadOS 27 board builds it |
+| `DroidVMVirtioMedia.c` | the virtio-media transport (V4L2 stateful codec over virtio-mmio): `/arm-io/virtio-media-0`, `media-host-pool`. The device is xnuhost's (`runtime/bridges/encoder/media_device.rs`), not crosvm's. Unchanged, `-DDROIDVM_DEVICE_DYNAMIC=1`, Mach universe, as its iPadOS 27 board builds it |
 | `DroidVMVTHost.cpp` | the session logic: `encs`/`+enc`/`esta`/`efrm`/`Eemt`/`ecfr` (and, staged, iOS 27's tile session `ests`/`epti`/`etil`/`ecti` with `TEsa`/`TEcd`/`TEem`); the IOSurface lookup (IOCoreSurfaceRoot), NV12 copy into the OUTPUT buffer, hvcC/avcC assembly, the sample-buffer atoms. Runs in the guest kernel over the virtio-media device. **Staged with four edits** (below) |
 | `DroidVMVTParavirt.cpp` | Apple's `AppleVideoToolboxParavirtualizationDriver` user client + the `IODataQueue` transport; publishes the service with `droidvm-vt-paravirt=1`. Unchanged; its static initializer is taken out of `__mod_init_func` and made global (`droidvm_vt_paravirt_attach` runs it in its own module load), as the audio archive's |
 
@@ -54,7 +54,7 @@ HEVC SPS has emulation prevention bytes in exactly those bytes (Main's compatibi
 `60 00 00 03 00` in the stream, and the constraint flags' zeros get two more), so the copy put `03` bytes into the
 flags and never reached `general_level_idc`: the hvcC said level 0 for any real encoder's stream. The staged copy
 takes the twelve bytes without them. [F] read from the code and the standard; the stand-in's own SPS has the same
-three bytes (`runtime/bridges/encoder/tests/test_standin.c` checks its first two).
+three bytes (`runtime/bridges/encoder/tests/standin.rs` checks its first two).
 
 ## The tile session (2026-11-22)
 

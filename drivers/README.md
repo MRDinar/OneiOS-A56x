@@ -48,5 +48,5 @@ Boot arguments: `oneios-bridge=0`, `oneios_haptic=0`, `oneios_haptic_ui=0`, `one
 - `/arm-io/bridge`: `compatible = "oneios,bridge"`, `reg` (one 4 KiB virtio-mmio window), `interrupts` (its SPI),
   `dma-coherent`. Host device: `br_bridge_create()`.
 - `/arm-io/cpufreq`, cpu nodes: `cpu/README.md`. `/arm-io/net`, `/arm-io/virtio-snd`: as booter's
-  `runtime/loader/src/machine.c` already names them.
+  `runtime/loader/src/machine.rs` already names them.
 - Bluetooth node: `docs/hardware.md` section 4, "Missing".

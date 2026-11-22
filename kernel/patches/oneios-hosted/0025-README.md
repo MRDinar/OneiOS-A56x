@@ -1,7 +1,7 @@
 # 0025-text-fixup-once: user pages that fail their signature or change under a process (Q6)
 
 Owner: fable-user. Date: 2026-11-11. A diff on top of the series up to `0024`. It goes with a change in
-xnuhost (`runtime/xnuhost/src/task.c`, same commit), which is where the worst of the three causes was.
+xnuhost (`runtime/xnuhost/src/task.rs`, same commit), which is where the worst of the three causes was.
 
 ## What was wrong
 
@@ -65,7 +65,7 @@ All with `oneios-data-wait=3000`; the same Data store kept between runs.
 `hosted_mapcheck=1` in runs 5 to 7: no fill over another page and no page freed while mapped. The audit of
 run 5 (before the 2 ms second look) reported two mappings of launchd that were writable in the host while the page
 table had them read-only with the "was writable" bit: a range whose modify bits were being cleared, between the
-entries' change and the range's flush. `make -C runtime/xnuhost test`: passes (no test creates tasks from two
+entries' change and the range's flush. `make -C runtime/xnuhost test` (the C runtime of that date; today `cargo test -p xnuhost` in runtime/): passes (no test creates tasks from two
 threads at once: the race was found by the boots).
 
 ## Not done, not known

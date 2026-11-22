@@ -97,7 +97,7 @@ so those archives keep their own names.
   the mode's own preferred scale when it has one; else, in a virtual device, 2 (or the mode's native-scale field
   when that is more); else 2 for a mode taller than 1080 pixels, 1 otherwise. This framebuffer's modes carry no
   preferred scale, so the unchanged answer is 2. For 3 xnuhost adds two text fixups to `/chosen text-fixups`
-  (`config.c` `xh_scale_fixups`: the virtual device's floor 2 -> 3 at 0x40b17a8, the height test's result -> 3 at
+  (`runtime/xnuhost/src/config.rs` `scale_fixups`: the virtual device's floor 2 -> 3 at 0x40b17a8, the height test's result -> 3 at
   0x40b17bc), which the kernel applies to those pages when they are paged in, only where the original bytes
   match. **Not verified in a running guest** (no frame of the compositor's yet): whether the fixups are applied
   to shared-cache pages under xnuhost, and what UIKit then lays out, are open.
@@ -271,7 +271,7 @@ resource with its pages attached (`RESOURCE_CREATE_2D` in B,G,R,X with the surfa
 into its frame and posts the rectangle on `display.sock`. With a renderer (the phone) the surfaces are guest blobs
 and a frame is `SET_SCANOUT_BLOB` and a flush (`docs/gpu.md`).
 
-Two changes in xnuhost's device (`runtime/xnuhost/src/virtio_gpu.c`) came with this:
+Two changes in xnuhost's device (`runtime/xnuhost/src/virtio_gpu.rs`) came with this:
 
 - A surface of scattered 4 KiB pages needs up to 4388 backing entries at 1440x3120 (3765 at 1320x2868); the limit
   for a 2D resource was 4096 and is now 16384, as for blobs.
@@ -333,7 +333,7 @@ valid 1 1440x3120 stride 5760 bytes 17973248`, `late probe: stage 10, ... scale 
 Not run, anywhere: a swap (validation, the offer to the virtio scanout, the CPU copy into the boot video, the
 half-float conversion, retirement), the vsync tick with a client, a blank frame, the kernel mapping of the boot
 video being written (it is made at start; nothing drew into it), whether QuartzCore takes @3x, the blob scanout,
-anything on the phone. xnuhost's two changes are covered by its unit tests (`make -C runtime/xnuhost test`:
+anything on the phone. xnuhost's two changes are covered by its unit tests (`make -C runtime/xnuhost test` (the C runtime of that date; today `cargo test -p xnuhost` in runtime/):
 13189 checks).
 
 ## Power: why no frame was shown, and the fix (lead, 2026-11-11)

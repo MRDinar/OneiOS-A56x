@@ -43,7 +43,7 @@ space of its own (pmap + map, 8 anonymous pages) and reports each check on the c
   immediate, an undefined instruction, the task's store read back by `copyin`. `svc`: SKIP (no seccomp
   under qemu-user).
 - With `--no-tasks`: 21 passed, 0 failed (user mode skipped).
-- Without the boot argument the boot is as before. `make -C runtime/xnuhost test`: passes, unchanged.
+- Without the boot argument the boot is as before. `make -C runtime/xnuhost test` (the C runtime of that date; today `cargo test -p xnuhost` in runtime/): passes, unchanged.
 
 ## Not tested, not done
 

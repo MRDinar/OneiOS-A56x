@@ -13,7 +13,7 @@
 #             pinned to the same cores, then each BENCH line's mean over the rounds for both and B's difference in %.
 #             One run of each is not a comparison: a boot's numbers move 10-30% with the host cores it lands on (a
 #             hybrid PC's fast and slow cores) and the load; alternate rounds on the same cores move by about 3%.
-#               XNUHOST_B=FILE  the other binary (its default, build/android/xnuhost, was the C build, which is gone: set it)
+#               XNUHOST_B=FILE  the other binary (required: e.g. a build of another commit)
 #               AB_ROUNDS=N     rounds (default 4); logs in WORK/ab (A.N.txt, B.N.txt)
 #               PIN=CPUS        the host CPUs (taskset -c); for ab the default is one thread of each fastest core
 #                               (cpufreq's cpuinfo_max_freq within 10% of the top, the first of its siblings)
@@ -120,8 +120,8 @@ for what in "$@"; do
       grep -E 'RPC|BENCH|perf: [0-9.]+ s since|perf:   (up|down|queue|release)|emulated: insn|TESTKERNEL: (all|FAIL)' "$work/rpc-$m.log"
     done ;;
   ab)
-    b=${XNUHOST_B:-$here/build/android/xnuhost}
-    [ -x "$b" ] || { echo "check-arm64 ab: no $b (set XNUHOST_B=FILE: the C build that was its default is gone)" >&2; exit 2; }
+    b=${XNUHOST_B:-}
+    [ -n "$b" ] && [ -x "$b" ] || { echo "check-arm64 ab: set XNUHOST_B=FILE, the binary to compare with (no default)" >&2; exit 2; }
     echo "ab: A $XNUHOST"
     echo "ab: B $b"
     echo "ab: ${AB_ROUNDS:-4} rounds, each binary in turn, on host CPUs $PIN"

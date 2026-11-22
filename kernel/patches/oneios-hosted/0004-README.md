@@ -1,7 +1,7 @@
 # 0004-root-mount-launchd and `storage/`: the hosted kernel's disks, root, Data and launchd
 
 Owner: fable-root2 (took over from fable-root). Date: 2026-11-10. The xnuhost side is commit `3b57b73`
-(`runtime/xnuhost/src/imageset.c`): chunk checks, trust caches, `/chosen/root-matching`, each disk's identity.
+(`runtime/xnuhost/src/imageset.rs`): chunk checks, trust caches, `/chosen/root-matching`, each disk's identity.
 
 **State, plainly.** It builds and links into the hosted kernel (from scratch, `HOSTED_OUT=root`). **None of it has
 run in a kernel**: the standalone `xnu.macho` panics at `image4 interface not available @kern_trustcache.c:592`,

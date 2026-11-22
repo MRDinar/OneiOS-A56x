@@ -844,7 +844,7 @@ decision, 2026-11-12: no pressure feedback, no cache cap, no change to XNU's fre
   810 s: by design this check gives back pages that cycle, 35 s of the thread's time in 840 s; the default keep
   never does). A first `hosted_mapcheck=1` boot with the default keep (4 GiB): launchd 299 s, SpringBoard 366 s, no
   panic, no `hosted check:` line, nothing given back.
-- **The cost to iOS** (test kernel, `make -C runtime/xnuhost bench-arm64`, under qemu on the PC; times about 10x the
+- **The cost to iOS** (test kernel, `make -C runtime/xnuhost bench-arm64` (the C runtime of that date; today `runtime/xnuhost/check-arm64.sh bench`), under qemu on the PC; times about 10x the
   phone's): `ram_discard` of one 16 KiB page 5.2 us, of 1 MiB in one run 90 us (1.4 us a page); zero-filling a 16 KiB
   page that was given back 11.7 us against 6.0 us resident (the host's first touch of each 4 KiB part): +5.7 us per
   16 KiB, about 0.36 ms per MiB used again, paid only for pages given back and reused (never for pages cycling
@@ -1142,7 +1142,7 @@ read WnR alone: `hosted_trap_access` said `XH_PROT_WRITE`, `hosted_user_fill` re
 - `hosted_selftest=1`: a new check, "a cache maintenance fault (CM, WnR) reaches XNU as a read with CM kept; a store as
   a write", on synthetic traps (the stub's old `XH_PROT_WRITE` included).
 
-The runtime half is in the stub (`runtime/xnuhost/stub/stub_abi.h` `xs_fault_access`, host test `test_fault_access`):
+The runtime half is in the stub (`runtime/abi/src/stub.rs` `fault_access`, host test `fault_access_of_syndromes`):
 either half alone fixes the crash. Tests: `docs/booter.md` 2.6 and 6 (`test_jit_icache`; qemu-user never faults on
 cache maintenance, so only arm64 hardware runs the fault itself).
 
@@ -1705,7 +1705,7 @@ log shows the line.
 Core Haptics' server for the guest. audiomxd publishes `com.apple.audio.hapticd` (Core Haptics' server: every UI and
 keyboard haptic, the Actuator device's only client) and, at its start, loads its synth preset from
 `/Library/Audio/Tunings/<hardware model>/Haptics/hapticengineconfig.plist`. The guest's hardware model is the tree's
-first `compatible`, `oneios,xnuhost` (`runtime/loader/src/machine.c`, no identity tree), so the file was not found and
+first `compatible`, `oneios,xnuhost` (`runtime/loader/src/machine.rs`, no identity tree), so the file was not found and
 the server gave up (iOS's log of the PC boot of 2026-11-14 with `haptics=sim`, `--proc audiomxd`):
 `-[AVHapticServer loadSynthPreset]: ERROR: Unable to load the configuration plist ... NSFilePath=/Library/Audio/Tunings/oneios,xnuhost/Haptics/hapticengineconfig.plist ... No such file or directory`,
 `-[AVHapticServer init]: ERROR: Failed to set up SSS client -- server bailing out`, `HapticServerManager.mm:43 ...
@@ -1755,7 +1755,7 @@ first 8 s of the phone's boot of 2026-11-22 17:01 (271 in 21 s at 16:30), until 
 Tested (Mac, 2026-11-22): built in `HOSTED_OUT=cam` from the series (the full build, not `hosted-dev.sh`): `xnu.macho`
 sha256 `ad0a2993d910cdf7...`, 167 patches; prelinked (`KERNEL=out/kernel/current-hosted-cam/xnu.macho
 OUT=out/kernel/cam-24A446 kernel/prelink/build.sh`): `kernel.kc` sha256 `3c66f79ee04fbcbf...`, audit 2712 paired, 92 on
-the stub, 0 failures; `prelink stubs-check`: 666 good, 0 bad. The loader's hash in `runtime/loader/tests/test_loader.c`.
+the stub, 0 failures; `prelink stubs-check`: 666 good, 0 bad. The loader's hash in `runtime/loader/tests/loader.rs`.
 Not run on the phone yet. Rebased on 0083 (2026-11-23): the camera helper made it on a tree without 0083, so it did not
 apply on main (`patch failed: bsd/kern/kern_exec.c:9710`); now its function comes after 0083's `oneios_dictation_status`,
 the same code, and 0085 and 0086 apply after it.
