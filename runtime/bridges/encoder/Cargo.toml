@@ -10,13 +10,42 @@ autobins = false
 autotests = false
 autoexamples = false
 autobenches = false
+build = "build.rs"
 
 [lib]
 path = "lib.rs"
 
+# bin/oneios-encoder of the runtime package: the helper process (dynamic on Android: build.rs; on a host the
+# stand-in only).
+[[bin]]
+name = "oneios-encoder"
+path = "bin/oneios-encoder.rs"
+
+# bin/encctl: the phone test, the whole path in one process (dynamic on Android; on a host with the stand-in).
+[[bin]]
+name = "encctl"
+path = "bin/encctl.rs"
+
+# The stand-in encoder alone, its streams through ffmpeg when there is one (test_standin.c, tests/decode.sh).
+[[test]]
+name = "standin"
+path = "tests/standin.rs"
+
+# The virtio-media device over xh-core's transport, through the helper process and in-process (test_encoder.c).
+[[test]]
+name = "encoder"
+path = "tests/encoder.rs"
+
+# The Rust mirrors of media_proto.h and encoder_link.h against the C headers.
+[[test]]
+name = "headers"
+path = "tests/headers.rs"
+
 [dependencies]
 libc.workspace = true
 xh-core.workspace = true
+# The helper spawn (posix_spawn with the socket as descriptor 3) and the wire helpers are the camera's.
+onecamera.workspace = true
 
 [lints]
 workspace = true
