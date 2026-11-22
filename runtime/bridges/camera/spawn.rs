@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: MIT
+//! Starting a helper process with its end of a socket as descriptor 3 (the camera's and the encoder's helpers), with
+//! posix_spawn as the C did: xnuhost holds gigabytes of locked guest RAM, and a fork would copy its page tables.
+use std::ffi::{c_char, c_int, CString};
+use std::io;
+use std::os::fd::{AsRawFd, BorrowedFd};
+
+extern "C" {
+    static environ: *const *mut c_char;
+    // bionic has them from API 28, glibc always; the libc crate declares them for glibc only.
+    fn posix_spawn(
+        pid: *mut libc::pid_t,
+        path: *const c_char,
+        actions: *const libc::c_void,
+        attr: *const libc::c_void,
+        argv: *const *mut c_char,
+        envp: *const *mut c_char,
+    ) -> c_int;
+    fn posix_spawn_file_actions_init(actions: *mut libc::c_void) -> c_int;
+    fn posix_spawn_file_actions_adddup2(actions: *mut libc::c_void, fd: c_int, to: c_int) -> c_int;
+    fn posix_spawn_file_actions_destroy(actions: *mut libc::c_void) -> c_int;
+}
+
+/// Starts `path` with `args` after argv[0] (= `path`), this process's environment, and `fd` as its descriptor 3
+/// (dup2 clears close-on-exec on the copy; every other descriptor of ours is close-on-exec). Its pid, or the errno
+/// posix_spawn gave (ENOENT for a program that is not there).
+pub fn spawn_with_fd3(path: &str, args: &[&str], fd: BorrowedFd<'_>) -> Result<libc::pid_t, i32> {
+    let einval = |_| libc::EINVAL;
+    let path_c = CString::new(path).map_err(einval)?;
+    let args_c = args.iter().map(|a| CString::new(*a)).collect::<Result<Vec<_>, _>>().map_err(einval)?;
+    let mut argv: Vec<*mut c_char> = std::iter::once(&path_c).chain(&args_c).map(|a| a.as_ptr().cast_mut()).collect();
+    argv.push(std::ptr::null_mut());
+    // posix_spawn_file_actions_t: 80 bytes in glibc, a pointer in bionic; this is room for either, aligned.
+    let mut actions = [0u64; 16];
+    let at = actions.as_mut_ptr().cast::<libc::c_void>();
+    let mut pid: libc::pid_t = 0;
+    // SAFETY: the actions object lives in `actions` for the calls; argv is NULL-terminated over live CStrings; the
+    // environment is the process's own.
+    let rc = unsafe {
+        posix_spawn_file_actions_init(at);
+        posix_spawn_file_actions_adddup2(at, fd.as_raw_fd(), 3);
+        let rc = posix_spawn(&mut pid, path_c.as_ptr(), at, std::ptr::null(), argv.as_ptr(), environ);
+        posix_spawn_file_actions_destroy(at);
+        rc
+    };
+    if rc != 0 {
+        return Err(rc);
+    }
+    Ok(pid)
+}
+
+/// A connected pair of `kind` sockets (SOCK_SEQPACKET, SOCK_STREAM), close-on-exec.
+pub fn socket_pair(kind: c_int) -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use std::os::fd::FromRawFd;
+    let mut pair = [0 as c_int; 2];
+    // SAFETY: a two-int array for the result.
+    if unsafe { libc::socketpair(libc::AF_UNIX, kind | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: two fresh descriptors that nothing else owns.
+    Ok(unsafe { (std::os::fd::OwnedFd::from_raw_fd(pair[0]), std::os::fd::OwnedFd::from_raw_fd(pair[1])) })
+}
+
+/// Reaps `pid` if it has ended, without waiting (`waitpid(pid, NULL, WNOHANG)`).
+pub fn reap_nowait(pid: libc::pid_t) {
+    // SAFETY: a plain call on our own child.
+    unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+}
