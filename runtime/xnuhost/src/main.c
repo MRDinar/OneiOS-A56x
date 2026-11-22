@@ -1364,12 +1364,18 @@ int main(int argc, char **argv)
   // and 0x350 is a field of the chip object it then reads through a null pointer.
   if (xh_boot_args_hides_vmm_from(config.boot_args, "bluetoothd"))
     LOGE("boot arguments: owner-hide-vmm names bluetoothd: it crashes in a loop that way (docs/hardware.md 4); take it out");
-  // bt-transport-override=10 hands bluetoothd its own simulated controller (BTVC: the transport's write goes to an object
-  // in bluetoothd's own process, which answers the commands itself): nothing reaches the kernel's transport or the phone's
-  // controller, and on the phone (main 3233fed, 2026-11-15) bluetoothd then exited(1) after 56 s, again and again.
-  if (xh_boot_args_bt_transport(config.boot_args) == 10)
-    LOGE("boot arguments: bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: "
-         "nothing reaches the phone's controller (docs/hardware.md 4); take it out");
+  // bt-transport-override=N replaces the transport-encoding bluetoothd reads. Since 2026-11-23 the guest's Bluetooth driver
+  // gives it 10 (in a VM its power init passes only with 10) and the kernel adds BT_HCI_TRANSPORT=H4:POSIX to its
+  // environment (hosted 0087), which keeps its HCI on our transport: so 10 changes nothing, any other N makes its power
+  // init fail (PowerState 3, Bluetooth off). Without the kernel's variable (oneios-bt-hci=0, or a kernel before 0087) 10
+  // is BTVC, a simulated controller in bluetoothd's own process (main 3233fed, 2026-11-15: exit(1) every 56 s).
+  int bt_override = xh_boot_args_bt_transport(config.boot_args);
+  if (bt_override >= 0 && bt_override != 10)
+    LOGE("boot arguments: bt-transport-override=%d: bluetoothd's power init passes only with 10 in a VM, so Bluetooth "
+         "stays off (docs/hardware.md 4); take it out", bt_override);
+  else if (bt_override == 10)
+    LOGI("boot arguments: bt-transport-override=10 is what the guest's driver gives bluetoothd already; with "
+         "oneios-bt-hci=0 (no BT_HCI_TRANSPORT) it is bluetoothd's own simulated controller (docs/hardware.md 4)");
   xh_perf_init(&config);
   if (boot()) { xh_tasks_shutdown(); return EXIT_SETUP; }
 

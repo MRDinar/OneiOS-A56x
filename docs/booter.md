@@ -1152,11 +1152,14 @@ bridge device that serves only it. One log line says which:
 `bluetooth: on: the phone's controller through its HAL 1.1, address ...`, `bluetooth: on: a stand-in controller
 (bluetooth=sim), address ...` or `bluetooth: off (...)` with the reason. Boot arguments whose `owner-hide-vmm=` list
 names bluetoothd get an error line (`boot arguments: owner-hide-vmm names bluetoothd: ...`) and are left as they are:
-24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4). So do boot
-arguments that give bluetoothd `bt-transport-override=10`, read as bluetoothd reads it (`boot arguments:
-bt-transport-override=10 gives bluetoothd its own simulated controller, in its own process: ...`; since 2026-11-15):
-that transport is a simulated controller inside bluetoothd, and nothing reaches the phone's
-([hardware.md](hardware.md) 4, "The virtual transport is bluetoothd's own").
+24A446's bluetoothd crashes in a loop with the virtual machine hidden ([hardware.md](hardware.md) 4). The guest's
+Bluetooth driver changes the nub's transport-encoding from 1 to 10 when the host serves a controller, and the kernel
+adds `BT_HCI_TRANSPORT=H4:POSIX` to bluetoothd's environment (hosted 0087; since 2026-11-23): in a VM bluetoothd powers
+on only with 10, and the variable keeps its HCI on the H4 transport ([hardware.md](hardware.md) 4, "Bluetooth powers
+on"). So boot arguments that give bluetoothd `bt-transport-override=N` with N other than 10, read as bluetoothd reads
+it, get an error line (`boot arguments: bt-transport-override=N: bluetoothd's power init passes only with 10 in a VM,
+...`); `=10` gets an information line (it is what the driver gives already; with `oneios-bt-hci=0` it is bluetoothd's
+own simulated controller: "The virtual transport is bluetoothd's own").
 Haptics (`haptics=` in `xnuhost.conf`, `--set haptics=...`; 2026-11-13): `auto`, the default, opens the phone's
 force-feedback device (`haptics: on: /dev/input/eventN ...`) when the bridges are on; `off` gives iOS no actuator
 (`haptics: off (haptics=off)`: no Actuator audio device, no `/product/haptics`); `sim` (a boot with no vibrator,
