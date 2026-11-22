@@ -4,7 +4,8 @@ Owner: fable-gpu. Date: 2026-11-10. The Metal path of OneiOS, as Droid-VM runs i
 Metal plug-in runs Turnip, Turnip speaks the drm/msm protocol over virtio-gpu's DRM native context, and the host
 serves that protocol on `/dev/kgsl-3d0` with Droid-VM's `drm2kgsl`.
 
-**State, plainly.** The host side is written, builds for Android and passes its tests on the PC. On the phone only
+**State, plainly (2026-11-10; the host side is Rust since 2026-11-23, section 2, and that build has not run on the
+phone).** The host side is written, builds for Android and passes its tests on the PC. On the phone only
 `gpuctl` has run (2026-11-11, runtime 0.1.3, as root from the fork's Hardware checks): KGSL opened, the context and
 `GET_PARAM` worked, and the first buffer import failed with ENOMEM. The cause was found in Samsung's KGSL source and is
 fixed here (section 4.1); the fix has **not** run on the phone yet, `gpuctl` of the next runtime release shows whether
@@ -22,35 +23,44 @@ iOS process: Metal -> NativeAdrenoMetal.bundle (NativeMetal, metal2vulkan, Turni
    | IOKit: AGXAccelerator -> AGXDeviceUserClient, open type 0x4149, DROIDVM_VIRTGPU_*       gpu/ archive, opens on the PC
 hosted XNU: DroidVMVirtioGpu3D.cpp (droidvm_virtgpu_call) -> DroidVMVirtioGpu.cpp            0005, builds
    | virtio-mmio: /arm-io/virtio-gpu, control queue
-xnuhost: src/virtio_gpu.c (the device) -> src/gpu3d.h -> src/gpu3d_kgsl.c                    written, tested on the PC
+xnuhost: src/virtio_gpu.rs (the device) -> src/gpu3d.rs -> src/gpu3d_kgsl.rs                 Rust, tested on the PC
    | function calls, same process
 drm2kgsl (external/virglrenderer src/drm/drm2kgsl, linked in) -> ioctl on /dev/kgsl-3d0      not run on the phone
 ```
 
 ## 2. Host side (`runtime/xnuhost`)
 
+The host side is Rust since 2026-11-23 (branch `rust-runtime`; until then the same files in C: `src/virtio_gpu.c`,
+`src/gpu3d.h`/`.c`, `src/gpu3d_kgsl.c`, `tools/gpuctl.c`, built by `runtime/xnuhost/Makefile`). Every behaviour, log
+line and test case was kept ([runtime/RUST.md](../runtime/RUST.md)); the Rust GPU path has not run on the phone yet.
+
 | File | What |
 |---|---|
-| `src/virtio_gpu.c` | The device. 2D as before (the first frame still comes through it). With a renderer: features VIRGL, RESOURCE_BLOB, CONTEXT_INIT, CREATE_GUEST_HANDLE; one capset (6, DRM); `CTX_CREATE/DESTROY`, `CTX_ATTACH/DETACH_RESOURCE`, `RESOURCE_CREATE_BLOB`, `RESOURCE_MAP_BLOB` (answered `MAP_INFO_POOL` + the offset in the pool), `RESOURCE_UNMAP_BLOB`, `SUBMIT_3D`, `SET_SCANOUT_BLOB` |
-| `src/gpu3d.h` | What the device asks of a renderer (`xh_gpu3d`), so the tests can put a recording one there |
-| `src/gpu3d.c` | `xh_gpu3d_udmabufs`: guest physical segments of the RAM memfd as dma-bufs (`UDMABUF_CREATE_LIST`), one where the blob fits udmabuf's limits, several in a row ("chunks") where it does not |
-| `src/gpu3d_kgsl.c` | The renderer: drm2kgsl, with what virglrenderer.c and crosvm's rutabaga are around it in a DroidVM; the chunk lists of resources made of several udmabufs |
-| `drm2kgsl/config.h` | The `config.h` of the virglrenderer sources the Makefile compiles |
-| `drm2kgsl/patches/*.patch` | This project's changes to `drm2kgsl_renderer.c` (section 2.1). The Makefile applies them, in name order, to a copy in `build/android/drm2kgsl/patched/` and compiles that; `external/virglrenderer` stays at its pin |
-| `drm2kgsl/oneios_drm2kgsl.h` | The functions the patches add for `gpu3d_kgsl.c` |
-| `drm2kgsl/oneios_gpu_policy.h` | The GPU's per-process policy as pure functions: each context's class, its KGSL priority, the level by frame deadline (section 2.2b; `tests/test_gpu_policy.c`) |
-| `drm2kgsl/host_c11.h` | Only for the host test's build of those sources |
-| `tools/gpuctl.c` | The renderer alone, for the phone (section 4) |
+| `src/virtio_gpu.rs` | The device. 2D as before (the first frame still comes through it). With a renderer: features VIRGL, RESOURCE_BLOB, CONTEXT_INIT, CREATE_GUEST_HANDLE; one capset (6, DRM); `CTX_CREATE/DESTROY`, `CTX_ATTACH/DETACH_RESOURCE`, `RESOURCE_CREATE_BLOB`, `RESOURCE_MAP_BLOB` (answered `MAP_INFO_POOL` + the offset in the pool), `RESOURCE_UNMAP_BLOB`, `SUBMIT_3D`, `SET_SCANOUT_BLOB` |
+| `src/gpu3d.rs` | What the device asks of a renderer (the `Gpu3d` trait), so the tests can put a recording one there; guest physical segments of the RAM memfd as dma-bufs (`UDMABUF_CREATE_LIST`), one where the blob fits udmabuf's limits, several in a row ("chunks") where it does not |
+| `src/gpu3d_kgsl.rs` | The renderer: drm2kgsl, with what virglrenderer.c and crosvm's rutabaga are around it in a DroidVM; the chunk lists of resources made of several udmabufs, the stats, the log lines |
+| `src/gpu3d_kgsl/policy.rs` | The GPU's per-process policy as pure functions: each context's class, its KGSL priority, the level by frame deadline (section 2.2b); tests in `policy/tests.rs` |
+| `drm2kgsl/` (crate `drm2kgsl-sys`) | `build.rs` builds the renderer's C from `external/virglrenderer` (below) and a small glue; `src/` is the safe Rust front (one lock over the renderer's tables) |
+| `drm2kgsl/config.h` | The `config.h` of the virglrenderer sources `build.rs` compiles (`-imacros`) |
+| `drm2kgsl/patches/*.patch` | This project's changes to `drm2kgsl_renderer.c` (section 2.1). `build.rs` applies them, in name order, to a copy in cargo's `OUT_DIR` and compiles that; `external/virglrenderer` stays at its pin |
+| `drm2kgsl/oneios_drm2kgsl.h` | The functions the patches add for the renderer's front |
+| `drm2kgsl/oneios_gpu_policy.h` | The C policy header the patched renderer still includes for its own two uses (`og_class_name`, `og_kgsl_priority`); `policy.rs` is the policy, and its test `the_renderers_header_agrees` checks the two say the same |
+| `drm2kgsl/glue/oneios_glue.c`, `.h` | Only what Rust cannot reach: virglrenderer's C structures with function pointers (read and called by id) and the three variadic or `va_list` functions the sources expect of their surroundings (Android's liblog and mesa's `os_misc.c`), which go to xnuhost's log |
+| `drm2kgsl/glue/oneios_sys.c`, `.h` | Host builds only: every `open` and `ioctl` of the renderer through a table the tests set (the stand-in KGSL), instead of the C tests' `-Wl,--wrap` |
+| `drm2kgsl/glue/oneios_kgsl_layout.c` | Host builds only: the sizes and offsets of drm2kgsl's `msm_kgsl.h` that the tests' stand-in KGSL mirrors in Rust (`src/gpu3d_kgsl/tests/kgsl.rs`), checked by `layout_matches_msm_kgsl_h` |
+| `drm2kgsl/host_c11.h` | Only for the host build of those sources (mesa's C11 threads shim beside a new glibc) |
+| `tools/gpuctl.rs` | The renderer alone, for the phone (section 4); the bin `gpuctl` |
 
-**drm2kgsl is linked in, statically. There is no helper process.** The Makefile compiles sixteen sources of
+**drm2kgsl is linked in, statically. There is no helper process.** `runtime/xnuhost/drm2kgsl/build.rs` compiles
+sixteen sources of
 `external/virglrenderer` (Droid-VM's fork at the pin of `scripts/setup/get-references.sh`): the renderer, the DRM
 context and fence code, the context and resource tables and the mesa utilities under them. `virglrenderer.c` itself
 is left out: it needs the GL renderer (epoxy, EGL) and libdrm, which a static Android binary has not. The three
-symbols it wants from Android's liblog and mesa's `os_misc.c` are in `gpu3d_kgsl.c` and go to xnuhost's log.
-Without `external/virglrenderer` xnuhost still builds, with the 2D device, and says so at start.
+symbols it wants from Android's liblog and mesa's `os_misc.c` are in `glue/oneios_glue.c` and go to xnuhost's log.
+Without `external/virglrenderer` the crate still builds (`drm2kgsl_sys::AVAILABLE` false, a cargo warning) and xnuhost is the 2D-only one, which says so at start (`gpu: 2D only: this build has no drm2kgsl`); `runtime/build.sh` refuses such a stage unless `XNUHOST_2D_ONLY=1`.
 
 **Memory.**
-- The RAM memfd is now created sealable and sealed against shrinking (`mem.c`): udmabuf takes no other memfd.
+- The RAM memfd is now created sealable and sealed against shrinking (`src/mem.rs`): udmabuf takes no other memfd.
 - Guest pages: every buffer object is the guest's own memory (`MSM_BO_GUEST_ALLOC`, a `HOST3D_GUEST` blob with
   `CREATE_GUEST_HANDLE`). The device checks the segments (guest RAM, whole 4 KiB pages, at least the blob's size),
   the renderer makes udmabufs of them, hands them to the context and KGSL imports each and binds them at the GPU
@@ -58,7 +68,7 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
 - **udmabuf's limits.** The kernel caps one udmabuf at `size_limit_mb` MiB and `list_limit` runs of adjacent pages:
   64 and 1024 on the S24 Ultra (the kernel's defaults). A guest blob can be 256 MiB of single pages
   (`MaxBlobEntries` in `DroidVMVirtioGpu3D.cpp`), and an 18 MiB framebuffer of scattered 16 KiB pages is already 1152
-  runs. So `xh_gpu3d_udmabufs` cuts a blob into chunks, in the blob's order: adjacent segments are joined, and a chunk
+  runs. So `gpu3d::udmabufs` cuts a blob into chunks, in the blob's order: adjacent segments are joined, and a chunk
   ends where the next page would pass either limit (a run is cut in the middle when the chunk is full). Each chunk is
   one udmabuf and one KGSL object; drm2kgsl binds them one after another at the blob's GPU address with a single
   `BIND_RANGES`. A blob that fits is one udmabuf, as before. The limits used are the kernel's
@@ -72,13 +82,13 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
   process) and the blob is split again: more chunks, which the chunked path above already takes. One line each time:
   `xnuhost: gpu: udmabuf: the kernel refused a 64 MiB udmabuf (ENOMEM: its page array needs contiguous memory);
   udmabufs of at most 32 MiB from now on`. Every phone (the S24 Ultra's 6.1 too); nothing changes until a refusal.
-  `test_xnuhost`: a stand-in kernel that refuses lists over 16 MiB gets 72 MiB as 16 + 16 + 16 + 16 + 8, the limit
+  Host test (`src/virtio_gpu/tests.rs`, `test_xnuhost` in the C): a stand-in kernel that refuses lists over 16 MiB gets 72 MiB as 16 + 16 + 16 + 16 + 8, the limit
   stays 16 MiB, and another error (EINVAL) is returned as it is with the limit kept.
 - A resource made of several udmabufs: virglrenderer's resource holds one fd (the first chunk's); the whole list is
-  kept by `gpu3d_kgsl.c` under the resource id until the resource is gone, and a second context that attaches the
+  kept by `gpu3d_kgsl.rs` under the resource id until the resource is gone, and a second context that attaches the
   resource (`CTX_ATTACH_RESOURCE`: an IOSurface shared between processes, the display's surface) imports every chunk
   again. Cost: one fd per chunk in xnuhost plus one per chunk in each context that uses the resource.
-- The pool: 8 MiB of the memfd between the kernel's window and the boot framebuffer (`main.c` `GPU_POOL_BYTES`),
+- The pool: 8 MiB of the memfd between the kernel's window and the boot framebuffer (`src/session/board.rs` `GPU_POOL_BYTES`),
   named to the guest as `/arm-io/virtio-gpu` `drm-host-pool` (base, size) and to drm2kgsl as its arena. It holds each
   context's 16 KiB response buffer; drm2kgsl keeps its first 2 MiB unused. The kernel's window is 8 MiB smaller
   for it unless `--gpu 2d`.
@@ -179,7 +189,7 @@ offers one timeline, so `KGSL_CONTEXT_PRIORITY_UNDEF`, the kernel's default), so
 level with the front app's and the render server's. On a real iPhone the AGX firmware picks the GPU's clock per frame from
 Core Animation's work-interval deadlines; nothing of that reached KGSL here.
 
-**Now** (`drm2kgsl/oneios_gpu_policy.h`, `src/gpu3d_kgsl.c`, `drm2kgsl/patches/0008-deadline-level-and-class-priority.patch`):
+**Now** (`src/gpu3d_kgsl/policy.rs`, `src/gpu3d_kgsl.rs`, `drm2kgsl/patches/0008-deadline-level-and-class-priority.patch`; the C header `drm2kgsl/oneios_gpu_policy.h`, the policy's first form, is still included by the patched renderer for two functions):
 
 - **The level follows the frame's deadline.** xnuhost decides it for every GPU submission (a SUBMIT_3D with a
   `GEM_SUBMIT`) of the render server, and of any other non-background context within a second of a render-server frame.
@@ -220,7 +230,7 @@ Core Animation's work-interval deadlines; nothing of that reached KGSL here.
   process's surfaces" matches them), that context is `shown` and never background again, whatever its name or role says
   (`gpu: context N xnu:NAME: the render server reads its surfaces: default now, not background`); then **process names**
   that never draw what the user sees: `photoanalysisd`, `mediaanalysisd`, `assetsd`, `searchd`, `analyticsd`, `suggestd`
-  (background; each one's reason is in `oneios_gpu_policy.h`), replaceable with `ONEIOS_GPU_BACKGROUND=` /
+  (background; each one's reason is in `src/gpu3d_kgsl/policy.rs`), replaceable with `ONEIOS_GPU_BACKGROUND=` /
   `ONEIOS_GPU_FRONT=` in xnuhost's environment; then **the guest's hint**: the submitting task's effective role
   (`TASK_POLICY_ROLE`, which RunningBoard sets: foreground, control, graphics server, user-init -> front; background,
   throttle, non-UI, DarwinBG -> background), the thread's DarwinBG and its QoS (maintenance, background, utility ->
@@ -231,8 +241,8 @@ Core Animation's work-interval deadlines; nothing of that reached KGSL here.
 - **The hint's channel** (guest: `gpu/OneiOSAdreno.cpp` `oneios_gpu_hint`, called from the staged
   `DroidVMVirtioGpu3D.cpp` on the client's own thread, `tools/oneios-tool/crates/oneios-kernel/src/staged/gpu.rs`): CTX_CREATE's
   `context_init` bits 8-23 (beside the capset id) and the SUBMIT_3D header's three padding bytes: [0] `0x80` | `0x40`
-  DarwinBG | role, [1] QoS, [2] time to the frame's deadline in 250 us units. The host reads them in `virtio_gpu.c` and
-  hands them to the renderer (`xh_gpu3d.hint`). **The CPU agent's signal** (fix-host-overhead's hosted CLPC: thread groups,
+  DarwinBG | role, [1] QoS, [2] time to the frame's deadline in 250 us units. The host reads them in `virtio_gpu.rs` and
+  hands them to the renderer (`Gpu3d::hint`). **The CPU agent's signal** (fix-host-overhead's hosted CLPC: thread groups,
   work intervals, RunningBoard roles) is read through two weak functions in `OneiOSAdreno.cpp`, whose defaults say "not
   known": `int oneios_clpc_thread_role(thread_t)` (the thread group's role as a `task_role_t`, or -1) and `uint64_t
   oneios_clpc_frame_deadline(thread_t)` (the work interval's deadline in mach absolute time, or 0). A strong definition in
@@ -259,7 +269,7 @@ drm2kgsl: context 9: power constraint at the lowest level
 
 The `drm2kgsl:` facts above are `xnuhost I` lines. drm2kgsl prints them at virglrenderer's WARNING level (so that
 the library's threshold passes them); until 2026-11-22 xnuhost mapped WARNING to `xnuhost E`, and all 28 `E` lines of
-a session were such facts. Only `drm_err` (ERROR) is an `xnuhost E` line now (`gpu3d_kgsl.c`, docs/booter.md 2.9b).
+a session were such facts. Only `drm_err` (ERROR) is an `xnuhost E` line now (`gpu3d_kgsl.rs`, docs/booter.md 2.9b).
 
 (examples, not from a run.) `gpu: context` comes once per context (two per process) and when its class changes: a
 process whose contexts keep coming back is making Metal devices again and again. The 10 s line says how much of the
@@ -297,7 +307,7 @@ xnu:WidgetRenderer_Default: default, KGSL priority 8`; `gpu: 10 s host: ... othe
 (below 10000 us); the guest's `oneios-gpu-report: ... fence timeouts +0`; no `gpu: 10 s fences over 100 ms` line naming
 WidgetRenderer_Default.
 
-**Tested on the PC** (no KGSL): `tests/test_gpu_policy.c` (`make -C runtime/xnuhost test`; 166 checks: classes from
+**Tested on the PC** (no KGSL; the C tests of 2026-11, ported to Rust on 2026-11-23, section 3): `tests/test_gpu_policy.c` (now `src/gpu3d_kgsl/policy/tests.rs`; 166 checks: classes from
 names, hints and `shown`, priorities, the surface table, the level for each kind of stream, deadlines, background, the
 lowest level's rules, the follow window, the three modes, and the starvation model below) runs here. Its last part runs the same frame streams under `gpu-level=hold` and `=deadline` (frames at the governor's
 lowest clock taken as 4 times their top-level time, the hold 150 ms), the share of time the clock is held at the top:
@@ -327,8 +337,8 @@ last the render server composites 3 frames of it; photoanalysisd computes all th
 
 (In the third case SpringBoard's frame, a counted one, ended the lowest level under #42's rules too.) The heavy case
 under #42's rules is the phone's pattern (a mean near 90 ms, fences over Metal's 100 ms slice); the time the GPU spends
-at its lowest level hardly changes, so the power it saves stays. `test_xnuhost`: CTX_CREATE's hint bits and SUBMIT_3D's
-padding reach the renderer. `test_drm2kgsl`'s policy scenarios run on this PC with a stand-in for `/dev/udmabuf` (a
+at its lowest level hardly changes, so the power it saves stays. `test_xnuhost` (now `three_d`): CTX_CREATE's hint bits and SUBMIT_3D's
+padding reach the renderer. `test_drm2kgsl`'s policy scenarios (now `classes` and `shown_surfaces` in `src/gpu3d_kgsl/tests.rs`) run on this PC with a stand-in for `/dev/udmabuf` (a
 memfd per UDMABUF_CREATE_LIST: `/dev/udmabuf` is root:kvm here) and on the Mac's container with the real one: queue
 priorities by class (the render server 4 with its constraint flag, iconservicesagent 8 without it, an app 4 in front,
 8 with the flag sent to the background, photoanalysisd 8 with the flag; 13 checks), and a context whose surfaces the
@@ -362,7 +372,7 @@ context with no room is not made: one log line (`context xnu:NAME: no room for 2
 hold M of 192 GiB): not made`), the device answers `CTX_CREATE` with `ERR_OUT_OF_MEMORY`, the guest's context init
 fails, the plug-in reports no device and the process draws without the GPU (the path an unlisted process takes).
 Each context's own line: `context xnu:NAME: GPU addresses [base, +N GB); N contexts hold M of 192 GiB`
-(drm2kgsl's debug log). Host tests: `test_drm2kgsl` and `test_gpu_leaks` pass with it; not yet run on the phone.
+(drm2kgsl's debug log). Host tests: `test_drm2kgsl` and `test_gpu_leaks` (now `src/gpu3d_kgsl/tests.rs`) pass with it; not yet run on the phone.
 
 ### 2.4 `drm2kgsl/patches/0007-import-coherence-read-back.patch` (widgets, 2026-11-13)
 
@@ -385,11 +395,11 @@ gpu: KGSL imports N, read back C: IO-coherent K, coherence dropped by KGSL D, no
 
 `D` above 0 on the phone means guest memory is not coherent with the GPU: the fix would then be cache maintenance where
 the guest hands memory to the GPU (or `DRM2KGSL_NONCOHERENT` turned the other way), not more counters. Host test:
-`test_drm2kgsl`'s third scenario (the stand-in KGSL keeps or, as an MMU without IO coherence would, drops the flag; an
+`test_drm2kgsl`'s third scenario (now `coherence`; the stand-in KGSL keeps or, as an MMU without IO coherence would, drops the flag; an
 attach asks none): built on the Linux PC (2026-11-13), not run there (no access to `/dev/udmabuf`, section 3); the Mac's
 container runs it. Not yet run on the phone.
 
-To change it: edit a copy of the pinned file, `diff -u` against the original into `drm2kgsl/patches/`, `make`.
+To change it: edit a copy of the pinned file, `diff -u` against the original into `drm2kgsl/patches/`, then `cargo build -p xnuhost` (`drm2kgsl/build.rs` applies the series again).
 A new pin of virglrenderer that the patch no longer applies to stops the build (`patch -F0`).
 
 **Threads and fences.** With a renderer the control queue is served by one thread of the device, never by a vCPU's
@@ -409,7 +419,7 @@ the lane choice of an app's next blob and the render server's submit it took the
 wait for several blobs. A fast-lane command that names a resource the
 slow lane has not made yet (an app's surface the render server attaches, the unref of an app's blob) waits for the slow
 lane's commands that came before it and runs again. A device reset drops the slow lane's chains of the old queue. Test:
-`test_virtio_gpu3d` (all its contexts are the slow lane's now, and one case holds two of an app's blobs: the render
+`test_virtio_gpu3d` (now `three_d`; all its contexts are the slow lane's now, and one case holds two of an app's blobs: the render
 server's submission is answered before both, or right after the first when the slow lane had started it, never after
 the second; 8 runs green with every core of the PC busy, where the old one-blob check failed 2 of 3: it asked for the
 submission before the one blob, which the slow lane may rightly have started first; the test's `driver_send_at` puts
@@ -451,7 +461,7 @@ hard limit (no privilege needed; `gpu: open files: soft limit N -> M` in the log
 ran out of fds under GFXBench before it did the same.
 
 **The host's share of a frame.** The guest's GPU report times a render-server frame from submission to the fence it
-sees (9-11 ms on the phone on 2026-11-12, with KGSL 7 % busy). `gpu3d_kgsl.c` times the host's part, one line per 10 s
+sees (9-11 ms on the phone on 2026-11-12, with KGSL 7 % busy). `gpu3d_kgsl.rs` times the host's part, one line per 10 s
 while fences retire: `gpu: 10 s host: backboardd fences N, submit->retired mean X us max Y us; submit calls mean X us max
 Y us; other fences N, mean X us; blobs made N, mean X us max Y us (udmabufs X us of it); clock held +N times, keep-alives +M`. "blobs made" is the host's part of each guest BO
 (udmabufs of its pages, drm2kgsl's import and bind): every Turnip BO is one (a process drawing icons held 1335 under 1 MiB). "submit->retired" runs from the fence reaching the renderer to drm2kgsl's retire
@@ -464,56 +474,69 @@ are descriptors of xnuhost and go with it at SIGKILL; drm2kgsl's fence threads a
 
 ## 3. Tests on the PC
 
-`make -C runtime/xnuhost test` (also `runtime/build.sh --test`):
+`cd runtime && cargo test -p xnuhost -p drm2kgsl-sys` (also part of `runtime/host-tests.sh` and `runtime/build.sh
+--test`). These are the C tests of `runtime/xnuhost/tests/` ported case for case on 2026-11-23 (commit `c61e7a5`: 34
+tests pass with drm2kgsl and in the 2D-only build); the numbers of checks below are the C tests' unless said:
 
-- `test_virtio_gpu3d` in `tests/test_xnuhost.c`, the device against a recording renderer: capsets, contexts, the
-  three kinds of blob with good and bad segments, `MAP_BLOB`'s pool answer, `SUBMIT_3D` bytes reaching the renderer
-  whole, fences held and retired in order per ring, a context destroyed with a command held, a blob as the scanout,
-  the 2D commands beside them, a device reset. Then a generated stream: 4000 commands of every type and of none,
-  with random lengths, ids, flags and segments; each gets exactly one answer or error, under ASan and UBSan.
-  `XNUHOST_TEST_SEED=N` changes the stream (144 seeds were run).
-- `xh_gpu3d_udmabuf` against the real `/dev/udmabuf` of the PC: three segments of a sealed memfd read back in order
+- `three_d` in `src/virtio_gpu/tests.rs` (`test_virtio_gpu3d` of `tests/test_xnuhost.c` in the C), the device against a
+  recording renderer: capsets, contexts, the three kinds of blob with good and bad segments, `MAP_BLOB`'s pool answer,
+  `SUBMIT_3D` bytes reaching the renderer whole, fences held and retired in order per ring, a context destroyed with a
+  command held, a blob as the scanout, the 2D commands beside them (`two_d`), a device reset, the two lanes. Then a
+  generated stream: 4000 commands of every type and of none, with random lengths, ids, flags and segments; each gets
+  exactly one answer or error (the C ran it under ASan and UBSan). `XNUHOST_TEST_SEED=N` changes the stream (144 seeds
+  were run with the C).
+- `gpu3d::udmabuf` against the real `/dev/udmabuf` of the PC: three segments of a sealed memfd read back in order
   through the dma-buf, a write seen in the memfd, an unsealed memfd refused.
 - The split, same file, real udmabufs read back page by page: with the limits set to 8 pages and 3 runs
-  (`xh_gpu3d_udmabuf_set_limits`), 20 pages in one run become 8 + 8 + 4, seven separate pages 3 + 3 + 1, two joined
+  (`gpu3d::udmabuf_set_limits`), 20 pages in one run become 8 + 8 + 4, seven separate pages 3 + 3 + 1, two joined
   segments and a third are cut where the first udmabuf is full, exactly the limit is one udmabuf and one page more
   is not; with the limits as on the phone, 72 MiB in one run become 64 + 8 MiB (the second begins where the first
   ends) and 1100 separate pages 1024 + 76. The PC's own limit is 2147483647 MiB, and setting it to 64 needs root,
-  so the kernel *refusing* a 65 MiB udmabuf was not seen here; the phone's `gpuctl nodes` printed 64.
-- `tests/test_drm2kgsl.c` (`build/host/test_drm2kgsl`, built when `external/virglrenderer` is there): the renderer
-  with the patched drm2kgsl on the PC against a stand-in for KGSL's memory ioctls, `ioctl` and `open` wrapped at link
-  time, the udmabufs real. The stand-in gives GPU addresses as Samsung's driver does (section 4.1): one range of
-  256 GiB, a VBO as large as the range allowed, every object an address of its own. Two processes: (a) with the room
+  so the kernel *refusing* a 65 MiB udmabuf was not seen here; the phone's `gpuctl nodes` printed 64. The ENOMEM
+  halving against a stand-in `UDMABUF_CREATE_LIST` (section 2). Without `/dev/udmabuf` these say so and are skipped.
+- `src/gpu3d_kgsl/tests.rs` (`tests/test_drm2kgsl.c` in the C; built when `external/virglrenderer` is there, else each
+  scenario prints `skipped (no drm2kgsl in this build)`): the renderer with the patched drm2kgsl on the PC against a
+  stand-in for KGSL's memory ioctls (`src/gpu3d_kgsl/tests/kgsl.rs`, reached through `drm2kgsl-sys`'s open/ioctl hooks,
+  `glue/oneios_sys.c`; the C wrapped them at link time), the udmabufs real; each scenario runs in a child process of the
+  test binary, as the C's did. The stand-in gives GPU addresses as Samsung's driver does (section 4.1): one range of
+  256 GiB, a VBO as large as the range allowed, every object an address of its own. `whole_range`: with the room
   check off the VBO is 256 GiB and the first import fails with drm2kgsl's `GPUOBJ_IMPORT failed` ENOMEM, the phone's
-  result; (b) with it the VBO is 192 GiB, a 16 KiB buffer is one import and one range, 72 MiB two imports bound in a
+  result; `with_room`: the VBO is 192 GiB, a 16 KiB buffer is one import and one range, 72 MiB two imports bound in a
   row by one call (64 + 8 MiB at the right offsets), 1100 pages two (1024 + 76), a blob shorter than its segments
   is bound only to its size, one longer is refused with nothing left imported, a second context imports both chunks
   and binds them at its own address on `GEM_SET_IOVA`, and at the end every chunk is unbound and freed (only the
-  VBO is left). A third profile is the base S25's Adreno 830 (chip 0x44050000, gpu_id 6850, 12 MiB gmem, 192 GiB of
+  VBO is left). `a830` is the base S25's Adreno 830 (chip 0x44050000, gpu_id 6850, 12 MiB gmem, 192 GiB of
   VA): the 256 GiB rung then leaves no import room and the renderer takes the 128 GiB one, and a GEM_SUBMIT on a queue
   shows the default is the WAITTIMESTAMP_CTXTID path (no TIMESTAMP_EVENT) while `NCTX_NO_WAITTS` asks for
-  TIMESTAMP_EVENT(FENCE) (patch 0007's A/B switch). 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL
-  from its source; it is not KGSL.
-- `tests/test_gpu_leaks.c` (`build/host/test_gpu_leaks`, LeakSanitizer on): the same renderer and stand-in through 30 cycles
-  each of 72 MiB, 16 KiB and 1100-page context blobs (create, upload, attach to a second context, its own GPU address there,
-  detach, unref), display blobs in two contexts, contexts destroyed with their own, others' and display resources attached,
-  blobs whose `get_blob` fails, and a reset; open fds and live KGSL objects must come back each time. It found two leaks
-  (fixed by `drm2kgsl/patches/0003-free-objects-of-a-failed-get-blob.patch`): a `get_blob` that failed after taking its
-  object out of the blob table left the object, its KGSL objects and its udmabufs reachable from nowhere (+2 fds and 2 KGSL
+  TIMESTAMP_EVENT(FENCE) (patch 0007's A/B switch). Also `coherence` (patch 0007's read-back, section 2.4), `classes`
+  and `shown_surfaces` (section 2.2b). The C had 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL from
+  its source; it is not KGSL. `layout_matches_msm_kgsl_h` checks the stand-in's mirror of `msm_kgsl.h` against the header
+  (`glue/oneios_kgsl_layout.c`).
+- `leaks` in the same file (`tests/test_gpu_leaks.c` in the C, which ran under LeakSanitizer): the same renderer and
+  stand-in through 30 cycles each of 72 MiB, 16 KiB and 1100-page context blobs (create, upload, attach to a second
+  context, its own GPU address there, detach, unref), display blobs in two contexts, contexts destroyed with their own,
+  others' and display resources attached, blobs whose `get_blob` fails, and a reset; open fds and live KGSL objects
+  must come back each time, and in place of LeakSanitizer a second round of the cycles must leave the heap where the
+  first did (2026-11-23: +128 bytes). The C test found two leaks (fixed by
+  `drm2kgsl/patches/0003-free-objects-of-a-failed-get-blob.patch`): a `get_blob` that failed after taking its object
+  out of the blob table left the object, its KGSL objects and its udmabufs reachable from nowhere (+2 fds and 2 KGSL
   objects for a chunked blob, +1 and 1 single; a guest reaches it with a GEM_NEW at a GPU address outside its range or a
-  size unlike the blob's), and a context destroyed with a dma-buf still parked for a `get_blob` kept that fd. 956 checks.
-  `CYCLES=N` for more. Not covered off the phone: KGSL itself, submits and fences, the guest's driver and Metal.
-- `tests/test_gpu_policy.c` (`build/host/test_gpu_policy`): the policy of section 2.2b alone, no KGSL and no udmabuf, so it
-  runs on every host; it prints the before/after table of section 2.2b.
-- The loader's `drm-host-pool` property (`runtime/loader` tests).
-- `check-arm64`: the Android binary with the 3D code linked still boots the test kernel under `qemu-aarch64` (2D:
-  no KGSL there).
+  size unlike the blob's), and a context destroyed with a dma-buf still parked for a `get_blob` kept that fd (956 checks
+  in the C). `CYCLES=N` for more. Not covered off the phone: KGSL itself, submits and fences, the guest's driver and Metal.
+- `src/gpu3d_kgsl/policy/tests.rs` (`tests/test_gpu_policy.c` in the C): the policy of section 2.2b alone, no KGSL and
+  no udmabuf, so it runs on every host; it prints the before/after table of section 2.2b. `the_renderers_header_agrees`
+  checks `drm2kgsl/oneios_gpu_policy.h`'s two functions against the Rust policy.
+- The loader's `drm-host-pool` property (`runtime/loader/tests/loader.rs`).
+- `runtime/xnuhost/check-arm64.sh check`: the static Android xnuhost with the 3D code linked still boots the test kernel
+  under `qemu-aarch64` (2D: no KGSL there).
 
 Not tested on the PC: anything the GPU does (submits, fences), and KGSL itself. That is `gpuctl`.
 
 ## 4. `gpuctl`: the check on the phone
 
-Built by `runtime/build.sh STAGE` as `STAGE/bin/gpuctl` (static). As root on the S24 Ultra:
+Built by `runtime/build.sh STAGE` as `STAGE/bin/gpuctl` (static; the bin `gpuctl` of the crate `xnuhost`,
+`runtime/xnuhost/tools/gpuctl.rs`, the port of `tools/gpuctl.c` with the same steps, lines and verdicts; the Rust one
+has not run on the phone yet). As root on the S24 Ultra:
 
 ```sh
 adb push STAGE/bin/gpuctl /data/local/tmp/gpuctl
@@ -784,7 +807,7 @@ pool's first blocks are in the 4-32 MiB columns too.)
 | metal2vulkan (`memory.rs` pools) | the blocks resources are placed in (dedicated allocations for large ones) and up to two empty blocks a pool | an empty block after 2 s (`watchIdleMemory`), every kept block on a pressure rise; never while placements live in it |
 | Turnip (`tu_knl_darwin.cc`) | a freed BO until its fence is done (the retire queue), then in its BO cache: at most 16 MiB of BOs up to 1 MiB and 96 MiB of larger ones (`TU_DARWIN_BO_CACHE_SMALL_MB`, `TU_DARWIN_BO_CACHE_MB`) | past the budgets, oldest first: the close below |
 | the kernel (`DroidVMVirtioGpu3D.cpp`) | a closed blob while the client still has fenced work made before the close ("deferred", "waiting") | at the client's next method or fence wait once that work is done (`reapPending`); every blob at the connection's close |
-| xnuhost (`virtio_gpu.c`, `gpu3d_kgsl.c`, drm2kgsl) | the resource, its udmabufs and KGSL's import of them | at `RESOURCE_UNREF`: detached from every context (drm2kgsl unbinds and frees the GPU object), the chunks closed |
+| xnuhost (`virtio_gpu.rs`, `gpu3d_kgsl.rs`, drm2kgsl) | the resource, its udmabufs and KGSL's import of them | at `RESOURCE_UNREF`: detached from every context (drm2kgsl unbinds and frees the GPU object), the chunks closed |
 
 So "blobs +N closed +M" with N far above M (the phone, 2026-11-12 23:45: backboardd +182, closed +17 in 10 s) means the
 client has not closed them: the holder is in the process (Core Animation, NativeMetal, metal2vulkan or Turnip's cache, the
@@ -812,7 +835,7 @@ oneios-gpu-ages: backboardd <16K 600, <64K 300, <256K 200, <1M 92; age <10 s 120
   minutes is GPU work that never finishes (a fence lost). A burst that the next quiet 10 s returns ("gone" catching up with
   "made", the counts falling) is a busy UI, not a leak.
 
-The host's side, in xnuhost's log every 10 s while it changes (`virtio_gpu.c` `blob_note`): `gpu: 10 s: host blobs N (M
+The host's side, in xnuhost's log every 10 s while it changes (`virtio_gpu.rs`, the blob note): `gpu: 10 s: host blobs N (M
 MiB), made +A unref'd +B`. N against the guest's `oneios-gpu-memory` live count says whether the host keeps blobs the guest
 let go (N larger by more than the display's few 2D surfaces: a host leak); equal, the holding is the guest's.
 

@@ -1,29 +1,52 @@
 # The booter: xnuhost and the loader
 
-Owner: booter. Code: `runtime/loader/` (the loader library), `runtime/xnuhost/` (the program),
-`runtime/build.sh` (what `runtime/package.sh` calls). Date: 2026-11-10.
+Owner: booter. Code: `runtime/loader/` (the loader, crate `xnuloader`), `runtime/xnuhost/` (the program, crate
+`xnuhost`), `runtime/build.sh` (what `runtime/package.sh` calls). Date: 2026-11-10.
+
+**The runtime is Rust (2026-11-23, branch `rust-runtime`).** xnuhost and the loader were C until then; every C file
+became a Rust module of the same name (`src/<name>.c` -> `src/<name>.rs`; `main.c` -> `src/session.rs` and
+`src/session/{board,bridges,host,memory}.rs`, `return.c` -> `src/ret.rs`, `arch_aarch64.S` -> `src/arch.rs`'s
+`global_asm!` thunks; xnuhost's `log.c`, `virtio.c`, `mmio.c` and `insn.c` -> the shared crate `xh-core`,
+`runtime/core/src/`), with the same settings, log lines and exit codes ([runtime/RUST.md](../runtime/RUST.md) has the
+crate map and the rules). The task stub is `runtime/xnuhost/stub` (no_std, `aarch64-unknown-none`, `stub/build.sh`),
+the test kernel `runtime/xnuhost/testkernel` (`testkernel/build.sh`), the loader's tools the bins `xnuloader-inspect`
+and `mkkernel`. What stays C: the guest-facing headers the kernel's C includes,
+`runtime/xnuhost/include/xnuhost/{hostcall,pixels,free_report,free_report_runs}.h`, each mirrored in Rust
+(`runtime/abi/src/`, `runtime/core/src/pixels.rs`) with a test that reads the header and checks every constant, size
+and offset; and the GPU's renderer (virglrenderer's drm2kgsl, pinned, built by `runtime/xnuhost/drm2kgsl/build.rs`
+with a small C glue). Function names below are the Rust ones (`module::function`) where the text names code; a record
+of a test or a measurement keeps the names of the tree it was made on. **The Rust xnuhost has not run on the phone
+yet**: it passes the host tests and boots the test kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`,
+the three boots); every phone measurement below was made with the C xnuhost.
 
 xnuhost boots a source-built XNU **as a Linux process** on One UI's kernel: it loads the kernel collection
 into its own address space, gives it CPUs (host threads), interrupts and a timer (signals), devices
 (emulated in-process) and iOS tasks (other Linux processes whose system calls and faults it traps).
 
-**State, plainly.** Everything below is built and tested on the PC, including the whole program booting a
+**State, plainly, as of 2026-11-10** (today's: [README.md](../README.md) "Status"). Everything below is built and tested on the PC, including the whole program booting a
 test kernel under `qemu-aarch64`. Nothing has run on the phone, and iOS does not boot: the kernel that
 uses this host (the hosted machine layer inside XNU) does not exist yet. Section 8 lists what is missing.
 
 ## 1. Use
 
 ```sh
-runtime/build.sh STAGE        # Android binary -> STAGE/bin/xnuhost (static, 1.2 MB; the task stub is inside),
-                              # and the bridges' bin/oneios-audio, bin/oneios-net.sh
-runtime/build.sh --test       # loader tests, xnuhost tests, and the binary booting the test kernel under qemu-aarch64
-runtime/host-tests.sh         # every host test of the runtime; on a Mac in an arm64 Linux container, where the
-                              # binary boots the test kernel as it is (no qemu)
+runtime/build.sh STAGE        # cargo, aarch64-linux-android: STAGE/bin/xnuhost (static, crt-static; the task stub is
+                              # inside), gpuctl, the bridges' helpers and phone checks (the script's header lists them)
+runtime/build.sh --test       # = runtime/host-tests.sh
+runtime/host-tests.sh         # every host test of the runtime (workspace, lint, boot, port, links, package); on a Mac
+                              # in an arm64 Linux container, where the binary boots the test kernel as it is (no qemu)
+cd runtime && cargo test -p xnuloader -p xnuhost   # the loader's and xnuhost's unit tests alone
+runtime/xnuhost/check-arm64.sh smoke check         # the vCPU machinery alone, then the test kernel's three boots
+                              # (the static Android xnuhost under qemu-aarch64 on a PC; natively on arm64 Linux)
+runtime/xnuhost/check-arm64.sh bench|parallel|rpc|ab   # the trap path's costs, the parallel test, the Mach RPC
+                              # round trip, two binaries compared (sections 2.6a, 2.6b, 2.6d; the script's header)
 ```
 
-Both build hosts work: a Linux x86_64 PC and a Mac (`runtime/host.mk` picks the NDK's `linux-x86_64` or
-`darwin-x86_64` tools). The host unit tests are Linux tests; `tests/test_xnuhost.c` is built with `-DXH_HOST_TEST`,
-so `cpu.c` and `task.c` take their stand-ins on an arm64 Linux host too ([building.md](building.md) section 4).
+Both build hosts work: a Linux x86_64 PC and a Mac (`runtime/ndk-cc`, cargo's linker, finds the NDK's `linux-x86_64`
+or `darwin-x86_64` tools). The host unit tests are Linux tests. On a target that can run the kernel (AArch64 Linux or
+Android) `build.rs` sets `cfg(xh_machine)` and the real vCPUs, thunks and task layer are built (and the stub, by
+`stub/build.sh`, embedded by `arch.rs`); elsewhere, and in the unit tests, `cpu.rs` and `task.rs` build their
+stand-ins ([building.md](building.md) section 4).
 
 Command line (the first line is what the OneOS fork runs, `oneos/interface.md` section 4):
 
@@ -70,7 +93,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--hw-backend-BRIDGE samsung\|treble` (`hw-backend-backlight=`, `-battery`, `-thermal`, `-haptics`, `-touch`, `-keys`, `-audio`, `-camera`, `-wifi`, `-bluetooth`, `-display`) | unset (`hw-backend`'s) | one bridge's backend, over `hw-backend`; an unknown bridge name is refused |
 | `--hw-backend-fallback 0\|1` (`hw-backend-fallback=`) | 0 | a treble bridge whose interface is missing: 0 the bridge stays off, 1 it uses its samsung form; either way one line says what was missing |
 | `--set haptics-native-impacts=0\|1` (`haptics-native-impacts=`, also in `xnuhost.conf`) | unset | iOS's short taps as the vibrator HAL's own presets (TICK, CLICK, HEAVY_CLICK) instead of 20 ms motor starts, both halves with one setting: 1 asks the haptics bridge for them and adds `oneios_native_impacts=1` after the boot arguments (kept whole); refused (exit 2) without `hw-backend-haptics=treble`, with `hw-backend-fallback=1`, with `haptics=off\|sim` or the bridges off, or when the boot arguments say `oneios_native_impacts=` otherwise. 0: off, whatever the environment says. Unset: `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` in xnuhost's environment decides, as before (the OneOS fork passes none). [hardware.md](hardware.md) 5, "Native impacts". Default off on every phone; host-tested only |
-| `--host-device auto\|none\|NAME` (`host-device=`, also in `xnuhost.conf`) | `auto` | the host phone ([hardware.md](hardware.md) 7h): `auto` reads `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (fallbacks: `/sys/devices/soc0/machine`, `/proc/device-tree/compatible`) and takes the matching entry of `runtime/bridges/hw/host_device.c` (`galaxy-s24-ultra`, `galaxy-s25-ultra`, `galaxy-s25`, `galaxy-s26-ultra`, `galaxy-a56`); `none`: no entry; a name forces that entry; another name is refused (exit 2). The entry's defaults go under the command line and the image set. One line at the start: `host: NAME (...), matched by ro.product.model=...; read: ...; defaults: ...` (or `host: unknown phone (read: ...): today's defaults`) |
+| `--host-device auto\|none\|NAME` (`host-device=`, also in `xnuhost.conf`) | `auto` | the host phone ([hardware.md](hardware.md) 7h): `auto` reads `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (fallbacks: `/sys/devices/soc0/machine`, `/proc/device-tree/compatible`) and takes the matching entry of `runtime/bridges/hw/host_device.rs` (`galaxy-s24-ultra`, `galaxy-s25-ultra`, `galaxy-s25`, `galaxy-s26-ultra`, `galaxy-a56`); `none`: no entry; a name forces that entry; another name is refused (exit 2). The entry's defaults go under the command line and the image set. One line at the start: `host: NAME (...), matched by ro.product.model=...; read: ...; defaults: ...` (or `host: unknown phone (read: ...): today's defaults`) |
 | `--host-props FILE`, `--host-root DIR` (`host-props=`, `host-root=`) | the property area, `/` | a getprop dump read instead of the property area (`[key]: [value]` or `key=value` lines; an unreadable file is refused), and a folder for `/` of the sysfs and proc fallbacks: host tests, or a PC replaying a phone's `adb shell getprop` |
 | `--gpu auto\|3d\|2d` (`gpu=`, also in `xnuhost.conf` since 2026-11-21) | `auto` (the A56's entry: `2d`) | the GPU ([gpu.md](gpu.md) 2): `auto` 3D when KGSL opens, `3d` or do not start, `2d` the scanout only and no GPU pool. Before 2026-11-21 an image set's `gpu=` was read and dropped |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
@@ -101,7 +124,7 @@ memory: the guest's RAM: R MiB in the host's RAM, W MiB swapped out by the host;
 ```
 
 The second line (2026-11-13): `R` is the memfd's pages in the host's RAM (`mincore` over xnuhost's mapping,
-`xh_ram_resident` in `src/discard.c`, 64 MiB per call; since fix-ram-locked only over the part that is not locked: the
+`discard::ram_resident` in `src/discard.rs`, 64 MiB per call; since fix-ram-locked only over the part that is not locked: the
 locked part is resident while the process's `VmLck` covers it, so with the whole RAM locked there is no `mincore` at
 all), `W` = `H` - `R`: pages the guest touched that Linux swapped
 out (zram on the phone; `st_blocks` counts them as held). A guest page that is swapped out costs a fault and a
@@ -136,7 +159,7 @@ fork turns into another `SIGTERM`), or a panic (it sets the stop directly). Then
 The way back never depends on the guest acting: the deadline is ours and the fork's `SIGKILL` is the backstop under
 everything; a guest with no shutdown helper (or any image before this) simply reaches the deadline and is killed.
 Log: `return: graceful shutdown asked; iOS has up to N ms`, then `return: iOS shut down in N ms` or
-`return: graceful shutdown timed out after N ms; stopping`. State machine: `runtime/xnuhost/src/return.c`
+`return: graceful shutdown timed out after N ms; stopping`. State machine: `runtime/xnuhost/src/ret.rs`
 (unit-tested). **The guest half is the Mac's to build:** a guest helper that `oneios_power_request()` reaches which
 runs iOS's clean power-off (a halt, so xnuhost exits and the return completes, not a reboot). The host half above
 works and is tested without it; the end-to-end (iOS saving its overlay) is not yet verified. The kernel's own
@@ -170,13 +193,13 @@ One UI's Linux kernel (unchanged; 39-bit user addresses, 4 KiB pages, PAC, secco
 
 ### 2.1 Loader (`runtime/loader`)
 
-A port of DarwinBoot to plain C with no firmware under it:
+A port of DarwinBoot with no firmware under it (C until 2026-11-23, now the crate `xnuloader`, `runtime/loader/src/`):
 
-- `macho.c`: arm64/arm64e `MH_EXECUTE` and `MH_FILESET` (`LC_FILESET_ENTRY`, `com.apple.kernel` checked against
+- `macho.rs`: arm64/arm64e `MH_EXECUTE` and `MH_FILESET` (`LC_FILESET_ENTRY`, `com.apple.kernel` checked against
   the collection's segments), every offset bounds-checked; a symbol lookup. Fixups are **not** applied: XNU
   rebases and signs its own chains after entry, as under DarwinBoot.
-- `adt.c`: Apple device tree in memory: build, parse, edit, flatten.
-- `machine.c`: the tree of xnuhost's board, a port of UniXNU-droidvm's `make-droidvm-adt.py`: `/chosen` (256
+- `adt.rs`: Apple device tree in memory: build, parse, edit, flatten.
+- `machine.rs`: the tree of xnuhost's board, a port of UniXNU-droidvm's `make-droidvm-adt.py`: `/chosen` (256
   seed bytes, CHRP NVRAM proxy, dram, security properties, root matching, MAC addresses), `/cpus`, `/psci`,
   `/defaults` (with the iPhone18,2's I/O throttle since 2026-11-22: `kern.io_throttle_period_tier1` 5,
   `_tier2` 15, `_tier3` 20 and `kern.io_throttle_window_tier3` 100 ms; the hosted disks answer DKIOCISSOLIDSTATE 0, so
@@ -184,7 +207,7 @@ A port of DarwinBoot to plain C with no firmware under it:
   `/options`, `/product` (copied from the identity tree, minus exclaves and the AGX-only feature
   sets; `artwork-scale-factor` is the UI scale), `/buttons`, `/bluetooth`, `/arm-io` with the GICv3, `wlan`, `uart0` and one node per virtio window
   under the names and `compatible` strings UniXNU's drivers match; `/chosen/xnuhost` for a hosted kernel.
-  **The cameras (2026-11-22, `xl_machine.cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
+  **The cameras (2026-11-22, `Machine::cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
   `camera-rear` = 1 when the camera helper lists a back camera (wide, ultra-wide or a telephoto) and `camera-front` = 1
   when it lists the front one (u32, the iPhone18,2's values; no `compatible`, no `device_type`: no driver matches it),
   an empty `/product/camera`, and without an identity tree `/product unique-model` = `V54AP` (an identity tree's own
@@ -196,14 +219,14 @@ A port of DarwinBoot to plain C with no firmware under it:
   for the helper's list before it builds the tree, asleep on the bridge's condition variable, at most 3 s (the phone:
   170 ms after the helper's start); `camera: iOS is told of a rear camera and a front camera (3 cameras from the
   helper)`. Without the camera device, or with an empty list, the tree is as before.
-  **`/chosen oneios-identity` (`xl_machine_identity`, 2026-11-22):** 8 bytes, FNV-1a 64 of what MobileGestalt can
+  **`/chosen oneios-identity` (`machine::identity`, 2026-11-22):** 8 bytes, FNV-1a 64 of what MobileGestalt can
   read that stays the same from boot to boot: the root's own properties, the `/product`, `/arm-io`, `/buttons` and
   `/bluetooth` subtrees, `/chosen`'s own properties and `/chosen/xnuhost`'s `display-*` ones; not `random-seed`,
   `dram-base`, `dram-size`, the GPU and media pools, the memory map, xnuhost's vector (its ASLR) or `/defaults` (its
   limits follow the RAM). xnuhost writes it on the finished tree (after a shipped tree's nodes). Hosted 0084 keeps
   MobileGestalt's cache while it stays the same and removes it once when it changes ([userland.md](userland.md),
   "MobileGestalt's cache follows the tree"). xnuhost logs it: `identity: <16 hex digits> (/chosen oneios-identity: ...)`.
-- `boot.c`: `boot_args` (1024-byte command line of Darwin 23+, or the 608-byte one), the sidecar checks
+- `boot.rs`: `boot_args` (1024-byte command line of Darwin 23+, or the 608-byte one), the sidecar checks
   (trust caches, packed RAM disk `DBRDISK1`, GPU addon, root policies) and the placement in DarwinBoot's
   order: kernel, `boot_args`, tree, RAM disk, trust caches, addon, policies; memory-map entries filled.
   `RAMDisk1` mirrors `RAMDisk` (same address and size) only when the tree names it: iOS 16 userlands look for the
@@ -226,7 +249,7 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
 - The board's device windows are a `PROT_NONE` reservation at their physical addresses
   (`0x08000000..0x0b000000`), so a device register's physical address is also its pointer and every access
   traps.
-- **What follows the RAM's size** (checked for `ram=auto` by the test kernel, `make check-arm64`'s third boot): the
+- **What follows the RAM's size** (checked for `ram=auto` by the test kernel, `check-arm64.sh check`'s second boot): the
   window is the RAM less the boot framebuffer and the GPU's pool (8 MiB, the renderer's response buffers; fixed: the
   GPU's blobs are guest pages, udmabufs of the window, and grow with it); `boot_args.memSize`, `/chosen dram-size` and
   `xh_info.ram_size` all name the window; `kern.maxvnodes` in `/defaults` is the window / 64 KiB + 1024. The kernel's
@@ -237,13 +260,13 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   was not run on its own.
 - **Free pages back to the host (kernel 0058, 2026-11-12).** The goal: iOS keeps all of its ram=auto memory; the host
   gets back only pages iOS has freed. The kernel gives back pages on XNU's own free queue (never cached, compressed or
-  wired ones) with `ram_discard`: `xh_ram_discard_fd` (`src/discard.c`) punches a hole in the memfd
+  wired ones) with `ram_discard`: `discard::ram_discard_fd` (`src/discard.rs`) punches a hole in the memfd
   (`FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`, allowed under the GPU's shrink seal), only inside the kernel's window
   (never the boot framebuffer or the GPU's pool above it), host-page aligned, else -EINVAL; the range then reads as
   zero in every mapping and the host holds nothing for it until it is touched again (a read through a shared mapping
   fills it too). xnuhost counts calls, bytes, failures and time for the `memory:` line. The kernel's side (what is
   given back, when, in what order) is in `kernel/patches/oneios-hosted/README.md`, 0058; its decisions are
-  `include/xnuhost/free_report.h`, which the kernel carries as a copy (the host tests check they are one file). Run on
+  `include/xnuhost/free_report.h`, which the kernel carries as a copy (`runtime/abi/tests/headers.rs` checks they are one file and that `runtime/abi/src/free_report.rs` mirrors it). Run on
   the PC at `ram=auto` (14,080 MiB): the host held 4,973 MiB after 16.5 min instead of 12,266 MiB, with XNU's own
   view of its memory unchanged. A task that still has the page mapped (an unmap xnuhost has queued, 2.6) loses it in
   the punch and cannot run before the queue is carried out (test kernel). Not run on the phone. With `ram-giveback=0`
@@ -259,8 +282,8 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   9.5 MB/s in, 8 MB/s out) at 800 % CPU (226 % sys): **the swap was also the main heat source, so a RAM that fits and is
   held fixed is the thermal fix too.** Outside the guest the host used about 11,084 - 860 - (7,263 - 2,126) = 5,087 MiB,
   zram's compressed pool and the 575 MiB of page tables included. So `ram=auto` now also takes no more than what fits:
-  - `fit = (MemAvailable - ram-session-reserve - ram-gpu-reserve) / (1 + ram-pagetable-percent / 100)` (`xh_ram_fit`,
-    `config.c`), MemAvailable read at xnuhost's start, which is after the fork stopped One UI's zygote and
+  - `fit = (MemAvailable - ram-session-reserve - ram-gpu-reserve) / (1 + ram-pagetable-percent / 100)` (`config::ram_fit`,
+    `config.rs`), MemAvailable read at xnuhost's start, which is after the fork stopped One UI's zygote and
     system_server (`oneos/interface.md` 4) and before the guest takes anything.
   - The page tables: every iOS task is a Linux process with its own page tables over the memfd, and the same pages are
     mapped by many tasks (the shared cache, the shared region): 575 MiB for 7,263 MiB held, 7.9 %, so 8 % of the guest.
@@ -319,7 +342,7 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     further 256 MiB: `memory: the host swaps iOS's RAM: N MiB (host MemAvailable M MiB); host swap-ins I pages/s (X MB/s),
     swap-outs O pages/s (Y MB/s)` (the rates are the host's, all processes, `/proc/vmstat` pswpin and pswpout over the
     last 5 s). Heat has its own line (fix-thermal-log); this one is only about iOS's RAM.
-- **Fixed RAM (`ram-giveback=0`, `src/ramfix.c`, fix-fixed-memory, 2026-11-13; the default since fix-ram-locked,
+- **Fixed RAM (`ram-giveback=0`, `src/ramfix.rs`, fix-fixed-memory, 2026-11-13; the default since fix-ram-locked,
   2026-11-15, the owner's rule that iOS's RAM is never swapped; `ram-giveback=1` turns it off).** The owner's requirement:
   iOS's RAM must not grow and shrink during a session. The phone's c2d281a session showed why: the memfd was faulted in
   bit by bit (4,904 -> 6,010 -> 6,254 MiB), 527 MiB of free pages given back in 22,688 calls, then 669 MiB of it swapped
@@ -386,8 +409,8 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     and the valve undoes it; past the limit a clean fallback; the thread, the refusal, the return. `test_config`: the
     new defaults, the lock's 768 MiB headroom where the lock can work and 1 GiB where it cannot, the fit with the
     2026-11-15 numbers (8,561 MiB -> 6,912 MiB locked, 6,656 MiB unlocked), the valve's floor and margin, one setting
-    back to 0058's way; `xh_proc_values` on meminfo and vmstat files), and the test kernel under qemu-aarch64 (`make
-    check-arm64`'s second boot runs with the defaults: the refusal, the prefault, the sizing line, and on the PC the
+    back to 0058's way; `xh_proc_values` on meminfo and vmstat files; C tests of 2026-11-15, ported 1:1 to the tests in `src/ramfix.rs` and `src/config/tests.rs`, with `xh_core::fs::proc_values`), and the test kernel under qemu-aarch64
+    (`check-arm64.sh check`'s second boot; on 2026-11-15 the C Makefile's `make check-arm64`; it runs with the defaults: the refusal, the prefault, the sizing line, and on the PC the
     clean fallback, `not locked (mlock: Out of memory), so not prefaulted`: RLIMIT_MEMLOCK 8 MiB, no root). **Not
     run:** the phone (where xnuhost is root: the lock itself).
   - **PC boots, before and after** (fix-ram-fit, 2026-11-14; qemu-aarch64, 8 vCPUs, `--ram 4G`, `out/image-pc/24A446`, a
@@ -449,11 +472,11 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   - **The memfd's layout.** The window starts at `0x2000000000 + (link base mod 2 MiB)`, `0x...4000`, and until now the
     memfd's offset 0 was that byte, so address and offset never agreed modulo 2 MiB and Linux could not map any 2 MiB
     page of it with one entry. Now the memfd is 2 MiB longer, its offset 0 is at the 2 MiB boundary below the window
-    (`g_mem.fd_phys`, 16 KiB below; that head is mapped, never guest RAM), and every offset is `address - fd_phys`
+    (`fd_phys` in `src/mem.rs`, 16 KiB below; that head is mapped, never guest RAM), and every offset is `address - fd_phys`
     (the tasks' maps, `kernel_map`, `ram_discard`, the GPU's udmabufs). Measured natively on the PC (a 64 MiB memfd
     mapped `MAP_SHARED` with `MADV_HUGEPAGE`, `shmem_enabled` advise): at offset 0 `ShmemPmdMapped 65536 kB`, VmPTE
     56 kB; at offset `0x4000`, today's layout, `ShmemPmdMapped 0 kB`, VmPTE 176 kB.
-  - **The choice** (`xh_huge_choose`, `ramfix.c`; read only, named files, once): `shmem_enabled` (a memfd is on the
+  - **The choice** (`ramfix::huge_choose`, `ramfix.rs`; read only, named files, once): `shmem_enabled` (a memfd is on the
     kernel's internal shmem mount, which that file governs), `hpage_pmd_size`, and `/proc/meminfo`'s `HugePages_Free`
     and `Hugepagesize`. With `advise`, `always`, `within_size` or `force` and 2 MiB PMD pages, xnuhost's window gets
     `madvise(MADV_HUGEPAGE)` before the first touch; the prefault and `mlock` then fault it 2 MiB at a time (16 MiB
@@ -496,7 +519,7 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     `/defaults kern.vm_compressor` with the default `VM_PAGER_FREEZER_WITH_SWAP` (32) for `CONFIG_FREEZE`
     (`vm_pageout.c`); `vm_config_init` makes 32 compressor active, general swap off, freezer swap on. The PC's log says
     `vm: "vm_compressor_mode" is 32`; 24A446's own DeviceTree has `kern.vm_compressor` = 32 too. No boot argument of
-    xnuhost's (`config.c`) or of the PC's sets `vm_compressor`, and no hosted patch touches the compressor or the pageout
+    xnuhost's (`config.rs`) or of the PC's sets `vm_compressor`, and no hosted patch touches the compressor or the pageout
     daemon (only 0057, the swap folder, and 0058/0066/0067, which move free pages and change no count the daemon reads).
     Swap is only the freezer's, a file on iOS's own Data volume (`/private/var/vm`, 0057), as on the phone: never the host's.
   - **What feeds it (proven, `vm_pageout.c`).** Only the pageout daemon (when `vm_page_free_count` falls under
@@ -520,11 +543,11 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     file by the device tree root's `target-type`, which the generated tree had only from an identity tree (no image set
     has one, section 1). 24A446's DeviceTree has `target-type` V54 and the OS volume has
     `com.apple.jetsamproperties.V54.plist` (129,739 bytes): its bands and memory limits for apps and daemons were not
-    applied. **Fixed:** the loader gives the root `target-type` V54 without an identity tree (`machine.c`, `main.c`).
+    applied. **Fixed:** the loader gives the root `target-type` V54 without an identity tree (`runtime/loader/src/machine.rs`, `src/session/board.rs`).
   - **What the guest lacked (proven).** The guest's `/defaults` had none of the iPhone18,2's per-process limits
     (`kern.max_task_pmem` 3376, `kern.entitled_max_task_pmem` 6144, `kern.entitled_dev_max_task_pmem` 6656 MB in 24A446's
     DeviceTree): a task without a limit of its own (launchd's or RunningBoard's) had none (`task_init`). Since this change
-    the loader always gives `kern.max_task_pmem` 3376 (`runtime/loader/src/machine.c`); a footprint counts the task's
+    the loader always gives `kern.max_task_pmem` 3376 (`runtime/loader/src/machine.rs`); a footprint counts the task's
     compressed pages too (`phys_footprint`), so the limit is on what the compressor holds of it as well.
 
   **Can `hw.memsize` be more than the RAM? No (proven).** On iOS `hw.memsize` is `max_mem` (`kern_mib.c`; macOS reports
@@ -595,16 +618,20 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
 
 ### 2.3 Two contexts, host calls
 
-Kernel code keeps its own `TPIDR_EL0` and `x18`; xnuhost's C needs bionic's. Every host call goes through
-an assembly thunk (`arch_aarch64.S`) that saves the kernel's two registers, loads the host's, switches to
-a per-CPU host stack, calls the C function, and switches back. Signals enter through a thunk that finds
+Kernel code keeps its own `TPIDR_EL0` and `x18`; xnuhost's own code needs bionic's. Every host call goes through
+an assembly thunk (`src/arch.rs`, `global_asm!`; `arch_aarch64.S` in the C) that saves the kernel's two registers, loads the host's, switches to
+a per-CPU host stack, calls the Rust function of the same name in `src/hostcalls.rs` (`extern "C"`), and switches back. Signals enter through a thunk that finds
 the vCPU from the signal stack's address (stacks are 1 MiB aligned blocks; the first word is the vCPU)
 and does the same swap. So the kernel may keep its current-thread pointer in `TPIDR_EL0`, which lets
 Apple's kexts' inlined `mrs xN, TPIDR_EL1` be rewritten to `mrs xN, TPIDR_EL0` in place at prelink.
 
 The contract is one header, `runtime/xnuhost/include/xnuhost/hostcall.h` (freestanding C, ABI 1): entry
 registers, `struct xh_cpu`, `struct xh_vector` (32 calls; additions are appended and `vector->size` says which exist; the 32nd, `irq_take`, since fix-mach-rpc 2026-11-15), `struct xh_upcalls`, `struct xh_info`, frames
-and traps.
+and traps. The header stays C (the kernel's machine layer includes it unchanged); xnuhost uses its Rust mirror,
+`runtime/abi/src/hostcall.rs` (crate `xnuhost-abi`, no_std, `XhCpu`, `XhVector`, `XhInfo`, ...), which
+`runtime/abi/tests/headers.rs` checks against the header: every constant, every struct's size and every field's offset.
+The task stub's ABI (`stub_abi.h` in the C, the trap page, the deferred queue, the fault rules) has no C header any more:
+it is `runtime/abi/src/stub.rs`, shared by the stub and xnuhost.
 
 ### 2.4 Interrupts and the timer
 
@@ -623,7 +650,7 @@ and traps.
   interrupts masked (the return path of a host call belongs to the vCPU the call started on).
 - The timer is CNTVCT_EL0 (the kernel and iOS tasks read it directly; `/cpus` timebase = CNTFRQ_EL0) with a
   per-CPU POSIX timer (`SIGEV_THREAD_ID`) for the deadline; its line is INTID 27, a level, as ArmCpu takes it.
-- The controller is a GICv3 model (`gic.c`): distributor and redistributor frames by trapped MMIO, the CPU
+- The controller is a GICv3 model (`src/gic.rs`): distributor and redistributor frames by trapped MMIO, the CPU
   interface by trapped `ICC_*` registers, or the `irq_ack/irq_take/irq_eoi/irq_enable/ipi` host calls (the hosted
   kernel uses `ipi`, `irq_take` and `irq_eoi` for IPIs and the timer since hosted 0081; ArmCpu's trapped registers for
   devices' interrupts: 2.6d).
@@ -632,7 +659,7 @@ and traps.
 
 So that unchanged code keeps working while the kernel's hot paths move to host calls:
 
-| Instruction | Emulation (`sysreg.c`) |
+| Instruction | Emulation (`src/sysreg.rs`) |
 | --- | --- |
 | `mrs/msr TPIDR_EL1` | `cpu->tpidr_el1` |
 | `msr daifset/daifclr`, `mrs/msr DAIF`, `mrs CurrentEL` | the mask flag; EL1 |
@@ -644,25 +671,25 @@ So that unchanged code keeps working while the kernel's hot paths move to host c
 | any other EL1/EL2 register (and `TPIDRRO_EL0` writes) | a per-CPU shadow: reads return what was written |
 
 Each emulated instruction is a signal round trip on the vCPU's thread. xnuhost counts them by instruction word and
-logs the twelve most frequent at the stop and on SIGQUIT (`emulated: insn 0x... N times (first at pc 0x...)`, `sysreg.c`
-`xh_sysreg_stats_log`): the first thing to read when an idle guest keeps its vCPUs busy (`docs/hardware.md` 7d).
+logs the twelve most frequent at the stop and on SIGQUIT (`emulated: insn 0x... N times (first at pc 0x...)`, `sysreg.rs`
+`stats_log`): the first thing to read when an idle guest keeps its vCPUs busy (`docs/hardware.md` 7d).
 `dc isw/csw/cisw` (set/way) with `setway-skip` (on by default; `setway-skip=0` in `--set` or `xnuhost.conf` turns it
 off) sets its register to the last set and way of its level, so XNU's set/way loop ends after one trap: the guest's
 `cpu_idle` flushes L1 by set/way at every idle entry, 1024 traps each, and that alone kept an idle lock screen at 310%
 CPU in the vCPU threads (233% with the skip; phone, 2026-11-12).
 
 The shadow does **not** give a write its hardware meaning: page tables, vectors and PAC key registers
-have no effect. Loads and stores on the I/O aperture are decoded (`insn.c`: register, immediate, pre/post
+have no effect. Loads and stores on the I/O aperture are decoded (xh-core's `runtime/core/src/insn.rs`: register, immediate, pre/post
 index, pairs, sign extension) and run against the device models.
 
 ### 2.5a The thermal step
 
 `runtime/bridges/thermal` reads the phone's temperatures every 5 s from the start. Since fix-ram-locked (2026-11-15; the
 owner's rule: all CPU cores) it gives one step, at a critical temperature only: the case (lrp) at 50 C or the cell at
-50 C (before, steps 1-3 from heavy pressure up: the case at 44 C, the SoC at 95 C). Then `main.c`'s `thermal_step`
-narrows the vCPU threads' affinity (`br_cpu_plan_cap`, step 2: only the slowest P domain and the E cores, cpu0-1 and
-5-6 here) and bumps `xh_cpu_place_epoch`, so
-`xh_thread_run` places each iOS thread again at its next run (`task.c`). Only xnuhost's own threads and its tasks' are
+50 C (before, steps 1-3 from heavy pressure up: the case at 44 C, the SoC at 95 C). Then `src/session/bridges.rs`' `thermal_step`
+narrows the vCPU threads' affinity (`CpuPlan::cap` of `runtime/bridges/cpu/topology.rs`, step 2: only the slowest P domain and the E cores, cpu0-1 and
+5-6 here) and bumps `task::PLACE_EPOCH`, so
+`thread_run` places each iOS thread again at its next run (`task.rs`). Only xnuhost's own threads and its tasks' are
 changed, nothing outside the process: a SIGKILL leaves nothing to restore. `ONEIOS_THERMAL_CAP=0` turns the step off.
 Since 2026-11-13 a step keeps the CPUs it adds of the other kind (step 2: the P vCPUs on cpu5-6 and the E cores, `0x63`;
 before, `0x60`), and cpu-pin pins a vCPU to one core only while each vCPU of its kind has a core of the step's mask to
@@ -676,7 +703,7 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
 - **Factory.** Forked from xnuhost before it has threads or the RAM mapped; it never execs, and neither do
   the tasks it forks. So xnuhost and every task hold the **same PAC keys**, which is what arm64e's shared
   cache needs (a pointer the kernel signs authenticates in any task). `--selftest` checks it on the host.
-- **Stub** (`stub/stub.c`, a 3 KB position-independent blob with no data and no libc). In a new task it
+- **Stub** (`runtime/xnuhost/stub/src/main.rs`, a no_std crate for `aarch64-unknown-none`; `stub/build.sh` links it at 0 with `stub.ld` into a 3.4 KB position-independent blob with no data, no relocations, no panic path and no libc, which `src/arch.rs` embeds; `stub/stub.c` until 2026-11-23). In a new task it
   unmaps the whole address space but its region, installs the handlers and the seccomp filter, optionally
   drops to another uid, and becomes the service thread.
 - **System calls.** The filter returns `SECCOMP_RET_TRAP` for every system call whose instruction pointer is
@@ -699,7 +726,7 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
   of its own:** Linux sends every SIGTRAP (brk, single step, watchpoint) through `send_user_sigtrap()`, which leaves
   `thread.fault_code` alone, and `fault_code` is written only when a fault signal is delivered; the signal frame's
   `esr_context` is then the thread's last fault's. xnuhost passes no ESR with a SIGTRAP, in the kernel's upcall
-  (`cpu.c`: the kernel reads the `brk` at pc, `hosted_kernel_esr`) and in a task's trap (`stub.c`: `esr` 0 and the
+  (`cpu.rs`: the kernel reads the `brk` at pc, `hosted_kernel_esr`) and in a task's trap (the stub: `esr` 0 and the
   instruction in `insn`, for 0002's `hosted_trap_esr`). Before that (phone, 2026-11-12 23:15), a UBSan soft trap in
   `tcp_input` (`compute_iaj_meat`'s `cur_iaj_dev * cur_iaj_dev`, a signed multiply of a wrapped `uint32_t`
   difference) came with a software-TLB fill's data abort and panicked iOS: "Unexpected fault in kernel physical
@@ -710,7 +737,7 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
   task's Linux process has not mapped (the hosted pmap maps a page into the task only when it faults) it takes a
   data abort whose ESR has **ISS.WnR = 1 and ISS.CM = 1**; Linux treats it as a read (`is_write_abort` is WnR without
   CM), finds no VMA and sends SIGSEGV with that ESR whole in `esr_context` (`set_thread_esr` sanitizes kernel
-  addresses only). The stub (`xs_fault_access`, `stub/stub_abi.h`) used to read WnR alone and said `XH_PROT_WRITE`;
+  addresses only). The stub (`xs_fault_access`, then in `stub/stub_abi.h`, now `fault_access` in `runtime/abi/src/stub.rs`) used to read WnR alone and said `XH_PROT_WRITE`;
   the kernel's software TLB then refused to fill the read-execute page, and its ESR (a permission fault with WnR, no
   CM) made `inspect_data_abort` ask `vm_fault` for write on a read-execute entry: KERN_PROTECTION_FAILURE. That was
   WebKit's crash loop (phone, 2026-11-14 06:03): every WebContent process died in `sys_icache_invalidate` of its first
@@ -760,9 +787,9 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
   service thread, when that vCPU gives it an order, go on the same CPU. A hand-off is then a switch on one core. Across
   cores it is a wake-up of another CPU (an IPI, the way out of idle) each way. The thermal step's masks still apply: a
   narrowed mask gives the vCPUs of a kind its CPUs in turn. `cpu-pin=0` is the old placement (any core of the kind).
-  `cpu-pin=2` also pins with no plan, vCPU *i* on CPU *i* (for `make bench-arm64`).
+  `cpu-pin=2` also pins with no plan, vCPU *i* on CPU *i* (for `check-arm64.sh bench`).
 - **Wakes only for a sleeper.** Each side says when it sleeps (`host_sleeping`, `task_sleeping` in the trap page) and
-  the other side issues `FUTEX_WAKE` only then (`stub/stub_abi.h` has the rule and its barriers).
+  the other side issues `FUTEX_WAKE` only then (`runtime/abi/src/stub.rs` has the rule and its barriers).
 - **`map-defer` (default 1).** `task_map` puts the map in the task's queue (up to 256) and returns. The queue goes with
   the next release of one of the task's threads: that thread carries out the maps in the stub's handler before it runs
   (`XS_OPS_OFF` in its slot) while xnuhost holds the task's order lock, or it goes at the head of the task's next order
@@ -790,7 +817,7 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
   on its own core this halves nothing that pinning does not already remove, and on a shared core it costs the spin
   every time (below), so both are off.
 
-**Measured** with `make bench-arm64` (the test kernel's loops on vCPU 0, one iOS thread; native arm64 Linux 6.18 in the
+**Measured** with the C tree's `make bench-arm64` (today `runtime/xnuhost/check-arm64.sh bench`; the test kernel's loops on vCPU 0, one iOS thread; native arm64 Linux 6.18 in the
 Mac's container, an M4 with 8 CPUs; the counter is 24 MHz, so a tick is 42 ns). Means, p50 in brackets, 40,000 null
 calls, 10,000 faults, 4,000 interrupts; two runs each, the same within 5%:
 
@@ -808,7 +835,7 @@ spin on each side; with each thread on its own core a 20 us spin gave 1.8 us. So
 and on the phone, where two vCPUs and their iOS threads share the two E cores, a spin would cost what it saves. Not
 measured on the phone; the hand-off across cores there may be cheaper or dearer than in this VM.
 
-**Deferred unmaps, measured on the x86_64 PC** (2026-11-12, `make -C runtime/xnuhost bench-arm64 BENCH_SET="--set
+**Deferred unmaps, measured on the x86_64 PC** (2026-11-12, the C xnuhost, `make bench-arm64` of its Makefile, today `check-arm64.sh bench`, `BENCH_SET="--set
 cpu-pin=2"`, the Android binary under qemu-aarch64 11.1.3 on 4 host CPUs; qemu's counter is 1 GHz and its times are
 qemu's, about ten times the container's: compare these with each other only). Three runs each, before (`main`
 `43df9dd`) and after, alternated; mean (p50); 20,000 null calls, 5,000 faults, 2,000 interrupts:
@@ -830,20 +857,20 @@ round trips per 30 s (about 1.5 vCPUs); how many of them this queues depends on 
 then: not measured yet (the `perf:` line's `task_unmap N queued, M ordered`).
 
 **The stub's register copy, and the Rust xnuhost against the C** (2026-11-23, branch `rust-runtime`, the x86_64 laptop
-(i9-12900H), qemu-aarch64, the C test image `build/android/testimage`, `check-arm64.sh ab`: the two binaries in turn
+(i9-12900H), qemu-aarch64, the C tree's test image, `check-arm64.sh ab`: the two binaries in turn
 on the same six P cores, means over the rounds). The Rust port was reported 7% slower on the null call (10.96 against
 11.75 us); pinned and alternated it was not (6 rounds each, load 1-2.6): null call C 9.86, Rust 9.77 us; svc to the
 kernel 4.84 / 4.80; release to user code 4.95 / 4.90; page fault 14.5 / 14.8; every other line within the 3% that
 rounds of one binary move. Unpinned single runs move 10-30% with the cores qemu lands on (P or E) and the load, which
 is where the 7% came from. What both spent most of a half on was the stub: its handler copied x0-x30, V0-V31, fpsr,
-fpcr and the esr between the signal frame and the trap page **one volatile byte at a time** (`stub.c`'s `copy`, kept
+fpcr and the esr between the signal frame and the trap page **one volatile byte at a time** (the C `stub.c`'s `copy`, kept
 by the port so that no memcpy call appears in the blob), about 1.5 KiB per trap and some 9000 instructions. The
 Rust stub now copies by 8-byte words when both ends are aligned (all of these are): pinned, 6 rounds (load 6-12),
 null call C 9.95 us, Rust before 10.63, Rust after **6.48 us**; svc to the kernel 4.88 / 5.22 / **3.14**; release to
 user code 5.00 / 5.34 / **3.28**; xnuhost's `up` step 3.27 / 3.39 / **1.93** us; page fault 14.7 / 15.6 / **11.1**; timer
 interrupt 12.9 / 15.8 / **11.0**; rpc mode 2 (one vCPU) 19.5 / 18.3 / **12.2**. On the phone the same loop was about
 1500 bytes a trap at roughly a byte a cycle each way: not measured there yet (the `perf:` lines' `up` and `down`).
-The C stub (`stub/stub.c`, still what the C build ships) keeps the byte copy.
+The C stub kept the byte copy until it was deleted with the rest of the C runtime (2026-11-23).
 
 **On the phone** (combined boot of 2026-11-12 12:30, kernel.kc 1e297354, runtime 0.1.10-dev; `cpu-pin=1`, vCPU *i*
 on CPU *i*; 30 s windows during the boot): 17,000-22,600 task traps a second, two to three faults for each system
@@ -855,7 +882,7 @@ faults are now the larger costs, not the hand-off (the kernel side: `kernel/patc
 "0040-0044").
 
 **The report.** Each vCPU counts its traps by kind and keeps histograms (4 buckets a power of two) of each step
-(`src/perf.c`). The main thread prints them every `perf-log` seconds (default 30, `--set perf-log=0` only at the stop
+(`src/perf.rs`). The main thread prints them every `perf-log` seconds (default 30, `--set perf-log=0` only at the stop
 and on SIGQUIT), for that period; at the stop and on SIGQUIT since the start:
 
 ```text
@@ -876,7 +903,7 @@ The kernel's side of the same trips (which system calls, the fills, the TLB lock
 stays, 684,514 system calls, 330,746 faults, 331,008 user maps and 414,758 user unmaps (each an mmap or munmap of one
 page in the task's process), and the host at 482 % of 800 with 212 % in Linux's own code. What changed in xnuhost:
 
-- **The deferred queue joins entries** (`stub/stub_abi.h` `xs_queue_join`, unit-tested in `test_xnuhost`): a map of the
+- **The deferred queue joins entries** (`queue_join` of `runtime/abi/src/stub.rs`, `stub_abi.h`'s `xs_queue_join` in the C; unit-tested there, `queue_joins`): a map of the
   next page of the same file range with the same protection extends the last map; adjacent or overlapping unmaps become
   one; an unmap followed by a map of the same range is the map alone (`MAP_FIXED` replaces the old page in one step: the
   pattern of a fault that changes an entry, the flush then the refill); a map followed by an unmap of the same range is
@@ -886,17 +913,17 @@ page in the task's process), and the host at 482 % of 800 with 212 % in Linux's 
 - **Maps are populated** (`MAP_POPULATE`, `XS_MAP_POPULATE`): the stub's maps of the RAM memfd, in the release and in an
   order, and the kernel's `kernel_map` fill the page tables in the same call, so the faulting instruction's retry does
   not take a second, Linux, fault on the page it was just given.
-- **The GIC tells only the CPU a change concerns** (`gic.c` `update_cpu`): an ack, an EOI of an SGI or PPI, an SGI, a
+- **The GIC tells only the CPU a change concerns** (`gic.rs` `update_cpu`): an ack, an EOI of an SGI or PPI, an SGI, a
   PPI or SPI level change recompute that CPU's line (an SPI's: its target's), not all eight under the one lock. Changes of
   the distributor, an enable, the priority mask still recompute every line.
-- **A line that is up is not signalled again** (`cpu.c` `xh_cpu_line`): every GIC change used to send each other vCPU
+- **A line that is up is not signalled again** (`cpu.rs` `line`): every GIC change used to send each other vCPU
   whose line was up a `tgkill` (or a futex wake), even when the line had been up for a while (a vCPU running with
   interrupts masked got a signal per interrupt step anywhere). The CPU takes a pending line when it unmasks, when a host
   call returns, and in `thread_run` and `cpu_idle` before they wait, and only it lowers its line, by recomputing under the
   GIC's lock after the raiser's change, so a raise skipped is never lost. `perf:   queue:` counts the raises signalled and
   those skipped.
-- **The uclamp reaches iOS's own code** (`task.c` `xh_thread_run`, `xh_cpu_uclamp`): the guest's frequency request
-  (DroidVMCpufreq's `SET_PERF`, `br_cpufreq`) and drm2kgsl's animation boost used to set `uclamp.min` on the vCPU thread
+- **The uclamp reaches iOS's own code** (`task.rs` `thread_run`, `cpu.rs`): the guest's frequency request
+  (DroidVMCpufreq's `SET_PERF`, `cpu::Cpufreq` of `runtime/bridges/cpu`) and drm2kgsl's animation boost used to set `uclamp.min` on the vCPU thread
   only, which waits while the iOS thread runs on its task's own Linux thread: the host's governor never saw a request for
   the core where the work ran. Now each release gives the iOS thread its vCPU's clamp (one `sched_setattr` per change,
   none otherwise; SCHED_OTHER stays SCHED_OTHER, nice is kept). The kernel's hint (`hostcall.h` `perf_hint`, hosted 0075:
@@ -904,8 +931,8 @@ page in the task's process), and the host at 482 % of 800 with 212 % in Linux's 
   utility one no floor and no ceiling of ours (a ceiling, `uclamp.max` 512, stood here until 2026-11-16; it also slowed
   chronod's widget extensions, newtodo's decision list). drm2kgsl's own clamp looked for threads named
   `crosvm_vcpu*` and logged `vCPU uclamp.min 1024: 0 of 0 threads`; its patch 0008 calls xnuhost's
-  `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `xh_gpu_vcpu_boost`, the iOS threads).
-- **The same timer deadline again is not a host call** (`cpu.c` `xh_cpu_timer_set`): a future deadline equal to the
+  `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `cpu.rs`' uclamp hook, the iOS threads).
+- **The same timer deadline again is not a host call** (`cpu.rs` `timer_set`): a future deadline equal to the
   armed one leaves the host timer as it is (`perf: ... timer_set N (M to the host timer)`: N - M saved; the PC's baseline
   boot made 4.8 million timer sets in 2,400 s, every one a `timer_settime`).
 - **Each vCPU is described as the core it runs on** (`runtime/bridges/cpu`, section 2.6b).
@@ -939,7 +966,7 @@ with its CPUs and the `cpufreq/boost` switch (`cpu: xnuhost's cpuset /..., CPUs 
   A720s are P on purpose: each is about twice an A520's work at the same clock, and as E they would take iOS's background
   work while UI work queued on four P cores. They are the P cluster's slowest cores: cpu-pin puts vCPU 5-6 there, and
   with the hint below a UI thread there still asks the host for its top clock.
-- **Each vCPU is described as its own core** (`br_cpu_plan_make`): cpu-pin puts the rank-th vCPU of a kind on the
+- **Each vCPU is described as its own core** (`CpuPlan::make`, `runtime/bridges/cpu/topology.rs`): cpu-pin puts the rank-th vCPU of a kind on the
   rank-th CPU of the kind's mask, in CPU order (vCPU *i* on CPU *i* on the S24 Ultra), and the vCPU's clock table,
   capacity and caches are now that core's. Before, every P vCPU was described as the fastest core of its kind (six X4s),
   and a frequency request of a vCPU on an A720 was sized against the X4's table.
@@ -958,7 +985,7 @@ above-UI, 768 for user-initiated, the vCPU's own request for default, and 0 with
 background and darwin-background threads (RunningBoard's background and suspended roles clamp an app's threads to
 background QoS; the `uclamp.max` 512 that stood here until 2026-11-16 also slowed chronod's widget extensions, #57, and
 is gone: newtodo's decision list). The same word is readable by host code on the vCPU
-(the GPU path: `xh_cpu_self()->cpu.perf_hint`, for fix-gpu-perf's per-context priority).
+(the GPU path: the current vCPU's `perf_hint`, `Vcpu::current()` in `src/cpu.rs`, for fix-gpu-perf's per-context priority).
 The E cluster is DroidVMCpufreq's preferred cluster of every class but UI, above-UI and realtime, and XNU's Edge edges
 let nothing move from E to P: until hosted `0085` (2026-11-22) the `perf: cpuN:` lines showed vCPU 0-1 0% idle and
 vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0085` opens the E -> P edges (migration and steal;
@@ -975,7 +1002,7 @@ the v2 cgroup `oneios_session` only; the v1 cpuset (`/dev/cpuset`) is changed on
 cpuset with `/dev/cpuset/cpus`, as its cgroup move), not in xnuhost, which never leaves its cgroup: not done in this
 change.
 
-**The parallel test** (`make -C runtime/xnuhost parallel-arm64`, the test kernel's `testkernel-parallel[=SCALE]`, 8
+**The parallel test** (`runtime/xnuhost/check-arm64.sh parallel`, the C Makefile's `parallel-arm64` until 2026-11-23; the test kernel's `testkernel-parallel[=SCALE]`, 8
 vCPUs): N threads of one task, one per vCPU, each the same user-mode work (100 rounds of a 100,000-iteration loop and a
 system call), all at once, for N = 1, 2, 4 and 8; the wall time and the speed-up against one thread
 (`PARALLEL 8 threads: 555 ms, speed-up 3.67 (ideal 8)`). With nothing in xnuhost's path serialising the vCPUs it stays
@@ -1011,15 +1038,15 @@ boot ran while the box was loaded about twice as much, so the 2.6 times as many 
 s earlier and a third of the vCPU time per stay are partly the box. The unchanged-entry skip never fired here: the PC's
 kernel maps are new entries (a different cause than the guess in hosted 0075's README; the skip stays, cheap, for the
 phone to say). `oneios-cpu` lines are not printed on the PC (the GPU archive's report runs with 3D only); the window's
-bound is the host test's (`test_cpu_window`). uclamp: 0 on the PC (no CPU plan without the bridges).
+bound is the host test's (`test_cpu_window`, now `cpu_window` in `src/cpu.rs`). uclamp: 0 on the PC (no CPU plan without the bridges).
 
-**`make bench-arm64 BENCH_SET="--set cpu-pin=2"`** on the same PC, alternated, two rounds each (p50, us): null system call
+**`make bench-arm64 BENCH_SET="--set cpu-pin=2"`** (the C xnuhost; today `check-arm64.sh bench`) on the same PC, alternated, two rounds each (p50, us): null system call
 19.0/19.0 before, 19.0/20.0 after; a fault filled by `task_map` 38.0/37.0 before, 38.0/37.0 after; timer interrupt of a
 running thread 29.0/28.0 before, 28.0/27.0 after (the means fell, 21.6-20.1 against 20.4-65.0 for the null call, but the
 box's load moved them more than the code did). The single-thread trip did not change, as expected: the fixes are in
 what runs between trips (queue, GIC, timers) and in what several vCPUs share.
 
-**The parallel test** (`parallel-arm64`, 8 vCPUs, scale 3, after the warm-up round; same box and load): 8 threads took
+**The parallel test** (`parallel-arm64`, the C xnuhost, 8 vCPUs, scale 3, after the warm-up round; same box and load): 8 threads took
 357-573 ms after and 418-474 ms before against 92-270 ms for one thread: speed-ups 2.2-4.4 (after) and 1.6-5.2 (before)
 of an ideal 8, where the PC has 4 cores and other agents' jobs on them. The 2-thread and 4-thread runs are within the
 same spread. So on this box nothing shows a serialisation in xnuhost's path (8 threads never took 8 times one thread),
@@ -1030,9 +1057,9 @@ and the PC cannot show more than its 4 cores; the phone's run (below) is the mea
 1. Before the switch and in the session: `oneios-tool phone cpu > cpu-before.txt` (then `cpu-after.txt`). Read: the X4's
    top and boost (`cpu7 Cortex-X4 ... top ... boost ...`), any `CAPPED` domain, `cpufreq boost`, xnuhost's cpuset and
    `allowed` CPUs (all 8 is right; `0-1` means the vCPUs cannot reach the big cores), one `xnu-cpuN` thread on each CPU.
-2. The parallel test on the phone's own cores, no session open: push `runtime/xnuhost/build/android/xnuhost` and the
-   folder `build/android/testimage` to a scratch folder (`/data/local/tmp/par`), and run there as root the command line
-   of the `parallel-arm64` target with `--set cpu-pin=2` (and once without): `PARALLEL N threads: ... speed-up` for 1,
+2. The parallel test on the phone's own cores, no session open: push the static xnuhost and the test image that `runtime/xnuhost/check-arm64.sh parallel` builds (`runtime/target/machine-static/aarch64-linux-android/release/xnuhost`
+   and the folder `runtime/target/machine-check/testimage`) to a scratch folder (`/data/local/tmp/par`), and run there as root the command line
+   of the script's `parallel` boot with `--set cpu-pin=2` (and once without): `PARALLEL N threads: ... speed-up` for 1,
    2, 4, 8. Right: near N up to 8 (the A520s are slower, so 8 lands
    between 6 and 8 by their share).
 3. Idle lock screen 2 minutes, then Settings scrolled for 60 s, then a text field typed into for 60 s (the keyboard), each
@@ -1065,8 +1092,8 @@ server's work; then the same back. Two user stays (four hand-offs), two IPIs, tw
 (`external/Droid-VM-UniXNU/drivers/ArmCpu/ArmCpu.cpp`): `signalCPU` -> `spiIpiSend` is a store to GICD_ISPENDR (with
 `armcpu-spi-ipi=1`), and `ArmCpu::interrupt` takes each interrupt with `mrs ICC_IAR1_EL1`, a store to GICD_ICPENDR (for an
 IPI SPI), `msr ICC_EOIR1_EL1`, and `mrs ICC_IAR1_EL1` again to see 1023. At EL0 each is a trapped instruction: a SIGSEGV or
-SIGILL on the vCPU's thread, `xh_mmio_emulate` or `xh_sysreg_emulate` under the GIC's lock (a distributor store
-recomputes all eight CPUs' lines, `gic.c` `dist_write` -> `update()`), and the signal return. Five signals per IPI, ten per
+SIGILL on the vCPU's thread, xh-core's MMIO emulation or `sysreg::emulate` under the GIC's lock (a distributor store
+recomputes all eight CPUs' lines, `gic.rs`: the distributor's store -> `update()`), and the signal return. Five signals per IPI, ten per
 round trip, and three per timer interrupt. A PC boot (fix-host-overhead's `run-fpr/off`, 2,400 s) emulated `ICC_IAR1_EL1`
 2,293,015 times and `ICC_EOIR1_EL1` 1,171,059 times: more than every other trapped instruction together.
 
@@ -1089,7 +1116,7 @@ entry) into calls that came back to their own thread and calls that blocked. xnu
 the `sched_setaffinity` calls that put an iOS thread with another vCPU's core and the host's work in `thread_run` before
 each release (placement, uclamp, the deferred queue): time the `down` line does not include.
 
-**The bench** (`make -C runtime/xnuhost rpc-arm64`, the test kernel's `testkernel-rpc`, docs/building.md section 4): a client
+**The bench** (`runtime/xnuhost/check-arm64.sh rpc`, the C Makefile's `rpc-arm64` when these numbers were taken; the test kernel's `testkernel-rpc`, docs/building.md section 4): a client
 task's thread on vCPU 0 and a server task's on vCPU 1 trade a request and a reply as above, 4,000 round trips per mode:
 mode 0 = ArmCpu's trapped registers and GICD stores, mode 1 = the host calls of 0081, mode 2 = both threads on one vCPU, no
 IPI (the floor: what a direct hand-off of the CPU would cost). On the x86_64 PC under qemu-aarch64 (times are qemu's, about
@@ -1107,7 +1134,7 @@ one futex sleep per hand-off on each side (`futex sleeps: vCPU ~7,900, iOS threa
 work before each release 1.2-2.0 us. So on this box the host calls take the round trip's p50 to about a third, and what is
 left over the floor is the two wakes of an idle vCPU (a futex wake of a sleeping thread on another core, and its way out).
 
-**What one system call costs, and where** (`make bench-arm64`, the same PC and load, p50): the null system call 24.0 us
+**What one system call costs, and where** (the C xnuhost's `make bench-arm64`, today `check-arm64.sh bench`; the same PC and load, p50): the null system call 24.0 us
 kernel to kernel, of it svc -> the kernel has the trap 11.0 us (seccomp's or, under qemu, the marked instruction's signal,
 the stub's register copy, the store and the vCPU's futex wake) and the release -> user code 12.0 us (the store, the futex
 wake of the iOS thread, its way out of the futex and the signal return); each side sleeps in a futex every time (`futex
@@ -1119,16 +1146,16 @@ testkernel-rpc-mode=0|1|2`).
 
 ### 2.7 Devices
 
-All devices are virtio-mmio version 2 windows (`virtio.c`: split queues, indirect descriptors, the status
+All devices are virtio-mmio version 2 windows (xh-core's `runtime/core/src/virtio.rs`: split queues, indirect descriptors, the status
 and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order: the disks, input, GPU.
 
 | Device | File | Backed by | Guest driver it is written for |
 | --- | --- | --- | --- |
-| Block, read-only (`F_RO`) | `virtio_blk.c`, `blk.c` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
+| Block, read-only (`F_RO`) | `src/virtio_blk.rs`, `src/blk.rs` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
 | Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync`, on the disk's flush thread ("Disks" below), timed (`disk NAME: 30 s: reads .., writes .., flushes N in T ms (max X ms)` every 30 s per busy disk, `since the start` at the stop, `disk NAME: a flush took N ms` for the first 16 of 500 ms or more: a flush holds every other request of the guest to that disk) | the Data store window (node `data-store`) |
-| Input | `virtio_input.c`, `input.c` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
-| GPU, 2D scanout | `virtio_gpu.c`, `display.c` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
-| Console | `uart.c` | the log | XNU's PL011 console (`uart0`) |
+| Input | `src/virtio_input.rs`, `src/input.rs` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
+| GPU, 2D scanout | `src/virtio_gpu.rs`, `src/display.rs` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
+| Console | `src/uart.rs` | the log | XNU's PL011 console (`uart0`) |
 | Bridge channel, network, sound | `runtime/bridges` (the bridges agent's; `docs/hardware.md`) | haptics and Bluetooth HCI; a tap with built-in DHCP; an AAudio helper process | `drivers/bridge`, `DroidVMVirtioNet.c`, `DroidVMVirtioSnd.c` |
 | CPU frequency | `runtime/bridges` | a plain MMIO window per vCPU at `0x09000000` (`/arm-io/cpufreq`) | `DroidVMCpufreq.c` |
 
@@ -1137,20 +1164,20 @@ trap kind K signal S far ... esr ... insn ...; pc ... lr ... sp ... fp ... x0 ..
 iOS task may use (below 4 GiB or at and above the stub region), an undefined instruction, a breakpoint; the first 64
 of a run. It shows a process's fatal fault when the kernel does not log that process (`sheng-exc-name`).
 
-Read-only images are checked on read (`imageset.c`, `xh_verify_range`): each 1 MiB chunk is read whole and its
+Read-only images are checked on read (`src/imageset.rs`, `Verify::range`): each 1 MiB chunk is read whole and its
 SHA-256 compared with `<image>.hashes` the first time a read touches it. The chunk is read and hashed outside the
 image's lock, in a buffer of the reading thread, so several vCPUs check different chunks at once (the guest reads
 the 5.8 GiB shared cache on all of them before its first process runs); the lock covers only the checked bits. The
-hash uses the CPU's SHA-256 instructions when `AT_HWCAP` has `HWCAP_SHA2`, plain C otherwise. Tested: `make test`
-(host build in plain C, the arm64 build's test image under `qemu-aarch64 -cpu cortex-a710`, which has SHA2); not
+hash uses the CPU's SHA-256 instructions when `AT_HWCAP` has `HWCAP_SHA2` (`is_aarch64_feature_detected!("sha2")`), plain code otherwise. Tested: the C `make test` (2026-11)
+(the host build in plain C, the arm64 build's test image under `qemu-aarch64 -cpu cortex-a710`, which has SHA2), and the Rust `src/imageset/tests.rs` (every check of the C test, plus the static test binary under `qemu-aarch64 -cpu max`: the SHA2 path); not
 measured on the phone.
 
-The bridges are linked in as `libonebridges.a` and come after the GPU in the window order: `bridge`, `net`,
+The bridges are linked in (the crates `onebridges`, `onecamera`, `oneencoder`; `src/session/bridges.rs` sets them up) and come after the GPU in the window order: `bridge`, `net`,
 `virtio-snd`. They are on in a takeover session and off in `--mode bench` (`--set bridges=0|1`). With them,
 `/cpus` gets the host's cluster types (E vCPUs first), each vCPU thread is put on one host CPU of its cluster
 (`cpu-pin=1`, section 2.6a; `cpu-pin=0`: any CPU of its cluster), and so is the iOS thread a vCPU runs (when the vCPU
 changes). The speaker's output latency (since 2026-11-15, fix-audio-latency): once virtio-snd has the AAudio helper,
-xnuhost asks it for its measured latency before the guest boots (`br_audio_probe_latency`, at most 2 s: the helper
+xnuhost asks it for its measured latency before the guest boots (`AudioBackend::probe_latency` of `runtime/bridges/audio/backend.rs`, at most 2 s: the helper
 opens the speaker in silence, which then lingers for iOS's first sound) and adds `oneios-audio-latency=FRAMES` to the
 boot arguments, unless they have one (`audio: speaker latency N frames (N ms) measured by the helper:
 oneios-audio-latency=N`, or `audio: output latency N frames (N ms): the boot arguments' oneios-audio-latency, not
@@ -1162,7 +1189,7 @@ bluetoothd's H4 UART transport, which on iOS 27 is a Skywalk pipe: [hardware.md]
 `virtual` gives iOS none (encoding 10, the guest driver hides the nub); the default `auto` is `hidl` when the bridges
 are on and hwservicemanager returns `android.hardware.bluetooth@1.x::IBluetoothHci/default` at the start (asked once
 and let go; the HAL is opened only when bluetoothd connects), else `virtual`. `sim` (a boot with no phone, the PC):
-a stand-in controller (`runtime/bridges/bt/hci_sim.c`) behind the same bridge channel and the same `/bluetooth` node
+a stand-in controller (`runtime/bridges/bt/hci_sim.rs`) behind the same bridge channel and the same `/bluetooth` node
 (transport-encoding 1, the made-up address of `/chosen mac-address-bluetooth0`); with the bridges off xnuhost makes a
 bridge device that serves only it. One log line says which:
 `bluetooth: on: the phone's controller through its HAL 1.1, address ...`, `bluetooth: on: a stand-in controller
@@ -1179,7 +1206,7 @@ own simulated controller: "The virtual transport is bluetoothd's own").
 Haptics (`haptics=` in `xnuhost.conf`, `--set haptics=...`; 2026-11-13): `auto`, the default, opens the phone's
 force-feedback device (`haptics: on: /dev/input/eventN ...`) when the bridges are on; `off` gives iOS no actuator
 (`haptics: off (haptics=off)`: no Actuator audio device, no `/product/haptics`); `sim` (a boot with no vibrator,
-the PC) is a stand-in actuator (`runtime/bridges/haptics/haptic.c`) that takes, counts and logs every request
+the PC) is a stand-in actuator (`runtime/bridges/haptics/haptic.rs`) that takes, counts and logs every request
 (`haptics: on: a stand-in actuator (haptics=sim)`), behind the same bridge channel; with the bridges off xnuhost
 makes a bridge device that serves only the stand-ins (with `bluetooth=sim` one device serves both). Each played
 effect is logged for the first 8, then at 16, 32, ...; `haptics: counters: ...` at those points and at the end, and
@@ -1202,22 +1229,22 @@ the bridges off: no phone): no MediaCodec; every frame is coded as it is (I_PCM)
 stand-in always, also in a session. `encoder: session N: HEVC WxH on <backend>` at each encoder session
 ([hardware.md](hardware.md) section 7g, `runtime/bridges/encoder/README.md`).
 The network (`wifi=` in `xnuhost.conf`, `--set wifi=...`): `auto`, the default, makes the phone's wlan0 the guest's
-en0 (`br_wlan_prepare`, [hardware.md](hardware.md) section 3): the `net` window's virtio-net device carries wlan0's
+en0 (`wlan::prepare` of `runtime/bridges/wifi/wlan.rs`, [hardware.md](hardware.md) section 3): the `net` window's virtio-net device carries wlan0's
 address in its configuration, its frames go to and from wlan0 by AF_PACKET, and the guest driver's station messages
 (frames of type 0x88b5) go to nl80211 and the vendor's supplicant. It keeps what it changes on wlan0 (GRO,
 `disable_ipv6`) in `/data/session/wifi.state`. No wlan0: one line (`wifi: off: no wlan0 ...`) and no `net` window.
 `off` makes no network device; `tap` is the old route (a tap and `bin/oneios-net.sh`'s NAT), for a bench; `sim` is a
 made-up radio for a boot with no phone (it also works with the bridges off): two networks, "OneiOS open" and "OneiOS
-WPA2" (passphrase `password`), that the guest can scan and join, and no frames (`runtime/bridges/wifi/sim.c`).
+WPA2" (passphrase `password`), that the guest can scan and join, and no frames (`runtime/bridges/wifi/sim.rs`).
 A bridge whose Linux side is missing logs one line and is left out. At a stop the motor is stopped, the Wi-Fi
-bridge leaves its network and gives wlan0's settings back (`br_wlan_close`), and with `wifi=tap`
+bridge leaves its network and gives wlan0's settings back (`wlan::close`), and with `wifi=tap`
 `bin/oneios-net.sh down` removes the tap's rules. Every virtio node carries its SPI as `interrupts` and as
 `droidvm,intid` (the name UniXNU-droidvm's transports read).
 
 Where UniXNU's RamBlock keeps the Data seed in RAM and changed pages in a store window, xnuhost has
 Linux's page cache and a sparse file: the store is a raw image.
 
-**Disks: where a request is served** (`virtio_blk.c`; fix-widget-kill-loop, 2026-11-15). The guest's driver
+**Disks: where a request is served** (`src/virtio_blk.rs`; fix-widget-kill-loop, 2026-11-15). The guest's driver
 (`kernel/patches/oneios-hosted/storage/OneiOSHostedDisk.cpp`) sends one request at a time per disk and polls for the
 answer, and xnuhost serves reads and writes inside the notify, on the vCPU that wrote the register (a `pread` or
 `pwrite` of the image: Linux's page cache). A **flush** was served the same way: `fdatasync(2)` of the 32 GiB
@@ -1238,10 +1265,10 @@ A lasting line per disk, once a minute while it is used: `disk N: 60 s: reads R 
 (M MiB, T ms, slowest S ms), flushes F (on its thread|on the vCPU: T ms, mean A ms, slowest S ms)` (N as in the start
 line `disk N: PATH, ...`). Reads and writes are the time the vCPUs spent in the host for them (a read-only image's
 includes its chunk checks), the flushes the `fdatasync`'s own time. On the phone the Data store's line says how often
-iOS flushes and how long the phone's storage takes for it. A second, coarser line comes from `blk.c` itself: every 30 s
+iOS flushes and how long the phone's storage takes for it. A second, coarser line comes from `src/blk.rs` itself: every 30 s
 per disk with requests, `disk NAME: 30 s: reads R (M MiB), writes W (M MiB), flushes F in T ms (max S ms)`, at the stop
 the same `since the start`, and the first 16 flushes of 500 ms or more as they happen (`disk NAME: a flush took N ms`).
-The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU or flush thread) ran it.
+The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCPU or flush thread) ran it.
 
 ### 2.8 Display and input: the choice
 
@@ -1264,24 +1291,24 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   the frame's offset, stride, size, changed rectangle and its segments as RAM memfd offsets, and the helper copies
   the rows from the guest's pages straight into the layer's buffer. xnuhost copies nothing. The guest's flush is
   answered when the helper sends `done {"XHDA", seq low, seq high, flags, 0}` after posting the buffer, so the guest
-  does not draw into a surface that is still being read (`virtio_gpu.c` holds the reply on the fence list, as the
+  does not draw into a surface that is still being read (`virtio_gpu.rs` holds the reply on the fence list, as the
   display's: ctx 0). A helper that does not answer within 100 ms is answered for. One that leaves, or a newer
   helper, has its frames answered at once. `done` flags bit 0 (a frame it could not copy) turns direct frames off
   for that helper. 2D resources, a scanout outside RAM or of another format, and a helper without the flag use the
   memfd copy as before. `display-direct=0` (command line or `xnuhost.conf`) turns direct frames off for xnuhost.
   Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (posted to in
   the layer: mean X ms, max Y ms), T not answered within 100 ms, C flushes of xnuhost's own copy`. The segments'
-  offsets are offsets in the RAM memfd, counted from the file's offset 0: `main.c` gives `xh_display_set_ram` the
-  address of offset 0 (`g_mem.fd_phys`) and the file's length up to the window's end (`g_mem.head + g_mem.size`).
-  The window starts `g_mem.head` bytes into the file (16 KiB on the phone, fix-ram-hugepages), so it is not
-  `g_mem.phys`. Until 2026-11-22 `main.c` passed `g_mem.phys`: the helper read every page of a frame 16 KiB too
+  offsets are offsets in the RAM memfd, counted from the file's offset 0: the session (`src/session/board.rs`; `main.c` in the C) gives `display::set_ram` the
+  address of offset 0 (`fd_phys`, `src/mem.rs`) and the file's length up to the window's end (`head + size`).
+  The window starts `head` bytes into the file (16 KiB on the phone, fix-ram-hugepages), so it is not
+  `phys`. Until 2026-11-22 the C `main.c` passed `g_mem.phys`: the helper read every page of a frame 16 KiB too
   low, from another guest page, and the screen showed narrow stripes of other memory that flickered (runtime 0.1.13
   to 0.1.15; the direct path was written on 11-11, before the head existed, and merged on 11-20 without a phone run).
   Fixed and checked on the phone on 2026-11-22: the picture is correct, and the helper's 10 s line shows only the
   changed rows copied (24-43% of the rows while iOS moves, 15 of 99 frames unchanged on a still screen; before the
   fix 100% of the rows of every frame, because the wrong pages kept changing). Since 2026-11-22 the helper reads a
   frame's pages once, as soon as `XHDS` comes: each tile into the cache, hashed there, and copied on into its own
-  snapshot of the picture only when it changed (`struct xhd_snapshot`, `runtime/display/src/xhd.h`). Then it waits
+  snapshot of the picture only when it changed (`Snapshot`, `runtime/display/src/xhd/snapshot.rs`; `struct xhd_snapshot` of `xhd.h` in the C). Then it waits
   for surfaceflinger's buffer and fills it from the snapshot. `XHDS`'s fifth word is xnuhost's send time (the low 32
   bits of `CLOCK_MONOTONIC` in us), and the helper's 10 s line says how long after it the read began. The guest does
   not draw into a surface while the helper reads it: the guest's display driver completes the swap for the
@@ -1297,11 +1324,11 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   gralloc handle would have to be forged), and the guest's surfaces cannot be made gralloc buffers either, since the
   guest allocates them in its own RAM. Droid-VM's host does one GPU blit instead, with a Vulkan dma-buf import that
   needs the Turnip driver its app ships (`plans/DISPLAY_PIPELINE_DECOUPLING.md`); this phone's own Vulkan driver is
-  not known to import a udmabuf. Tested on the PC (`tests/test_display_mode.c` with the helper's `xhd.c` on the
-  other end, `tests/test_display.c`, the held flush in `test_xnuhost.c`); not yet run on the phone.
+  not known to import a udmabuf. Tested on the PC (the C `tests/test_display_mode.c` with the helper's `xhd.c` on the
+  other end, `tests/test_display.c`, the held flush in `test_xnuhost.c`; in Rust `src/display/tests.rs` with `oneios-display`'s xhd on the other end, `runtime/display/src/xhd/tests.rs`, `src/virtio_gpu/tests.rs`); not yet run on the phone.
   switch on One UI's side; its README has the phone test). Not run on a phone yet.
-- **The frame's pixels** (`display-format=`, `--display-format`; `include/xnuhost/pixels.h`, which the helper
-  includes too):
+- **The frame's pixels** (`display-format=`, `--display-format`; `include/xnuhost/pixels.h`, kept for the kernel's C; xnuhost and the helper use its mirror `xh_core::pixels`, `runtime/core/src/pixels.rs`, which a test checks against the header; the C helper
+  included it too):
 
   | `display-format` | hello `format` | Bytes a pixel | What the numbers are |
   |---|---|---|---|
@@ -1315,7 +1342,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   them) beside the eight 8-bit ones, and writes every flush in the frame's own format: half floats copied, 8-bit
   pixels (the boot console) decoded to linear light, and on a `bgrx` frame half floats encoded to sRGB and clamped.
   The log says `display: the frame's pixels: ...`. `rgba16f` needs `--display shm` (KMS takes 32-bit pixels), and
-  `oneios-tool kernel display-capture` (PC) reads both (a half-float frame as sRGB, clamped). Host-tested (`make test`: the 2D and blob paths, a pixel split
+  `oneios-tool kernel display-capture` (PC) reads both (a half-float frame as sRGB, clamped). Host-tested (the C `make test`, now `src/virtio_gpu/tests.rs`: the 2D and blob paths, a pixel split
   between two blob segments); not run on a phone. Whether iOS then renders half floats is the Metal plug-in's
   (`userland/metal/DisplayWide.inc`, built on the Mac).
 - **The mode is the one surfaceflinger runs the panel in.** The guest's frame (the boot framebuffer, the virtio-gpu
@@ -1339,7 +1366,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   120 Hz assumed` (with `(panel-fallback=)` or `(the S24 Ultra's; panel-fallback= sets another phone's)` after it), then `display: shm, guest frame 1440x3120 at 120 Hz, @3x (480x1040 points)`. The stride of the frame
   is the width times 4 (5760 bytes; 8 with `display-format=rgba16f`); the `stride` in the helper's `first frame posted` line is the layer buffer's, in
   pixels, and is whatever gralloc aligned the width to. Tested on the PC against a stand-in helper
-  (`tests/test_display_mode.c`); not yet run on the phone.
+  (the C `tests/test_display_mode.c`, now `src/display/tests.rs`); not yet run on the phone.
 - **The UI scale** is `scale`: 3 (default, 480x1040 points) or 2 (720x1560 points), from `--scale`/`--set
   scale=`, else `xnuhost.conf` of the image set, else its `overlay/userland/xnuhost.conf` (the userland hook's),
   else 3. The pixels are the same either way. One value goes to every place that states it:
@@ -1373,26 +1400,26 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   - **Timing log**, one line when the last finger lifts: `input: touch: N frames in T ms, C contacts, a frame every
     a..b ms; read x/y/z us after the scan (min/avg/max)`, then `; K frames waited for the guest's buffers` when the guest
     had posted no buffers at a frame's end, and, for a touch-down after 100 ms without a guest frame, `; the guest's next
-    frame F ms after the touch-down` (the end is `xh_input_frame_shown`, called by `xh_display_flush`).
-  - The filter (`xh_input_feed`) is portable and has its own host test (`test_input_filter`): the events that pass, the
+    frame F ms after the touch-down` (the end is `input::frame_shown`, called by `display::flush`).
+  - The filter (`feed`, `src/input.rs`) is portable and has its own host test (`test_input_filter` in the C, `filter` in `src/input/tests.rs`): the events that pass, the
     scan time, the resync of slots and keys after `SYN_DROPPED`, the still-screen timing.
 - **The touch IC's power state** is the brightness bridge's (`runtime/bridges/brightness/README.md`, "The touch IC
   follows the display"): Samsung's IC is off while the panel is blank and One UI's input HAL, which wakes it, is
   not there in a session. The bridge writes `/sys/class/sec/tsp*/enabled` (`sec_touchscreen` only): `2,0`, `2,1`
-  at its start, at every iOS display on (after the backlight), at every press of the power key (input.c calls
-  `xh_input_power_key`, which main.c sets to the bridge's `br_bright_key`), and at the stop; `1,0`, `1,1` before the
+  at its start, at every iOS display on (after the backlight), at every press of the power key (`input.rs` calls
+  the hook `input::set_power_key` gives it, which `src/session/bridges.rs` points at the bridge's `Bright::key`), and at the stop; `1,0`, `1,1` before the
   backlight when iOS turns its display off (its framebuffer's power request, `OB_BRIGHT_POWER`, hosted `0069`). A
   brightness of 0 no longer sleeps it (since 2026-11-14). `touch-sleep=0` (`--set touch-sleep=0`, or the
   image's `xnuhost.conf`) keeps the IC awake at a display off (it sets `ONEIOS_TSP_OFF=0` for the bridge). After a SIGKILL of xnuhost
   the IC is woken by One UI's own input HAL when the return brings the framework back.
-- **`--input-script FILE`** (`input-script=FILE`; `src/input_script.c`, whose head has the format): touches and
+- **`--input-script FILE`** (`input-script=FILE`; `src/input_script.rs`, whose head has the format): touches and
   key presses from a text file, on the same virtio-input device, for a host with no touchscreen (the PC under
   qemu) and for repeatable checks. `abs` lines give the device its axes before the guest starts (a device
   without `ABS_MT_POSITION_X/Y` is not a touch screen to the guest), `ready` waits for the guest's driver
-  (`xh_virtio_ready`: DRIVER_OK), then `tap`, `swipe`, `key`, `ev`, `wait`, `repeat`.
+  (the virtio transport's `ready`: DRIVER_OK), then `tap`, `swipe`, `key`, `ev`, `wait`, `repeat`.
   `tools/input-demo.script` is a 1440 x 3120 panel with a tap, a swipe from the bottom edge and the three side
   keys, repeated. It runs beside the evdev reader, or alone with `--no-input`. Its events go through the panel's filter
-  (`xh_input_feed`): each frame's end gets `EV_MSC` / `MSC_TIMESTAMP` with the time it is sent, and each scripted
+  (`input.rs` `feed`): each frame's end gets `EV_MSC` / `MSC_TIMESTAMP` with the time it is sent, and each scripted
   gesture gets the `input: touch:` line with its touch-to-frame time, so the latency can be measured without a finger.
   The filter passes the three side keys, and Home (`KEY_HOMEPAGE`) and the ringer (`KEY_MUTE`) for a host that has them.
 - **`session/ready` (the ready rule, since 2026-11-15)** is created at the guest's first frame of its own **that
@@ -1400,7 +1427,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   image's `xnuhost.conf`) after its first frame of its own when every frame was black, or by the `ready` host call.
   The guest's display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame
   drawn there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but never counts,
-  lit or not (`virtio_gpu.c` `frame_shown`). "Shows something" is `xh_pixels_lit` (`include/xnuhost/pixels.h`): a grid
+  lit or not (`virtio_gpu.rs` `frame_shown`). "Shows something" is `xh_core::pixels::lit` (`runtime/core/src/pixels.rs`; `xh_pixels_lit` of `include/xnuhost/pixels.h` in the C): a grid
   of every 16th pixel of every 16th row (90 x 195 = 17,550 pixels at 1440x3120, not the 18 MB frame) with one of R, G,
   B above 16 of 255 (half floats through the clamp to 8-bit sRGB); a lit 16x16 area is always seen. A frame the display
   helper copies itself (the direct path) is sampled on the same grid where it lies, in the guest's pages (`blob_lit`,
@@ -1421,7 +1448,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   black: no frame with content in N s after the guest's first (F frames); ready all the same (ready-content-wait)`,
   `guest ready: first frame (ready-content-wait=0: content not waited for)`, `guest ready: first frame (the kernel's
   ready call)`. All begin with `guest ready: first frame`, the marker the fork's boot stages, its Session logs
-  screen and `oneios-tool` look for. Host tests: `test_pixels_lit` (an all-black frame with and without the X byte,
+  screen and `oneios-tool` look for. Host tests (C names; in Rust `lit_frames` in `runtime/core/src/pixels.rs`, `ready_rule` in `src/ready.rs`, `two_d` in `src/virtio_gpu/tests.rs`): `test_pixels_lit` (an all-black frame with and without the X byte,
   a console's rows of text, one lit pixel on the grid, one off it, the level at and above 16, a 16x16 block at
   every place, half floats), `test_ready_rule` (lit at once, black then lit, the timeout by a frame and by the tick,
   0, the host call, once only, the key's range) and `test_virtio_gpu` (the console lit and not counted, the guest's
@@ -1437,22 +1464,22 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   rule and the new one were ready at the same frame there; the black frames before the logo are the phone's (its
   frames come through the GPU's blobs). The timeout path has run in the host tests only.
 
-- **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
+- **The pen** (`src/pen.rs`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
   session proves it) or `pen=auto`; `pen-rotate=auto|0|90|180|270` (the digitizer's frame turned clockwise onto the
   panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess for such a device; the S24 Ultra's IC is portrait, so 0: Samsung's driver reports the IC's frame unturned, `docs/hardware.md` 7f); `pen-mirror=1` (then mirrored
   left to right). These three settings come from the command line, else from the image set's `xnuhost.conf` or its
-  `overlay/userland/xnuhost.conf`; until 2026-11-22 the image set's were read and then dropped (`xh_config_finish` did
+  `overlay/userland/xnuhost.conf`; until 2026-11-22 the image set's were read and then dropped (the C `xh_config_finish` did
   not copy them), so the phone's `pen=auto` never turned the pen on and no session had a `pen:` line. With `pen=auto`,
-  xnuhost (with `input` on) calls `xh_pen_lookup`: the default, `xh_pen_lookup_evdev`,
+  xnuhost (with `input` on) calls `pen::lookup`: the default, `pen::lookup_evdev`,
   opens each `/dev/input/event0..63` read only and takes the best device with `BTN_TOOL_PEN`, `ABS_X/Y` and
   `ABS_PRESSURE` (more for `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a name with "pen" in it, such as Samsung's
   `sec_e-pen`); never one with a side key or multitouch positions; never grabbed. Another hardware backend replaces the
-  lookup by setting `xh_pen_lookup` to its own function (same signature; nothing else names a Samsung device). When a pen
+  lookup with `pen::set_lookup` and its own function (a `LookupFn`; nothing else names a Samsung device). When a pen
   is found, or the input script has `pen-` lines, the board gets a **second virtio-input device, `/arm-io/input-1`**,
   named "OneiOS pen" (`BTN_TOOL_PEN`, `BTN_TOOL_RUBBER`, `BTN_TOUCH`, `BTN_STYLUS`; `ABS_X/Y` 0..32767, `ABS_PRESSURE`
   0..4095, `ABS_DISTANCE` 0..255, `ABS_TILT_X/Y` -90..90 degrees; `INPUT_PROP_DIRECT`), and `oneios-pen=1` is added to
   the guest's command line unless it has an `oneios-pen=` (so `--boot-args "... oneios-pen=0"` keeps the guest's side
-  off). The pen's descriptor is read on input.c's thread beside the others; its filter (`xh_pen_feed`) turns each evdev
+  off). The pen's descriptor is read on `input.rs`' thread beside the others; its filter (`Source::feed`) turns each evdev
   frame into one sample in those units (in range, tip, side button, eraser end; pressure only while the tip is down; a
   hover height never 0, half way for a device without `ABS_DISTANCE`; tilt by its resolution in units per radian, else
   as degrees within +-90, else its range's end as 90; at most +-89), sends only the fields that changed and nothing for
@@ -1460,9 +1487,9 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   2026-11-22: the S Pen sent about 480 frames a second, each a HID report and a stylus event, and backboardd took 100 to
   160 % of a CPU while drawing): an edge (in range or out, the tip down or up, the eraser end, the side button) goes at
   once with the newest position; any other frame goes when 8.33 ms (`XH_PEN_PERIOD_NS`, 120 Hz) have passed since the
-  last send, by the frames' own kernel times (the read's time when a frame's is not within the last second); until then the newest is held and input.c's poll wakes for it when its
-  time comes (`xh_pen_due`, `xh_pen_tick`); the pressure sent is the most of the frames folded together while the tip
-  was down; a hovering frame within one guest pixel of the last one sent (`xh_pen_set_panel`, the guest's frame) is not
+  last send, by the frames' own kernel times (the read's time when a frame's is not within the last second); until then the newest is held and `input.rs`' poll wakes for it when its
+  time comes (`Source::due`, `Source::tick`); the pressure sent is the most of the frames folded together while the tip
+  was down; a hovering frame within one guest pixel of the last one sent (`Source::set_panel`, the guest's frame) is not
   sent. No `MSC_TIMESTAMP` on the pen's device (the
   guest's scan-time code is the touch screen's). Log lines: `pen: /dev/input/eventN "NAME": read only, not grabbed; x
   A..B, y ..., pressure ..., distance ..., tilt x ... (res R); keys: ...; turned D degrees (why)`, or `pen: none found:
@@ -1475,13 +1502,13 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   pen key: its screen-off (AOP) mode ...` (the IC asleep; such keys are never passed on). With the host's pen xnuhost
   sets `ONEIOS_PEN_IC=1` before the brightness bridge opens: the bridge then wakes and sleeps the pen's IC
   (`/sys/class/sec/sec_epen/enabled`) with the touch IC (`runtime/bridges/brightness/README.md`). The script's lines
-  (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.c`) go
+  (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.rs`) go
   through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
-  the side button. Host test: `test_pen` in `tests/test_xnuhost.c`.
+  the side button. Host tests: `src/pen/tests.rs` (`test_pen` of `tests/test_xnuhost.c` in the C).
 - `session/ready` is created at the guest's first presented frame (or by the `ready` host call). The guest's
   display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame drawn
   there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but is not that
-  first frame (`virtio_gpu.c` `frame_shown`).
+  first frame (`virtio_gpu.rs` `frame_shown`).
 
 ### 2.9 What xnuhost must never do in a session
 
@@ -1496,12 +1523,12 @@ and any change that would break one goes on the board first:
 - nothing that needs a clean exit: every helper is a child inside the cgroup and dies with it.
 
 Two things outlive a killed session and are not xnuhost's files: `vm.max_map_count` stays raised until
-the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is killed before `br_wlan_close`
+the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is killed before `wlan::close`
 (neither breaks One UI's Wi-Fi: [hardware.md](hardware.md) section 3, "Return"; `bin/wifictl restore
 SESSION/wifi.state` puts them back). With `wifi=tap`, the tap's routing rules and iptables chains stay until
 `oneios-net.sh down` (the tap itself goes with the process).
 
-### 2.9a The USB gadget in the log (`src/usb.c`, 2026-11-13)
+### 2.9a The USB gadget in the log (`src/usb.rs`, 2026-11-13)
 
 xnuhost never opens, writes or binds anything of USB, the USB gadget, configfs, Type-C or power supplies but
 the battery and thermal bridges' reads of named files of `/sys/class/power_supply/battery` and of `online` of
@@ -1528,7 +1555,7 @@ seconds (3; not a realtime thread; three serials and one small file a poll). A v
 `(none)`, a state file that cannot be read `(unreadable)`, a controller that is not a plain name `(not a name)`.
 On the PC (no property area: the host build, or the Android binary under qemu-aarch64) the line is
 `usb: state (none), config (none), UDC (none) (unreadable)`, once.
-`test_xnuhost`'s `test_usb` checks it with a stand-in property source and state file: the first line, nothing
+`usb_line` in `src/usb.rs` (`test_xnuhost`'s `test_usb` in the C, ported case for case) checks it with a stand-in property source and state file: the first line, nothing
 logged or read again while the serials and the file stay, a change of the file alone and of one property, a value
 read only through its serial, a property that goes away, a controller name that is a path (`../../../proc/self`:
 its file is never opened), and `usb-log`'s default and range. **Not run on the phone yet.**
@@ -1592,15 +1619,15 @@ before this change.
 **Three wrong readings, fixed with the lines (2026-11-22).** All three were in the kbd-debug session:
 
 1. *Touch to frame with direct frames.* Since the display helper copies frames itself from guest RAM (the direct
-   path, `xh_display_post`), xnuhost's own `xh_display_flush` no longer ran for iOS's frames, and only it ended
-   input.c's touch-to-frame wait. So every gesture said `no guest frame after the touch-down` (66 of 66, while the
+   path, `xh_display_post`, now `display.rs`), xnuhost's own `xh_display_flush` no longer ran for iOS's frames, and only it ended
+   `input.c`'s (now `input.rs`') touch-to-frame wait. So every gesture said `no guest frame after the touch-down` (66 of 66, while the
    helper showed 153 frames in 10 s). `xh_display_post` now ends the wait when a frame is posted
-   (`test_display_mode`: a posted frame, and only it, counts as shown).
+   (`test_display_mode`, now `a_posted_frame_ends_the_touch_wait` in `src/display/tests.rs`: a posted frame, and only it, counts as shown).
 2. *Ready with direct frames.* The ready rule asked whether the frame is lit (`xh_pixels_lit`) of the display's own
    buffer, which a direct frame never reaches: it stayed black, and session/ready waited the whole
-   `ready-content-wait` (first frame at +51.4 s, ready at +171.5 s, "no frame with content in 120 s"). virtio_gpu.c's
+   `ready-content-wait` (first frame at +51.4 s, ready at +171.5 s, "no frame with content in 120 s"). `virtio_gpu.c`'s (now `virtio_gpu.rs`')
    `blob_lit` now samples the posted blob where it lies in the guest's pages, on the same grid and level
-   (`test_xnuhost`: a direct frame black at the sampled pixel reads black, a lit one reads lit, with the display's
+   (`test_xnuhost`, now `three_d` in `src/virtio_gpu/tests.rs`: a direct frame black at the sampled pixel reads black, a lit one reads lit, with the display's
    buffer black both times).
 3. *drm2kgsl's facts as errors.* Our drm2kgsl patches print their once-per-event facts at virglrenderer's WARNING
    level (the library's threshold passes them), and xnuhost mapped WARNING to `xnuhost E`: all 28 `E` lines of the
@@ -1611,7 +1638,7 @@ about 12 devices' queue counters (under each device's lock, a few loads each) an
 per-event lines come at boot (one per device), at a key press, or at a fault. The counters are plain increments in
 code that already holds the device's or the tasks' lock.
 
-**Tested:** `test_xnuhost`'s `test_health` (the tasks' line and its silence when nothing moved; a virtio device
+**Tested:** `test_xnuhost`'s `test_health`, now `tasks_health_line` in `src/task.rs` and `health`, `health_summary_and_bad_chains` in `runtime/core/src/virtio/tests.rs` (the tasks' line and its silence when nothing moved; a virtio device
 that holds the chains it is given: the summary, the in-flight count, the episode told once, the line when it moves
 again, a queue whose posted chains nobody took), the direct-frame cases above, the Rust tests of `log summary`
 (`tests/synthetic.rs` `summary_of_a_boot`, the unit test `problems_and_zero_counts`), and `log summary` on the
@@ -1647,13 +1674,13 @@ that names them, and `oneios-tool ioslog` reads the job states from the Data sto
 
 | Source (commit) | Licence | What | Where |
 | --- | --- | --- | --- |
-| [DarwinBoot](https://github.com/UniXNU/DarwinBoot) `8544957`: `DarwinBoot.c`, `BootArgs.h`, `PackedRamdisk.h`, `Test/make-fixtures.py` | BSD-2-Clause-Patent | Mach-O and fileset parser, `boot_args`, trust-cache and packed-RAM-disk checks, placement order, the fixture shape | `runtime/loader/src/macho.c`, `boot.c`, `tests/fixture.h` (headers keep the notice) |
-| [UniXNU-droidvm](https://github.com/Droid-VM/UniXNU-droidvm) `f9121cd`: `ipados27/scripts/make-droidvm-adt.py` | BSD-2-Clause-Patent | the device tree that boots iPadOS 27.0.1: nodes, properties and the reasons recorded for them | `runtime/loader/src/machine.c` |
-| [ArmDTPlatform](https://github.com/UniXNU/ArmDTPlatform) `e8bd8d5`, [ArmCpu](https://github.com/UniXNU/ArmCpu) `1604083` | BSD-2-Clause-Patent | not copied: their requirements define the machine. The tree has what `configure()` demands; the GIC registers ArmCpu reads and writes, timer INTID 27, SGIs and PSCI `CPU_ON` are what `gic.c`, `sysreg.c` and `cpu.c` implement | `runtime/xnuhost/src/gic.c`, `sysreg.c`, `cpu.c` |
-| [VirtioMmioBlock](https://github.com/UniXNU/VirtioMmioBlock) `4e1013e` | BSD-2-Clause-Patent | not copied: the register sequence of `NativeVirtioBlock::configureQueue` is the device model's test (in the test kernel and the unit tests) | `virtio.c`, `virtio_blk.c` |
-| [RamBlock](https://github.com/UniXNU/RamBlock) `60a54ce` | BSD-2-Clause-Patent | the role (seed + persistent store), done with a sparse file; `DBRDISK1` packed RAM disks are accepted by the loader | `blk.c`, `boot.c` |
-| iOSPlus10 `b2ffcac`: `external/slop/shim/loader.c`, `external/slop/tools/adt.py`, `docs/ios26-port-status.md` section 7 | no licence file in slop: nothing copied | the 608-byte `boot_args` layout; the ADT dump tool's behaviour (`xnuloader-inspect adt`); the one-global-key-set PAC model | `boot.h`, `tools/xnuloader-inspect.c`, section 2.6 |
-| gVisor systrap, User-Mode Linux skas | design only | the stub, trap pages, service thread | `stub/`, `task.c` |
+| [DarwinBoot](https://github.com/UniXNU/DarwinBoot) `8544957`: `DarwinBoot.c`, `BootArgs.h`, `PackedRamdisk.h`, `Test/make-fixtures.py` | BSD-2-Clause-Patent | Mach-O and fileset parser, `boot_args`, trust-cache and packed-RAM-disk checks, placement order, the fixture shape | `runtime/loader/src/macho.rs`, `boot.rs`, `fixture.rs` (their heads keep the notice) |
+| [UniXNU-droidvm](https://github.com/Droid-VM/UniXNU-droidvm) `f9121cd`: `ipados27/scripts/make-droidvm-adt.py` | BSD-2-Clause-Patent | the device tree that boots iPadOS 27.0.1: nodes, properties and the reasons recorded for them | `runtime/loader/src/machine.rs` |
+| [ArmDTPlatform](https://github.com/UniXNU/ArmDTPlatform) `e8bd8d5`, [ArmCpu](https://github.com/UniXNU/ArmCpu) `1604083` | BSD-2-Clause-Patent | not copied: their requirements define the machine. The tree has what `configure()` demands; the GIC registers ArmCpu reads and writes, timer INTID 27, SGIs and PSCI `CPU_ON` are what `gic.rs`, `sysreg.rs` and `cpu.rs` implement | `runtime/xnuhost/src/gic.rs`, `sysreg.rs`, `cpu.rs` |
+| [VirtioMmioBlock](https://github.com/UniXNU/VirtioMmioBlock) `4e1013e` | BSD-2-Clause-Patent | not copied: the register sequence of `NativeVirtioBlock::configureQueue` is the device model's test (in the test kernel and the unit tests) | `runtime/core/src/virtio.rs`, `src/virtio_blk.rs` |
+| [RamBlock](https://github.com/UniXNU/RamBlock) `60a54ce` | BSD-2-Clause-Patent | the role (seed + persistent store), done with a sparse file; `DBRDISK1` packed RAM disks are accepted by the loader | `src/blk.rs`, `runtime/loader/src/boot.rs` |
+| iOSPlus10 `b2ffcac`: `external/slop/shim/loader.c`, `external/slop/tools/adt.py`, `docs/ios26-port-status.md` section 7 | no licence file in slop: nothing copied | the 608-byte `boot_args` layout; the ADT dump tool's behaviour (`xnuloader-inspect adt`); the one-global-key-set PAC model | `runtime/loader/src/boot.rs`, `runtime/loader/src/bin/xnuloader-inspect.rs`, section 2.6 |
+| gVisor systrap, User-Mode Linux skas | design only | the stub, trap pages, service thread | `runtime/xnuhost/stub/`, `src/task.rs` |
 
 Not used, and why: iOSPlus10's `BOARD=` shim and boot-image flow, its `mkadt.py`/`adt-extra.py` and its
 platform patches target a bootloader hand-off and SoC hardware that do not exist under a process.
@@ -1676,21 +1703,38 @@ XnuPrelink and VerifiedRoot are the kernel's and the image set's. vphone-android
 5. **A factory process** forks tasks, not xnuhost itself (which has threads and gigabytes mapped).
 6. **Interrupted kernel contexts live on the kernel stack and return through `rt_sigreturn`**: needed so the
    kernel can switch threads inside an interrupt.
-7. **C, not Rust**, as its own program in `runtime/`, not in `android/vphone-native`.
+7. **Its own program in `runtime/`, not in `android/vphone-native`.** Written in C first; rewritten in Rust on
+   2026-11-23 (branch `rust-runtime`, one C file to one Rust module, behaviour and log lines kept;
+   [runtime/RUST.md](../runtime/RUST.md)).
 8. **GPU.** The plan's "forward KGSL calls" is dropped: Droid-VM measured the KGSL proxy at half the speed
    and retired it. The proven path on this SoC is virtio-gpu's DRM native context served by drm2kgsl
    (`docs/references.md`); see section 8.
 
 ## 6. Tests and what they prove
 
-| Test | Where it runs | Result (2026-11-10) |
+The Rust runtime (2026-11-23, branch `rust-runtime`; every C test was ported with its cases and expectations):
+
+| Test | Where it runs | Result |
+| --- | --- | --- |
+| `cd runtime && cargo test -p xnuloader` (`runtime/loader/tests/loader.rs`) | PC | every case of the C `test_loader.c` (193 checks) in 11 tests, plus the Makefile's `xnuloader-inspect` checks and a `mkkernel` run, pass; against the C loader on two refused kernelcaches the output and exit codes were byte-identical |
+| `cd runtime && cargo test -p xnuhost` (unit tests beside each module: `src/*/tests.rs`, `#[cfg(test)]`) | PC (x86_64; `cpu.rs` and `task.rs` with their stand-ins) | 73 pass (commit `8c56fa5`); the 3D renderer's stand-in-KGSL scenarios need `external/virglrenderer` and the memory ones `/dev/udmabuf` |
+| `cd runtime && cargo test -p xnuhost-abi` (`runtime/abi/tests/headers.rs`) | PC | the Rust mirrors of `hostcall.h`, `free_report.h`, `free_report_runs.h` agree with the C headers (every constant, size and offset), and the kernel's copies are the same files |
+| `runtime/xnuhost/check-arm64.sh smoke check` | the static Android xnuhost under `qemu-aarch64` (natively on arm64 Linux) | `smoke`: the vCPU machinery alone passes; `check`: the Rust test kernel's three boots pass (`TESTKERNEL: all passed` with 3 vCPUs and 256 MiB, `ram=auto` 1024 MiB held, the restart loop's exit 3 after 9 starts) |
+| `runtime/xnuhost/check-arm64.sh ab` | the same, two binaries pinned and alternated | the Rust xnuhost level with the C on every BENCH line before the stub's word copy, faster after (section 2.6a) |
+| `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` | PC; clippy also for `aarch64-linux-android` | clean |
+| the phone | - | **not run yet** with the Rust runtime |
+
+`runtime/host-tests.sh` runs all of these with the rest of the runtime ([building.md](building.md) section 4). The C
+runtime's record, kept for its numbers:
+
+| Test | Where it runs | Result (2026-11-10, the C runtime) |
 | --- | --- | --- |
 | `runtime/loader`: `make test` | PC, ASan/UBSan | 150 checks pass: Mach-O and fileset parsing with DarwinBoot's rejected variants, the tree round trip and malformed trees, the board's tree, sidecars, placement in both `boot_args` layouts, hosted and firmware |
 | `runtime/xnuhost`: `test_xnuhost` | PC, ASan/UBSan | 149 checks pass: instruction decoding, MMIO emulation, the GIC by registers and by calls, system registers and PSCI, virtio block/GPU/input driven as a guest driver does, the seccomp filter run in a BPF interpreter, configuration, the Data store |
 | `make check-arm64` | the Android binary under `qemu-aarch64` | the test kernel's checks pass (98 on 2026-11-14, with `test_jit_icache`) |
 | cross-build | NDK 28.2, `aarch64-linux-android30`, `-Wall -Wextra -Werror` | clean |
 
-The test kernel (`tests/testkernel.c`) is our own freestanding program wrapped as a Mach-O linked at
+The test kernel (`runtime/xnuhost/testkernel`, a no_std Rust program for `aarch64-unknown-none` built by `testkernel/build.sh`; `tests/testkernel.c` until 2026-11-23, every check ported in its order and with its text) is our own freestanding program wrapped as a Mach-O (by the loader's `mkkernel`) linked at
 `0xfffffff007004000`. xnuhost loads it by the real path (parse, place, device tree, `boot_args`, enter on
 vCPU 0) and it checks: `boot_args` and the tree; the emulated registers; the timer waking `cpu_idle`; five
 timer interrupts taken inside a running computation with integer and floating-point state intact; the timer
@@ -1715,11 +1759,11 @@ the **RX** alias and a branch to it, once with the RX alias mapped first (no fau
 so that its first access is the `dc cvau`: a fault there must come as a read (`XH_PROT_READ`, ISS.CM in the ESR),
 after which the test kernel maps the page read-execute, as the kernel does, and the code runs. **What qemu cannot
 show:** qemu-user (11.1.3) runs `dc cvau`, `dc civac` and `ic ivau` as no-ops that never fault, even on an unmapped
-or `PROT_NONE` page (checked with a probe on 2026-11-14), so under `make check-arm64` the never-touched alias's
+or `PROT_NONE` page (checked with a probe on 2026-11-14), so under `check-arm64.sh check` the never-touched alias's
 first fault is the branch (the test prints a `NOTE`) and the cache maintenance fault path runs only on arm64
 hardware (the phone, or `check-arm64` on an arm64 Linux host, which runs the binary without qemu). The decision
-itself (an ESR with CM is a read, whatever WnR says) is checked on the host by `test_fault_access` in
-`test_xnuhost` with the hardware's syndromes, and on the kernel's side by `hosted_selftest=1` (0071).
+itself (an ESR with CM is a read, whatever WnR says) is checked on the host by `fault_access_of_syndromes` in
+`runtime/abi/src/stub.rs` (the C `test_xnuhost`'s `test_fault_access`) with the hardware's syndromes, and on the kernel's side by `hosted_selftest=1` (0071).
 
 **Not covered anywhere**: qemu-user has no seccomp and no `process_vm_writev`, so the `svc #0x80` trap and
 `task_read/write` have run nowhere (the test prints SKIP). The filter's logic is tested in the interpreter
@@ -1739,7 +1783,7 @@ link-time high address (`0xfffffff00719c028`). That is where the hosted layer ha
   `task_map` with `XH_PROT_READ | XH_PROT_WRITE | XH_PROT_EXEC` (the stub `mmap`s `PROT_READ|WRITE|EXEC` of the RAM
   memfd). xnuhost's own RAM mapping is W+X and works, and `test_jit` passes under qemu-user, but qemu-user has no
   SELinux; One UI's kernel under KernelSU may refuse a write+execute mapping of a shared file for a task process. If
-  it does, the fill fails and `task.c` logs `tasks: pid N: a deferred map (va 0x..., prot 7) failed`; that is the
+  it does, the fill fails and `task.rs` logs `tasks: pid N: a deferred map (va 0x..., prot 7) failed`; that is the
   first line to read when WebKit's content process cannot run its JIT on the phone.
 - Trap cost is a signal plus two hand-offs per system call or fault: measured in section 2.6a on the Mac's container,
   not yet on the phone.
@@ -1772,6 +1816,6 @@ In order. 1-3 are the kernel agent's with this ABI; the rest are split as noted.
    `/dev/kgsl-3d0` in-process, blob resources over the RAM memfd through `/dev/udmabuf` (several udmabufs for a
    blob past 64 MiB or 1024 runs of pages, the phone's limits; `docs/gpu.md` section 2), per-ring fences; each KGSL
    import's IO coherence read back and logged (`gpu: KGSL imports ...`, drm2kgsl patch 0007, `docs/gpu.md` 2.4);
-   guest side UniXNU-droidvm's `DroidVMVirtioGpu3D.cpp` and the Metal plugin. `virtio_gpu.c` is 2D only.
+   guest side UniXNU-droidvm's `DroidVMVirtioGpu3D.cpp` and the Metal plugin. (In since: `src/virtio_gpu.rs` serves 2D and 3D, the renderer is `src/gpu3d_kgsl.rs` on drm2kgsl, [gpu.md](gpu.md).)
 8. Then: the bridges' first run on the phone (network, sound, haptics, Bluetooth are wired and untested),
    battery, a guest-initiated shutdown on `SIGTERM`, the uid drop and trap batching.
