@@ -2,9 +2,9 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `84b0ba5`, 2026-11-22:
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `5ffc71c`, 2026-11-22:
 upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, Make iOS image
-with `make-image` on a fresh phone, the pairing files of kb format 2 (no Python; `hello`'s `kb`), no change to session ABI 1).
+with `make-image` on a fresh phone, the pairing files of kb format 2 (no Python; `hello`'s `kb`), the shared debug key (a doc change), no change to session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
 and `app-android/app/src/full/assets/root/oneios_root.sh` there.
 

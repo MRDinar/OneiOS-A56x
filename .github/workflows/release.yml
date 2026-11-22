@@ -60,6 +60,8 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           IN_VERSION: ${{ inputs.version }}
           IN_BUILD: ${{ inputs.build }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           release=false version=0.0.0-ci runtime=true apk=true
@@ -73,6 +75,12 @@ jobs:
           if [ "$release" = true ]; then
             [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]] || { echo "::error::version '$version' is not N.N.N[-suffix]"; exit 1; }
             git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_SHA is not on main"; exit 1; }
+          fi
+          # A release that scripts/release/release.sh published from a build machine makes its tag public itself: the
+          # tag's run then builds and tests again (a check of the same commit) and uploads nothing.
+          if [ "$release" = true ] && [ "$EVENT" = push ] && gh release view "$REF_NAME" --repo "$REPO" > /dev/null 2>&1; then
+            echo "release $REF_NAME exists already (published from a machine): this run builds and tests only"
+            release=false
           fi
           echo "release=$release version=$version runtime=$runtime apk=$apk"
           { echo "release=$release"; echo "version=$version"; echo "runtime=$runtime"; echo "apk=$apk"; } >> "$GITHUB_OUTPUT"
@@ -233,8 +241,9 @@ jobs:
           sdkmanager=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | tail -n 1)
           yes | "$sdkmanager" --licenses > /dev/null || true
           "$sdkmanager" "platforms;android-37.0" "build-tools;37.0.0"
-      # Optional: one debug key for every run (the fork's secret of the same name, set here too), so a new APK installs
-      # over the last one. Without it each run signs with a key of its own.
+      # One debug key for every run (the secret is set here and on the fork since 2026-11-22: secrets/oneios-debug.keystore of
+      # the build machine, which scripts/release/release.sh signs with too), so a new APK installs over the last one, whoever
+      # built it. Without the secret each run signs with a key of its own.
       - name: Debug key
         env:
           KEYSTORE_B64: ${{ secrets.ONEIOS_DEBUG_KEYSTORE_B64 }}

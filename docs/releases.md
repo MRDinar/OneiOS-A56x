@@ -199,7 +199,9 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
 | a dispatch on `main` (Actions, "build and release", Run workflow; inputs `version` and `both` / `runtime only` / `apk only`) | what was asked (apk-macos with the APK) | the release `v<version>`, its tag made at the dispatched commit when missing |
 
 - **plan**: whether the run releases, the version (`0.0.0-ci` when not), what it builds. A release's version must be
-  `N.N.N[-suffix]` and its commit on `main`.
+  `N.N.N[-suffix]` and its commit on `main`. A tag whose release exists already (published from a build machine by
+  `scripts/release/release.sh`, "Releasing from a build machine" below) does not release again: its run builds and
+  tests only.
 - **runtime**: what `ci.yml` and the old `release.yml` did, on every build. `app/` must be an empty submodule
   folder (this job never checks the fork out); no firmware and no Python in git (`check-tracked-files.sh`: a
   tracked `*.py`, or an executable with a python shebang, fails it since 2026-11-21); `bash -n`, `shellcheck -S error`; NDK 28.2.13676358, the `aarch64-linux-android` Rust target and
@@ -218,11 +220,12 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   --remote app` (the head of the branch `.gitmodules` names, `oneios`; the commit recorded in OneiOS is printed beside
   it); the token for tribalfs' packages (below); JDK 21 (Temurin); Gradle (`setup-gradle`, its open-source `basic`
   cache); Android SDK platform 37 and build-tools 37.0.0; the debug key of the secret `ONEIOS_DEBUG_KEYSTORE_B64`
-  when this repository has it (else a key of the run's own); `app/scripts/build-guest-manager.sh --debug`; mksh;
+  (set since 2026-11-22: the key of `secrets/oneios-debug.keystore`, "The debug key" below; without the secret a key
+  of the run's own); `app/scripts/build-guest-manager.sh --debug`; mksh;
   `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
   APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
   `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
-  The commit recorded for `app/` is `84b0ba5` (2026-11-22; the pairing files without XnuPrelink's Python sources, kb
+  The commit recorded for `app/` is `5ffc71c` (2026-11-22, the fork's CI doc on the shared debug key; code as `84b0ba5`: the pairing files without XnuPrelink's Python sources, kb
   format 2, 688 tests, 0 failures, 76 skipped; before it `7e34fa4`, 2026-11-21: Make iOS image with `make-image` on a
   fresh phone, 688 tests, 0 failures, 74 skipped, an end-to-end test against the real tool; before that `53abb04`): upstream OneOS 0.5.14 to 0.5.31 merged into `oneios`
   (`2d2f26b`, `728db89`), the on-phone kernel update (`133b64a`) and Update the kernel fetching Apple's kernelcache
@@ -416,3 +419,62 @@ The workflow does the rest: the runtime from this commit, the APK from the head 
 "apk only") and the commits in the notes, then tell the oneos agent the tag (`docs/agents.md`). To redo a broken
 release: delete the release and the tag, fix, tag again; never replace an asset under the same version once the
 fork may have downloaded it (the workflow refuses to: an asset with other bytes under the same name stops it).
+
+### Releasing from a build machine
+
+`scripts/release/release.sh` builds the same files on this machine and publishes them, without waiting for the
+runners. It runs three lanes in parallel, each with its log in `out/release-local/VERSION/logs/`:
+- **runtime**: `runtime/package.sh` with the kernel pinned in `kernel/release-kernel.txt` (downloaded and checked
+  as CI does, cached in `out/release-local/kernel/`), then CI's package checks (drm2kgsl, `elf-check.sh`, the
+  members, `check-phone-tool.sh`);
+- **apk**: `app/` as it is checked out, signed with the debug key below, then `check-apk.sh`, plus a check that
+  the APK's signer is that key;
+- **tests**: `check-tracked-files.sh`, `bash -n`, shellcheck when it is installed, and the host tests.
+
+When all three pass, it checks every `.sha256` and writes the same notes as CI. It then creates the release as a
+draft with every asset and makes it public, which creates the tag at HEAD. The tag's CI run sees the release
+already exists (plan job), so it builds and tests again and uploads nothing.
+
+```sh
+git pull --rebase origin main            # HEAD must be on origin/main, and app/'s commit on the fork's origin/oneios
+scripts/bg.sh release scripts/release/release.sh 0.1.14 --build-only   # build and check only: out/release-local/0.1.14/files
+scripts/bg.sh release scripts/release/release.sh 0.1.14                # build, check and publish v0.1.14
+scripts/bg.sh -s release                                               # its state and log (logs/release.log)
+```
+
+Options:
+- `--runtime-only` and `--apk-only` are CI's "runtime only" and "apk only"; an APK-only release is not marked
+  latest.
+- `--skip-tests` leaves out the tests lane.
+
+The script refuses:
+- uncommitted changes to tracked files, in OneiOS or in `app/`;
+- a HEAD that is not on `origin/main`, or an `app/` commit that is not on the fork's `origin/oneios`;
+- a tag or release that already exists.
+
+Notes on the build:
+- Unlike CI, the APK is built from the commit checked out in `app/`, not from the head of `oneios`. `git -C app
+  pull` first if you want the branch head.
+- Tested on the Linux PC on 2026-11-22 with `--build-only` (results below this section once run).
+
+### The debug key
+
+Every OneOS APK in a release is signed with one debug key, `secrets/oneios-debug.keystore`. It was made on the Linux
+build machine on 2026-11-22.
+- **The key:** PKCS12, RSA 2048, valid for 10,000 days; alias `androiddebugkey`, store and key password `android`,
+  as Android's own debug keys. Certificate SHA-256
+  `8b3be966893342e8ca63cbb9b2097e038cfb30c7bccb1296c2baa25654217599`.
+- **Where it lives:**
+  - `secrets/` is git-ignored, so the key is never committed.
+  - The same bytes, base64, are the secret `ONEIOS_DEBUG_KEYSTORE_B64` of akshaynexus/OneiOS and akshaynexus/OneOS.
+  - CI writes the secret to `~/.android/debug.keystore`. `scripts/release/release.sh` passes the file to Gradle
+    (`-Pandroid.injected.signing.*`).
+- **What it gives:** an APK from CI and one from the build machine install over each other.
+- **The first APK signed with it** has to replace one signed with an older key by uninstalling it. That applies to
+  v0.1.13's 0.5.47 and every earlier release, each signed with a run's own key.
+- **Keep a copy:** GitHub does not give a secret back. If `secrets/oneios-debug.keystore` is lost, the next key
+  means one more uninstall. To set the secret again from the file (for example after making a new key):
+
+```sh
+for r in akshaynexus/OneiOS akshaynexus/OneOS; do base64 -w0 secrets/oneios-debug.keystore | gh secret set ONEIOS_DEBUG_KEYSTORE_B64 -R "$r"; done
+```

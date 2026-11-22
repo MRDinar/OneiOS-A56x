@@ -810,8 +810,8 @@ git -C app switch oneios                   # to work on the fork in app/: a bran
 
 `--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
 `app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). Recorded now: `84b0ba5` (upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
-the pairing files without Python, kb format 2, 2026-11-22). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
+app`). Recorded now: `5ffc71c` (upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
+the pairing files without Python, kb format 2, 2026-11-22; the CI doc on the shared debug key). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
 --remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
 `git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
 package takes `runtime/`, `kernel/` and `LICENSE` only, and the runtime job never checks it out.
@@ -934,6 +934,10 @@ A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/
 runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
 once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
 [releases.md](releases.md).
+`scripts/release/release.sh VERSION [--build-only]` (run under `scripts/bg.sh`) builds the same files on the build
+machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the
+runners. It signs the APK with the debug key CI uses, `secrets/oneios-debug.keystore`, which is git-ignored (releases.md,
+"Releasing from a build machine" and "The debug key").
 The first release is [`v0.1.0`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.0) (2026-11-10).
 
 ## 9. iOS user-space code (executables, dylibs, bundles): Xcode on macOS, a cross toolchain on Linux
