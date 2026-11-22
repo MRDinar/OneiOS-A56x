@@ -1,0 +1,44 @@
+# The test kernel (tests/testkernel.c in Rust): a stand-in for the hosted XNU that exercises the host-call ABI, built
+# for aarch64-unknown-none, linked high by testkernel.ld, and wrapped as a kernel.kc by xnuloader's mkkernel. Its own
+# workspace (the runtime's excludes it); build.sh builds it.
+[package]
+name = "testkernel"
+description = "The test kernel: xnuhost's host-call ABI exercised as XNU's machine layer uses it"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+build = "build.rs"
+
+[[bin]]
+name = "testkernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+xnuhost-abi = { path = "../../abi" }
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+debug = false
+
+# The runtime workspace's lints (runtime/Cargo.toml), which this workspace of its own does not inherit.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
