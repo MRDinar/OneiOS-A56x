@@ -1912,6 +1912,10 @@ oneios-tool phone pen wake                    # 2,0 then 2,1 to that node, then 
 oneios-tool phone backlight status            # the panel's level, max_brightness, One UI's own value (read only)
 oneios-tool phone backlight set N             # 1..max_brightness (12750); the return writes One UI's own value back
 oneios-tool phone cpu [--trace S] [--out F]   # cores, domains, top and capped clocks, cpusets, xnuhost's threads and uclamps (read only)
+oneios-tool phone wifi p2p [--station IFACE] [--save FILE]   # the staged wifictl p2p as root (read only): every radio, Wonder,
+                                              #   the AirDrop verdicts, Wonder's files; then a summary of those lines
+oneios-tool phone wifi wonder [--seconds 30] [--freq 2437|5220|5745] [--country CC] [--save FILE]
+                                              # wifictl wonder (docs/hardware.md 4a), its lines as they come (adb exec-out)
 oneios-tool phone pull-log DIR [--boot last|UUID] [--keep]   # iOS's log only: ioslog show runs on the phone (the runtime's
                                               #   oneios-tool on the staged store; an open session is fine, its newest
                                               #   checkpoint is read), only the gzipped text crosses adb; then DIR/ioslog.txt,
@@ -2050,6 +2054,8 @@ What each does:
 
 ```sh
 tools/oneios-tool/tests/phone/run.sh          # 258 checks against the stand-in phone (94 of them session-cmds.sh: display-restart, touch, backlight;
+                                              #   24 of them wifi.sh, 2026-11-23: phone wifi p2p and wonder against a stand-in wifictl (on the Mac:
+                                              #   251 ok, hw-backend and serve cpu skipped there; ALL OK);
                                               #   30 of them usb.sh: with a fork checkout that has --usb-watch (found as `app dir` finds it);
                                               #   34 of them hw-backend.sh (12 the bridgectl haptic checks, 2026-11-21): the bridges' samsung and treble backends on stand-in
                                               #   phones, their host-built tools; docs/hardware.md 7e;

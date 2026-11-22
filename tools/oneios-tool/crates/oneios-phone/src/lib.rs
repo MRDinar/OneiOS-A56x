@@ -17,6 +17,7 @@ pub mod pull;
 pub mod pulllog;
 pub mod session;
 pub mod sparse;
+pub mod wifi;
 
 use adb::Adb;
 
@@ -90,6 +91,13 @@ pub enum Command {
         /// Where the trace goes (default oneios-cpu.pftrace)
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
+    },
+    /// The staged runtime's wifictl as root beside One UI (docs/hardware.md 4a): `p2p` (read only: every radio, Google's
+    /// Wonder radio, the verdicts for AirDrop) and `wonder` (a session on Wonder's raw 802.11 path beside wlan0, AWDL's
+    /// frames counted, everything closed after it and wlan0's link checked)
+    Wifi {
+        #[command(subcommand)]
+        command: WifiCommand,
     },
     /// Only during a session: the panel's level (/sys/class/backlight/panel0-backlight/brightness)
     Backlight {
@@ -177,6 +185,34 @@ pub enum TouchCommand {
     Status,
     /// Write `2,0` then `2,1` (what One UI's input HAL writes when the panel comes on), then read the node back
     Wake,
+}
+
+#[derive(clap::Subcommand)]
+pub enum WifiCommand {
+    /// `wifictl p2p`: every radio and interface, the Wonder block, the verdicts, Wonder's files (read only), then a summary
+    P2p {
+        /// The station whose radio the verdicts are for
+        #[arg(long, default_value = "wlan0")]
+        station: String,
+        /// Also write the phone's report to FILE
+        #[arg(long, value_name = "FILE")]
+        save: Option<String>,
+    },
+    /// `wifictl wonder`: a monitor interface on Wonder's radio, its frames counted for SECONDS, then all of it closed
+    Wonder {
+        /// How long frames are counted (1 to 600)
+        #[arg(long, default_value_t = 30)]
+        seconds: u32,
+        /// The AWDL channel: 2437 (6), 5220 (44) or 5745 (149)
+        #[arg(long, default_value_t = 2437)]
+        freq: u32,
+        /// The phone's country (two letters), only when the driver's is not known: wifictl refuses one that differs
+        #[arg(long, value_name = "CC")]
+        country: Option<String>,
+        /// Also write what the phone printed to FILE
+        #[arg(long, value_name = "FILE")]
+        save: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -283,6 +319,10 @@ pub fn main(cli: Cli) -> i32 {
         Command::Pen { command: TouchCommand::Status } => Adb::connect(serial).and_then(|adb| session::pen_status(&adb)),
         Command::Pen { command: TouchCommand::Wake } => Adb::connect(serial).and_then(|adb| session::pen_wake(&adb)),
         Command::Cpu { trace, out } => Adb::connect(serial).and_then(|adb| cpu::cpu(&adb, trace, out.as_deref())),
+        Command::Wifi { command: WifiCommand::P2p { station, save } } => Adb::connect(serial).and_then(|adb| wifi::p2p(&adb, &station, &save)),
+        Command::Wifi { command: WifiCommand::Wonder { seconds, freq, country, save } } => {
+            Adb::connect(serial).and_then(|adb| wifi::wonder(&adb, &wifi::Wonder { seconds, freq, country, save }))
+        }
         Command::Backlight { command: BacklightCommand::Status } => Adb::connect(serial).and_then(|adb| session::backlight_status(&adb)),
         Command::Backlight { command: BacklightCommand::Set { level } } => Adb::connect(serial).and_then(|adb| session::backlight_set(&adb, level)),
         Command::Stage { kind, dir } => Adb::connect(serial).and_then(|adb| phone::stage(&adb, &kind, &dir)),

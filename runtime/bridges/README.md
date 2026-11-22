@@ -27,7 +27,7 @@ tests/host.sh      # both; CI runs it (Linux only: on a Mac, runtime/host-tests.
 | `camera/` | the camera (fable-camera): the helper process `oneios-camera`, the frame ring, xnuhost's end (`libonecamera.a`) and `camctl`; its own `Makefile` and `README.md` |
 | `devices/` | `bridge_dev.c` (`oneios,bridge`), `virtio_net.c` (`droidvm,net`; a frame of the Wi-Fi station's own type waits up to 50 ms for a guest buffer, any other is dropped when there is none), `virtio_snd.c` (`droidvm,virtio-snd`) |
 | `tools/bridgectl.c` | tries each bridge on the phone without xnuhost (root) |
-| `tools/wifictl.c` | the Wi-Fi bridge on the phone without xnuhost (root): `status`, `scan`, `join`, `restore`, `p2p` (the radio's peer-to-peer paths: `wifi/p2p.c`) |
+| `tools/wifictl.c` | the Wi-Fi bridge on the phone without xnuhost (root): `status`, `scan`, `join`, `restore`, `p2p` (every radio's peer-to-peer paths and Google's Wonder radio: `wifi/p2p.c`), `wonder` (a session on Wonder's raw 802.11 path beside wlan0, AWDL's frames counted: `wifi/wonder.c`) |
 | `tests/` | `test_bridges.c`, `host.sh`; `test_hidl_binder.c` (`make test-binder`, part of `make test`): the HAL client against a fake hwservicemanager and IBluetoothHci on a real binder driver, a binderfs mounted in a user namespace (the PC kernel's `CONFIG_ANDROID_BINDERFS`; no root; skipped without it). A kernel whose `CONFIG_ANDROID_BINDER_DEVICES` is empty (Ubuntu's; the Mac's container kernel) mounts a binderfs with only `binder-control`: the test asks it for `hwbinder` (`BINDER_CTL_ADD`). The fake HAL retries `BINDER_SET_CONTEXT_MGR` while the last scenario's killed HAL still holds it (`EBUSY`, up to 2 s). On a Mac: `runtime/host-tests.sh`, in Apple's `container` with a kernel built with binderfs ([building.md](../../docs/building.md) section 4); `test_wifi.c` (in `make test`): the Wi-Fi bridge's frames, the nl80211 channel list reader, the DHCP reader (the REQUEST forms of RFC 2131 4.3.2, iOS's and another station's, and their log lines), station, parcels, join plan and callbacks; `test_aidl_binder.c` (`make test-binder`): the supplicant client against a fake service manager and supplicant on the same binderfs |
 
 ## Into xnuhost (bridges -> booter)
@@ -130,7 +130,8 @@ the read-only commands must leave the log empty). The fork's results on the S26 
 ```sh
 adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl status'    # read only
 adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl scan'      # read only (one scan, 6 s)
-adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p'       # read only: the radio's peer-to-peer paths for AirDrop (docs/hardware.md 4a)
+adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p'       # read only: every radio, Google's Wonder radio, the AirDrop verdicts (docs/hardware.md 4a)
+adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl wonder --seconds 30 --freq 5745'   # a Wonder session beside wlan0 (below)
 adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl join NAME PASSPHRASE'   # takes the Wi-Fi from One UI while it runs
 adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl restore /data/local/tmp/oneios/session/wifi.state'
 ```
@@ -146,6 +147,26 @@ networks removed, wlan0's IPv4 addresses removed, GRO and IPv6 off), scans, join
 the offer (`DHCP: 192.168.x.y offered by ...`), stays 5 s, leaves and gives wlan0 back. Not during a session
 (xnuhost's bridge has the supplicant). The passphrase is on the command line: use it on your own phone only.
 `restore` puts wlan0's GRO and IPv6 settings back from a killed session's `wifi.state`.
+
+`p2p` (read only, beside One UI and in a session) dumps every wiphy (a split `GET_WIPHY` dump with no interface
+named) and every interface, names Google's Wonder radio (the wiphy named `wonder...`, else one with vendor commands
+under `00:1a:11` and monitor mode but no access point), and prints its `p2p: Wonder:` lines: its interface types,
+its subcommands by name, the version they imply (1 to 5 only: Wonder 1.4 or 1.5; 6 or more: 1.6 or later), and who
+holds it now (an interface on its wiphy, a `wondertap*` vdev). Then the verdicts for wlan0's radio, and Wonder's
+module, platform driver, `.ko` files and `mosey_server` (named paths, `present` or `none`).
+`wonder [--seconds N] [--freq 2437|5220|5745] [--country CC]` (root, One UI running; default 30 s on 2437 MHz) is a
+session on Wonder's raw path beside wlan0, in Samsung's Wonder 1.5 order (`wifi/wonder.c`): wlan0's link read; the
+refusals (no Wonder; Wonder in use: another interface on its wiphy or a `wondertap*` vdev up; no wlan0; the
+driver's country not known or another than `--country`: Wonder's init sets the driver's country to the one given);
+a monitor interface `wondermon0` on Wonder's wiphy; `SET_REGULATORY` (the driver's own country), `SET_FREQUENCY`
+(20 MHz), `SET_FIXED_TX_RATE` (HT MCS 0, one stream), `SET_FILTER` (AWDL's BSSID `00:25:00:ff:94:73`); up (the
+provider's init opens `wondertap0`); `GET_IF_MAC_ADDR`; `AF_PACKET` on it and N s of frames counted (AWDL's action
+frames by subtype, AWDL's data frames, the peers' addresses and best signal, frames without the radiotap TSFT); then
+in reverse, also after any failed step or Ctrl-C: the socket closed, down (the provider's deinit), the interface
+removed; last wlan0's link against its link before (waited for up to 10 s; `-ENOLINK` when it was associated and is
+not). Each step is a `wonder:` line with its result. A killed `wonder` leaves `wondermon0`: the next one removes it
+first. Host-tested on a stand-in nl80211 (`tests/test_wifi.c` `test_wonder_session`); **not run on the phone**.
+`oneios-tool phone wifi p2p|wonder` runs both from the Mac (docs/hardware.md 4a has the phone checks).
 
 `audio` plays a 440 Hz tone at -30 dBFS (quiet at any media volume) for S seconds, then 0.5 s later a 660 Hz one
 for 0.5 s (the helper's stream lingers: no new open), and with `record` takes 2 s of the microphone. A pass, as on

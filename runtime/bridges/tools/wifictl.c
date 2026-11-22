@@ -11,11 +11,21 @@
 //                                    leaves and gives wlan0 back. It takes the Wi-Fi from One UI while it runs: One
 //                                    UI joins its network again by itself after it. Not during a session.
 //   wifictl restore FILE             wlan0's settings back from a session's wifi.state (after a killed xnuhost)
-//   wifictl p2p [IFACE]              read only: what the radio offers for a peer-to-peer link (AirDrop's AWDL:
-//                                    docs/hardware.md "AirDrop"): interface types and combinations, action frames,
-//                                    off-channel sends, NAN, Wi-Fi Direct, vendor commands, every Wi-Fi interface;
-//                                    the network devices, modules and processes whose names hint at AWDL or NAN.
-//                                    Safe beside One UI and in a session.
+//   wifictl p2p [IFACE]              read only: what every radio offers for a peer-to-peer link (AirDrop's AWDL:
+//                                    docs/hardware.md 4a): each wiphy's interface types and combinations, action
+//                                    frames, off-channel sends, NAN, Wi-Fi Direct, vendor commands; every interface;
+//                                    Google's Wonder radio (its subcommands under 00:1a:11, who holds it); the
+//                                    verdicts for IFACE's radio (default wlan0); Wonder's module, driver and
+//                                    files, mosey_server; the network devices, modules and processes whose names hint
+//                                    at AWDL or NAN. Safe beside One UI and in a session.
+//   wifictl wonder [--seconds N] [--freq MHZ] [--country CC] [--station IFACE]
+//                                    a session on Wonder's raw 802.11 path beside wlan0 (wifi/wonder.c): a monitor
+//                                    interface on Wonder's radio, its country (the driver's own), frequency (2437,
+//                                    5220 or 5745 MHz; default 2437), TX rate and AWDL's BSSID set, up (the driver's
+//                                    PASSTHRU vdev wondertap0 opens), N s (default 30) of frames counted (AWDL's
+//                                    action and data frames, by peer), then all of it closed in reverse and wlan0's
+//                                    link checked against its link before. Refused when Wonder is missing or in use.
+//                                    Root, One UI running; Ctrl-C ends the count and still closes everything.
 // Each ends with "ok" or "failed".
 #define _GNU_SOURCE
 #include "bridges/bridges.h"
@@ -23,6 +33,7 @@
 #include "../wifi/wifi.h"
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -239,13 +250,25 @@ static bool p2p_hint(const char *name)
 static int p2p(int argc, char **argv)
 {
   const char *ifname = argc > 2 ? argv[2] : "wlan0";
-  static br_wifi_caps caps;
-  int rc = br_wlan_caps(ifname, &caps);
-  if (rc) { printf("p2p: nl80211 on %s: %s\n", ifname, strerror(-rc)); return 1; }
-  static char text[32768];
-  size_t n = br_wifi_caps_report(&caps, text, sizeof text);
+  static br_wifi_radios radios;
+  int rc = br_wlan_radios(&radios);     // every wiphy: Wonder's radio is not wlan0's
+  if (rc) { printf("p2p: nl80211: %s\n", strerror(-rc)); return 1; }
+  static char text[65536];
+  size_t n = br_wifi_radios_report(&radios, ifname, text, sizeof text);
   fputs(text, stdout);
   if (n >= sizeof text) printf("(report cut at %zu of %zu bytes)\n", sizeof text, n);
+  // Wonder's pieces on disk and in the kernel (Samsung's binding: a platform driver "wonder" on google,wonder-drv-v1;
+  // Google's mosey_server in system_ext from One UI 9). Named paths only.
+  static const char *const wonder_paths[] = { "/sys/module/wonder", "/sys/module/wonder/parameters/physical_name", "/sys/bus/platform/drivers/wonder",
+                                              "/vendor_dlkm/lib/modules/wonder.ko", "/vendor/lib/modules/wonder.ko", "/system_ext/bin/mosey_server",
+                                              "/vendor/bin/mosey_server", NULL };
+  for (const char *const *p = wonder_paths; *p; p++) {
+    if (access(*p, F_OK)) { printf("wonder: %s: none\n", *p); continue; }
+    char value[64] = "";
+    FILE *v = strstr(*p, "/parameters/") ? fopen(*p, "r") : NULL;
+    if (v) { if (!fgets(value, sizeof value, v)) value[0] = 0; fclose(v); value[strcspn(value, "\n")] = 0; }
+    printf("wonder: %s: present%s%s\n", *p, *value ? ": " : "", value);
+  }
   // Network devices: one with no wiphy but a hinting name is a virtual one (a tun of a user-space AWDL, Pixel's
   // "wonder" virtual radio).
   DIR *d = opendir("/sys/class/net");
@@ -280,15 +303,51 @@ static int p2p(int argc, char **argv)
   return 0;
 }
 
+// ---- wonder: a session on Wonder's raw 802.11 path (docs/hardware.md 4a, wifi/wonder.c) ----
+static volatile int wonder_stop;
+static void wonder_signal(int sig) { (void)sig; wonder_stop = 1; }
+
+static int wonder(int argc, char **argv)
+{
+  br_wonder_params p = { .station = "wlan0", .name = BR_WONDER_IFNAME, .freq_mhz = 2437, .seconds = 30, .stop = &wonder_stop };
+  for (int i = 2; i < argc; i++) {
+    const char *v = i + 1 < argc ? argv[i + 1] : NULL;
+    if (!strcmp(argv[i], "--seconds") && v) { p.seconds = (unsigned)atoi(v); i++; }
+    else if (!strcmp(argv[i], "--freq") && v) { p.freq_mhz = (uint32_t)atoi(v); i++; }
+    else if (!strcmp(argv[i], "--country") && v && strlen(v) == 2) { p.country[0] = (char)(v[0] & ~0x20); p.country[1] = (char)(v[1] & ~0x20); i++; }
+    else if (!strcmp(argv[i], "--station") && v) { p.station = v; i++; }
+    else { printf("usage: wifictl wonder [--seconds 1..600] [--freq 2437|5220|5745] [--country CC] [--station IFACE]\n"); return 2; }
+  }
+  if (!p.seconds || p.seconds > 600) { printf("wonder: --seconds 1 to 600\n"); return 2; }
+  if (geteuid() != 0) { printf("wonder: needs root (su)\n"); return 1; }
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = wonder_signal;        // no SA_RESTART: the receive's poll ends at once
+  sigaction(SIGINT, &sa, NULL);
+  sigaction(SIGTERM, &sa, NULL);
+  sigaction(SIGHUP, &sa, NULL);
+  signal(SIGPIPE, SIG_IGN);             // adb gone: the lines are lost, the teardown still runs
+  void *ctx = br_wlan_wonder_open();
+  if (!ctx) { printf("wonder: nl80211 not opened\n"); return 1; }
+  static br_wonder_result r;
+  const int rc = br_wonder_run(&br_wlan_wonder_ops, ctx, &p, &r);
+  br_wlan_wonder_close(ctx);
+  printf("wonder: %s: %llu frames, %llu AWDL action frames from %u peer(s); %s %s\n", rc ? strerror(-rc) : "done", (unsigned long long)r.count.frames,
+         (unsigned long long)r.count.awdl_action, r.count.peer_count, p.station,
+         !r.link_before ? "was not associated before" : r.link_after ? "associated as before" : "LOST ITS LINK");
+  return rc ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
   int rc = 2;
   setvbuf(stdout, NULL, _IOLBF, 0);
   br_log_sink = say;
-  if (argc < 2) { fprintf(stderr, "usage: wifictl status [IFACE] | scan [SECONDS [IFACE]] | join SSID [PASSPHRASE [SECONDS]] | restore FILE | p2p [IFACE]\n"); return 2; }
+  if (argc < 2) { fprintf(stderr, "usage: wifictl status [IFACE] | scan [SECONDS [IFACE]] | join SSID [PASSPHRASE [SECONDS]] | restore FILE | p2p [IFACE] | wonder [--seconds N] [--freq MHZ] [--country CC] [--station IFACE]\n"); return 2; }
   if (!strcmp(argv[1], "status")) rc = status(argc, argv);
   else if (!strcmp(argv[1], "scan")) rc = scan(argc, argv);
   else if (!strcmp(argv[1], "p2p")) rc = p2p(argc, argv);
+  else if (!strcmp(argv[1], "wonder")) rc = wonder(argc, argv);
   else if (!strcmp(argv[1], "join") && argc > 2) rc = join(argc, argv);
   else if (!strcmp(argv[1], "restore") && argc > 2) { rc = br_wlan_restore(argv[2]); if (rc == -ENOENT) { printf("nothing to give back (no %s)\n", argv[2]); rc = 0; } else rc = rc ? 1 : 0; }
   printf("%s\n", rc == 0 ? "ok" : rc == 2 ? "unknown command" : "failed");
