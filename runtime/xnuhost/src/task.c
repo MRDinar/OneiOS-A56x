@@ -156,6 +156,8 @@ static struct {
   bool available, seccomp;
   bool map_defer;                            // map-defer (default on)
   uint64_t spin_host, spin_task;             // counter ticks: spin-host, spin-task
+  uint64_t kick_again;                       // counter ticks: a kick not answered in this long is sent again (200 ms)
+  bool kick_failed_said;
   uint64_t base;                             // of the stub region = the first address tasks may not use
   int trap_fd, sock;
   uint8_t *trap;                             // the whole trap memfd, mapped
@@ -332,6 +334,7 @@ int xh_tasks_init(const xh_config *c)
   // (docs/booter.md 2.6a): the defaults are what that measurement chose.
   uint64_t hz = xh_counter_hz();
   T.spin_host = (uint64_t)(c->spin_host < 0 ? XH_SPIN_HOST_US : c->spin_host) * hz / 1000000;
+  T.kick_again = hz / 5;
   T.spin_task = (uint64_t)(c->spin_task < 0 ? XH_SPIN_TASK_US : c->spin_task) * hz / 1000000;
   T.map_defer = c->map_defer != 0;
   // Is the filter usable here? (qemu-user and some kernels have no seccomp.) Asked in a child so
@@ -987,7 +990,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
   if (__atomic_load_n(&tp->task_sleeping, __ATOMIC_RELAXED)) { futex(&tp->to_task, FUTEX_WAKE, 1, NULL); p->task_wakes++; }
   bool kicked = false, sleeping = false;
-  uint64_t kicked_at = 0;
+  uint64_t kicked_at = 0, kicked_last = 0;
   struct timespec step = { 0, 200 * 1000 * 1000 };
   for (;;) {
     if (draining && __atomic_load_n(&tp->ops_done, __ATOMIC_ACQUIRE)) {
@@ -1009,11 +1012,16 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
       return 0;
     }
     // The vCPU's interrupt line rose (its timer or another CPU signalled this thread, which ended
-    // the wait below): force the iOS thread to stop, once.
-    if ((v->cpu.irq_pending || xh_stopping()) && !kicked) {
+    // the wait below): force the iOS thread to stop. Again at each futex step (200 ms) while it is not back: a kick
+    // that did not get there (tgkill refused: the queue of real-time signals full) must not leave the vCPU deaf to its
+    // interrupts and to the debugger's cross-call (a stackshot panics after debug-ack, 5 s). The first refusal is said.
+    if ((v->cpu.irq_pending || xh_stopping()) && (!kicked || xh_counter() - kicked_last >= T.kick_again)) {
       uint32_t tid = __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE);
-      kicked_at = xh_counter();
-      if (tid) syscall(SYS_tgkill, t->pid, tid, KICK_SIGNAL);
+      kicked_last = xh_counter();
+      if (!kicked) kicked_at = kicked_last; else p->kicks_again++;
+      if (tid && syscall(SYS_tgkill, t->pid, tid, KICK_SIGNAL) && !__atomic_exchange_n(&T.kick_failed_said, true, __ATOMIC_RELAXED))
+        LOGE("tasks: the kick of pid %d tid %u (vCPU %u's interrupt) was refused: %s; it is sent again every 200 ms", t->pid, tid,
+             v->cpu.index, strerror(errno));
       kicked = true;
     }
     if (!sleeping) {

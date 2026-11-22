@@ -19,6 +19,8 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <signal.h>
+#include <pthread.h>
+#include <time.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
@@ -1322,6 +1324,68 @@ static void test_health(void)
   xh_virtio_health(361000, health_sink, NULL);
   xh_virtio_health(421000, health_sink, NULL);
   CHECK(strstr(health_lines, "virtio testq#1: queue 0: 1 chain(s) posted by the guest and not taken in 60 s"));
+}
+
+// A handler that does not come back (phone, 2026-11-23: the encoder's open waited for ever on cpu1 with the virtio-media
+// device held, and the main loop's report waited in its lock): the report goes on, says who holds the device, and says
+// when it is free again.
+static int stuck_pipe[2];
+static int64_t stuck_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov *iov, unsigned n)
+{
+  (void)dev; (void)queue; (void)head; (void)iov; (void)n;
+  char c;
+  while (read(stuck_pipe[0], &c, 1) < 0 && errno == EINTR) {}
+  return 0;
+}
+static void *stuck_guest(void *arg)
+{
+  driver *d = arg;
+  driver_send(d, 0, (const uint64_t[][3]){ { GUEST_PA + 0xc8000, 8, 1 } }, 1, true);   // the kick runs the handler here
+  return NULL;
+}
+static int stuck_cpu(void) { return 1; }
+static uint64_t test_mono_ms(void)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+}
+
+static void test_health_held(void)
+{
+  static const xh_virtio_ops ops = { .device_id = 97, .nqueues = 1, .handle = stuck_handle };
+  driver d = { .dev = xh_virtio_create(0, 52, &ops, NULL, "virtio-stuckq") };
+  CHECK(d.dev && driver_init(&d, 0, 1, GUEST_PA + 0xc0000) && pipe(stuck_pipe) == 0);
+  unsigned held_was = xh_virtio_held_ms;
+  xh_line_fn log_was = xh_virtio_log;
+  xh_virtio_held_ms = 0;
+  xh_virtio_cpu = stuck_cpu;
+  xh_virtio_log = health_sink;
+  pthread_t guest;
+  CHECK(pthread_create(&guest, NULL, stuck_guest, &d) == 0);
+  // The guest's thread is in the handler once the device's lock is taken: the report must come back all the same.
+  for (int tries = 0; tries < 2000; tries++) {
+    health_lines[0] = 0;
+    xh_virtio_health(test_mono_ms(), health_sink, NULL);
+    if (strstr(health_lines, "virtio stuckq#0: held by a request on queue 0 for ")) break;
+    struct timespec ms = { 0, 1000000 };
+    nanosleep(&ms, NULL);
+  }
+  CHECK(strstr(health_lines, "virtio stuckq#0: held by a request on queue 0 for ") && strstr(health_lines, "(cpu1 in its handler)"));
+  health_lines[0] = 0;
+  xh_virtio_health(test_mono_ms(), health_sink, NULL);
+  CHECK(!strstr(health_lines, "stuckq"));                           // said once per hold
+  CHECK(write(stuck_pipe[1], "x", 1) == 1);
+  pthread_join(guest, NULL);
+  CHECK(strstr(health_lines, "virtio stuckq#0: free again: the request that held it ended after "));
+  health_lines[0] = 0;
+  xh_virtio_health(test_mono_ms(), health_sink, NULL);
+  CHECK(strstr(health_lines, "stuckq#0 q0 +1"));                    // its counts come with the next report
+  xh_virtio_held_ms = held_was;
+  xh_virtio_cpu = NULL;
+  xh_virtio_log = log_was;
+  close(stuck_pipe[0]);
+  close(stuck_pipe[1]);
 }
 
 // input.c's filter of one device: what reaches the guest, the scan time, SYN_DROPPED.
@@ -3264,6 +3328,7 @@ int main(void)
   test_virtio_gpu3d();
   test_virtio_input();
   test_health();
+  test_health_held();
   test_input_filter();
   test_pen();
   test_input_script();

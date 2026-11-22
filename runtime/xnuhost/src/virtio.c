@@ -46,6 +46,13 @@ struct xh_virtio {
   uint64_t driver_features;
   vqueue q[XH_VIRTIO_QUEUES];
   vstats st[XH_VIRTIO_QUEUES];
+  // Who holds the device now (hold()/release(), the lock held): since when (CLOCK_MONOTONIC ms, 0: nobody marked),
+  // the queue whose request it is (-1: a device thread's xh_virtio_lock), the vCPU (-1: not a vCPU), and whether the
+  // health report said so. Read by xh_virtio_health without the lock, when it cannot take it.
+  uint64_t held_ms;
+  int held_queue, held_cpu;
+  unsigned held_depth;
+  bool held_said;
 };
 
 // Every device, for the health report. Made at the boot, from one thread; never freed.
@@ -69,9 +76,39 @@ __attribute__((format(printf, 1, 2))) static void say(const char *fmt, ...)
 
 void *(*xh_virtio_translate)(uint64_t pa, uint64_t len) = xh_ram;
 
+int (*xh_virtio_cpu)(void);
+unsigned xh_virtio_held_ms = 2000;
+
+static uint64_t mono_ms(void)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+}
+
+// The device's holder, for the health report (d->lock held). A request's handler and a device thread's work mark it; a
+// nested mark keeps the outer one. One clock read per request (the vDSO's, no system call).
+static void hold(xh_virtio *d, int queue)
+{
+  if (d->held_depth++) return;
+  __atomic_store_n(&d->held_said, false, __ATOMIC_RELEASE);
+  d->held_queue = queue;
+  d->held_cpu = xh_virtio_cpu ? xh_virtio_cpu() : -1;
+  __atomic_store_n(&d->held_ms, mono_ms(), __ATOMIC_RELEASE);
+}
+
+static void release(xh_virtio *d)
+{
+  if (!d->held_depth || --d->held_depth) return;
+  uint64_t since = __atomic_load_n(&d->held_ms, __ATOMIC_ACQUIRE);
+  __atomic_store_n(&d->held_ms, 0, __ATOMIC_RELEASE);
+  if (__atomic_exchange_n(&d->held_said, false, __ATOMIC_ACQ_REL))
+    say("virtio %s: free again: the request that held it ended after %llu s", d->label, (unsigned long long)((mono_ms() - since) / 1000));
+}
+
 void *xh_virtio_opaque(xh_virtio *d) { return d->opaque; }
-void xh_virtio_lock(xh_virtio *d) { pthread_mutex_lock(&d->lock); }
-void xh_virtio_unlock(xh_virtio *d) { pthread_mutex_unlock(&d->lock); }
+void xh_virtio_lock(xh_virtio *d) { pthread_mutex_lock(&d->lock); hold(d, -1); }
+void xh_virtio_unlock(xh_virtio *d) { release(d); pthread_mutex_unlock(&d->lock); }
 
 static void raise_irq(xh_virtio *d, uint32_t bits)
 {
@@ -208,10 +245,12 @@ static void notify(xh_virtio *d, unsigned qi)
   unsigned n;
   if (qi >= d->ops->nqueues || !(d->status & 4)) return;
   if (d->ops->manual & (1u << qi)) { if (d->ops->kick) d->ops->kick(d, qi); return; }
+  hold(d, (int)qi);
   while (pop(d, qi, &head, iov, 64, &n)) {
     int64_t written = n ? d->ops->handle(d, qi, head, iov, n) : 0;
     if (written >= 0) push(d, qi, head, (uint32_t)written);
   }
+  release(d);
 }
 
 uint64_t xh_virtio_mmio_read(xh_virtio *d, uint64_t off, unsigned size)
@@ -380,7 +419,26 @@ void xh_virtio_health(uint64_t now_ms, xh_line_fn out, void *ctx)
   uint64_t bad = 0;
   for (unsigned k = 0; k < n_devices; k++) {
     xh_virtio *d = all_devices[k];
-    pthread_mutex_lock(&d->lock);
+    // Never waits for a device: a handler that does not come back held this report, and with it xnuhost's main loop
+    // and the session's end (phone, 2026-11-23: the encoder's open waited for ever on cpu1 with the virtio-media device
+    // held; the main loop stopped in this lock 78 s before the guest's panic, and the halt was never seen). A device
+    // held longer than xh_virtio_held_ms is said once per hold; its counts wait for the next report.
+    if (pthread_mutex_trylock(&d->lock)) {
+      uint64_t since = __atomic_load_n(&d->held_ms, __ATOMIC_ACQUIRE);
+      if (since && now_ms >= since + xh_virtio_held_ms && !__atomic_exchange_n(&d->held_said, true, __ATOMIC_ACQ_REL)) {
+        char line[192], who[24] = "a device thread";
+        int cpu = __atomic_load_n(&d->held_cpu, __ATOMIC_RELAXED), queue = __atomic_load_n(&d->held_queue, __ATOMIC_RELAXED);
+        if (cpu >= 0) snprintf(who, sizeof who, "cpu%d", cpu);
+        if (queue >= 0)
+          snprintf(line, sizeof line, "virtio %s: held by a request on queue %d for %llu s (%s in its handler): the guest's next access to the device waits for it",
+                   d->label, queue, (unsigned long long)((now_ms - since) / 1000), who);
+        else
+          snprintf(line, sizeof line, "virtio %s: held by %s for %llu s: the guest's next access to the device waits for it", d->label, who,
+                   (unsigned long long)((now_ms - since) / 1000));
+        out(ctx, line);
+      }
+      continue;
+    }
     device_health(d, now_ms, sum, sizeof sum, &used, out, ctx);
     for (unsigned i = 0; i < XH_VIRTIO_QUEUES; i++) bad += d->st[i].bad;
     pthread_mutex_unlock(&d->lock);

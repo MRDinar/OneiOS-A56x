@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 enum { STUB_RING = 16, STUB_HEADROOM = 65536 };
 
@@ -308,6 +309,9 @@ static int stub_encode(const br_enc_session *s, const uint8_t *nv12, uint8_t *ou
 }
 
 static br_enc_session *stub_open(uint32_t codec, uint32_t width, uint32_t height) {
+  // The test of a helper whose open never comes back (tests/test_encoder.c): MediaCodec's open hung so in the phone's
+  // helper on 2026-11-23. Only the helper's environment sets it.
+  if (getenv("ONEIOS_ENCODER_STUB_HANG_OPEN")) for (;;) pause();
   if (!width || !height || width > 16384 || height > 16384) return NULL;
   br_enc_session *s = calloc(1, sizeof *s);
   if (!s) return NULL;

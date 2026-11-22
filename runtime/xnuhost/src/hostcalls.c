@@ -24,6 +24,13 @@ void xh_impl_halt(struct xh_cpu *cpu, uint32_t reason, uint32_t code)
 {
   char why[64];
   snprintf(why, sizeof why, "the guest halted on cpu%u", cpu->index);
+  // A panic's halt (the kernel's hosted_halt: code 0 panic(), 1 a start-up check, 2 a fatal kernel fault, 3 a panic
+  // while panicking). The session ends from here whatever the other vCPUs do (the debugger's wait loops spin on, and a
+  // blocked main loop is the stop watch's: main.c).
+  if (reason == XH_HALT_PANIC) {
+    static const char *const kinds[] = { "panic()", "a start-up check", "a fatal kernel fault", "a panic while panicking" };
+    LOGI("guest panic: the kernel halted on cpu%u (code %u, %s): ending the session", cpu->index, code, code < 4 ? kinds[code] : "?");
+  }
   xh_stop(reason, code, why);
   for (;;) pause();
 }

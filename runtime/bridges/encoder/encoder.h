@@ -44,6 +44,11 @@ const br_encoder_backend *br_encoder_backend_stub(void);
 // is static and MediaCodec is a shared library, so the NDK backend lives in a helper, as the camera's does. `path` is
 // the helper binary (runtime/bin/oneios-encoder).
 const br_encoder_backend *br_encoder_backend_helper(const char *path);
+// The helper backend never waits for the helper without a limit (a vCPU calls it): the HELLO and each write 1 s, an open's
+// reply br_encoder_helper_open_ms (2500; the test sets less). A helper that misses one is killed and the next open
+// starts a new one, twice at most a session. br_encoder_helper_stop: xnuhost's stop kills the helper (never waits).
+extern unsigned br_encoder_helper_open_ms;
+void br_encoder_helper_stop(void);
 
 // The "droidvm,virtio-media" encoder device on xnuhost's transport. `pool_host` is the host mapping of the media pool
 // (guest physical `pool_gpa`, `pool_size` bytes) in which the MMAP'd V4L2 buffers live; the guest maps the same pool
