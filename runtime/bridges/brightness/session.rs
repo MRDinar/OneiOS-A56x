@@ -327,9 +327,11 @@ impl Als {
 pub struct Bright {
     info: Info,
     panel: Arc<Panel>,
-    panel_thread: Option<JoinHandle<()>>,
+    panel_thread: Mutex<Option<JoinHandle<()>>>,
     als: Option<Arc<Als>>,
-    als_thread: Option<JoinHandle<()>>,
+    als_thread: Mutex<Option<JoinHandle<()>>>,
+    /// [`Bright::shutdown`] ran (it runs once)
+    shut: AtomicBool,
 }
 
 impl Bright {
@@ -403,7 +405,14 @@ impl Bright {
             touch_sleep: !o.no_touch_off,
             trace: o.trace.clone(),
         });
-        let mut bright = Bright { info, panel, panel_thread: None, als: None, als_thread: None };
+        let mut bright = Bright {
+            info,
+            panel,
+            panel_thread: Mutex::new(None),
+            als: None,
+            als_thread: Mutex::new(None),
+            shut: AtomicBool::new(false),
+        };
         let b = &mut bright;
         if b.panel.file.is_some() {
             if b.info.saved == 0 {
@@ -423,7 +432,7 @@ impl Bright {
             let panel = Arc::clone(&b.panel);
             match thread::Builder::new().name("brightness".into()).spawn(move || panel.worker()) {
                 Ok(handle) => {
-                    b.panel_thread = Some(handle);
+                    *lock(&b.panel_thread) = Some(handle);
                     b.info.panel = true;
                 }
                 Err(e) => panel_error = e,
@@ -552,7 +561,7 @@ impl Bright {
         let Ok(handle) = thread::Builder::new().name("brightness-als".into()).spawn(move || worker.worker()) else {
             return;
         };
-        self.als_thread = Some(handle);
+        *lock(&self.als_thread) = Some(handle);
         self.info.als = true;
         br_info!(
             "brightness: light sensor on: {} ({name}, not grabbed), {scale} millilux per clear count{}",
@@ -668,16 +677,20 @@ impl Bright {
     /// Writes One UI's value back (the start value when that was 0), wakes the touch IC, turns the sensor off if this
     /// session turned it on. Within 300 ms. (The same as dropping it.)
     pub fn close(self) {}
-}
 
-impl Drop for Bright {
-    fn drop(&mut self) {
+    /// What close does, through a shared reference and once (later calls and the drop do nothing more): for xnuhost's
+    /// stop, which ends the process without dropping the bridge device that holds this (C: br_bright_close at the
+    /// stop). The bridge takes no more requests after it.
+    pub fn shutdown(&self) {
+        if self.shut.swap(true, Ordering::AcqRel) {
+            return;
+        }
         lock(&self.panel.state).stop = true;
         self.panel.wake.notify_one();
         if let Some(als) = &self.als {
             als.stop.store(true, Ordering::Relaxed);
         }
-        if let Some(handle) = self.panel_thread.take() {
+        if let Some(handle) = lock(&self.panel_thread).take() {
             let _ = handle.join();
             // One UI's own value; system_server sets it again when it starts. If that was 0, the start value: the
             // return's screen needs a lit panel. Always written: the node may have been set outside the bridge during
@@ -689,7 +702,7 @@ impl Drop for Bright {
         if self.info.touch_nodes != 0 || self.info.pen_nodes != 0 {
             self.panel.touch_power(true); // after the backlight; the return finds the ICs awake
         }
-        if let Some(handle) = self.als_thread.take() {
+        if let Some(handle) = lock(&self.als_thread).take() {
             let _ = handle.join();
         }
         if let Some(als) = &self.als {
@@ -699,6 +712,12 @@ impl Drop for Bright {
                 }
             }
         }
+    }
+}
+
+impl Drop for Bright {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

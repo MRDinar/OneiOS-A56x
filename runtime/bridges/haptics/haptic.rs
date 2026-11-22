@@ -315,7 +315,7 @@ fn worker(shared: Arc<Shared>, mut dev: Device) {
 /// The haptic bridge: a worker over one backend. Dropping it logs the counter line and stops the motor.
 pub struct Haptic {
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for Haptic {
@@ -357,7 +357,7 @@ impl Haptic {
             Device { backend, effect: -1, playing: false, active: None, impact_until: Instant::now(), failures: 0 };
         let for_worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new().name("haptics".into()).spawn(move || worker(for_worker, dev)).ok()?;
-        Some(Haptic { shared, thread: Some(thread) })
+        Some(Haptic { shared, thread: Mutex::new(Some(thread)) })
     }
 
     /// Finds the force-feedback device under `dev_dir` (None: /dev/input) and starts the worker; the backend as
@@ -399,8 +399,11 @@ impl Haptic {
             st.stats.replaced += 1; // the newest wins: the one not started is never played
         }
         set(&mut st);
-        st.pending = true;
-        self.shared.wake.notify_one();
+        if !st.quit {
+            // after shutdown: counted, not played (no worker takes it)
+            st.pending = true;
+            self.shared.wake.notify_one();
+        }
     }
 
     /// Vibrate from now for on_ms (0 = stop) at intensity 0..1000 and frequency_hz (0 = resonance). Never blocks: the
@@ -463,8 +466,13 @@ impl Haptic {
     }
 }
 
-impl Drop for Haptic {
-    fn drop(&mut self) {
+impl Haptic {
+    /// What dropping it does, through a shared reference and once: the counter line, the motor stopped, the worker
+    /// ended and the backend closed (the vibrator HAL's off() when it is owed). For xnuhost's stop, which ends the
+    /// process without dropping the bridge device that holds this (C: br_haptic_close). Requests after it are counted
+    /// and not played.
+    pub fn shutdown(&self) {
+        let Some(t) = self.thread.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
         self.report(); // the session's figures, before the closing stop counts as one
         self.stop(); // the motor never outlives the bridge
         {
@@ -472,9 +480,13 @@ impl Drop for Haptic {
             st.quit = true;
             self.shared.wake.notify_one();
         }
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        let _ = t.join();
+    }
+}
+
+impl Drop for Haptic {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

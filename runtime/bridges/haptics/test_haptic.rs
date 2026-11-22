@@ -174,3 +174,22 @@ fn haptic() {
     let native = Haptic::open_backend(fresh()).unwrap();
     assert!(!native.impacts_available());
 }
+
+#[test]
+fn shutdown_once() {
+    // xnuhost's stop: the bridge is shut down through a shared reference (the bridge device holds it), once; requests
+    // after it are counted and not played, and a flush does not wait for a worker that is gone.
+    let (backend, motor) = FakeMotor::new(Motor::default());
+    let h = Arc::new(Haptic::open_backend(backend).unwrap());
+    h.vib(100, 500, 0);
+    h.flush();
+    h.shutdown();
+    assert!(motor.lock().unwrap().plays == 1 && motor.lock().unwrap().stops == 1); // the motor stopped at the shutdown
+    h.vib(100, 500, 0);
+    h.flush();
+    h.shutdown();
+    assert_eq!(motor.lock().unwrap().plays, 1);
+    assert_eq!(h.stats().vib, 2);
+    drop(h);
+    assert_eq!(motor.lock().unwrap().stops, 1);
+}
