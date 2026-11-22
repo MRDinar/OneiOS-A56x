@@ -23,7 +23,9 @@ header and has a test that reads the C header and checks every constant, size an
 | `onebridges` (`bridges/`) `wifi`, `bt`, `hal` | `bridges/wifi`, `bridges/bt`, `bridges/hal`, wifictl, their tests, fake-hal | bridges-net |
 | `onebridges` (`bridges/`) the rest | `cpu`, `hw`, `haptics`, `net`, `audio` (+ oneios-audio), `brightness`, `battery`, `thermal`, `devices`, `proto`, bridgectl/brightctl/batteryctl/thermalctl, `test_bridges` | bridges-hw |
 | `onecamera`, `oneencoder` | `bridges/camera`, `bridges/encoder` | media |
-| `xnuhost` (`xnuhost/`) | `src/*.c`, `arch_aarch64.S`, `tools/gpuctl.c`, the tests | machine, session, devices (see the module list in `xnuhost/src/lib.rs`) |
+| `xnuhost` (`xnuhost/`) machine | `arch_aarch64.S`, `cpu`, `task`, `sysreg`, `gic`, `hostcalls`, `kctx`, `mem`, `discard`, `ramfix`, `uart`, `perf`; `xnuhost/build.rs`, `xnuhost/Cargo.toml`; the qemu boots of the test kernel (`check-arm64`, bench, parallel, rpc) | machine |
+| `xnuhost` session | `main.c` (`session.rs`, `main.rs`), `config`, `imageset`, `blk`, `virtio_blk`, `usb`, `ready`, `ret` (return.c); `tests/test_imageset.c` | session |
+| `xnuhost` devices; `drm2kgsl-sys` (`xnuhost/drm2kgsl/`) | `display`, `virtio_gpu`, `gpu3d`, `gpu3d_kgsl`, `input`, `input_script`, `pen`, `virtio_input`, `tools/gpuctl.c`, the drm2kgsl build; `tests/test_display_mode.c`, `test_drm2kgsl.c`, `test_gpu_leaks.c`, `test_gpu_policy.c` | devices |
 | `oneios-package-tools` (`package/`) | `runtime/package/*.c` | lead |
 
 A folder's owner is the only one who edits it. Anyone may add a new helper module to `xh-core` (a new file and its one
