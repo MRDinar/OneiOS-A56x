@@ -8,4 +8,4 @@ mod vibrator; // haptics/haptic.c: the vibrator HAL backend
 pub use haptic::{find, map, set_native_impacts, Errno, Haptic, HapticBackend, HapticStats, Impact};
 
 #[cfg(test)]
-mod test_haptic; // tests/test_bridges.c's test_haptic
+pub(crate) mod test_haptic; // tests/test_bridges.c's test_haptic

@@ -8,4 +8,4 @@ pub mod net;
 pub use net::{dhcp_reply, Net, NetBackend, NetConfig, NetOpen, RxFn, FRAME_MAX};
 
 #[cfg(test)]
-mod test_net; // tests/test_bridges.c's test_net
+pub(crate) mod test_net; // tests/test_bridges.c's test_net

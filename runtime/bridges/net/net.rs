@@ -314,7 +314,10 @@ impl Drop for Net {
         // SAFETY: one byte from a valid buffer: the thread sits in poll().
         let _ = unsafe { libc::write(self.wake.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // The last owner may be a frame handed up by the receive thread itself: it ends by itself then.
+            if t.thread().id() != std::thread::current().id() {
+                let _ = t.join();
+            }
         }
     }
 }

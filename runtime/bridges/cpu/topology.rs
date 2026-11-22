@@ -683,3 +683,13 @@ impl Cpufreq {
 pub(crate) fn c_number_for_tests(text: &str) -> Option<u64> {
     c_number(text)
 }
+
+/// The device on xnuhost's MMIO bus: `mmio::bus().add(base, nvcpu * CPUFREQ_WINDOW, "cpufreq", Arc::new(cpufreq))`.
+impl xh_core::mmio::MmioDevice for Cpufreq {
+    fn mmio_read(&self, offset: u64, size: u32) -> u64 {
+        self.read(offset, size)
+    }
+    fn mmio_write(&self, offset: u64, size: u32, value: u64) {
+        self.write(offset, size, value)
+    }
+}
