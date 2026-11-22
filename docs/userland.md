@@ -49,7 +49,7 @@ Output in `OUT` (the hook puts it in the image set's `overlay/userland/`):
 |---|---|---|
 | `boot-contract.json` | booter, kernel | device tree identity, display, launch policy, mounts, kernel features (section 6) |
 | `xnuhost.conf` | xnuhost | `scale=3` or `scale=2`: the UI scale this image was made for (section 5.1) |
-| `owner-trust.json` | kernel build | CDHashes of our own binaries for the owner trust cache |
+| `owner-trust.json` | kernel build | CDHashes of our own binaries for the owner trust cache; `oneios-tool phone addon` adds a boot addon's CDHashes to the staged one (hosted 0090) |
 | `tweaks.manifest.json` | image build | every path changed, with the owner and mode the guest needs |
 | `report.txt`, `report.json` | people | one line per item: `applied`, `kept`, `not-found`, `off`, `contract` |
 

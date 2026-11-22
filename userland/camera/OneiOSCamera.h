@@ -18,9 +18,12 @@ void oneios_camera_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)
 bool oneios_camera_off(void);
 
 /* Scales a frame's NV12 picture into a two-plane 4:2:0 buffer of any size (nearest pixel; video_range: 420v's
- * 16-235/240 levels), or into a BGRA buffer. 0, or -EINVAL. (Exported for the host tests.) */
+ * 16-235/240 levels), into a two-plane 10-bit video-range buffer ('x420' 4:2:0, or 'x422' 4:2:2 with chroma_422; the
+ * strides in bytes), or into a BGRA buffer. 0, or -EINVAL. (oneios_camera_scale.c; the host tests run them.) */
 int oneios_camera_scale_nv12(const struct oneios_camera_frame *h, const uint8_t *picture, uint8_t *y, size_t y_stride, uint8_t *cbcr,
     size_t cbcr_stride, uint32_t width, uint32_t height, bool video_range);
+int oneios_camera_scale_10bit(const struct oneios_camera_frame *h, const uint8_t *picture, uint8_t *y, size_t y_stride, uint8_t *cbcr,
+    size_t cbcr_stride, uint32_t width, uint32_t height, bool chroma_422);
 int oneios_camera_scale_bgra(const struct oneios_camera_frame *h, const uint8_t *picture, uint8_t *bgra, size_t stride, uint32_t width,
     uint32_t height);
 

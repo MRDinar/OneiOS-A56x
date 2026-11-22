@@ -80,11 +80,9 @@ stage() {
   fi
   # Lasting debug tooling, off by default (each patch only logs when its environment variable is set:
   # ONEIOS_VK_INIT, ONEIOS_SURFACE_TRACE): the trace patches staged beside the base's own, applied by the
-  # `ios metal-stage-edit` below. Re-running stage is idempotent: the mesa-work copy is applied only once.
+  # `ios metal-stage-edit` below. Re-running stage is idempotent: the mesa-work copy is applied only once, after its
+  # clone below (a fresh METAL_WORK has no mesa-work yet: applied before the clone, stage stopped with git's status 128).
   cp "$HERE/trace-turnip-init.patch" "$R/patches/mesa/"
-  if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/trace-turnip-init.patch" 2>/dev/null; then
-    git -C "$R/.cache/mesa-work" apply "$HERE/trace-turnip-init.patch"
-  fi
   cp "$HERE/trace-metal-vulkan-init.patch" "$R/patches/metal2vulkan/"
   cp "$HERE/trace-metal-surfaces.patch" "$R/patches/"
   rsync -a --delete --exclude .git "$EXT/NativeMetal/" "$R/drivers/AdrenoMetal/"
@@ -106,6 +104,9 @@ stage() {
       i=$((i + 1))
     done
     say "Mesa $(git -C "$R/.cache/mesa-work" rev-parse --short HEAD) with the recorded patches in $R/.cache/mesa-work"
+  fi
+  if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/trace-turnip-init.patch" 2>/dev/null; then
+    git -C "$R/.cache/mesa-work" apply "$HERE/trace-turnip-init.patch"
   fi
   [ -d "$R/.cache/gpu-reference/metal2vulkan/.git" ] || git clone -q "$EXT/metal2vulkan" "$R/.cache/gpu-reference/metal2vulkan"
   # The staged scripts and sources: what differs from upstream, each said.

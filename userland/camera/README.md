@@ -29,9 +29,22 @@ part skipped on Linux).
 
 **What reaches the phone how:** the back camera needs only the new xnuhost (the runtime): the plug-in of the phone's
 Data store already gives a `PortTypeBack` stream, and only the VM check dropped it. The front port is in the plug-in,
-which lives in the Data store; a new plug-in reaches the phone only with a new seed (the Data store starts over), as the
-kernel's add-on writer (`kernel.kc.gpuaddon`) writes only under `/private/var/ngpu`. So the order is: xnuhost first
-(the back camera), the plug-in with the next new seed (the front camera, and whatever the next log asks for).
+which lives in the Data store. Since hosted 0090 (2026-11-23) a new plug-in reaches an existing Data store as the boot
+addon ("Getting it to the phone"), no new seed.
+
+**2026-11-23, second boot (main 44d9c49; iOS's log `rel-logs/ioslog-int2/ioslog.txt` on the build laptop): the back
+stream stayed (the VM fix worked), the preview was black, and cameracaptured crashed again and again.** The causes, each
+read in the 24A446 shared cache (`docs/hardware.md` 7, "The second 2026-11-23 boot", has the code addresses):
+the stream did not list `ModuleInfo`, so CMCapture had no sensor ID (`Unexpected sensor ID ((null)) found for
+PortTypeBack`); no stream format matched a named one (`failed to resolve format 'Video-FES-60'` and all others: the
+formats had no front-end scaler output size and no SIFR binning factor); and the Metal plug-in refused
+FigMetalAllocator's heap options (0x600200) and had no `newFunctionWithName:constantValues:pipelineLibrary:error:`
+(`function is nil`), after which cameracaptured died with SIGSEGV. **Fixes (host-tested on the build laptop, not run on
+the phone):** `ModuleInfo` `{sensorID}` from `CameraSetup.plist` `DefaultSensorIDs` (back `0x0903`, front `0x0914`);
+the stream formats from `oneios_camera_formats.c` (CMCapture's own rule, checked in `tests/test_formats.c`, and run by
+the plug-in over its own list at each create); `x420` and `x422` outputs; the camera opened at the graph's Start only
+(it was opened at every stream reservation, for nothing); the two Metal fixes (`docs/gpu.md`, "What the camera needs");
+the boot addon (hosted 0090, `oneios-tool ios addon`, `phone addon`).
 
 ## Where the camera broke (iOS's own log, sessions of 2026-11-12)
 
@@ -77,15 +90,51 @@ and nothing would have loaded it.
   open; `/dev/oneios-camera` is not known to be allowed. So the plug-in reads frames through that user client
   (`drivers/camera/OneiOSCameraService.cpp`), and uses the node only where the user client is not there.
 
+## How CMCapture picks a stream format [F, read in the 24A446 shared cache, 2026-11-23]
+
+- **The sensor ID.** `BWFigCaptureStream` copies the stream's `ModuleInfo` (with requireSupported: a name missing from
+  SupportedPropertiesDictionary is answered -12787 by CMCapture itself), and `+[FigCaptureCameraParameters
+  sensorIDStringFromModuleInfo:]` makes `[NSString stringWithFormat:@"0x%04x", ModuleInfo[@"sensorID"]]`
+  (`kFigCapturePropertyValue_SensorID` of CMCaptureCore). `csu_createMultiStreamSourceFormatsArrayAndAddAVCompressionSettingsAttribute`
+  then looks the camera's tables up by port type and that string, and logs `Unexpected sensor ID (...) found for ...`
+  when there is none. V54's `CameraSetup.plist` keys its tuning so (`DefaultSensorIDs`: PortTypeBack `0x0903`,
+  PortTypeBackSuperWide `0x0972`, PortTypeBackTelephoto `0x0973`, PortTypeFrontSuperWide `0x0914`, ...); the plug-in
+  reads that table at the first create.
+- **The named formats.** For each name of the device's `MultiStream` `FigCaptureStreamFormats` (an entry with
+  `Unsupported` is skipped) `csu_resolveFormatIndexForNamedStreamFormat` (0x1b07b7644) takes the first stream format
+  (SupportedFormatsArray, `Experimental` ones skipped) whose keys agree with the entry's:
+
+  | The plist entry | The stream format (CMCaptureCore's key) | Rule |
+  |---|---|---|
+  | `SensorWidth`, `SensorHeight` | `SensorWidth`, `SensorHeight` | equal |
+  | `Binned` | `VideoIsBinned` | equal |
+  | `HDR` | `SensorHDRMode` | HDR when the mode is above 0 |
+  | `FES`, `FESWidth`, `FESHeight` | `FrontEndScalerOutputWidth`, `...Height` | the format has an output size when FES; the sizes equal when the entry gives them |
+  | `MaxFrameRate` | `VideoMaxFrameRate` | equal, when the entry gives one |
+  | `SIFREnabled`, `SIFRBinningFactor` | `SIFREnabled`, `SIFRBinningFactor` | equal; with SIFR on both, the entry's factor (else 2 when binned, 1 when not) equals the format's (at least 1) |
+  | `QuadraBinningFactor` | `QuadraBinningFactor` | none on either side, or the format's equals the entry's (2 when the entry has none) |
+  | `OptimizedForMidFrameSynchronization` | the same name | equal |
+  | `SecureSigningFaceIDSupported` | `SensorSigningEnabled` | equal |
+
+  Companions (`DepthCompanionFormat`, `FESCompanionFormats`, `UltraHighResCompanionFormat`, ...) name only what differs
+  from their format; the plug-in makes `NAME[Companion]` formats of the parent's keys with the companion's over them.
+  [I] how CMCapture builds a companion's parameters (that code was not read): the names of the AVCaptureDevice formats
+  (`1080p30` from `Video-FullSensor-FES-30`, ...) need only the main ones.
+- **The pixel format.** `csu_createSourceFormatDictFromDeviceFormat` asks every output of the resolved stream format's
+  `SupportedOutputs` for the device format's `PixelFormatType` (default `420v`; `420f` for some device types): V54's
+  device formats ask `x420` and `x422` (10-bit) and `btp2` (ProRes RAW, not given: those formats stay off).
+
 ## Files
 
 | File | What |
 |---|---|
 | `OneiOSCaptureDevice.c` | `H9ISPCaptureDeviceCreate`: a FigCaptureDevice (CMCaptureDevice's class) with a stream for each of the back wide and the front camera that the kernel lists. Each stream's formats are the device's own `CMCapture.framework/V54/AVCaptureSession.plist` stream formats (`FigCaptureStreamFormats` of "Back Camera", read at the first create, every key kept, so that each AVCaptureDevice format of that file resolves). The HakiOS property set. Frames scaled into the pools the graph gives each output (420f, 420v, BGRA) and handed to its `PixelBufferHandler` |
+| `oneios_camera_formats.c`, `.h` | plain C: what a named stream format of the plist asks for, the keys of our stream format made from it, and CMCapture 24A446's rule for "this format is that name" (`csu_resolveFormatIndexForNamedStreamFormat`, "How CMCapture picks a stream format" below) |
+| `oneios_camera_scale.c` | plain C: the kernel's NV12 frame scaled into 420f/420v, x420/x422 (10-bit video range) or BGRA buffers (moved out of the device file on 2026-11-23, so the host test runs them) |
 | `OneiOSCamera.c`, `.h` | the log (`ONEIOS CAMERA: ios: <process>[pid]: ...` to the unified log, `/dev/console` and `/private/var/oneios/log/camera.log`, each where the sandbox lets it), the off switch, a line when it is loaded |
 | `oneios_camera_reader.c`, `.h` | the kernel's frames: AppleH9CamIn's user client (`-DONEIOS_CAMERA_IOKIT`, the iOS build) or `/dev/oneios-camera`; checks each header; copies the NV12 planes |
 | `build.sh` | `out/userland/camera/H9ISP.mediacapture` and `cdhashes.txt` |
-| `tests/host.sh` | CI: the reader against stand-ins (26 checks), then `host-mac.sh` |
+| `tests/host.sh` | CI: the reader against stand-ins (26 checks), the formats and scalers (`tests/test_formats.c`, 42 checks: V54's named formats resolve each to its own format, the 2026-11-23 formats do not, each compare of the rule), then `host-mac.sh` |
 | `tests/host-mac.sh`, `test_device_mac.m` | on a Mac, our create function under macOS 27's own CMCapture: the device is of `FigCaptureDeviceGetClassID`'s class; the stream answers (port, formats from a stand-in plist, pixel size, clock, supported properties); **macOS's `BWFigCaptureDeviceVendor` makes a `BWFigCaptureDevice` over ours with our function**; a frame from a stand-in node reaches the PrimaryScaler's handler, scaled into the test's pool (35 checks) |
 
 What the property names are worth: they are HakiOS's (iOS 16). Every property iOS 27 asks for that is not answered,
@@ -103,6 +152,13 @@ userland/camera/build.sh          # -> out/userland/camera/H9ISP.mediacapture, c
   `/private/var/oneios/addons/MediaCapture/H9ISP.mediacapture` in the Data seed and its CDHash to
   `overlay/userland/owner-trust.json` (library validation in `cameracaptured`). **A new seed starts the phone's Data
   store over** (settings, joined Wi-Fi networks, everything iOS wrote).
+- **Without a new seed (hosted 0090, 2026-11-23):** `build.sh` also writes `H9ISP.gpuaddon` and its
+  `H9ISP.gpuaddon.cdhashes` (`oneios-tool ios addon`); `oneios-tool phone addon out/userland/camera/H9ISP.gpuaddon`
+  stages it as `image/kernel.kc.gpuaddon`, with the phone's `owner-trust.json` plus the plug-in's CDHash and a manifest
+  for both. At the next boot the kernel writes it to `/private/var/ngpu/camera/MediaCapture/H9ISP.mediacapture` and 0056
+  shows that folder instead of the seed's. With a rebuilt Metal plug-in too, one sidecar holds both: `oneios-tool ios
+  addon OUT --metal out/userland/NativeAdrenoMetal.bundle --camera out/userland/camera`, then `phone addon OUT`.
+  `phone addon --remove` goes back to the seed's plug-ins. The kernel must have 0090.
 - The kernel must have AppleH9CamIn and hosted 0056 (one kernel build has both).
 - Off without a rebuild: the boot argument `oneios-camera-plugin=0` (no AppleH9CamIn, no mount), or the file
   `/private/var/oneios/camera/off` (the plug-in makes no device).
@@ -148,6 +204,29 @@ given`. Lines that say where it stops: `error '...' trying to load dylib` (the m
 `stage 1 status 2` (no plug-in in this Data store), `the kernel's camera: Operation not permitted` (the sandbox
 refused the user client), `no answer for X` (a property to add).
 
+Since fix-camera-preview-stream (2026-11-23; the kernel with 0090, the plug-in and the Metal plug-in by `phone addon`),
+the lines that prove each step, in order. `xnuhost.log`: `oneios-camera-addon: boot addon: N files (-1 none), 1 of the
+capture plug-in (camera/), M of the Metal plug-in (addons/)`, then `oneios-camera-addon: /private/var/ngpu/camera/MediaCapture
+over /System/Library/MediaCapture: stage 5, status 0`; with M above 0 also `oneios-gpu-addon: /private/var/ngpu/addons over
+/System/Library/Extensions: stage 5`, and `oneios-gpu-plugin: ... code signature of ...: error 0` (the CDHashes trusted).
+iOS's log (`phone pull-log`):
+1. `ONEIOS CAMERA: ios: cameracaptured[N]: .../V54/AVCaptureSession.plist: read; .../V54/CameraSetup.plist: read`.
+2. `stream Back Camera: M stream formats for 17 named formats and K companions of the plist; X of X resolve by
+   CMCapture's rule (all)`: the plug-in's own check (a name listed after "these do not" is a key to add).
+3. No `failed to copy ModuleInfo`, no `Unexpected sensor ID`, no `failed to resolve format`, no `Fig assert:
+   "streamFormatDict"`; `pixelFormatIsSupported` only for the ProRes RAW formats (`btp2`).
+4. No `native-metal: heap refused`; at most one `native-metal: heap options 0x600200: bits 0x600000 are not Metal's known
+   ones; made without them`; no `missing NBLibrary newFunctionWithName:constantValues:pipelineLibrary:error:`, no
+   `function is nil`; no `exited due to SIGSEGV` for cameracaptured.
+5. With the Camera app open: `device: streams asked for (1)`, `stream Back Camera: format N`, `stream Back Camera: the
+   graph starts the stream (format N)`, `stream Back Camera: reading frames through AppleH9CamIn`, `stream Back Camera: the
+   first frame: 1920x1080, camera 0, turned 90`, `Back Camera PrimaryScaler: the first picture given (WxH '420f' from
+   1920x1080)`: a picture on the screen. A photo: `stream: a photograph asked for StillImageCaptureNow` and `stream Back
+   Camera: the photograph is given`.
+6. Before the app opens, no `reading frames through AppleH9CamIn` (the camera opens at the graph's Start only).
+If cameracaptured still crashes, boot with `sheng-exc-name=newfs_apfs,cameracaptured` in `xnuhost.conf`'s boot
+arguments: the kernel logs each exception's pc, lr, far and return addresses (give them to `oneios-tool sym`).
+
 ## Not done
 
 1. Run in iOS. Whether the 27 capture graph takes this device as it is, what it asks that is missing (the log
@@ -167,5 +246,7 @@ refused the user client), `no answer for X` (a property to add).
    need `SupportedSynchronizedStreamsGroups` with two or three streams that run at once: the kernel's camera has one
    client and one camera at a time, so that needs streams of more than one camera in `drivers/camera` and the helper.
    With each stream, its `/product/camera` flag (`rear-cam-superwide-capability`, `rear-cam-telephoto-capability`).
-6. A way to put a new plug-in into the phone's Data store without a new seed (a kernel add-on path for
-   `/private/var/oneios/addons`, or an `oneios-tool phone` command that writes a file into `data.img`).
+6. ~~A way to put a new plug-in into the phone's Data store without a new seed~~: done 2026-11-23 (hosted 0090, `phone
+   addon`); not run on the phone yet.
+7. `WhiteBalanceGain` (asked with requireSupported, -12787) and the companions' parameters ([I] above): what the next
+   log asks for.

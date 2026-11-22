@@ -1489,7 +1489,12 @@ Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s
   camera-only addon.
 - **Off.** Without the sidecar nothing changes. `oneios-camera-plugin=0` and `sheng-gpu-addon=0` as for 0056.
 
-Numbered 0090: 0089 was the last number on main (2026-11-23). Tested: see the end of this section (the build laptop).
+Numbered 0090: 0089 was the last number on main (2026-11-23); the frame-rate helper's 0091 applies after it.
+Tested (the build laptop, 2026-11-23): `HOSTED_OUT=cam2 ONEIOS_CRYPTO=original kernel/build-hosted.sh` applied the series
+with 0090 (no fuzz, no compiler warning from the kernel sources) and built `xnu.macho` (sha256 `3ebbc5637e4ee3de...`; both
+new strings in it). `KERNEL=out/kernel/current-hosted-cam2/xnu.macho OUT=out/kernel/cam2-24A446 kernel/prelink/build.sh`:
+`kernel.kc` 96,239,616 bytes, sha256 `c50ca941a445b494...` (`kernel.kc.hashes` `61096d9322aa59d1...`), audit 2,711 paired,
+93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet.
 
 ## 0088-cmcapture-model-folder.patch (fix-audio-camera-model, 2026-11-23)
 

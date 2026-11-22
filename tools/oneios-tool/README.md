@@ -701,6 +701,7 @@ oneios-tool ios codesign ARGS...                         # `codesign` for the Me
 oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS   # userland/metal/build.sh stage: the staged copy's changes
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
 oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2)
+oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon with the Metal and/or the capture plug-in, and OUTPUT.cdhashes (hosted 0090)
 ```
 
 | Command | Was | Needs | Compared with the script (Linux PC, 2026-11-21) |
@@ -712,6 +713,7 @@ oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the k
 | `metal-stage-edit` | build.sh `stage`'s inline Python | nothing | on copies of the pinned Droid-VM-UniXNU and NativeMetal trees, with and without the clang-23 warning: the same staged tree (`diff -r`) and the same lines; a hooks file of another revision is refused with the same message |
 | `metal-record` | build.sh `finish`'s inline Python | scripts/ios/env.sh's variables | the same record and lines on the bundle in `out/userland`, but for its `check` text (`ios macho-check`) |
 | `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream) |
+| `addon` | nothing (new, 2026-11-23) | `image tweaks cdhash`'s Mach-O reader (oneios-tweaks) | new: its Metal part is `gpuaddon`'s byte for byte (unit test); the capture plug-in goes to `camera/MediaCapture/H9ISP.mediacapture`, which hosted 0090 mounts; `OUTPUT.cdhashes` has one `CDHASH NAME` line for each Mach-O file in it, for `phone addon`. `userland/camera/build.sh` makes `H9ISP.gpuaddon` with it |
 
 `tbds` writes TBD v4 as the 24A446 stubs were laid out (one item per line); weak definitions and thread-local
 variables in their own lists (the `ipsw` stubs had them in `symbols`), an Objective-C class in `objc-classes` when
@@ -1903,6 +1905,8 @@ oneios-tool phone log --list                  # the logs by name, with sizes
 oneios-tool phone sums                        # sha256 of the staged kernel.kc, its hash list, manifest.json, data.seed's line, xnuhost.conf, the runtime
 oneios-tool phone image-check                 # the staged manifest.json against the staged files (image.sha256), as xnuhost will (read only)
 oneios-tool phone manifest DIR [--out FILE] [--stage]   # the phone's manifest.json with DIR's files' entries set to theirs
+oneios-tool phone addon FILE [--cdhashes LIST]   # a boot addon (ios addon) as image/kernel.kc.gpuaddon, owner-trust.json plus its CDHashes, a manifest
+oneios-tool phone addon --remove              # no boot addon at the next boot (owner-trust.json is left as it is)
 oneios-tool phone switch [--version-code N]   # busybox setsid sh oneios_root.sh switch <the installed app's versionCode> 1
 oneios-tool phone return [--timeout 180] [--note TEXT]   # session/return.request, then waits for "One UI restored"
 # only during a session (refused without one; "The session's own commands" below):
@@ -1997,7 +2001,13 @@ What each does:
   files set to their SHA-256 and size. Every other entry must already list the staged file, and a file of DIR
   that the manifest does not list is refused. Printed, `--out FILE`, or `--stage`: DIR's files and the manifest
   staged together, then `image-check`. Run on the phone: the manifest it replaced by hand that night (21 entries,
-  all equal to `image.sha256`).
+  all equal to `image.sha256`). The kernel's boot addon `kernel.kc.gpuaddon` is the one file DIR may hold that the
+  manifest does not list (xnuhost reads a sidecar beside the kernel itself): it is staged new, its lines added.
+- `addon FILE` (2026-11-23, hosted 0090): `ios addon`'s sidecar staged as `image/kernel.kc.gpuaddon` with the phone's
+  `overlay/userland/owner-trust.json` plus the CDHashes of `FILE.cdhashes` (`--cdhashes LIST`; sorted, each once, every
+  other key kept) and a manifest for both, through `manifest --stage`. Refused: a file that is not NGPUADD2, one over
+  64 MiB, a set whose manifest lists no owner-trust.json. `--remove` deletes the sidecar and its lines. Tested on the
+  stand-in phone (`tests/phone/run.sh`, "phone addon"); not run on the phone yet.
 - `switch` reads the versionCode from `dumpsys package com.fahadali.oneos` (not a fixed 115; `--version-code`
   for a phone without the app). A refusal of the preflight (`@@REFUSED ...`) is printed and is exit status 1. If
   `setsid` lets adb go before the script answers, the new `epoch` line of `switch.log` is the proof it started.
