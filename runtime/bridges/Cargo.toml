@@ -39,3 +39,7 @@ path = "tests/fake_hal.rs"
 [[bin]]
 name = "thermalctl"
 path = "thermal/thermalctl.rs"
+[[test]]
+name = "test_hidl_binder"
+path = "tests/test_hidl_binder.rs"
+harness = false

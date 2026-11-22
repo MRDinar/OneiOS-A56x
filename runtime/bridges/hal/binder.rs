@@ -100,11 +100,7 @@ pub(crate) fn last_errno() -> i32 {
 
 /// strerror(errno) of a positive or negative errno (C's `strerror(rc < 0 ? -rc : rc)`).
 pub fn strerror(rc: i32) -> String {
-    let text = io::Error::from_raw_os_error(rc.saturating_abs()).to_string();
-    match text.rfind(" (os error ") {
-        Some(at) => text[..at].to_owned(),
-        None => text,
-    }
+    xh_core::sys::strerror(rc.saturating_abs())
 }
 
 /// struct binder_transaction_data (64 bytes), with `data.ptr` as its two words.
@@ -130,7 +126,7 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 }
 
 impl TransactionData {
-    fn parse(b: &[u8]) -> TransactionData {
+    pub fn parse(b: &[u8]) -> TransactionData {
         TransactionData {
             target: u64_at(b, 0),
             cookie: u64_at(b, 8),
@@ -174,7 +170,7 @@ impl Commands {
     pub fn quad(self, v: u64) -> Commands {
         self.put(&v.to_ne_bytes())
     }
-    fn transaction(self, t: &TransactionData) -> Commands {
+    pub fn transaction(self, t: &TransactionData) -> Commands {
         self.quad(t.target)
             .quad(t.cookie)
             .word(t.code)
@@ -694,7 +690,10 @@ impl Drop for Looper {
         // SAFETY: one byte to our pipe's write end.
         let _ = unsafe { libc::write(self.wake.as_raw_fd(), c"".as_ptr().cast(), 1) };
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // dropped from its own thread (a handler held the last reference to the owner): it ends by itself
+            if t.thread().id() != std::thread::current().id() {
+                let _ = t.join();
+            }
         }
     }
 }

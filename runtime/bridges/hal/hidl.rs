@@ -114,6 +114,20 @@ impl<'a> HidlParcel<'a> {
         self.scratch_used = 0;
         self.overflow = false;
     }
+    /// The same memory, emptied, for parcels that borrow for another lifetime (a caller keeps one parcel for every
+    /// packet it sends).
+    pub fn recycle<'b>(mut self) -> HidlParcel<'b> {
+        self.clear();
+        HidlParcel {
+            data: std::mem::take(&mut self.data),
+            offsets: std::mem::take(&mut self.offsets),
+            buffers_size: 0,
+            scratch: std::mem::replace(&mut self.scratch, Box::new([0; PARCEL_SCRATCH / 8])),
+            scratch_used: 0,
+            overflow: false,
+            _borrows: PhantomData,
+        }
+    }
     pub fn size(&self) -> usize {
         self.data.len()
     }
