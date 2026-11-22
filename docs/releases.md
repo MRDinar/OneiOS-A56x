@@ -225,7 +225,7 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
   APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
   `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
-  The commit recorded for `app/` is `5ffc71c` (2026-11-22, the fork's CI doc on the shared debug key; code as `84b0ba5`: the pairing files without XnuPrelink's Python sources, kb
+  The commit recorded for `app/` is `bc837b4` (2026-11-22: status quick by the files' ids, its steps and seconds shown, 20 s without an answer from su is "Root didn't answer", the setup steps on iOS 27's page, clearer runtime and image choices, live hardware-check output, debug builds signed with the shared key; 689 tests, 0 failures, 76 skipped; before it `5ffc71c`, the CI doc on the key, and `84b0ba5`: the pairing files without XnuPrelink's Python sources, kb
   format 2, 688 tests, 0 failures, 76 skipped; before it `7e34fa4`, 2026-11-21: Make iOS image with `make-image` on a
   fresh phone, 688 tests, 0 failures, 74 skipped, an end-to-end test against the real tool; before that `53abb04`): upstream OneOS 0.5.14 to 0.5.31 merged into `oneios`
   (`2d2f26b`, `728db89`), the on-phone kernel update (`133b64a`) and Update the kernel fetching Apple's kernelcache
@@ -472,7 +472,8 @@ build machine on 2026-11-22.
   - `secrets/` is git-ignored, so the key is never committed.
   - The same bytes, base64, are the secret `ONEIOS_DEBUG_KEYSTORE_B64` of akshaynexus/OneiOS and akshaynexus/OneOS.
   - CI writes the secret to `~/.android/debug.keystore`. `scripts/release/release.sh` passes the file to Gradle
-    (`-Pandroid.injected.signing.*`).
+    (`-Pandroid.injected.signing.*`). Since fork `bc837b4` every debug build in this checkout (`./gradlew assembleFullDebug`,
+    `oneios-tool app build`, `cycle`) signs with it too: the fork's `app/build.gradle.kts` takes the file when it is there.
 - **What it gives:** an APK from CI and one from the build machine install over each other.
 - **The first APK signed with it** has to replace one signed with an older key by uninstalling it. That applies to
   v0.1.13's 0.5.47 and every earlier release, each signed with a run's own key.

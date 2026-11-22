@@ -810,8 +810,8 @@ git -C app switch oneios                   # to work on the fork in app/: a bran
 
 `--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
 `app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). Recorded now: `5ffc71c` (upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
-the pairing files without Python, kb format 2, 2026-11-22; the CI doc on the shared debug key). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
+app`). Recorded now: `bc837b4` (upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
+the pairing files without Python, kb format 2, 2026-11-22; the shared debug key; a quick status that names its steps and stops after 20 s without root, the setup steps on iOS 27's page, clearer runtime and image choices, live hardware-check output). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
 --remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
 `git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
 package takes `runtime/`, `kernel/` and `LICENSE` only, and the runtime job never checks it out.
