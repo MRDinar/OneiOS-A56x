@@ -353,6 +353,14 @@ pub fn service(c: &Capture, pid: u32) -> String {
 
 /// What the repository's docs say about a process, by its service and its name. A starting list (docs/
 /// plan-ios-first-session.md, "The inventory"), not a proof: `-` means "not classified", which is not "safe to stop".
+/// The program of a command line: its first word without its folder. `role` reads only that and the service, not
+/// the arguments: on the phone (2026-11-23) `dex2oat64 --zip-location=/system/app/Bluetooth/Bluetooth.apk ...` was
+/// named "bridge: Bluetooth (the HAL)" for a word of its arguments.
+pub fn program(command: &str) -> &str {
+    let first = command.split_whitespace().next().unwrap_or("");
+    first.rsplit('/').next().unwrap_or(first)
+}
+
 pub fn role(service: &str, name: &str) -> &'static str {
     let s = format!("{} {}", service.to_ascii_lowercase(), name.to_ascii_lowercase());
     let has = |words: &[&str]| words.iter().any(|w| s.contains(w));
@@ -557,7 +565,7 @@ pub fn render(c: &Capture, sort: Sort, top: usize, kernel: bool) -> String {
             r.p.threads,
             svc,
             short,
-            role(&svc, &name)
+            role(&svc, program(&name))
         );
     }
     // the session's own processes (xnuhost, the task factory, its helpers, the display helper), and iOS's task
@@ -844,5 +852,12 @@ mod tests {
         assert_eq!(role("media", "mediaserver"), "restart list; encoder: not known if needed");
         assert_eq!(role("vendor.thermal-engine", "thermal-engine-v2"), "keep: thermal and charge limits");
         assert_eq!(role("-", "some.samsung.daemon"), "-");
+        // only the program counts, not a word of its arguments
+        let dex = "dex2oat64 --zip-fd=7 --zip-location=/system/app/Bluetooth/Bluetooth.apk --oat-fd=8";
+        assert_eq!(program(dex), "dex2oat64");
+        assert_eq!(role("artd+", program(dex)), "-");
+        let hal = "/vendor/bin/hw/android.hardware.bluetooth@1.1-service.sec";
+        assert_eq!(role("vendor.bluetooth-1-1", program(hal)), "bridge: Bluetooth (the HAL)");
+        assert_eq!(program("com.samsung.android.app.soundpicker --audio"), "com.samsung.android.app.soundpicker");
     }
 }

@@ -365,7 +365,7 @@
 # the X4); XNU's default edges allow no migration and no steal from E to P, and without CLPC nothing changes them. On the
 # phone (s6, s8, s9) vCPU 0-1 were 0% idle in every period while vCPU 4-7 were 85-99% idle and the render server drew
 # 20-32 frames a second with 1.5-5 ms of GPU time; iOS's log: SpringBoard 90 hangs (214.9 s), chronod 126 watchdog kills
-# of widget extensions. Once all CPUs are up (oneios_board_late_start), E -> P migration and steal are allowed for
+# of widget extensions. Once all CPUs are up (the end of sched_cpu_init_completed; until 2026-11-23 oneios_board_late_start, which on the phone came too early), E -> P migration and steal are allowed for
 # fixed-priority, foreground, user-initiated and default (weight 0), utility (64 us of scheduling latency) and background
 # (1000 us). oneios-edge-spill=0 is the old way, =1 keeps background on E. One `oneios-edge:` line. README.md, "0085".
 0085-edge-e-to-p-spill.patch
