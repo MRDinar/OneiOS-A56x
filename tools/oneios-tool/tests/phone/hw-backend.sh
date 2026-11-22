@@ -1,8 +1,8 @@
 # Sourced by tests/phone/run.sh (with lib.sh's helpers, HERE, ROOT and W set): the bridges' two hardware backends
 # (hw-backend=samsung|treble, docs/hardware.md 7e) on stand-in phones of their own. The bridges' phone tools
-# (brightctl, ...; their host builds, made here with the build host's cc) run against each stand-in's sysfs, and for
+# (brightctl, ...; their host builds, made here with cargo from the Rust workspace runtime/Cargo.toml) run against each stand-in's sysfs, and for
 # the HAL-based treble forms against a fake servicemanager with fake HALs on a binderfs (fake-hal, runtime/bridges/
-# tests/fake_hal.c, in a user namespace; skipped with a line where the kernel has no binderfs):
+# tests/fake_hal.rs, in a user namespace; skipped with a line where the kernel has no binderfs):
 #   s24            the S24 Ultra as the bridges see it: sys/class/backlight/panel0-backlight (max 51000, Samsung's
 #                  doubled range), sys/class/sec/tsp (the touch IC's power node, name sec_touchscreen),
 #                  sys/class/power_supply/{battery,usb}, sys/class/thermal/thermal_zone{0,1}, sys/class/sec/sec-ap-thermistor;
@@ -14,21 +14,23 @@
 #   odd            a phone whose backlight has a vendor's own name (vendor-bl): samsung's folder listing finds it, the
 #                  treble backend (named paths only) does not
 #   s26            a Galaxy S26 Ultra's panel (panel0-backlight, max 12750) and its getprop dump: the host table's
-#                  ONEIOS_BRIGHT_MAX=2300 (runtime/bridges/hw/host_device.c), none, a set variable, the S24's dump, a bad name
+#                  ONEIOS_BRIGHT_MAX=2300 (runtime/bridges/hw/host_device.rs), none, a set variable, the S24's dump, a bad name
 # Checked per backend: which node is used and its range, the line naming the backend and why, what is written and
 # restored, what is left alone (the touch IC's node in treble), the one "missing" line and the fallback rule.
 # The stand-ins are under a short folder of their own (mktemp -d /tmp/oneios-hw.XXXXXX), removed at the end.
 hw_backend_checks() {
-  local B=$ROOT/runtime/bridges out st
-  if ! command -v cc > /dev/null 2>&1 || ! make -s -C "$B/brightness" build/host/brightctl > "$W/hw-build.txt" 2>&1; then
+  local out st
+  # The bridges' tools for this build host, in a target dir of their own (the container of runtime/host-tests.sh builds
+  # into another one, so a Linux build is never found here on the Mac)
+  local B=$ROOT/runtime/target/phone-tests-$(uname -s)/debug
+  if ! command -v cargo > /dev/null 2>&1 || ! (cd "$ROOT/runtime" && CARGO_TARGET_DIR=$(dirname "$B") cargo build --quiet --locked -p onebridges \
+      --bin brightctl --bin batteryctl --bin thermalctl --bin bridgectl --bin fake-hal) > "$W/hw-build.txt" 2>&1; then
     echo "skipped hw-backend (the bridges' host tools do not build here: $(tail -n 1 "$W/hw-build.txt" 2>/dev/null))"; return
   fi
-  local BRIGHTCTL=$B/brightness/build/host/brightctl
-  # build/host/ is shared with runtime/host-tests.sh's container: a Linux build there is up to date for make and
-  # cannot run on the Mac (status 126), so it is a skip, not 12 failures
+  local BRIGHTCTL=$B/brightctl
   "$BRIGHTCTL" > /dev/null 2>&1 < /dev/null; st=$?
   if [ $st = 126 ] || [ $st = 127 ]; then
-    echo "skipped hw-backend ($BRIGHTCTL cannot run here, status $st: a build for another system, e.g. the container's; make -C runtime/bridges/brightness clean, then run again)"; return
+    echo "skipped hw-backend ($BRIGHTCTL cannot run here, status $st)"; return
   fi
   # the stand-ins live under a short folder of their own: the bridges keep a sysfs path in 200 bytes, as the phone's are
   local T; T=$(mktemp -d /tmp/oneios-hw.XXXXXX) || { bad "hw-backend: no scratch folder"; return; }
@@ -39,7 +41,7 @@ hw_backend_checks() {
   echo sec_touchscreen > "$S24/sys/class/sec/tsp/input/name"; echo 0,0 > "$S24/sys/class/sec/tsp/enabled"
   echo 2047 > "$OTHER/sys/class/backlight/lcd-backlight/max_brightness"; echo 700 > "$OTHER/sys/class/backlight/lcd-backlight/brightness"
   echo 510 > "$ODD/sys/class/backlight/vendor-bl/max_brightness"; echo 100 > "$ODD/sys/class/backlight/vendor-bl/brightness"
-  bl() { local p=$1; shift; env ASAN_OPTIONS=detect_leaks=0 ONEIOS_BRIGHT_DIR="$p/sys/class/backlight" ONEIOS_TSP_DIR="$p/sys/class/sec" ONEIOS_INPUT_DIR="$p/dev/input" "$@" "$BRIGHTCTL" "${BL_ARGS[@]}"; }
+  bl() { local p=$1; shift; env ONEIOS_BRIGHT_DIR="$p/sys/class/backlight" ONEIOS_TSP_DIR="$p/sys/class/sec" ONEIOS_INPUT_DIR="$p/dev/input" "$@" "$BRIGHTCTL" "${BL_ARGS[@]}"; }
 
   # ---- backlight: samsung (the default) on the S24: unchanged, the doubled range halved, the touch IC woken
   BL_ARGS=(info)
@@ -119,8 +121,6 @@ hw_backend_checks() {
   local HAVE_HAL=1
   if ! grep -qw binder /proc/filesystems 2>/dev/null || ! unshare -Urm true 2>/dev/null; then
     HAVE_HAL=; echo "skipped hw-backend's HAL checks (no binderfs in this kernel, or no user namespaces)"
-  elif ! make -s -C "$B" build/host/fake-hal > "$W/hw-build.txt" 2>&1; then
-    HAVE_HAL=; bad "hw-backend: fake-hal does not build" "$(tail -n 2 "$W/hw-build.txt" | tr '\n' '|')"
   fi
   mkdir -p "$S24/.fake/hal" "$OTHER/.fake/hal"
   # with_hal PHONE CMD...: CMD with ONEIOS_BINDER set, beside fake-hal serving PHONE/.fake/hal (gone when CMD ends)
@@ -128,21 +128,21 @@ hw_backend_checks() {
     local p=$1; shift
     mkdir -p "$T/binderfs"
     unshare -Urm bash -c 'mount -t binder binder "$1" || exit 90; export ONEIOS_BINDER=$1/binder; hal=$2; shift 2
-      "$B/build/host/fake-hal" "$hal" > "$T/fake-hal.out" 2>&1 & f=$!
+      "$B/fake-hal" "$hal" > "$T/fake-hal.out" 2>&1 & f=$!
       for i in $(seq 50); do grep -q ready "$T/fake-hal.out" && break; sleep 0.05; done
       "$@"; st=$?; kill -9 $f; wait $f 2>/dev/null; exit $st' sh "$T/binderfs" "$p/.fake/hal" "$@"
   }
   export B T
 
   # ---- battery: samsung (the nodes) on the S24, treble (the health HAL) on the S24 and on another phone
-  if [ -n "$HAVE_HAL" ] && make -s -C "$B/battery" build/host/batteryctl > "$W/hw-build.txt" 2>&1; then
-    local BATCTL=$B/battery/build/host/batteryctl PS=$S24/sys/class/power_supply
+  if [ -n "$HAVE_HAL" ] && [ -x "$B/batteryctl" ]; then
+    local BATCTL=$B/batteryctl PS=$S24/sys/class/power_supply
     mkdir -p "$PS/battery" "$PS/usb"
     echo 64 > "$PS/battery/capacity"; echo Charging > "$PS/battery/status"; echo 1 > "$PS/battery/present"; echo 301 > "$PS/battery/temp"
     echo 4100000 > "$PS/battery/voltage_now"; echo 900 > "$PS/battery/current_now"; echo 1 > "$PS/usb/online"
     printf 'level=64\nstatus=2\npresent=1\ntemp=301\nvoltage_mv=4100\ncurrent_ua=900000\nusb=1\nfull_uah=4900000\ndesign_uah=5000000\n' > "$S24/.fake/hal/health"
     printf 'level=18\nstatus=3\npresent=1\ntemp=355\nvoltage_mv=3650\ncurrent_ua=-610000\ncycles=320\nfull_uah=3700000\ndesign_uah=4500000\n' > "$OTHER/.fake/hal/health"
-    bat() { local p=$1; shift; with_hal "$p" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_BATTERY_DIR="$p/sys/class/power_supply" "$@" "$BATCTL"; }
+    bat() { local p=$1; shift; with_hal "$p" env ONEIOS_BATTERY_DIR="$p/sys/class/power_supply" "$@" "$BATCTL"; }
     out=$(bat "$S24" 2>&1); st=$?
     [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^bridges: hw: battery: backend samsung (the default)$' && printf '%s\n' "$out" | grep -q "^bridges: battery: on: $PS, status \"Charging\", 64%, plugged in" \
       && printf '%s\n' "$out" | grep -q '^sample: 64% present=1 plugged=1 charging=1 full=0 temp=301 (tenths C) voltage=4100 mV current=900 mA' \
@@ -169,14 +169,14 @@ hw_backend_checks() {
   elif [ -n "$HAVE_HAL" ]; then bad "hw-backend: batteryctl does not build" "$(tail -n 2 "$W/hw-build.txt" | tr '\n' '|')"; fi
 
   # ---- thermal sensors: samsung (the zones, Samsung's thermistors, lrp) and treble (the thermal HAL); the same level
-  if [ -n "$HAVE_HAL" ] && make -s -C "$B/thermal" build/host/thermalctl > "$W/hw-build.txt" 2>&1; then
-    local THCTL=$B/thermal/build/host/thermalctl TZ=$S24/sys/class/thermal
+  if [ -n "$HAVE_HAL" ] && [ -x "$B/thermalctl" ]; then
+    local THCTL=$B/thermalctl TZ=$S24/sys/class/thermal
     mkdir -p "$TZ/thermal_zone0" "$TZ/thermal_zone1" "$S24/sys/class/sec/sec-ap-thermistor" "$S24/sys/class/power_supply/battery"
     echo cpu-1-2 > "$TZ/thermal_zone0/type"; echo 61200 > "$TZ/thermal_zone0/temp"; echo gpuss-0 > "$TZ/thermal_zone1/type"; echo 55000 > "$TZ/thermal_zone1/temp"
     echo 365 > "$S24/sys/class/sec/sec-ap-thermistor/temperature"; echo 304 > "$S24/sys/class/power_supply/battery/temp"; echo 412 > "$S24/sys/class/power_supply/battery/lrp"
     printf '0 cpu-1-2 61.2\n1 gpu 55.0\n2 battery 30.4\n3 skin 41.2\n' > "$S24/.fake/hal/thermal"
     printf '0 cpu0 45.0\n0 cpu7 52.5\n13 soc 53.0\n2 battery 29.0\n3 skin-therm 35.5\n' > "$OTHER/.fake/hal/thermal"
-    th() { local p=$1; shift; with_hal "$p" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_THERMAL_ROOT="$p" "$@" "$THCTL"; }
+    th() { local p=$1; shift; with_hal "$p" env ONEIOS_THERMAL_ROOT="$p" "$@" "$THCTL"; }
     out=$(th "$S24" 2>&1); st=$?
     [ $st = 0 ] && printf '%s\n' "$out" | grep -q '^backend: samsung$' && printf '%s\n' "$out" | grep -q '^zones: 2 of interest$' \
       && printf '%s\n' "$out" | grep -q '^reading (C): cpu 61.2 gpu 55.0 ddr - soc 61.2 (cpu-1-2) xo - ap 36.5 battery 30.4 lrp 41.2; case = 41.2 (lrp)$' \
@@ -198,13 +198,13 @@ hw_backend_checks() {
 
   # ---- haptics: samsung looks for the evdev force-feedback device (none can be faked here: it needs the kernel's
   # ff-memless or a vibrator driver), treble plays through the fake vibrator HAL, whose calls are its log
-  if [ -n "$HAVE_HAL" ] && make -s -C "$B" build/host/bridgectl > "$W/hw-build.txt" 2>&1; then
-    local BCTL=$B/build/host/bridgectl VL=$S24/.fake/hal/vibrator.log
+  if [ -n "$HAVE_HAL" ] && [ -x "$B/bridgectl" ]; then
+    local BCTL=$B/bridgectl VL=$S24/.fake/hal/vibrator.log
     mkdir -p "$S24/dev/input"
     echo 4 > "$S24/.fake/hal/vibrator"
     rm -f "$VL"
     # This AIDL getCapabilities probe must never call on/off/amplitude.
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-inspect 2>&1); st=$?
+    out=$(with_hal "$S24" env "$BCTL" haptic-hal-inspect 2>&1); st=$?
     if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq "haptic-hal-inspect: android.hardware.vibrator.IVibrator/default version 2 capabilities 0x4 (amplitude=yes)" && printf '%s\n' "$out" | grep -Fq "haptic-hal-inspect: ok (getCapabilities only; no on, off, amplitude or FF events)" && [ ! -e "$VL" ]; then
       ok "hw-backend: passive vibrator AIDL probe reports capabilities without any on/off/amplitude"
     else
@@ -213,7 +213,7 @@ hw_backend_checks() {
     # A composition-capable AIDL HAL returns primitives and preset effects
     # to getters, without any on/off/setAmplitude/compose/perform calls.
     echo 36 > "$S24/.fake/hal/vibrator"   # CAP_COMPOSE_EFFECTS | CAP_AMPLITUDE_CONTROL
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-primitives 2>&1); st=$?
+    out=$(with_hal "$S24" env "$BCTL" haptic-hal-primitives 2>&1); st=$?
     if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'max delay 500 ms, max composition entries 16' \
       && printf '%s\n' "$out" | grep -Fq '3 supported primitive(s)' \
       && printf '%s\n' "$out" | grep -Fq 'primitive 1 CLICK' \
@@ -228,14 +228,14 @@ hw_backend_checks() {
     # A native effect MUST require explicit opt-in; the blocked path sends no
     # active HAL request. Only CLICK/MEDIUM is allowed when the test is enabled.
     rm -f "$VL"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-click 2>&1); st=$?
+    out=$(with_hal "$S24" env "$BCTL" haptic-hal-click 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'blocked; set ONEIOS_HAPTIC_ACTIVE_TEST=1' && [ ! -e "$VL" ]; then
       ok "hw-backend: native haptic CLICK is opt-in and refuses without actuation"
     else
       bad "hw-backend: haptic CLICK opt-in" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
     fi
 
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-click 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-click 2>&1); st=$?
     if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'HAL accepted one CLICK MEDIUM (reported duration 20 ms)' \
       && printf '%s\n' "$out" | grep -Fq 'done (one perform; no off, gain, compose or fallback' \
       && [ "$(cat "$VL" 2>/dev/null)" = "perform 0 1" ]; then
@@ -246,7 +246,7 @@ hw_backend_checks() {
 
     rm -f "$VL"
     echo 1 > "$S24/.fake/hal/vibrator_effects_no_click"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-click 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-click 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'CLICK not in supported effects; no actuation attempted' && [ ! -e "$VL" ]; then
       ok "hw-backend: native CLICK refuses unsupported effect without playback"
     else
@@ -256,14 +256,14 @@ hw_backend_checks() {
 
     # Stronger single preset for S26: still explicit opt-in, one perform only.
     rm -f "$VL"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
+    out=$(with_hal "$S24" env "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'haptic-hal-heavy-click: blocked; set ONEIOS_HAPTIC_ACTIVE_TEST=1' && [ ! -e "$VL" ]; then
       ok "hw-backend: HEAVY_CLICK is opt-in with zero calls otherwise"
     else
       bad "hw-backend: HEAVY_CLICK opt-in" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
     fi
 
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
     if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'HAL accepted one HEAVY_CLICK STRONG (reported duration 60 ms)' \
       && printf '%s\n' "$out" | grep -Fq 'done (one perform; no off, gain, compose or fallback' \
       && [ "$(cat "$VL" 2>/dev/null)" = "perform 5 2" ]; then
@@ -274,7 +274,7 @@ hw_backend_checks() {
 
     rm -f "$VL"
     echo 1 > "$S24/.fake/hal/vibrator_effects_no_heavy_click"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_ACTIVE_TEST=1 "$BCTL" haptic-hal-heavy-click 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'HEAVY_CLICK not in supported effects; no actuation attempted' && [ ! -e "$VL" ]; then
       ok "hw-backend: HEAVY_CLICK not advertised fails closed before playback"
     else
@@ -284,14 +284,14 @@ hw_backend_checks() {
 
     # Real production Treble bridge: read-only HAL getters even on close.
     rm -f "$VL"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    out=$(with_hal "$S24" env "$BCTL" haptic-native-inspect 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'blocked; set ONEIOS_HAPTIC_NATIVE_IMPACTS=1' && [ ! -e "$VL" ]; then
       ok "hw-backend: native production impact preflight is opt-in"
     else
       bad "hw-backend: native preflight opt-in" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
     fi
 
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
     if [ "$st" = 0 ] && printf '%s\n' "$out" | grep -Fq 'haptics: native impacts enabled' \
       && printf '%s\n' "$out" | grep -Fq 'haptic-native-inspect: ready (native impact preflight PASS' \
       && [ ! -e "$VL" ]; then
@@ -301,7 +301,7 @@ hw_backend_checks() {
     fi
 
     echo 1 > "$S24/.fake/hal/vibrator_effects_no_heavy_click"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=0 "$BCTL" haptic-native-inspect 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'native preset preflight FAILED (no actuation)' \
       && [ ! -e "$VL" ]; then
       ok "hw-backend: failed native preflight also closes without motor off"
@@ -310,7 +310,7 @@ hw_backend_checks() {
     fi
     rm -f "$S24/.fake/hal/vibrator_effects_no_heavy_click"
 
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=1 "$BCTL" haptic-native-inspect 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_HAPTIC_NATIVE_IMPACTS=1 ONEIOS_HW_FALLBACK=1 "$BCTL" haptic-native-inspect 2>&1); st=$?
     if [ "$st" = 1 ] && printf '%s\n' "$out" | grep -Fq 'blocked; disable ONEIOS_HW_FALLBACK' \
       && [ ! -e "$VL" ]; then
       ok "hw-backend: native production probe blocks fallback to evdev"
@@ -318,15 +318,15 @@ hw_backend_checks() {
       bad "hw-backend: native probe must not allow fallback" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(cat "$VL" 2>/dev/null)"
     fi
 
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_INPUT_DIR="$S24/dev/input" "$BCTL" haptic 40 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_INPUT_DIR="$S24/dev/input" "$BCTL" haptic 40 2>&1); st=$?
     [ $st = 1 ] && printf '%s\n' "$out" | grep -q 'hw: haptics: backend samsung (the default)' && printf '%s\n' "$out" | grep -q 'haptics: off: no force-feedback device with FF_PERIODIC + FF_SINE under' \
       && [ ! -e "$VL" ] && ok "hw-backend: haptics samsung (the default): the evdev search, the vibrator HAL never called" || bad "hw-backend: haptics samsung" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_INPUT_DIR="$S24/dev/input" ONEIOS_HW_BACKEND=treble "$BCTL" haptic 40 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_INPUT_DIR="$S24/dev/input" ONEIOS_HW_BACKEND=treble "$BCTL" haptic 40 2>&1); st=$?
     [ $st = 0 ] && printf '%s\n' "$out" | grep -q 'haptics: on: the vibrator HAL android.hardware.vibrator.IVibrator/default (version 2, capabilities 0x4: amplitude control' \
       && printf '%s\n' "$out" | grep -q 'effect 1 played on the vibrator HAL: 40 ms' && [ "$(tr "\n" " " < "$VL")" = "on 40 amplitude 1.00 off off " ] \
       && ok "hw-backend: haptics treble: the vibrator HAL plays on(40) at amplitude 1, off when it ends and again at the close (the motor is stopped whatever the worker believed)" || bad "hw-backend: haptics treble" "status $st: $(printf '%s' "$out" | tr '\n' '|'); HAL: $(tr '\n' ' ' < "$VL" 2>/dev/null)"
     rm -f "$VL" "$S24/.fake/hal/vibrator"
-    out=$(with_hal "$S24" env ASAN_OPTIONS=detect_leaks=0 ONEIOS_INPUT_DIR="$S24/dev/input" ONEIOS_HW_BACKEND_HAPTICS=treble "$BCTL" haptic 40 2>&1); st=$?
+    out=$(with_hal "$S24" env ONEIOS_INPUT_DIR="$S24/dev/input" ONEIOS_HW_BACKEND_HAPTICS=treble "$BCTL" haptic 40 2>&1); st=$?
     [ $st = 1 ] && [ "$(printf '%s\n' "$out" | grep -c 'treble: missing:')" = 1 ] && printf '%s\n' "$out" | grep -q 'hw: haptics: treble: missing: android.hardware.vibrator.IVibrator/default (no service: .*the bridge stays off' \
       && ! printf '%s\n' "$out" | grep -q 'force-feedback' && ok "hw-backend: haptics treble, no vibrator HAL: one missing line, off, no evdev search" || bad "hw-backend: haptics treble, no vibrator HAL" "status $st: $(printf '%s' "$out" | tr '\n' '|')"
   elif [ -n "$HAVE_HAL" ]; then bad "hw-backend: bridgectl does not build" "$(tail -n 2 "$W/hw-build.txt" | tr '\n' '|')"; fi

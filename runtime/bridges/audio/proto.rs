@@ -51,24 +51,13 @@ pub fn samples(body: &[u8]) -> impl Iterator<Item = i16> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::cheader::{check_struct, check_values, Header};
 
+    /// The wire layout and the message numbers: xnuhost and the helper are both this crate, so this test is the
+    /// protocol's only check (audio_proto.h went with the C helper, 2026-11-23; its values are these).
     #[test]
-    fn matches_the_c_header() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("audio/audio_proto.h");
-        if !path.exists() {
-            // The helper's header is host-only: it goes with the C (runtime/RUST.md); this mirror is then the protocol.
-            println!("audio_proto.h is gone with the C helper: nothing to compare");
-            return;
-        }
-        let h = Header::read(&path);
-        #[rustfmt::skip]
-        check_values(&h, &["AU_"], &[
-            ("AU_START", AU_START.into()), ("AU_STOP", AU_STOP.into()), ("AU_PCM", AU_PCM.into()),
-            ("AU_STATE", AU_STATE.into()), ("AU_PROBE", AU_PROBE.into()), ("AU_LATENCY", AU_LATENCY.into()),
-            ("AU_TOLD", AU_TOLD.into()), ("AU_MAX_FRAMES", AU_MAX_FRAMES.into()),
-        ]);
-        check_struct::<AuHeader>(&h, "au_header", &["kind", "output", "channels", "reserved", "value"]);
+    fn wire_layout() {
+        assert_eq!([AU_START, AU_STOP, AU_PCM, AU_STATE, AU_PROBE, AU_LATENCY, AU_TOLD], [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(AU_MAX_FRAMES, 960);
         assert_eq!(<AuHeader as crate::proto::Wire>::SIZE, AU_HEADER);
         let m = au_message(AuHeader { kind: AU_PCM, output: 1, channels: 2, value: 1, ..Default::default() }, &[-2, 3]);
         assert_eq!(m, [3, 1, 2, 0, 1, 0, 0, 0, 0xfe, 0xff, 3, 0]);

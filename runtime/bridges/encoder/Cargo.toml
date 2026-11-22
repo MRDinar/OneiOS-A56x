@@ -36,7 +36,7 @@ path = "tests/standin.rs"
 name = "encoder"
 path = "tests/encoder.rs"
 
-# The Rust mirrors of media_proto.h and encoder_link.h against the C headers.
+# MediaCodec's numbers and AMediaCodecBufferInfo's layout against the NDK's headers.
 [[test]]
 name = "headers"
 path = "tests/headers.rs"

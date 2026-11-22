@@ -4,7 +4,7 @@
 #     OUT/bin/oneios-display        the launcher (src/bin/launcher.rs), static
 #     OUT/bin/displayctl            the phone test (src/bin/displayctl.rs), static
 #     OUT/bin/liboneios-display.so  the JNI library (the lib as a cdylib with the feature jni): NEEDED libandroid,
-#                                   libnativewindow, libdl, libm, libc; linked with -z defs, soname liboneios-display.so
+#                                   libnativewindow, libdl, libm, libc; linked with -z defs and soname liboneios-display.so
 #     OUT/lib/oneios-display.dex    java/OneiOSDisplay.java by javac and d8 (min API 30)
 # Not stripped (runtime/build.sh strips what it stages). Then runtime/package/elf-check.sh OUT checks the dynamic one.
 # Needs the NDK (runtime/ndk-cc: $NDK, else $ANDROID_NDK_HOME, else the SDK's ndk/28.2.13676358), rustup's
@@ -21,8 +21,12 @@ T=${CARGO_TARGET_DIR:-target/display}
 case "$T" in /*) ;; *) T=$PWD/$T ;; esac
 A=aarch64-linux-android
 
+# The link rule of the runtime's Android shared objects: -z defs, so a symbol that no library on the link line has fails
+# the link here, not on the phone (liboneios-display.so of 1f7dd1f called libnativewindow's ANativeWindow_getBuffersDataSpace,
+# linked against libandroid only, and Android refused it: `dlopen failed: cannot locate symbol`, 2026-11-14).
+# runtime/package/elf-check-test.sh checks that every cdylib link of the runtime has it.
 CARGO_TARGET_DIR=$T cargo rustc --release --target $A -p oneios-display --lib --features jni --crate-type cdylib -- \
-  -C link-arg=-Wl,-soname,liboneios-display.so -C link-arg=-Wl,-z,defs
+  -C link-arg=-Wl,-z,defs -C link-arg=-Wl,-soname,liboneios-display.so
 CARGO_TARGET_DIR=$T-static cargo build --release --target $A -p oneios-display --bins \
   --config "target.$A.rustflags=[\"-C\",\"target-feature=+crt-static\"]"
 cp "$T/$A/release/liboneios_display.so" "$OUT/bin/liboneios-display.so"

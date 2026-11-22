@@ -19,10 +19,6 @@ fn hostcall_h() -> Header {
     Header::read(&runtime().join("xnuhost/include/xnuhost/hostcall.h"), &[])
 }
 
-fn stub_abi_h(hostcall: &Header) -> Header {
-    Header::read(&runtime().join("xnuhost/stub/stub_abi.h"), &[hostcall])
-}
-
 fn field_size<T, F>(_: fn(&T) -> &F) -> usize {
     size_of::<F>()
 }
@@ -136,64 +132,6 @@ fn hostcall_layouts() {
     let mirrored: BTreeSet<&str> =
         ["xh_cpu", "xh_vreg", "xh_frame", "xh_user_state", "xh_trap", "xh_info", "xh_upcalls", "xh_vector"].into();
     assert_eq!(h.structs.keys().map(String::as_str).collect::<BTreeSet<_>>(), mirrored);
-}
-
-#[test]
-fn stub_abi_constants() {
-    let hostcall = hostcall_h();
-    let h = stub_abi_h(&hostcall);
-    check_consts!(
-        h,
-        [
-            XS_REGION_SIZE,
-            XS_TEXT_MAX,
-            XS_CONFIG_OFF,
-            XS_BOOTSTACK_OFF,
-            XS_BOOTSTACK_SIZE,
-            XS_SERVICE_OFF,
-            XS_THREADS_OFF,
-            XS_AREA_SIZE,
-            XS_SLOT_SIZE,
-            XS_SIGSTACK_OFF,
-            XS_SIGSTACK_SIZE,
-            XS_MAX_THREADS,
-            XS_FILTER_MAX,
-            XS_RUN,
-            XS_EXIT,
-            XS_OPS_OFF,
-            XS_THREAD_OPS,
-            XS_OP_MAP,
-            XS_OP_UNMAP,
-            XS_OP_PROTECT,
-            XS_OP_CLONE,
-            XS_OP_EXIT,
-            XS_OPS_MAX,
-            XS_MAP_POPULATE,
-            XS_ESR_EC_SHIFT,
-            XS_ESR_WNR,
-            XS_ESR_CM,
-        ]
-    );
-    assert!(h.macros.is_empty());
-}
-
-#[test]
-fn stub_abi_layouts() {
-    let hostcall = hostcall_h();
-    let h = stub_abi_h(&hostcall);
-    check_struct!(h, "xs_filter_insn", XsFilterInsn, [code, jt, jf, k]);
-    #[rustfmt::skip]
-    check_struct!(h, "xs_config", XsConfig, [base, ram_fd, trap_fd, service_slot, kick_signal, uid, filter_length,
-        filter]);
-    check_struct!(h, "xs_op", XsOp, [op, prot, va, size, offset, result]);
-    #[rustfmt::skip]
-    check_struct!(h, "xs_trap_page", XsTrapPage, [to_task, to_host, tid, command, pac_set, pac_enabled, booted,
-        reserved, host_sleeping, task_sleeping, slept, nops, ops_done, reserved2, spin_ticks, t_enter, t_woken, trap,
-        state]);
-    check_struct!(h, "xs_service_page", XsServicePage, [request, done, ready, count, pid, setup_error, ops]);
-    let own: BTreeSet<&str> =
-        h.structs.keys().filter(|k| !hostcall.structs.contains_key(*k)).map(String::as_str).collect();
-    assert_eq!(own, ["xs_filter_insn", "xs_config", "xs_op", "xs_trap_page", "xs_service_page"].into());
 }
 
 #[test]

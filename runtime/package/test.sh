@@ -11,9 +11,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass=0
 if command -v sha256sum >/dev/null; then SHA256=(sha256sum); else SHA256=(shasum -a 256); fi
 ok() { pass=$((pass + 1)); echo "ok $pass: $*"; }
-# The NDK's compiler, found as package.sh finds the NDK (for the faulty library of the refusals).
+# The NDK, found as package.sh finds it (runtime/ndk-cc links the faulty library of the refusals with its clang).
 if [ "$(uname -s)" = Darwin ]; then SDK_DEFAULT=$HOME/Library/Android/sdk; else SDK_DEFAULT=$HOME/Android/Sdk; fi
-NDK_CC=$(echo "${ANDROID_NDK_ROOT:-${ANDROID_SDK_ROOT:-$SDK_DEFAULT}/ndk/28.2.13676358}"/toolchains/llvm/prebuilt/*/bin)/aarch64-linux-android30-clang
+export NDK=${NDK:-${ANDROID_NDK_ROOT:-${ANDROID_SDK_ROOT:-$SDK_DEFAULT}/ndk/28.2.13676358}}
+[ -d "$HOME/.cargo/bin" ] && PATH=$HOME/.cargo/bin:$PATH
 
 # runtime/build.sh refuses a stage without external/virglrenderer; a tree without that checkout (a fresh worktree) tests
 # the package with the 2D-only xnuhost, on purpose. CI's release job fetches the checkout and checks it is there.
@@ -123,14 +124,15 @@ refuse "kernel that links a non-redistributable source" m6
 link() { ln -s /etc/passwd "$T/extra/link"; }
 refuse "symbolic link" link
 # A library that Android cannot load, in the display helper's place: what liboneios-display.so of 1f7dd1f was.
-# elf-fault.c calls libnativewindow's dataspace functions and is linked `-landroid -lm` only, without -z defs.
+# elf-fault.rs calls libnativewindow's dataspace functions and is linked against libandroid only, without -z defs.
 faulty_library() {
   mkdir -p "$T/extra/bin"
-  "$NDK_CC" -fPIC -shared "$ROOT/runtime/package/elf-fault.c" -landroid -lm -o "$T/extra/bin/liboneios-display.so"
+  rustc --edition 2021 --target aarch64-linux-android -C opt-level=2 -C linker="$ROOT/runtime/ndk-cc" -A linker_messages \
+    --crate-type cdylib "$ROOT/runtime/package/elf-fault.rs" -o "$T/extra/bin/liboneios-display.so"
 }
 refuse "a shared object with a symbol that none of its NEEDED libraries has" faulty_library
 for symbol in ANativeWindow_getBuffersDataSpace ANativeWindow_setBuffersDataSpace; do
-  grep -qxF "bin/liboneios-display.so: symbol $symbol is in none of its NEEDED libraries (NEEDED: libandroid.so, libm.so, libdl.so, libc.so); it is in libnativewindow.so" "$T/log" ||
+  grep -qxF "bin/liboneios-display.so: symbol $symbol is in none of its NEEDED libraries (NEEDED: libdl.so, libc.so); it is in libnativewindow.so" "$T/log" ||
     { cat "$T/log"; fail "the refusal does not name $symbol and libnativewindow.so"; }
 done
 ok "the refusal names it: $(grep -m1 -o 'symbol ANativeWindow_getBuffersDataSpace.*' "$T/log")"
