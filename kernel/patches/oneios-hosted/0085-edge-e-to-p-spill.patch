@@ -1,7 +1,8 @@
 diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
+index 46e3308..dc6a6d7 100644
 --- a/osfmk/arm64/hosted/hosted_smp.c
 +++ b/osfmk/arm64/hosted/hosted_smp.c
-@@ -132,4 +132,110 @@
+@@ -132,4 +132,110 @@ hosted_timer_pending(void)
  	return deadline != UINT64_MAX && __builtin_arm_rsr64("CNTVCT_EL0") >= deadline;
  }
  
@@ -112,20 +113,23 @@ diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
 +#endif /* CONFIG_SCHED_EDGE */
 +
  #endif /* XNU_HOSTED */
-diff --git a/osfmk/arm64/oneios_host.c b/osfmk/arm64/oneios_host.c
---- a/osfmk/arm64/oneios_host.c
-+++ b/osfmk/arm64/oneios_host.c
-@@ -90,6 +90,13 @@
- 	/* 0026: the user backtraces asked for with oneios-ubt=NAME,... (off without it) */
- 	extern void hosted_user_backtrace_start(void);
- 	hosted_user_backtrace_start();
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 1b9515c..9bb4a63 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -7629,6 +7629,15 @@ sched_cpu_init_completed(void)
+ 
+ 	/* Release the +1 pcs_powerdown_suspend_count that we booted up with. */
+ 	resume_cluster_powerdown();
++#if XNU_HOSTED
 +	/*
-+	 * 0085: E -> P spill. DroidVMCpufreq (above) gives each thread group the E cluster with only the UI, above-UI and
-+	 * realtime classes on P; without CLPC nothing opens the Edge scheduler's E -> P edges, so all other work stayed on
-+	 * the two E vCPUs (arm64/hosted/hosted_smp.c).
++	 * 0085: E -> P spill, here: pcs_init_completed is true from just above and the Edge scheduler has set its default
++	 * edges (cpu_init_completed). Until 2026-11-23 it ran from oneios_board_late_start, which on the phone came before
++	 * this point ("oneios-edge: not all CPUs are up yet"), so the edges stayed XNU's.
 +	 */
 +	extern void hosted_sched_edge_spill(void);
 +	hosted_sched_edge_spill();
- #endif /* XNU_HOSTED */
++#endif /* XNU_HOSTED */
  }
  
+ bool

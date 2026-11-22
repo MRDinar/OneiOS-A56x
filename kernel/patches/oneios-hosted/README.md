@@ -1293,9 +1293,11 @@ What was found (`out/session-logs/2026-11-22/kbd-debug/xnuhost-s9.log`, `-s8-fin
   server metal2vulkan's GPU submission thread (a default-class thread, DroidVMCpufreq's own comment): the render thread
   waits for it every frame (`CA::OGL::MetalContext::flush` -> `dispatch_group_wait` in the plug-in, `live10.log`).
 
-What the patch changes (`osfmk/arm64/hosted/hosted_smp.c` `hosted_sched_edge_spill`, called from
-`oneios_board_late_start` after `droidvm_cpufreq_attach`, `XNU_HOSTED`): once all CPUs are up
-(`sched_is_cpu_init_completed`), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
+What the patch changes (`osfmk/arm64/hosted/hosted_smp.c` `hosted_sched_edge_spill`, called at the end
+of `sched_cpu_init_completed` in `osfmk/kern/sched_prim.c`, `XNU_HOSTED`): once all CPUs are up
+(`sched_is_cpu_init_completed`; until 2026-11-23 the call was in `oneios_board_late_start`, which on the phone ran before
+that point: the boot of 2026-11-23 logged `oneios-edge: not all CPUs are up yet: the edges stay XNU's`, so the edges
+were never opened), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
 fixed-priority, foreground, user-initiated and default buckets at weight 0, utility at 64 and background at 1000. The
 weight is compared with the clusters' load, their average scheduling latency in us (0 with an idle CPU): a thread goes
 to P when P has an idle CPU or waits less, background only when E's threads wait a millisecond longer (RunningBoard
