@@ -1,0 +1,95 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 5461869..a60bd5e 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -9710,6 +9710,78 @@ oneios_audio_tunings(proc_t p, user_addr_t scratch)
+ 	    oneios_audio_tunings_status);
+ }
+ #endif /* XNU_HOSTED */
++#if XNU_HOSTED
++/*
++ * OneiOS hosted (0084): MobileGestalt's cache follows the device tree. libMobileGestalt answers from the device tree
++ * and keeps the answers in containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/
++ * com.apple.MobileGestalt.plist; it builds the file again only for another OS build (its CacheVersion, 24A446). The
++ * base's native_gestalt_cache_drop removed it at every boot, so every boot ran without one until MobileGestaltHelper
++ * had made it again: "Could not open .../com.apple.MobileGestalt.plist: No such file or directory" from 144 processes
++ * in the first 8 s of the phone's boot of 2026-11-22 17:01 (271 in 21 s at 16:30), each of which then worked out its
++ * answers itself [I: IOKit lookups, XPC to MobileGestaltHelper] while the boot was busiest. Now the cache is
++ * removed only when the tree it was made from changed: xnuhost's loader writes /chosen oneios-identity (8 bytes, a hash
++ * of what MobileGestalt reads that stays the same from boot to boot: the root's properties, /product, /arm-io, /buttons,
++ * /bluetooth, /chosen's own properties and its display mode; runtime/loader xl_machine_identity), and here, before
++ * launchd, it is compared with the marker /private/var/oneios/mobilegestalt-identity (16 hex digits). They differ, or
++ * there is no marker (a Data store from before 0084): the cache is removed and the marker written, so the next answer
++ * is worked out from this tree (the camera nodes of 2026-11-22 reach an existing store so). The same: the cache stays.
++ * oneios-mg-cache=0: never removed; =2: removed at every boot (the old way, the A/B switch); 1 (default): as above.
++ * No oneios-identity in the tree (an older xnuhost): removed at every boot, as before. One line:
++ *   oneios-mg-cache: identity 1a2b3c4d5e6f7081 (marker none): cache removed (0), marker written (0)
++ *   oneios-mg-cache: identity 1a2b3c4d5e6f7081 (marker the same): cache kept
++ * (removed (2): there was no cache; marker written (-1): it had this value already.)
++ */
++static void
++oneios_mg_cache(proc_t p, user_addr_t scratch)
++{
++	static const char marker[] = "/private/var/oneios/mobilegestalt-identity";
++	uint32_t mode = 1;
++	(void)PE_parse_boot_argn("oneios-mg-cache", &mode, sizeof(mode));
++	if (mode == 0) {
++		printf("oneios-mg-cache: off (oneios-mg-cache=0): the cache is never removed\n");
++		return;
++	}
++	DTEntry chosen;
++	void const *value = NULL;
++	unsigned int size = 0;
++	if (SecureDTLookupEntry(0, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "oneios-identity", &value, &size) != kSuccess || size != 8) {
++		native_gestalt_cache_drop(p, scratch);
++		printf("oneios-mg-cache: no /chosen oneios-identity (an older xnuhost): cache removed (%d), as at every boot before\n",
++		    native_gestalt_cache_status);
++		return;
++	}
++	uint64_t identity = 0;
++	memcpy(&identity, value, sizeof(identity));
++	char now[17], before[17] = "none";
++	snprintf(now, sizeof(now), "%016llx", (unsigned long long)identity);
++	vfs_context_t ctx = vfs_context_current();
++	vnode_t vp = NULLVP;
++	if (vnode_open(marker, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx) == 0) {
++		char text[16];
++		int resid = 0;
++		int error = vn_rdwr(UIO_READ, vp, (caddr_t)text, sizeof(text), 0, UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(ctx), &resid,
++		    vfs_context_proc(ctx));
++		vnode_close(vp, FREAD, ctx);
++		if (error == 0 && resid == 0) {
++			memcpy(before, text, sizeof(text));
++			before[16] = 0;
++		}
++	}
++	const bool same = strcmp(before, now) == 0;
++	if (same && mode != 2) {
++		printf("oneios-mg-cache: identity %s (marker the same): cache kept\n", now);
++		return;
++	}
++	native_gestalt_cache_drop(p, scratch);
++	int written = native_gpu_addon_parents(p, scratch, marker);
++	if (written == 0) {
++		written = native_gpu_addon_write(marker, (const uint8_t *)now, 16, 0644, ctx);
++	}
++	printf("oneios-mg-cache: identity %s (marker %s%s): cache removed (%d), marker written (%d)\n", now, same ? "the same" : before,
++	    mode == 2 ? ", oneios-mg-cache=2: at every boot" : "", native_gestalt_cache_status, written);
++}
++#endif /* XNU_HOSTED */
+ static void
+ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+ {
+@@ -9782,7 +9854,11 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+ 	    "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/7570.iPadOS_17-1032w-1376h@2x~ipad.wallpaper/"
+ 	    "7570.iPadOS_17_Floating-1032w-1376h@2x~ipad.ca/Red-Light.png", &native_gpu_addon5_stage, &native_gpu_addon5_status);
+ 	native_cryptex_os_view(p, scratch);
++#if XNU_HOSTED
++	oneios_mg_cache(p, scratch);                  /* 0084: only when the tree changed (was: at every boot) */
++#else
+ 	native_gestalt_cache_drop(p, scratch);
++#endif
+ 	native_ls_store_drop(p, scratch);
+ #if XNU_HOSTED
+ 	oneios_camera_addon_mount(p, scratch);        /* 0056 */

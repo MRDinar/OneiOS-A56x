@@ -361,6 +361,21 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   // stays the identity's (2868 for iPhone18,2): it names a set of assets, and no set exists for another height.
   if (m->display_scale) xl_adt_set_u32(product, "artwork-scale-factor", m->display_scale);
   xl_adt_set_str(product, "model", "oneios,xnuhost");
+  // The cameras (with the camera device only, so a host without one keeps the tree it had). 24A446's libMobileGestalt
+  // answers video-camera from /product/camera being there (no property of it is needed; iOSPlus10 adds it empty), and
+  // HWModelDescriptionForCamera (= ...ForAnalytics, ...ForAudio, ...ForPowerPerf, ...ForAutomatedTesting) from /product
+  // unique-model. CMCapture's FigCaptureGetModelSpecificName takes that answer less "AP" as the folder of its per-model
+  // tables (CMCapture.framework/V54/AVCaptureSession.plist, CameraSetup.plist, ...); without it the name was NULL and
+  // every built-in source failed (iOS's log, 2026-11-22: Fig assert "modelSpecificAVCaptureSessionPlist" at
+  // FigCaptureSourceBackingsProvider.m:2316, err -12780, "Created 0 in-memory built-in backings"). The iPhone18,2's own
+  // value is "V54AP"; an identity tree's /product has it already.
+  bool camera_device = false;
+  for (unsigned i = 0; i < m->ndev; i++) camera_device |= m->dev[i].kind == XL_DEV_CAMERA;
+  const uint32_t cameras = camera_device ? m->cameras & (XL_CAMERA_REAR | XL_CAMERA_FRONT) : 0;
+  if (cameras) {
+    xl_adt_add(product, "camera");
+    if (!xl_adt_get(product, "unique-model")) xl_adt_set_str(product, "unique-model", "V54AP");
+  }
 
   xl_adt_node *io = xl_adt_add(root, "arm-io");
   xl_adt_set_str(io, "device_type", "arm-io");
@@ -375,6 +390,15 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   xl_adt_set_u64(intc, "redistributor-stride", m->gic_redist_stride);
   // launchd loads wifid only where the tree has a node named wlan; no driver matches it.
   xl_adt_set_str(xl_adt_add(io, "wlan"), "device_type", "wlan");
+  // MobileGestalt answers rear-facing-camera from IODeviceTree:/arm-io/isp camera-rear, front-facing-camera from its
+  // camera-front, and still-camera (Camera.app's SBAppTags: SpringBoard shows the app only with it) from either. The
+  // iPhone18,2's values are 1 (u32). No compatible and no device_type: no driver matches the node (the camera's
+  // driver is drivers/camera on /arm-io/camera, and CMCapture finds it by the AppleH9CamIn class, not by this node).
+  if (cameras) {
+    xl_adt_node *isp = xl_adt_add(io, "isp");
+    if (cameras & XL_CAMERA_REAR) xl_adt_set_u32(isp, "camera-rear", 1);
+    if (cameras & XL_CAMERA_FRONT) xl_adt_set_u32(isp, "camera-front", 1);
+  }
 
   unsigned blocks = 0, inputs = 0;
   for (unsigned i = 0; i < m->ndev; i++) {
@@ -423,4 +447,67 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     reg(uart, m->armio_base, m->uart_base, m->uart_size);
   }
   return root;
+}
+
+static uint64_t fnv(uint64_t h, const void *data, size_t length)
+{
+  const uint8_t *p = data;
+  for (size_t i = 0; i < length; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
+  return h;
+}
+
+// What changes from boot to boot, or with the RAM xnuhost got this time: never part of the identity.
+static bool boot_to_boot(const char *name)
+{
+  static const char *const names[] = { "random-seed", "dram-base", "dram-size", "drm-host-pool", "media-host-pool", "oneios-identity" };
+  for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+    if (!strncmp(name, names[i], XL_ADT_NAME_MAX)) return true;
+  return false;
+}
+
+// A node's properties (less boot_to_boot and, with `prefix`, only those that start with it) and, with `deep`, its
+// children's, in the tree's order.
+static uint64_t hash_node(uint64_t h, const xl_adt_node *n, bool deep, const char *prefix)
+{
+  for (unsigned i = 0; i < n->nprops; i++) {
+    const xl_adt_prop *p = &n->props[i];
+    if (boot_to_boot(p->name) || (prefix && strncmp(p->name, prefix, strlen(prefix)))) continue;
+    uint32_t length = p->length;
+    h = fnv(h, p->name, strnlen(p->name, XL_ADT_NAME_MAX));
+    h = fnv(h, &length, sizeof length);
+    h = fnv(h, p->value, p->length);
+  }
+  if (deep) {
+    uint32_t count = n->nchildren;
+    h = fnv(h, &count, sizeof count);
+    for (unsigned i = 0; i < n->nchildren; i++) h = hash_node(h, n->children[i], true, NULL);
+  }
+  return h;
+}
+
+uint64_t xl_machine_identity_hash(const xl_adt_node *tree)
+{
+  uint64_t h = hash_node(0xcbf29ce484222325ull, tree, false, NULL);   // the root's own properties
+  // Each part with a marker byte first, so that a missing node and an empty one differ.
+  static const char *const parts[] = { "product", "arm-io", "buttons", "bluetooth" };
+  for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) {
+    const xl_adt_node *n = xl_adt_child(tree, parts[i]);
+    h = fnv(h, n ? "+" : "-", 1);
+    if (n) h = hash_node(h, n, true, NULL);
+  }
+  // /chosen's own properties (the chip ID, the MAC addresses, display-scale, the root's volume, ...) and the display
+  // mode of /chosen/xnuhost; not its memory map (addresses of this boot) nor the host vector (xnuhost's own ASLR).
+  const xl_adt_node *chosen = xl_adt_child(tree, "chosen"), *host = chosen ? xl_adt_child(chosen, "xnuhost") : NULL;
+  h = fnv(h, chosen ? "+" : "-", 1);
+  if (chosen) h = hash_node(h, chosen, false, NULL);
+  h = fnv(h, host ? "+" : "-", 1);
+  if (host) h = hash_node(h, host, false, "display-");
+  return h;
+}
+
+uint64_t xl_machine_identity(xl_adt_node *tree)
+{
+  uint64_t h = xl_machine_identity_hash(tree);
+  xl_adt_set_u64(xl_adt_add(tree, "chosen"), "oneios-identity", h);
+  return h;
 }

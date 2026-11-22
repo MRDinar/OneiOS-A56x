@@ -340,3 +340,11 @@
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush
 # thread, not on the vCPU that sent the flush (docs/booter.md 2.7, "Disks"). Reads and writes are unchanged.
+# enable-camera-app (2026-11-22): MobileGestalt's cache follows the device tree. The base's native_gestalt_cache_drop
+# removed the cache at every boot (each boot then ran its first seconds with no cache: 145-272 "Could not open
+# .../com.apple.MobileGestalt.plist" lines on the phone); now xnuhost's loader writes /chosen oneios-identity (a hash of
+# what MobileGestalt reads that stays the same from boot to boot) and the kernel, before launchd, removes the cache only
+# when that differs from /private/var/oneios/mobilegestalt-identity (or there is none), then writes the marker. So a
+# device-tree change (the camera nodes) still reaches an existing Data store, once. `oneios-mg-cache:` line;
+# oneios-mg-cache=2 is the old way (at every boot), =0 never. README.md, "0084".
+0084-mobilegestalt-cache-identity.patch

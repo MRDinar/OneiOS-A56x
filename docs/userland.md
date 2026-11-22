@@ -237,11 +237,31 @@ V54 device tree (`out/kernel-inputs/24A446/devicetree.bin`, read with `xnuloader
 "phone", `artwork-device-subtype` 2868, `artwork-dynamic-displaymode` "0", `graphics-featureset-class` "APPLE10",
 `graphics-featureset-fallbacks` "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0" (APPLE2
 taken out, as with an identity), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
-frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). **A Data store that already booted keeps
-MobileGestalt's cache** (`containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`,
-`CacheVersion` 24A446): the phone's held `ArtworkTraits = {ArtworkDeviceScaleFactor = 3}` (key `oPeik/9e8lQWMszEjbPzng`),
-and MobileGestalt rebuilds its cache only for another build. A new Data seed carries no cache (the root tweaks remove
-it); an older store needs its cache removed once.
+frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). MobileGestalt's cache
+(`containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`,
+`CacheVersion` 24A446) pulled at 21:22, before that boot, held `ArtworkTraits = {ArtworkDeviceScaleFactor = 3}` (key
+`oPeik/9e8lQWMszEjbPzng`): the answers of the tree of its own boot. **Correction (2026-11-22, enable-camera-app):** an
+existing store did not keep an old cache. Until hosted 0084 the kernel removed the cache at every boot (the base's
+`native_gestalt_cache_drop`, `bsd/kern/kern_exec.c`), and MobileGestaltHelper made it again from that boot's tree
+(below).
+
+**MobileGestalt's cache follows the tree (hosted 0084, 2026-11-22).** MobileGestalt reads the device tree and keeps the
+answers (strings in `CacheExtra`, booleans such as `still-camera` in `CacheData`); it builds the file again only for
+another OS build. With the cache removed at every boot, each boot ran its first seconds without one: iOS's log of the
+phone's boot of 2026-11-22 17:01 has `Could not open .../com.apple.MobileGestalt.plist: No such file or directory` from
+144 processes between 17:01:39.6 and 17:01:47.6 (271 in 21 s at 16:30, 48 on the fresh store at 15:59), one line each
+process; each then worked out its answers itself [I: IOKit lookups and XPC to MobileGestaltHelper, whose `platform fast
+path elided` lines number 189]. Now xnuhost's loader writes `/chosen oneios-identity`, a hash of what MobileGestalt can
+read that stays the same from boot to boot (`xl_machine_identity`, [booter.md](booter.md) "machine.c"), and the kernel,
+before launchd, compares it with the marker `/private/var/oneios/mobilegestalt-identity` (16 hex digits). When they
+differ, or there is no marker (every store from before 0084), it removes the cache and writes the marker: the next
+answers are worked out from this tree, so a device-tree change (the camera nodes of `docs/hardware.md` 7) reaches an
+existing Data store once. When they are the same the cache stays. One line in `xnuhost.log`: `oneios-mg-cache:
+identity 1a2b... (marker none): cache removed (0), marker written (0)`, or `... (marker the same): cache kept`. Boot
+argument `oneios-mg-cache=2`: removed at every boot (the old way, the A/B switch); `=0`: never removed. A tree with no
+`oneios-identity` (an older xnuhost): removed at every boot, as before. What proves it on the phone: the second boot
+after a change has `cache kept` and no `Could not open .../com.apple.MobileGestalt.plist` line in iOS's log. Not run
+on the phone yet. A new Data seed carries no cache (the root tweaks remove it) and no marker.
 
 **Layout risks. None of this has been seen: no frame of SpringBoard's has been rendered at any size.**
 

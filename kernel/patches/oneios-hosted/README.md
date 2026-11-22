@@ -1515,3 +1515,32 @@ existing Data store gets it at its next boot. `oneios-audio-tunings=0`: nothing 
 `oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost -> V54 (link
 made 0), stage 5, status 0 (stage 5 status 0: ...)`; stage 1 status N: the folder could not be looked up, stage 2: the
 mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found.
+
+## 0084-mobilegestalt-cache-identity.patch (enable-camera-app, 2026-11-22)
+
+MobileGestalt answers from the device tree and keeps the answers in its cache
+(`/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`),
+which it builds again only for another OS build (`CacheVersion` 24A446). The base's `native_gestalt_cache_drop`
+(`bsd/kern/kern_exec.c`, in `native_gpu_addon_prepare`) removed it at every boot, so every boot ran its first seconds
+without one: `Could not open .../com.apple.MobileGestalt.plist: No such file or directory` from 144 processes in the
+first 8 s of the phone's boot of 2026-11-22 17:01 (271 in 21 s at 16:30), until MobileGestaltHelper had made it again.
+
+- xnuhost's loader writes `/chosen oneios-identity` (8 bytes): FNV-1a 64 of what MobileGestalt can read that stays the
+  same from boot to boot (the root's properties, `/product`, `/arm-io`, `/buttons`, `/bluetooth`, `/chosen`'s own
+  properties and its display mode; `xl_machine_identity`, `docs/booter.md`).
+- Before launchd, in place of the drop, `oneios_mg_cache` reads it and compares it with the marker
+  `/private/var/oneios/mobilegestalt-identity` (16 hex digits). They differ, or there is no marker: the cache is removed
+  (the base's `native_gestalt_cache_drop`) and the marker written, so a device-tree change (the camera nodes,
+  `docs/hardware.md` 7) reaches an existing Data store once. The same: the cache stays.
+- `oneios-mg-cache=2`: removed at every boot (the old way, the A/B switch); `=0`: never removed; 1 (default): as above.
+  No `oneios-identity` in the tree (an older xnuhost): removed at every boot, as before.
+- One line: `oneios-mg-cache: identity 1a2b3c4d5e6f7081 (marker none): cache removed (0), marker written (0)`; `...
+  (marker the same): cache kept`; `cache removed (2)` when there was no cache.
+- The phone's proof: the first boot of an existing store has `(marker none): cache removed (0)`; the second has `cache
+  kept` and no `Could not open .../com.apple.MobileGestalt.plist` in iOS's log.
+
+Tested (Mac, 2026-11-22): built in `HOSTED_OUT=cam` from the series (the full build, not `hosted-dev.sh`): `xnu.macho`
+sha256 `ad0a2993d910cdf7...`, 167 patches; prelinked (`KERNEL=out/kernel/current-hosted-cam/xnu.macho
+OUT=out/kernel/cam-24A446 kernel/prelink/build.sh`): `kernel.kc` sha256 `3c66f79ee04fbcbf...`, audit 2712 paired, 92 on
+the stub, 0 failures; `prelink stubs-check`: 666 good, 0 bad. The loader's hash in `runtime/loader/tests/test_loader.c`.
+Not run on the phone yet.

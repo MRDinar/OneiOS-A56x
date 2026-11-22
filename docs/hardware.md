@@ -24,7 +24,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
-| Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
+| Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (`H9ISPCaptureDeviceCreate`) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; in iOS (2026-11-22) the plug-in makes its device, CMCapture made no source (no `/product unique-model`: fixed with the camera nodes, not run yet, section 7); one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
@@ -2112,6 +2112,26 @@ the cameras are listed and one opens, no frame arrived; the cause is fixed in th
 the phone yet ("The first phone run" below). Also `runtime/bridges/camera/README.md` (the host, the phone commands),
 `drivers/camera/README.md`.
 
+**The 2026-11-22 sessions (main 203a9e7, kernel with 0082; iOS's own log `out/session-logs/2026-11-22/s7-ioslog`):
+the plug-in route works up to the device; CMCapture then had no model name.** In order: the kernel published
+`AppleH9CamIn`, 0056 mounted the plug-in, `fcc_probeCameraDriverService ... Camera driver AppleH9CamIn is active`,
+`ONEIOS CAMERA: ios: cameracaptured[51]: loaded`, `the device made: stream 0 Back Camera (17 formats)`, `stream 1
+Front Camera (8 formats)`, `Created FigCaptureDeviceRef`, `ONEIOS CAMERA: user client opened by cameracaptured`. Then,
+at each of cameracaptured's lookups: `Fig assert: "modelSpecificAVCaptureSessionPlist" at loopBail
+(FigCaptureSourceBackingsProvider.m:2316)`, err -12780, `Created 0 in-memory built-in backings`: no source, so no
+stream was ever asked for and no frame went to cameracaptured. **Cause** [F, read in the 24A446 shared cache]:
+`csu_createSourceInfoDictionariesFromAVCaptureSessionPlistForCaptureDeviceIDs` reads its per-model plist with
+`fcsbp_plistCreateAndPreprocess(FigCaptureGetModelSpecificName())`; that name is MobileGestalt's
+`HWModelDescriptionForCamera` less a trailing "AP" (or "DEV"), and MobileGestalt answers it from `/product
+unique-model` (on the iPhone18,2 "V54AP", so `CMCapture.framework/V54/`). The guest's `/product` had no
+`unique-model`, so the name was NULL. **Fix (2026-11-22, built and host-tested, not run on the phone):** the loader
+writes `unique-model` "V54AP" and the camera nodes (below, "The camera nodes"), and hosted 0084 removes
+MobileGestalt's cache once when the tree changes (until 0084 the kernel removed it at every boot; `docs/userland.md`,
+"MobileGestalt's cache follows the tree"). The same answer is MobileGestalt's `HWModelDescriptionForAnalytics`,
+`...ForAudio`, `...ForPowerPerf` and `...ForAutomatedTesting` (one table entry each, all reading `unique-model`):
+those were NULL before and are "V54AP" now, with the cameras only. [U] who reads them (a search of the shared cache
+for their importers stopped at its 10 minute limit); audio's tunings are found by HWModelStr (`oneios,xnuhost`, 0078).
+
 ### The phone [F]
 
 - Sensors (module files in
@@ -2174,8 +2194,8 @@ with no error.
 | Helper process `bin/oneios-camera`: opens a camera, NV12 frames with the sensor's time into a memfd ring | `runtime/bridges/camera` | built for Android; 131 host checks with a test picture; on the phone: the list and the open work, no frame yet (above) |
 | xnuhost: the helper's socket and ring, the `oneios,camera` virtio device (`/arm-io/camera`, `XL_DEV_CAMERA`) | `runtime/bridges/camera` (`libonecamera.a`), `runtime/xnuhost/src/main.c` | linked into xnuhost; the device tested on xnuhost's transport against a guest of plain memory |
 | Kernel: the transport and `/dev/oneios-camera` (the `NCFRAME1` layout of iOSPlus10's and HakiOS's node, NV12); `AppleH9CamIn` and its user client (the same session) | `drivers/camera` | compiles with the kernel's records, in the `HOSTED_OUT=cam` kernel; 37 host checks of the pure parts; on the phone (2026-11-12) the transport came up with 3 cameras; the service not run |
-| Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | built; not run |
-| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); not run in iOS; placed in the seed by the image hook (a new seed) |
+| Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | on the phone (2026-11-22): mounted, `stage 5, status 0` |
+| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); placed in the seed by the image hook (a new seed) |
 
 - **Route on the host** [F AOSP android15-release for the reason, I for Samsung's build]: the provider HAL directly
   when system_server is gone, Camera2 NDK through cameraserver while One UI runs (`auto`). cameraserver refuses every
@@ -2195,13 +2215,37 @@ with no error.
   FigCaptureDevice hands CVPixelBuffers to the capture graph. The app needs, in order: the capture servers running,
   a FigCaptureDevice with a steady preview stream, a still from the same stream, and only then the Camera icon's
   device tree nodes (`/arm-io/isp` `camera-rear`, `camera-front`; `/product/camera`): with the nodes and no frame
-  path the launch hangs.
+  path the launch hangs [F iOSPlus10, iOS 16]. On 27 the nodes are added now (below): the source list itself needs
+  `unique-model`, and without the nodes nothing can open the Camera app to test the stream.
+
+### The camera nodes (2026-11-22)
+
+The loader (`runtime/loader/src/machine.c`, `xl_machine.cameras`) adds them only with the `oneios,camera` device and
+only for the roles the helper lists; xnuhost waits for the list before the tree (at most 3 s; 170 ms on the phone).
+Values are the iPhone18,2's (`out/kernel-inputs/24A446/devicetree.bin`, `xnuloader-inspect adt`):
+
+| Node, property | Value | Given when | MobileGestalt answer (24A446, read in libMobileGestalt) |
+|---|---|---|---|
+| `/arm-io/isp` `camera-rear` | u32 1 | a back camera is listed (wide, ultra-wide or a telephoto) | `rear-facing-camera`; `still-camera` (Camera.app's `SBAppTags`) |
+| `/arm-io/isp` `camera-front` | u32 1 | the front camera is listed | `front-facing-camera`; `still-camera` |
+| `/product/camera` | empty node | either | `video-camera` (presence) |
+| `/product` `unique-model` | "V54AP" | either, without an identity tree | `HWModelDescriptionForCamera`: CMCapture's model folder `V54` |
+
+Left out on purpose: `/arm-io/isp`'s other properties (`compatible "isp,isp-generic-ex|isp,s5l8960x"`, `reg`, the
+exclave services: no driver may match the node); `/product/camera`'s feature flags (the iPhone's has about 80: `flash`,
+`live-photo-capture`, `rear-cam-superwide-capability`, `rear-cam-telephoto-capability`, slow motion, 4K, portrait,
+...), because the plug-in gives two streams of at most 1920x1080 and no torch: a flag the plug-in cannot honour would
+make the Camera app offer a mode with no device behind it. The ultra-wide and the telephotos get their flags with
+their streams. The S24 Ultra defaults are unchanged (the nodes follow the camera device, which follows the helper).
+Host test: `runtime/loader/tests/test_loader.c` (no nodes without the device; both, rear only, front only with an
+identity; the identity's own `unique-model` kept; the identity hash; 193 checks).
 
 ### Missing, unknown
 
-- **The first session with the plug-in** (`userland/camera/README.md`, "What the next session's logs must show"):
-  whether the 27 capture graph takes the device as it is, and which properties it asks for that are not answered.
-  The device tree nodes for MobileGestalt and the camera permission are after that.
+- **The first session with the nodes and 0084** (the phone check: `userland/camera/README.md`, "What the next
+  session's logs must show"): whether CMCapture builds its sources from V54's plist with this device, whether the
+  27 capture graph takes the device as it is, and which properties it asks for that are not answered. The camera
+  permission prompt is after that.
 - [U] on the phone: the capture again with the fix, the telephotos, the diagnostic run if no frame arrives
   (`runtime/bridges/camera/README.md`, "On the phone" and "When no frame arrives"), and "In a
   session" (the HAL back end with system_server stopped; whether Samsung's HAL takes a plain YCbCr_420_888 stream

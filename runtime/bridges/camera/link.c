@@ -25,6 +25,7 @@ struct br_camera {
   pid_t pid;
   pthread_t thread;
   pthread_mutex_t lock;
+  pthread_cond_t changed;                 // listed or gone became true (br_camera_list waits on it)
   cam_ring_map ring;                      // ring.ring != NULL once the helper's hello came
   bool listed, gone;
   uint32_t ncameras;
@@ -78,6 +79,7 @@ static void *receive(void *arg)
       memcpy(c->cameras, packet.cameras, count * sizeof(struct oc_camera));
       c->ncameras = count;
       c->listed = true;
+      pthread_cond_broadcast(&c->changed);
       pthread_mutex_unlock(&c->lock);
       br_log(1, "camera: the helper has %u cameras", count);
       break;
@@ -96,6 +98,7 @@ static void *receive(void *arg)
   pthread_mutex_lock(&c->lock);
   c->gone = true;
   c->listed = true;
+  pthread_cond_broadcast(&c->changed);
   pthread_mutex_unlock(&c->lock);
   event(c, BR_CAMERA_STATE, EPIPE);
   return NULL;
@@ -117,9 +120,12 @@ br_camera *br_camera_helper(const char *path, const char *backend)
   c->fd = pair[0];
   c->ring.fd = -1;
   pthread_mutex_init(&c->lock, NULL);
+  pthread_cond_init(&c->changed, NULL);
   if (pthread_create(&c->thread, NULL, receive, c)) {
     br_log(0, "camera: off: no thread for the helper");
     close(c->fd);                           // the helper exits when its socket closes
+    pthread_cond_destroy(&c->changed);
+    pthread_mutex_destroy(&c->lock);
     free(c);
     return NULL;
   }
@@ -137,17 +143,19 @@ void br_camera_listen(br_camera *c, br_camera_event_fn fn, void *ctx)
 
 int br_camera_list(br_camera *c, struct oc_camera *out, int max, int wait_ms)
 {
-  for (int waited = 0;; waited += 5) {
-    pthread_mutex_lock(&c->lock);
-    bool listed = c->listed;
-    int count = (int)c->ncameras < max ? (int)c->ncameras : max;
-    if (listed) memcpy(out, c->cameras, (size_t)count * sizeof *out);
-    pthread_mutex_unlock(&c->lock);
-    if (listed) return count;
-    if (waited >= wait_ms) return 0;
-    struct timespec nap = { 0, 5000000 };
-    nanosleep(&nap, NULL);
-  }
+  // Asleep on the receive thread's signal, not a sleep-and-look loop: xnuhost waits here once, before it builds
+  // the device tree (the cameras iOS is told about), and wakes the moment the list comes.
+  struct timespec until;
+  clock_gettime(CLOCK_REALTIME, &until);
+  until.tv_sec += wait_ms / 1000;
+  until.tv_nsec += (long)(wait_ms % 1000) * 1000000L;
+  if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
+  pthread_mutex_lock(&c->lock);
+  for (int rc = 0; !c->listed && rc == 0;) rc = pthread_cond_timedwait(&c->changed, &c->lock, &until);   // ETIMEDOUT ends it
+  int count = !c->listed ? 0 : (int)c->ncameras < max ? (int)c->ncameras : max;
+  if (count > 0) memcpy(out, c->cameras, (size_t)count * sizeof *out);
+  pthread_mutex_unlock(&c->lock);
+  return count;
 }
 
 static int send_message(br_camera *c, const struct cam_msg *message)
@@ -193,6 +201,7 @@ void br_camera_close(br_camera *c)
   // The helper needs a moment to close the camera; it is not waited for (PR_SET_PDEATHSIG and the
   // session's cgroup end it in any case).
   (void)waitpid(c->pid, NULL, WNOHANG);
+  pthread_cond_destroy(&c->changed);
   pthread_mutex_destroy(&c->lock);
   free(c);
 }
