@@ -22,6 +22,8 @@ pub mod binder;
 pub mod binderfs;
 pub mod fake;
 pub mod hidl;
+#[cfg(test)]
+pub(crate) mod test_c;
 
 pub use aidl::{CallError, Parcel, Reader};
 

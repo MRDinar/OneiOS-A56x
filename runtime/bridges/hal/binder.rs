@@ -716,84 +716,34 @@ mod tests {
     /// Every number above against the kernel's header, when the build host has it and a C compiler.
     #[test]
     fn uapi_matches_the_c_header() {
-        let header = Path::new("/usr/include/linux/android/binder.h");
-        if !header.exists() {
-            println!("uapi_matches_the_c_header: skipped (no {})", header.display());
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("onebridges-uapi-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let names = [
-            ("BINDER_WRITE_READ", BINDER_WRITE_READ),
-            ("BINDER_SET_MAX_THREADS", BINDER_SET_MAX_THREADS),
-            ("BINDER_SET_CONTEXT_MGR", BINDER_SET_CONTEXT_MGR),
-            ("BINDER_VERSION", BINDER_VERSION),
-            ("BINDER_CTL_ADD", BINDER_CTL_ADD),
-            ("BC_TRANSACTION", BC_TRANSACTION),
-            ("BC_REPLY", BC_REPLY),
-            ("BC_FREE_BUFFER", BC_FREE_BUFFER),
-            ("BC_INCREFS", BC_INCREFS),
-            ("BC_ACQUIRE", BC_ACQUIRE),
-            ("BC_RELEASE", BC_RELEASE),
-            ("BC_DECREFS", BC_DECREFS),
-            ("BC_INCREFS_DONE", BC_INCREFS_DONE),
-            ("BC_ACQUIRE_DONE", BC_ACQUIRE_DONE),
-            ("BC_ENTER_LOOPER", BC_ENTER_LOOPER),
-            ("BC_EXIT_LOOPER", BC_EXIT_LOOPER),
-            ("BC_REQUEST_DEATH_NOTIFICATION", BC_REQUEST_DEATH_NOTIFICATION),
-            ("BC_CLEAR_DEATH_NOTIFICATION", BC_CLEAR_DEATH_NOTIFICATION),
-            ("BC_DEAD_BINDER_DONE", BC_DEAD_BINDER_DONE),
-            ("BC_TRANSACTION_SG", BC_TRANSACTION_SG),
-            ("BC_REPLY_SG", BC_REPLY_SG),
-            ("BR_TRANSACTION_SEC_CTX", BR_TRANSACTION_SEC_CTX),
-            ("BR_TRANSACTION", BR_TRANSACTION),
-            ("BR_REPLY", BR_REPLY),
-            ("BR_DEAD_REPLY", BR_DEAD_REPLY),
-            ("BR_TRANSACTION_COMPLETE", BR_TRANSACTION_COMPLETE),
-            ("BR_INCREFS", BR_INCREFS),
-            ("BR_ACQUIRE", BR_ACQUIRE),
-            ("BR_NOOP", BR_NOOP),
-            ("BR_DEAD_BINDER", BR_DEAD_BINDER),
-            ("BR_FAILED_REPLY", BR_FAILED_REPLY),
-            ("BR_FROZEN_REPLY", BR_FROZEN_REPLY),
-            ("TF_ONE_WAY", TF_ONE_WAY),
-            ("TF_STATUS_CODE", TF_STATUS_CODE),
-            ("TF_ACCEPT_FDS", TF_ACCEPT_FDS),
-            ("BINDER_TYPE_BINDER", TYPE_BINDER),
-            ("BINDER_TYPE_HANDLE", TYPE_HANDLE),
-            ("BINDER_TYPE_PTR", TYPE_PTR),
-            ("BINDER_BUFFER_FLAG_HAS_PARENT", BUFFER_FLAG_HAS_PARENT),
-            ("BINDER_CURRENT_PROTOCOL_VERSION", CURRENT_PROTOCOL_VERSION as u32),
-            ("sizeof(struct binder_transaction_data)", TRANSACTION_DATA as u32),
-            ("sizeof(struct binder_transaction_data_sg)", TRANSACTION_DATA_SG as u32),
-            ("sizeof(struct binder_transaction_data_secctx)", TRANSACTION_DATA_SECCTX as u32),
-            ("sizeof(struct binder_write_read)", std::mem::size_of::<WriteRead>() as u32),
+        let v = |x: u32| i64::from(x);
+        #[rustfmt::skip]
+        let pairs: &[(&str, i64)] = &[
+            ("BINDER_WRITE_READ", v(BINDER_WRITE_READ)), ("BINDER_SET_MAX_THREADS", v(BINDER_SET_MAX_THREADS)),
+            ("BINDER_SET_CONTEXT_MGR", v(BINDER_SET_CONTEXT_MGR)), ("BINDER_VERSION", v(BINDER_VERSION)),
+            ("BINDER_CTL_ADD", v(BINDER_CTL_ADD)), ("BC_TRANSACTION", v(BC_TRANSACTION)), ("BC_REPLY", v(BC_REPLY)),
+            ("BC_FREE_BUFFER", v(BC_FREE_BUFFER)), ("BC_INCREFS", v(BC_INCREFS)), ("BC_ACQUIRE", v(BC_ACQUIRE)),
+            ("BC_RELEASE", v(BC_RELEASE)), ("BC_DECREFS", v(BC_DECREFS)), ("BC_INCREFS_DONE", v(BC_INCREFS_DONE)),
+            ("BC_ACQUIRE_DONE", v(BC_ACQUIRE_DONE)), ("BC_ENTER_LOOPER", v(BC_ENTER_LOOPER)), ("BC_EXIT_LOOPER", v(BC_EXIT_LOOPER)),
+            ("BC_REQUEST_DEATH_NOTIFICATION", v(BC_REQUEST_DEATH_NOTIFICATION)),
+            ("BC_CLEAR_DEATH_NOTIFICATION", v(BC_CLEAR_DEATH_NOTIFICATION)), ("BC_DEAD_BINDER_DONE", v(BC_DEAD_BINDER_DONE)),
+            ("BC_TRANSACTION_SG", v(BC_TRANSACTION_SG)), ("BC_REPLY_SG", v(BC_REPLY_SG)),
+            ("BR_TRANSACTION_SEC_CTX", v(BR_TRANSACTION_SEC_CTX)), ("BR_TRANSACTION", v(BR_TRANSACTION)), ("BR_REPLY", v(BR_REPLY)),
+            ("BR_DEAD_REPLY", v(BR_DEAD_REPLY)), ("BR_TRANSACTION_COMPLETE", v(BR_TRANSACTION_COMPLETE)),
+            ("BR_INCREFS", v(BR_INCREFS)), ("BR_ACQUIRE", v(BR_ACQUIRE)), ("BR_NOOP", v(BR_NOOP)), ("BR_DEAD_BINDER", v(BR_DEAD_BINDER)),
+            ("BR_FAILED_REPLY", v(BR_FAILED_REPLY)), ("BR_FROZEN_REPLY", v(BR_FROZEN_REPLY)),
+            ("TF_ONE_WAY", v(TF_ONE_WAY)), ("TF_STATUS_CODE", v(TF_STATUS_CODE)), ("TF_ACCEPT_FDS", v(TF_ACCEPT_FDS)),
+            ("BINDER_TYPE_BINDER", v(TYPE_BINDER)), ("BINDER_TYPE_HANDLE", v(TYPE_HANDLE)), ("BINDER_TYPE_PTR", v(TYPE_PTR)),
+            ("BINDER_BUFFER_FLAG_HAS_PARENT", v(BUFFER_FLAG_HAS_PARENT)),
+            ("BINDER_CURRENT_PROTOCOL_VERSION", CURRENT_PROTOCOL_VERSION.into()),
+            ("sizeof(struct binder_transaction_data)", TRANSACTION_DATA as i64),
+            ("sizeof(struct binder_transaction_data_sg)", TRANSACTION_DATA_SG as i64),
+            ("sizeof(struct binder_transaction_data_secctx)", TRANSACTION_DATA_SECCTX as i64),
+            ("sizeof(struct binder_write_read)", std::mem::size_of::<WriteRead>() as i64),
+            ("sizeof(struct flat_binder_object)", 24), ("sizeof(struct binder_buffer_object)", 40),
+            ("sizeof(struct binderfs_device)", 264),
         ];
-        let mut c = String::from(
-            "#include <stdio.h>\n#include <linux/android/binder.h>\n#include <linux/android/binderfs.h>\nint main(void) {\n",
-        );
-        for (name, _) in &names {
-            c.push_str(&format!("  printf(\"%u\\n\", (unsigned)({name}));\n"));
-        }
-        c.push_str("  return 0;\n}\n");
-        std::fs::write(dir.join("uapi.c"), c).unwrap();
-        let built = std::process::Command::new("cc")
-            .arg(dir.join("uapi.c"))
-            .arg("-o")
-            .arg(dir.join("uapi"))
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !built {
-            println!("uapi_matches_the_c_header: skipped (no C compiler)");
-            return;
-        }
-        let out = std::process::Command::new(dir.join("uapi")).output().unwrap();
-        let values: Vec<u32> = String::from_utf8(out.stdout).unwrap().lines().map(|l| l.parse().unwrap()).collect();
-        for ((name, ours), theirs) in names.iter().zip(values) {
-            assert_eq!(*ours, theirs, "{name}");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::hal::test_c::check("binder_uapi", &["linux/android/binder.h", "linux/android/binderfs.h"], pairs);
     }
 
     #[test]
