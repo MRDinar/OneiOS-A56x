@@ -34,4 +34,10 @@ its second line: Hang detected: 1.25s (always-on hang reporting)
 2026-11-15 09:06:00.000000Z chronod[87] Error [com.apple.imageio:chronod] writeImageAtIndex: *** CMPhotoCompressionSessionAddImage: err = kCMBaseObjectError_UnsupportedOperation [-12782] (codec: 'hvc1')
 2026-11-15 09:06:01.000000Z chronod[87] Error [com.apple.imageio:chronod] writeImageAtIndex: *** CMPhotoCompressionSessionAddImage: err = kCMBaseObjectError_UnsupportedOperation [-12782] (codec: 'hvc1')
 2026-11-15 09:06:02.000000Z SpringBoard[30] Error [com.apple.imageio:] writeImageAtIndex:99: *** CMPhotoCompressionSessionAddImage: err = -16993
+2026-11-15 09:07:00.000000Z audiomxd[111] Default [com.apple.coreaudio:va_rtutil]   RoutingSettings_N71.cpp:1195  Creating subport config for webcam recording
+2026-11-15 09:07:00.000100Z audiomxd[111] Error [com.apple.coreaudio:va_utils ]   RoutingSettings_N71.cpp:1196  PRECONDITION FAILURE (std::logic_error).
+2026-11-15 09:07:00.012000Z audiomxd[111] Error [com.apple.coreaudio:va_utils ]       StandardUtilities.h:675   Standard Library exception caught by ExceptionBarrier: Precondition failure: webcamRecordingDSPList && "Need valid DSPConfig for webcam recording" (:2202).
+2026-11-15 09:07:00.014000Z audiomxd[111] Default [com.apple.coreaudio:va_vaplug]    VirtualAudio_PlugIn.mm:2220  VA Init Status: 1
+2026-11-15 09:07:09.000000Z audiomxd[111] Error [com.apple.coreaudio:va_utils ]    VirtualAudio_PlugIn.mm:5943  EXCEPTION (std::logic_error) [mDeferredInitializationState != PlugInInitializeState::Initialized is true]: "VirtualAudio PlugIn is not initialized yet"
+2026-11-15 09:07:09.002000Z audiomxd[111] Error [com.apple.coreaudio:va_utils ]    VirtualAudio_PlugIn.mm:5943  EXCEPTION (std::logic_error) [mDeferredInitializationState != PlugInInitializeState::Initialized is true]: "VirtualAudio PlugIn is not initialized yet"
 2026-11-15 09:10:00.000000Z SpringBoard[30] Default [com.apple.SpringBoard:Common] the last entry

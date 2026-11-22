@@ -2655,6 +2655,15 @@ in iOS's log no `Volume Mode is HardwareOnly but physical device does not suppor
 curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
 up to the phone's full loudness. Back in One UI: the media volume as it was.
 
+### No audio at all in v0.1.16: VirtualAudio never started (fix-audio-camera-model, 2026-11-23; built, not on the phone)
+
+The camera's model name of 2026-11-22 (`/product unique-model` "V54AP") made AVFCapture's AVGestalt answer V54's
+webcam key in audiomxd; VirtualAudio then built a webcam subport with no DSP list, its precondition failed and it
+never started: no Speaker, no volume, no haptics (the Actuator is a VirtualAudio device too). Cause, fix (the name
+"OneiOSAP" and hosted 0088's link `CMCapture.framework/OneiOS -> V54`; `camera-model=V54AP` the old name) and the
+phone lines: section 7, "The model name stopped all audio". `oneios-tool ioslog health` says in its `audio` line
+whether VirtualAudio started (`started 1`) and which precondition failed.
+
 ### Missing, unknown
 
 - **Not run yet in a test cycle of mine:** `owner-hide-vmm=audiomxd,com.apple.WebKit.GPU` (VirtualAudio's Null device
@@ -2711,7 +2720,7 @@ writes `unique-model` "V54AP" and the camera nodes (below, "The camera nodes"), 
 MobileGestalt's cache once when the tree changes (until 0084 the kernel removed it at every boot; `docs/userland.md`,
 "MobileGestalt's cache follows the tree"). The same answer is MobileGestalt's `HWModelDescriptionForAnalytics`,
 `...ForAudio`, `...ForPowerPerf` and `...ForAutomatedTesting` (one table entry each, all reading `unique-model`):
-those were NULL before and are "V54AP" now, with the cameras only. [U] who reads them (a search of the shared cache
+those were NULL before and are "V54AP" from 2026-11-22, "OneiOSAP" from 2026-11-23 (below), with the cameras only. [U] who reads them (a search of the shared cache
 for their importers stopped at its 10 minute limit); audio's tunings are found by HWModelStr (`oneios,xnuhost`, 0078).
 
 **The 2026-11-23 session (runtime 0.1.16, hosted to 0087; `out/session-logs/2026-11-23/boot-0.1.16`): the Camera
@@ -2738,6 +2747,73 @@ and the rest keep the VM. `camera-vm=show` in `xnuhost.conf` turns it off (`docs
 stream is `PortTypeFrontSuperWide` and takes the formats of "Front Ultra Wide Camera" by name (a new plug-in: it reaches
 the phone only with a new seed; the back camera needs only the new xnuhost). Lines that prove it
 on the phone: `userland/camera/README.md`, "What the next session's logs must show".
+
+### The model name stopped all audio: `OneiOSAP` and a link to V54 (fix-audio-camera-model, hosted 0088, 2026-11-23)
+
+**The fault (the same v0.1.16 session, iOS's log `ioslog2/ioslog.txt`, 20:21:48):** no sound, no volume and no haptics
+for the whole session. audiomxd logged `RoutingSettings_N71.cpp:1195 Creating subport config for webcam recording`,
+then `PRECONDITION FAILURE (std::logic_error)`, `Precondition failure: webcamRecordingDSPList && "Need valid DSPConfig for
+webcam recording"`, `VA Init Status: 1`, no `Ending Deferred Initialization`, no VAD device and no Speaker port, and
+`VirtualAudio PlugIn is not initialized yet` 1618 times. The 2026-11-22 boots (s6-s9b, before 9ae1f0c) have no
+webcam line, `Ending Deferred Initialization` and `VA Init Status: 0`.
+
+**Cause [F, read in 24A446's VirtualAudio.plugin and shared cache on the laptop]:** RoutingSettings_N71 makes the
+webcam subport only when `AVGestaltGetBoolAnswer(AVGQ3J3FEVOOCNOKKTK3XQPUQ47DYY)` is true, and its DSP list exists
+only with input processing on (this guest logs `Input processing disabled`). AVFCapture's `AVGestaltGetDeviceFeatures`
+looks up `FigCaptureGetModelSpecificName()` in its table of 41 models (each entry a `-` separated list of names:
+`D93-D94`, `V53-V54`, `J517-J517x-J518-...`; `componentsSeparatedByString:` and `containsObject:`), and the webcam
+key is 1 in every entry. That name is MobileGestalt's `HWModelDescriptionForCamera` less a trailing "AP" (or "DEV";
+"v64s" becomes "V64s"): `___FigCaptureGetModelSpecificName_block_invoke`. Before 9ae1f0c the name was NULL (no
+entry: false); 9ae1f0c's `unique-model` "V54AP" gave "V54", found in `V53-V54`.
+
+**Fix (built and host-tested on the laptop, not run on the phone):**
+- The loader's `/product unique-model` with the cameras is `XL_CAMERA_MODEL` "OneiOSAP"
+  (`runtime/loader/src/machine.c`), in no entry of either table, so AVGestalt answers every key as with no name and
+  VirtualAudio builds no webcam subport. xnuhost's **`camera-model=NAME`** (`xnuhost.conf` or `--set`; 3-15 letters and
+  digits ending in "AP"; `docs/booter.md`) chooses another: `camera-model=V54AP` is the name of 9ae1f0c, for an A/B
+  boot. The name is part of the identity of hosted 0084, so a change of the setting makes MobileGestalt's cache again
+  once in an existing Data store. One xnuhost line: `camera: unique-model OneiOSAP (camera-model=): CMCapture's tables
+  through the kernel's link to V54, AVGestalt has no entry (VirtualAudio builds no webcam subport)`.
+- CMCapture still reads V54's tables: its folder for "OneiOSAP" is `CMCapture.framework/OneiOS`
+  (`fcmss_createPropertyListForModelAndBundleIdentifier`: the bundle `com.apple.CMCapture`, the model's folder, then
+  the plist; there is no `Default` folder on the image, `image apfs-ls` of `os.img`). Hosted 0088 makes
+  `/private/var/oneios/addons/CMCapture/OneiOS -> V54` before launchd and shows that folder over
+  `/System/Library/PrivateFrameworks/CMCapture.framework` read-only (0031's union mount, as 0056 and 0078). The name
+  comes from the tree's `/product unique-model`, so the kernel follows `camera-model=`; a name whose folder is sealed
+  (`V54AP`) or no `unique-model` (no camera): nothing is made or mounted. `oneios-cmcapture-model=0` turns it off,
+  `=NAME` links another folder. Kernel line: `oneios-cmcapture-model: /private/var/oneios/addons/CMCapture over
+  /System/Library/PrivateFrameworks/CMCapture.framework: OneiOS -> V54 (link made 0), stage 5, status 0`.
+- `oneios-tool ioslog health` has an `audio` line: `started` (`Ending Deferred Initialization`), `webcam`, `failed
+  at` and `failed` (the precondition's file:line and text, as names), `status` (`VA Init Status` not 0), `not ready`.
+- Tested on the build laptop (2026-11-23): the loader's tests (196 checks), `runtime/host-tests.sh` (all nine parts;
+  xnuhost 14,283 checks with `camera-model=` from `--set` and from the image set's `xnuhost.conf`, the bad names refused),
+  `cargo test` of `oneios-ioslog` and `oneios-tool` (the `audio` kind on the hand-written lines of the v0.1.16 boot and a
+  good start), `tests/phone/run.sh` and `tests/cycle/run.sh` (ALL OK), `runtime/build.sh` (`bin/xnuhost` sha256
+  `dc4f7e17e2ce6b4f...`), the kernel with 0088 (`kernel.kc` sha256 `71d7db1449994d58...`, audit 0 failures, stubs 666
+  good; `kernel/patches/oneios-hosted/README.md`, "0088"). Not run on the phone.
+
+**What the camera loses with a name in no table, as far as the code shows [F, the same reading]:**
+- AVFCapture's AVGestalt (the app side: `avgestalt_buildDataBase`) has no entry: every one of its per-model answers
+  (bool, integer and float tables, hashed key names) takes its default, as before 9ae1f0c. The block sets a few
+  keys itself after the lookup (one to false, the Continuity Camera key by platform); those do not depend on the name.
+- CMCapture's own `CMCaptureGestalt` (`cmcapturegestalt_buildDataBase`, in cameracaptured) has the same 41-entry table
+  and also finds no entry: its per-model answers take their defaults. [U] which of them (hashed names) the back stream,
+  the photo path or the formats need: the v0.1.16 boot (V54AP, both tables answered) did not get as far as a frame.
+- Functions that compare the name with other models (`BWDeviceModelIsV6x`, `BWDeviceModelIsV68`, ...) answer false for
+  both names. The VM regexp alias (`FigCaptureResolveAliasedModelSpecificName`, `VM\d\d\d\d`) is for other names.
+- Not lost: the per-model plists (`AVCaptureSession.plist`, `CameraSetup.plist`, the IQ tunings and module configs of
+  `V54/`), all read through the link.
+- VirtualAudio's own camera checks (`FigCaptureMicrophoneInterferenceMitigationIsSupported`) go by `MGGetProductType`
+  and the platform, not by the name. [U] who reads `HWModelDescriptionForAudio` (the same answer): VirtualAudio calls
+  no MobileGestalt model key, and a search of the shared cache for callers of its MobileGestalt function found none
+  (the calls go through stubs, so not a proof).
+
+The phone's proof (A/B with `camera-model=V54AP`): in iOS's log no `Creating subport config for webcam recording`
+before `Ending Deferred Initialization`, `VA Init Status: 0`, a Speaker port, `Reconfiguring volume curve with dB
+range {-64, 0}` (`ioslog health`: `audio ... started 1, webcam 0`); in xnuhost's log `oneios-audio: ... frames in` above
+0 when a sound plays, `DroidVMAudio: speaker volume N of 128` at a key press, `ONEIOS HAPTIC: counters: ... StartIO`
+above 0 after a haptic; the kernel's `oneios-cmcapture-model: ... stage 5, status 0`; and for the camera the back stream
+still opens (`ONEIOS CAMERA: ... streams asked for`, the `camera#0` count on the `virtio: 60 s` line).
 
 ### The phone [F]
 
@@ -2836,7 +2912,7 @@ Values are the iPhone18,2's (`out/kernel-inputs/24A446/devicetree.bin`, `xnuload
 | `/arm-io/isp` `camera-rear` | u32 1 | a back camera is listed (wide, ultra-wide or a telephoto) | `rear-facing-camera`; `still-camera` (Camera.app's `SBAppTags`) |
 | `/arm-io/isp` `camera-front` | u32 1 | the front camera is listed | `front-facing-camera`; `still-camera` |
 | `/product/camera` | empty node | either | `video-camera` (presence) |
-| `/product` `unique-model` | "V54AP" | either, without an identity tree | `HWModelDescriptionForCamera`: CMCapture's model folder `V54` |
+| `/product` `unique-model` | "OneiOSAP" (`camera-model=`; "V54AP" from 2026-11-22 to 2026-11-23) | either; `camera-model=` wins over an identity tree's own | `HWModelDescriptionForCamera`: CMCapture's model folder `OneiOS`, hosted 0088's link to `V54` (the model name stopped all audio, above) |
 
 Left out on purpose: `/arm-io/isp`'s other properties (`compatible "isp,isp-generic-ex|isp,s5l8960x"`, `reg`, the
 exclave services: no driver may match the node); `/product/camera`'s feature flags (the iPhone's has about 80: `flash`,
@@ -2845,7 +2921,7 @@ exclave services: no driver may match the node); `/product/camera`'s feature fla
 make the Camera app offer a mode with no device behind it. The ultra-wide and the telephotos get their flags with
 their streams. The S24 Ultra defaults are unchanged (the nodes follow the camera device, which follows the helper).
 Host test: `runtime/loader/tests/test_loader.c` (no nodes without the device; both, rear only, front only with an
-identity; the identity's own `unique-model` kept; the identity hash; 193 checks).
+identity; the identity's own `unique-model` kept unless `camera-model=` names one; `camera-model=V54AP` and its other identity; the identity hash).
 
 ### Missing, unknown
 

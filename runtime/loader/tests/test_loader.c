@@ -302,7 +302,8 @@ static void test_machine(void)
     CHECK(!strcmp((const char *)xl_adt_get(pr, "model")->value, "oneios,xnuhost"));
   }
   // the cameras: none without the camera device, whatever m.cameras says; with it /arm-io/isp camera-rear and
-  // camera-front (u32 1, no compatible), an empty /product/camera and /product unique-model V54AP
+  // camera-front (u32 1, no compatible), an empty /product/camera and /product unique-model XL_CAMERA_MODEL ("OneiOSAP":
+  // in no AVGestalt table, so VirtualAudio builds no webcam subport); camera-model= gives another (V54AP: the iPhone's)
   CHECK(!xl_adt_find(t, "arm-io/isp") && !xl_adt_find(t, "product/camera") && !xl_adt_get(xl_adt_find(t, "product"), "unique-model"));
   {
     xl_machine c;
@@ -324,7 +325,7 @@ static void test_machine(void)
     const xl_adt_node *cam = ct ? xl_adt_find(ct, "product/camera") : NULL;
     CHECK(cam && cam->nprops == 1 && cam->nchildren == 0);                                   // only its name
     q = ct ? xl_adt_get(xl_adt_find(ct, "product"), "unique-model") : NULL;
-    CHECK(q && !strcmp((const char *)q->value, "V54AP"));
+    CHECK(q && !strcmp((const char *)q->value, "OneiOSAP") && !strcmp(XL_CAMERA_MODEL, "OneiOSAP"));
     // the identity: another number with the cameras; set in /chosen; the same whatever changes per boot
     uint64_t with = ct ? xl_machine_identity(ct) : 0, stored = 0;
     q = ct ? xl_adt_get(xl_adt_find(ct, "chosen"), "oneios-identity") : NULL;
@@ -353,6 +354,18 @@ static void test_machine(void)
     again = xl_machine_tree(&c, &err);
     isp = again ? xl_adt_find(again, "arm-io/isp") : NULL;
     CHECK(isp && xl_adt_get(isp, "camera-rear") && !xl_adt_get(isp, "camera-front") && xl_machine_identity_hash(again) != with);
+    xl_adt_free(again);
+    // camera-model=V54AP (the name before 2026-11-23): that name, and another identity (MobileGestalt's cache is made
+    // again once when the setting changes, hosted 0084)
+    c.cameras = XL_CAMERA_REAR | XL_CAMERA_FRONT;
+    c.unique_model = "V54AP";
+    again = xl_machine_tree(&c, &err);
+    q = again ? xl_adt_get(xl_adt_find(again, "product"), "unique-model") : NULL;
+    CHECK(q && !strcmp((const char *)q->value, "V54AP") && q->length == 6 && xl_machine_identity_hash(again) != with);
+    xl_adt_free(again);
+    c.unique_model = NULL;
+    again = xl_machine_tree(&c, &err);
+    CHECK(again && xl_machine_identity_hash(again) == with);                                // back to the default
     xl_adt_free(again);
     xl_adt_free(ct);
   }
@@ -415,7 +428,7 @@ static void test_machine(void)
     CHECK(xl_adt_get(xl_adt_find(t, "product/audio"), "acoustic-id"));
     xl_adt_free(t);
   }
-  // with an identity and cameras: the identity's own unique-model stays
+  // with an identity and cameras: the identity's own unique-model stays, unless camera-model= names one
   {
     xl_machine c = m;
     static const xl_device_kind kinds[] = { XL_DEV_BLOCK, XL_DEV_DATA_STORE, XL_DEV_CAMERA };
@@ -426,6 +439,11 @@ static void test_machine(void)
     p = t ? xl_adt_get(xl_adt_find(t, "product"), "unique-model") : NULL;
     CHECK(p && !strcmp((const char *)p->value, "F1AP") && xl_adt_get(xl_adt_find(t, "arm-io/isp"), "camera-front") &&
           !xl_adt_get(xl_adt_find(t, "arm-io/isp"), "camera-rear"));
+    xl_adt_free(t);
+    c.unique_model = XL_CAMERA_MODEL;
+    t = xl_machine_tree(&c, &err);
+    p = t ? xl_adt_get(xl_adt_find(t, "product"), "unique-model") : NULL;
+    CHECK(p && !strcmp((const char *)p->value, "OneiOSAP"));
     xl_adt_free(t);
   }
   xl_adt_remove(donor, "product");

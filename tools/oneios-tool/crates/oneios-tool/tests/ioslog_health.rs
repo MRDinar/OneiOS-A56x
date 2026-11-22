@@ -18,7 +18,7 @@ fn health(args: &[&str]) -> (i32, String, String) {
     (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
-const KINDS: [&str; 7] = ["hangs", "watchdog", "xpc-timeouts", "jetsam", "crashes", "stuck-idle", "encode-fail"];
+const KINDS: [&str; 8] = ["hangs", "watchdog", "xpc-timeouts", "jetsam", "crashes", "stuck-idle", "encode-fail", "audio"];
 
 #[test]
 fn the_command() {
@@ -32,7 +32,7 @@ fn the_command() {
     assert_eq!((status, err.as_str()), (0, ""), "{out}");
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 1 + KINDS.len(), "{out}");
-    assert!(lines[0].ends_with(": the entries of a text file (ioslog show's), 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)"), "{out}");
+    assert!(lines[0].ends_with(": the entries of a text file (ioslog show's), 42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)"), "{out}");
     for (line, kind) in lines[1..].iter().zip(KINDS) {
         assert!(line.starts_with(kind) && !line.starts_with(' '), "{line}");
     }

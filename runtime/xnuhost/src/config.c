@@ -50,6 +50,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->pen_rotate, "auto");
   strcpy(c->encoder, "off");
   strcpy(c->camera_vm, "hide");
+  strcpy(c->camera_model, "OneiOSAP");   // XL_CAMERA_MODEL (xnuloader/machine.h)
   strcpy(c->wifi, "auto");
   br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
@@ -81,6 +82,16 @@ static int flag(const char *value, bool *out)
   if (!strcmp(value, "1") || !strcmp(value, "yes") || !strcmp(value, "true")) { *out = true; return 0; }
   if (!strcmp(value, "0") || !strcmp(value, "no") || !strcmp(value, "false")) { *out = false; return 0; }
   return -1;
+}
+
+// camera-model=: 3 to 15 letters and digits that end in "AP" (CMCapture takes the name less "AP" as a folder name; the
+// kernel, hosted 0088, makes a link of that name), so nothing else reaches the device tree or a path.
+static bool camera_model_ok(const char *value)
+{
+  size_t n = strlen(value);
+  if (n < 3 || n > 15 || strcmp(value + n - 2, "AP")) return false;
+  for (size_t i = 0; i < n; i++) if (!isalnum((unsigned char)value[i])) return false;
+  return true;
 }
 
 // A whole decimal number in [lo, hi].
@@ -176,6 +187,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "pen-mirror")) { if (flag(value, &c->pen_mirror)) return -1; c->pen_mirror_given = true; }
   else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) { strcpy(c->encoder, value); c->encoder_given = true; } }
   else if (!strcmp(key, "camera-vm")) { ok = !strcmp(value, "hide") || !strcmp(value, "show"); if (ok) { strcpy(c->camera_vm, value); c->camera_vm_given = true; } }
+  else if (!strcmp(key, "camera-model")) { ok = camera_model_ok(value); if (ok) { strcpy(c->camera_model, value); c->camera_model_given = true; } }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) { strcpy(c->wifi, value); c->wifi_given = true; } }
@@ -461,6 +473,7 @@ int xh_config_finish(xh_config *c)
   // encoder=). Until 2026-11-22 it was read and then dropped, so encoder=auto in xnuhost.conf did nothing.
   if (!c->encoder_given && from_image.encoder_given) strcpy(c->encoder, from_image.encoder);
   if (!c->camera_vm_given && from_image.camera_vm_given) strcpy(c->camera_vm, from_image.camera_vm);
+  if (!c->camera_model_given && from_image.camera_model_given) strcpy(c->camera_model, from_image.camera_model);
   // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
   // Never let an input-grabbing guest take control of Android outside a SHM bench.
   if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||

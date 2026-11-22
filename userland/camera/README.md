@@ -11,6 +11,8 @@ cameracaptured`; then CMCapture made no source: `Fig assert: "modelSpecificAVCap
 `Created 0 in-memory built-in backings`. Its per-model folder comes from MobileGestalt's `HWModelDescriptionForCamera`
 (`/product unique-model`), which the guest's tree did not have; the loader writes it now with the camera nodes
 (`docs/hardware.md` 7, "The camera nodes"), and hosted 0084 removes MobileGestalt's cache once when the tree changes.
+Its value is "OneiOSAP" since 2026-11-23 (with "V54AP" AVGestalt's webcam answer stopped all audio): CMCapture's
+folder `OneiOS` is hosted 0088's link to `V54` (`docs/hardware.md` 7, "The model name stopped all audio").
 
 **2026-11-23 (runtime 0.1.16, `out/session-logs/2026-11-23/boot-0.1.16`):** the nodes worked (the Camera icon, the
 app opens, V54's plist read), and the preview was black: CMCapture freed the Back stream right after its
@@ -124,6 +126,14 @@ Data store (`(marker the same): cache kept` after it).
 Since 2026-11-23 `xnuhost.log` also has `camera: cameracaptured is not told of the VM (owner-hide-vmm gets it): ...`,
 `owner-hide-vmm=cameracaptured` in the `placed: ... boot-args` line, and (hosted 0062) `oneios-iokit: cameracaptured[N]
 sysctl kern.hv_vmm_present -> 0 (the virtual machine hidden by owner-hide-vmm)`.
+
+Since fix-audio-camera-model (2026-11-23; `docs/hardware.md` 7, "The model name stopped all audio") the model name is
+"OneiOSAP" (`camera-model=`), so `xnuhost.log` has `camera: unique-model OneiOSAP (camera-model=): CMCapture's tables
+through the kernel's link to V54, ...` and the kernel's `oneios-cmcapture-model: /private/var/oneios/addons/CMCapture
+over /System/Library/PrivateFrameworks/CMCapture.framework: OneiOS -> V54 (link made 0), stage 5, status 0`; iOS's log
+has no `Fig assert: "modelSpecificAVCaptureSessionPlist"` with it either (CMCapture reads `OneiOS/AVCaptureSession.plist`,
+which is V54's), and no `Creating subport config for webcam recording` from audiomxd. With `camera-model=V54AP` there
+is no `oneios-cmcapture-model:` mount (`... is there already ...: nothing mounted`) and audio stops again.
 
 iOS's log (and `xnuhost.log` too if the sandbox lets `cameracaptured` write the console): `Camera driver AppleH9CamIn
 is active` in place of "not started in time"; `ONEIOS CAMERA: ios: cameracaptured[..]: loaded`; `the device made:

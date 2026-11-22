@@ -2399,6 +2399,15 @@ static void test_config(const char *dir)
   CHECK(xh_config_args(&c, 7, enc2) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.encoder, "off"));
   xh_config_defaults(&c);
   CHECK(xh_config_set(&c, "encoder", "mediacodec") == -1 && !c.encoder_given && !strcmp(c.encoder, "off"));
+  // the image set's camera-model= applies (the phone's overlay/userland/xnuhost.conf); the command line wins
+  f = fopen(path, "w");
+  fprintf(f, "boot-args=-v debug=0x8\ncamera-model=V54AP\n%s\n", set_meminfo);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, img1) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.camera_model, "V54AP"));
+  char *cm2[] = { "xnuhost", "--image", image, "--mode", "takeover", "--set", "camera-model=OneiOSAP" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, cm2) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.camera_model, "OneiOSAP"));
   // The image set's own ram-giveback=0 holds the RAM fixed, at what fits (5376 MiB of MemAvailable 7 GiB)
   f = fopen(path, "w");
   fprintf(f, "boot-args=-v debug=0x8\nram-percent=80\nram-giveback=0\n%s\n", set_meminfo);
@@ -2452,6 +2461,16 @@ static void test_config(const char *dir)
   char *argv4w[] = { "xnuhost", "--image", image, "--set", "camera-vm=maybe" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, argv4w) != 0);
+  // camera-model= (/product unique-model with the cameras): OneiOSAP by default (in no AVGestalt table: VirtualAudio
+  // starts); V54AP the iPhone's; letters and digits ending in AP only, at most 15
+  xh_config_defaults(&c);
+  CHECK(!strcmp(c.camera_model, "OneiOSAP") && !c.camera_model_given);
+  CHECK(xh_config_set(&c, "camera-model", "V54AP") == 0 && c.camera_model_given && !strcmp(c.camera_model, "V54AP"));
+  CHECK(xh_config_set(&c, "camera-model", "OneiOSAP") == 0 && !strcmp(c.camera_model, "OneiOSAP"));
+  CHECK(xh_config_set(&c, "camera-model", "V54") == -1 && xh_config_set(&c, "camera-model", "AP") == -1);
+  CHECK(xh_config_set(&c, "camera-model", "../V54AP") == -1 && xh_config_set(&c, "camera-model", "One iOSAP") == -1);
+  CHECK(xh_config_set(&c, "camera-model", "ABCDEFGHIJKLMAP") == 0 && xh_config_set(&c, "camera-model", "ABCDEFGHIJKLMNAP") == -1);
+  CHECK(!strcmp(c.camera_model, "ABCDEFGHIJKLMAP"));
   // bt-transport-override read as bluetoothd reads it: any word that contains the name, the value after its '=',
   // under 13, the last word wins
   CHECK(xh_boot_args_bt_transport("-v bt-transport-override=10 wdt=-1") == 10);

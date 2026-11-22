@@ -159,6 +159,12 @@ typedef struct {
                             // 24A446's CMCapture drops every back stream in a VM (FigCaptureIsRunningInVirtualization,
                             // kern.hv_vmm_present; docs/hardware.md 7). show: the VM path as before 2026-11-23
   bool  camera_vm_given;    // set here: the command line wins over the image set's
+  char  camera_model[16];  // camera-model=NAME: /product unique-model with the cameras (MobileGestalt's HWModelDescriptionForCamera;
+                            // CMCapture's per-model folder is NAME less "AP"). Default XL_CAMERA_MODEL "OneiOSAP" (in no AVGestalt
+                            // table: VirtualAudio starts; the kernel, hosted 0088, links CMCapture.framework/OneiOS to V54);
+                            // V54AP: the iPhone's name, as from 2026-11-23 to the fix (AVGestalt answers V54's features, and
+                            // VirtualAudio's webcam subport stops all audio). 3-15 letters and digits ending in "AP"
+  bool  camera_model_given; // set here: the command line wins over the image set's
   br_hw_settings hw;        // hw-backend=samsung|treble, hw-backend-<bridge>=..., hw-backend-fallback=0|1: which form of the
                             // phone's hardware each bridge uses (bridges/hw_backend.h; docs/hardware.md, "Hardware backends")
   // The host phone (bridges/host_device.h; docs/hardware.md, "The host device"): host-device=auto|none|NAME ("" unset: auto),

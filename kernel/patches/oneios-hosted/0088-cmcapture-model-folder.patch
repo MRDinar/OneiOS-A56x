@@ -1,0 +1,119 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -9843,6 +9843,107 @@
+ #endif /* XNU_HOSTED */
+ #if XNU_HOSTED
+ /*
++ * OneiOS hosted (0088): CMCapture's per-model folder under a guest's own model name. CMCapture reads its per-model
++ * tables (AVCaptureSession.plist, CameraSetup.plist, the IQ tunings) from
++ * /System/Library/PrivateFrameworks/CMCapture.framework/<name>/, where <name> is MobileGestalt's
++ * HWModelDescriptionForCamera less "AP" (FigCaptureGetModelSpecificName; HWModelDescriptionForCamera is /product
++ * unique-model). The sealed framework has one such folder, V54 (the iPhone18,2's, unique-model "V54AP"). The name
++ * "V54AP" cannot be the guest's: AVFCapture's AVGestalt (in audiomxd too) then finds V53-V54 in its table of 41 iPhone
++ * models and answers its webcam key true, and VirtualAudio's RoutingSettings_N71 builds a webcam subport whose DSP
++ * list exists only with input processing on (off in this guest): "Precondition failure: webcamRecordingDSPList &&
++ * "Need valid DSPConfig for webcam recording"", VA Init Status: 1, and no speaker, volume or haptics for the whole
++ * session (the phone, v0.1.16, 2026-11-23). So xnuhost's loader gives a name in no AVGestalt table (camera-model=,
++ * default "OneiOSAP"), and here, before launchd, /private/var/oneios/addons/CMCapture gets one link, <name> -> V54
++ * (made when missing; anything else there is left alone), and is shown over CMCapture.framework read-only as a union
++ * (0031's bindfs mount, as 0056 and 0078): the sealed folders stay visible below it, and the link resolves to the
++ * sealed V54 folder. Nothing of Apple's is copied. A name whose folder the sealed framework has (V54AP: V54), or no
++ * unique-model (no camera): nothing made or mounted. oneios-cmcapture-model=0: nothing made or mounted;
++ * oneios-cmcapture-model=NAME: the link points at CMCapture.framework/NAME instead of V54. One line:
++ *   oneios-cmcapture-model: /private/var/oneios/addons/CMCapture over /System/Library/PrivateFrameworks/
++ *       CMCapture.framework: OneiOS -> V54 (link made 0), stage 5, status 0 (stage 5 status 0: mounted, V54's
++ *       tables visible as OneiOS's)
++ */
++static volatile int oneios_cmcapture_model_stage = 0;
++static volatile int oneios_cmcapture_model_status = -1;
++static void
++oneios_cmcapture_model(proc_t p, user_addr_t scratch)
++{
++	static const char parent1[] = "/private/var/oneios", parent2[] = "/private/var/oneios/addons";
++	static const char source[] = "/private/var/oneios/addons/CMCapture";
++	static const char point[] = "/System/Library/PrivateFrameworks/CMCapture.framework";
++	char board[32] = "V54";
++	if (PE_parse_boot_argn("oneios-cmcapture-model", board, sizeof(board) - 1) && !strcmp(board, "0")) {
++		printf("oneios-cmcapture-model: off (oneios-cmcapture-model=0): CMCapture finds no tables for a guest model name\n");
++		return;
++	}
++	if (board[0] == 0 || board[0] == '.' || strchr(board, '/') != NULL) {
++		printf("oneios-cmcapture-model: \"%s\": not a folder name of CMCapture.framework: V54 taken\n", board);
++		strlcpy(board, "V54", sizeof(board));
++	}
++	/* The name, as FigCaptureGetModelSpecificName makes it: /product unique-model less "AP". */
++	DTEntry product;
++	void const *value = NULL;
++	unsigned int size = 0;
++	char name[24];
++	if (SecureDTLookupEntry(0, "/product", &product) != kSuccess ||
++	    SecureDTGetProperty(product, "unique-model", &value, &size) != kSuccess || size < 2 || size > sizeof(name)) {
++		printf("oneios-cmcapture-model: no /product unique-model (no camera): nothing to do\n");
++		return;
++	}
++	memcpy(name, value, size);
++	name[size - 1] = 0;
++	size_t n = strlen(name);
++	int plain = n > 2 && !strcmp(name + n - 2, "AP");
++	for (size_t i = 0; plain && i < n; i++) {
++		plain = (name[i] >= 'A' && name[i] <= 'Z') || (name[i] >= 'a' && name[i] <= 'z') || (name[i] >= '0' && name[i] <= '9');
++	}
++	if (!plain) {
++		printf("oneios-cmcapture-model: unique-model \"%s\" is not letters and digits ending in AP: nothing made\n", name);
++		return;
++	}
++	name[n - 2] = 0;
++	char link[96], visible[128], own[128];
++	snprintf(link, sizeof(link), "%s/%s", source, name);
++	snprintf(visible, sizeof(visible), "%s/%s/AVCaptureSession.plist", point, board);
++	snprintf(own, sizeof(own), "%s/%s/AVCaptureSession.plist", point, name);
++	vfs_context_t ctx = vfs_context_current();
++	vnode_t vp = NULLVP;
++	if (vnode_lookup(own, 0, &vp, ctx) == 0) {
++		vnode_put(vp);
++		printf("oneios-cmcapture-model: unique-model %sAP: CMCapture.framework/%s is there already (the sealed folder, or an "
++		    "earlier mount): nothing mounted\n", name, name);
++		return;
++	}
++	const char *dirs[] = { parent1, parent2, source };
++	int error = 0, made = -1;
++	for (unsigned i = 0; i < 3 && !error; i++) {
++		vnode_t dvp = NULLVP;
++		error = vnode_lookup(dirs[i], VNODE_LOOKUP_NOFOLLOW, &dvp, ctx);
++		if (error == 0) {
++			vnode_put(dvp);
++		} else if (error == ENOENT) {
++			error = oneios_kern_mkdir(dirs[i], 0755, ctx);
++		}
++		if (error) {
++			printf("oneios-cmcapture-model: %s could not be made (%d): nothing mounted\n", dirs[i], error);
++			return;
++		}
++	}
++	if (vnode_lookup(link, VNODE_LOOKUP_NOFOLLOW, &vp, ctx) == 0) {
++		vnode_put(vp);                        /* an earlier boot's link (or the owner's own entry): left as it is */
++	} else {
++		made = oneios_kern_symlink(board, link, ctx);
++	}
++	/* Scratch 0xa00..0xb28, as 0056's and 0078's mounts (done by now): the mount's type, point and source. */
++	native_gpu_addon_mount(p, scratch, 0xa00, source, sizeof(source), point, sizeof(point), visible, own,
++	    &oneios_cmcapture_model_stage, &oneios_cmcapture_model_status);
++	printf("oneios-cmcapture-model: %s over %s: %s -> %s (%s %d), stage %d, status %d (stage 5 status 0: mounted, %s's "
++	    "tables visible as %s's)\n", source, point, name, board, made < 0 ? "link there already" : "link made",
++	    made < 0 ? 0 : made, oneios_cmcapture_model_stage, oneios_cmcapture_model_status, board, name);
++}
++#endif /* XNU_HOSTED */
++#if XNU_HOSTED
++/*
+  * OneiOS hosted (0083): AssistantServices' offline dictation status in mobile's preferences, for a Data store made from
+  * a seed that does not carry it (the image's roottweak writes the same key into new seeds: prefs.toml group
+  * "dictation"). -[AFDictationConnection forcedOfflineDictationIsAvailableForLanguage:synchronous:] caches the
+@@ -10119,6 +10220,7 @@
+ 	oneios_swap_folder();                         /* 0057 */
+ 	oneios_log_persist();                         /* 0070 */
+ 	oneios_audio_tunings(p, scratch);             /* 0078 */
++	oneios_cmcapture_model(p, scratch);           /* 0088 */
+ 	oneios_dictation_status();                    /* 0083 */
+ #endif
+ }

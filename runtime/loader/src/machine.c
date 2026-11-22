@@ -367,14 +367,21 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   // unique-model. CMCapture's FigCaptureGetModelSpecificName takes that answer less "AP" as the folder of its per-model
   // tables (CMCapture.framework/V54/AVCaptureSession.plist, CameraSetup.plist, ...); without it the name was NULL and
   // every built-in source failed (iOS's log, 2026-11-22: Fig assert "modelSpecificAVCaptureSessionPlist" at
-  // FigCaptureSourceBackingsProvider.m:2316, err -12780, "Created 0 in-memory built-in backings"). The iPhone18,2's own
-  // value is "V54AP"; an identity tree's /product has it already.
+  // FigCaptureSourceBackingsProvider.m:2316, err -12780, "Created 0 in-memory built-in backings").
+  // The name is not the iPhone18,2's own "V54AP" by default: AVFCapture's AVGestalt (in audiomxd too) finds V54 in its
+  // table of 41 iPhone models and answers its webcam key true, VirtualAudio's RoutingSettings_N71 then builds a webcam
+  // subport whose DSP list exists only with input processing on (here it is off), its precondition fails, and
+  // VirtualAudio never starts: no speaker, no volume, no haptics (iOS's log, v0.1.16, 2026-11-23: "Need valid DSPConfig
+  // for webcam recording", VA Init Status: 1). XL_CAMERA_MODEL ("OneiOSAP") is in no such table, so AVGestalt answers
+  // as with no name, and the hosted kernel (0088) shows CMCapture.framework/OneiOS as a link to the sealed V54 folder.
+  // m->unique_model (xnuhost's camera-model=) wins; without it an identity tree's /product keeps its own.
   bool camera_device = false;
   for (unsigned i = 0; i < m->ndev; i++) camera_device |= m->dev[i].kind == XL_DEV_CAMERA;
   const uint32_t cameras = camera_device ? m->cameras & (XL_CAMERA_REAR | XL_CAMERA_FRONT) : 0;
   if (cameras) {
     xl_adt_add(product, "camera");
-    if (!xl_adt_get(product, "unique-model")) xl_adt_set_str(product, "unique-model", "V54AP");
+    if (m->unique_model || !xl_adt_get(product, "unique-model"))
+      xl_adt_set_str(product, "unique-model", m->unique_model ? m->unique_model : XL_CAMERA_MODEL);
   }
 
   xl_adt_node *io = xl_adt_add(root, "arm-io");

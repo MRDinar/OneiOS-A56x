@@ -82,10 +82,15 @@ typedef struct {
   uint32_t    display_width, display_height, display_scale, display_hz;
   // The cameras iOS is told about (XL_CAMERA_*; 0 = none), used only with an "oneios,camera" device: /arm-io/isp
   // camera-rear and camera-front (MobileGestalt's rear-facing-camera, front-facing-camera and still-camera, which
-  // SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and without an identity tree /product
-  // unique-model "V54AP" (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from
-  // CMCapture.framework/V54). docs/hardware.md section 7.
+  // SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and /product unique-model
+  // (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from CMCapture.framework/<it
+  // less "AP">). docs/hardware.md section 7.
   uint32_t    cameras;
+  // /product unique-model with the cameras (xnuhost's camera-model=): NULL gives an identity tree's own, else
+  // XL_CAMERA_MODEL. A name that AVFCapture's AVGestalt knows ("V54AP") makes VirtualAudio build a webcam subport it
+  // has no DSP chain for, and audio never starts (2026-11-23); XL_CAMERA_MODEL is in no such table, and the hosted
+  // kernel (0088) shows CMCapture.framework/OneiOS as a link to V54.
+  const char *unique_model;
   const char *text_fixups;                // NUL-separated list for /chosen text-fixups, with its length
   uint32_t    text_fixups_length;
   // xnuhost: where a hosted kernel finds the host (0 = not hosted, node omitted)
@@ -120,6 +125,9 @@ void xl_machine_mac(const xl_machine *m, unsigned which, uint8_t mac[6]);
 
 #define XL_CAMERA_REAR  1u      // a back camera (the bridge's wide, ultra-wide or a telephoto)
 #define XL_CAMERA_FRONT 2u      // the front camera
+// The default /product unique-model with the cameras: in neither AVGestalt's nor CMCaptureGestalt's table of 41 iPhone
+// models (so AVGestalt answers false, as with no name), and CMCapture's folder "OneiOS" is the kernel's link to V54.
+#define XL_CAMERA_MODEL "OneiOSAP"
 
 // Builds the tree. NULL with *error set for a machine that cannot be described.
 xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error);

@@ -385,3 +385,12 @@
 # transport: H4 over /dev/btwake and com.apple.uart.sk.bluetooth, the phone's controller. One `oneios-bt:` line per exec;
 # oneios-bt-hci=0 is the old way. README.md, "0087"; docs/hardware.md 4.
 0087-bluetoothd-hci-transport.patch
+# fix-audio-camera-model (2026-11-23): no sound, no volume, no haptics in the v0.1.16 boot: with /product unique-model
+# "V54AP" (9ae1f0c, for CMCapture's V54 tables) AVFCapture's AVGestalt answers V54's webcam key true in audiomxd, and
+# VirtualAudio's RoutingSettings_N71 builds a webcam subport with no DSP list (input processing is off here): its
+# precondition fails, "VA Init Status: 1", VirtualAudio never starts. xnuhost's loader now gives "OneiOSAP" (in no
+# AVGestalt table; camera-model=V54AP the old name), and before launchd /private/var/oneios/addons/CMCapture gets a link
+# OneiOS -> V54 shown over CMCapture.framework read-only (0031's union mount), so CMCapture still reads V54's tables.
+# Nothing when the name's folder is sealed (V54AP) or there is no unique-model. oneios-cmcapture-model=0: not done;
+# =NAME: another folder. README.md, "0088". Numbered 0088: 0087 was the last on main and on the open branches.
+0088-cmcapture-model-folder.patch

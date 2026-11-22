@@ -226,11 +226,12 @@ check "ioslog health without SOURCE: the stage's own data.img is the one read" 1
 check "ioslog health without SOURCE, on a stage without a store" 1 "no SOURCE, and no staged Data store at $W/none/data/data.img" "$TOOL" ioslog health --stage "$W/none"
 mkdir -p "$W/stage2/data" "$W/stage2/session"; cp "$HT" "$W/stage2/data/data.img"
 out=$("$TOOL" ioslog health --stage "$W/stage2" 2> "$W/health.err"); st=$?
-[ $st = 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 8 ] && printf '%s\n' "$out" | head -n 1 | grep -q "^$W/stage2/data/data.img: .*, 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)$" \
-  && ok "ioslog health without SOURCE: the head and one line per kind (7 kinds)" || bad "ioslog health without SOURCE" "status $st: $(printf '%s' "$out" | head -n 2 | tr '\n' '|') $(head -n 2 "$W/health.err")"
+[ $st = 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 9 ] && printf '%s\n' "$out" | head -n 1 | grep -q "^$W/stage2/data/data.img: .*, 42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)$" \
+  && ok "ioslog health without SOURCE: the head and one line per kind (8 kinds)" || bad "ioslog health without SOURCE" "status $st: $(printf '%s' "$out" | head -n 2 | tr '\n' '|') $(head -n 2 "$W/health.err")"
 miss=""; for want in "^hangs +8  109\.7 s in all, longest 61\.27 s \(Preferences\), 5 over 1 s; Preferences 4 \(64\.9 s, longest 61\.27 s, 2 over 1 s\), SpringBoard 2 \(40\.1 s, longest 39\.34 s, 1 over 1 s\), MobileSafari 2 " \
   "^watchdog +5  chronod 3, SpringBoard 1, backboardd 1; named: com\.example\.clock\.widget 2, com\.example\.weather\.widget 2$" "^xpc-timeouts +4  SpringBoard 3, Preferences 1; services: com\.example\.photos\.service 2, com\.example\.settings\.service 1$" \
-  "^jetsam +4  MobileSafari 2, Preferences 1, nfcd 1$" "^crashes +3  chronod 2, Preferences 1$" "^stuck-idle +3  profiled 2, coreauthd 1$" "^encode-fail +3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation \[-12782\] 2, -16993 1$"; do
+  "^jetsam +4  MobileSafari 2, Preferences 1, nfcd 1$" "^crashes +3  chronod 2, Preferences 1$" "^stuck-idle +3  profiled 2, coreauthd 1$" "^encode-fail +3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation \[-12782\] 2, -16993 1$" \
+  "^audio +6  started 0, webcam 1, failed at 1, failed 1, status 1, not ready 2; audiomxd 6; failures: RoutingSettings_N71\.cpp:1196 1, "; do
   printf '%s\n' "$out" | grep -Eq "$want" || miss="$miss /$want/"; done
 [ -z "$miss" ] && ok "ioslog health: the counts of the hand-written log, per kind and process" || bad "ioslog health: the counts" "missing:$miss"
 [ ! -s "$W/health.err" ] && ok "ioslog health: no session, nothing on stderr" || bad "ioslog health: stderr without a session" "$(head -n 2 "$W/health.err")"

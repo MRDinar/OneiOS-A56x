@@ -1410,6 +1410,40 @@ store's boot without 0083 (21:28): key taps in Spotlight 30 (0 before); Spotligh
 (103-107% all the time before). Still in the log, for later: `Keyboard screen not found for window (null)` 21 times at
 Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s).
 
+## 0088-cmcapture-model-folder.patch (fix-audio-camera-model, 2026-11-23)
+
+The v0.1.16 boot had no sound, no volume and no haptics: VirtualAudio never started (`Precondition failure:
+webcamRecordingDSPList && "Need valid DSPConfig for webcam recording"`, `VA Init Status: 1`). The cause was the camera's
+model name: with `/product unique-model` "V54AP" (9ae1f0c, so that CMCapture finds `CMCapture.framework/V54/`)
+AVFCapture's AVGestalt finds V54 in its table of 41 iPhone models and answers its webcam key true in audiomxd, and
+VirtualAudio's RoutingSettings_N71 then builds a webcam subport with no DSP list (input processing is off here).
+`docs/hardware.md` 7, "The model name stopped all audio", has the code read in the shared cache.
+
+The loader now gives "OneiOSAP" (xnuhost's `camera-model=`, `docs/booter.md`), in no AVGestalt table; CMCapture's
+folder for it is `OneiOS` (the name less "AP"). The patch (`bsd/kern/kern_exec.c`, `oneios_cmcapture_model`, in
+`native_gpu_addon_prepare` after 0078's `oneios_audio_tunings`): it reads `/product unique-model` from the device tree,
+takes the name less "AP" (letters and digits only), and when `CMCapture.framework/NAME/AVCaptureSession.plist` is not
+there it makes `/private/var/oneios/addons/CMCapture` (and its parents) with one link `NAME -> V54` (made when missing;
+an entry that is there is left alone) and shows that folder over `/System/Library/PrivateFrameworks/CMCapture.framework`
+read-only: `native_gpu_addon_mount`, the union mount of 0031, 0056 and 0078 (scratch 0xa00, as theirs: they are done by
+then). Stage 4 proves the sealed `V54/AVCaptureSession.plist` is still seen through the union, stage 5 that
+`NAME/AVCaptureSession.plist` is. Nothing of Apple's is copied.
+- A name whose folder is sealed (`camera-model=V54AP`: `V54`): `... is there already ...: nothing mounted`.
+- No `unique-model` (no camera listed): `no /product unique-model (no camera): nothing to do`.
+- `oneios-cmcapture-model=0`: off; `=NAME`: the link points at `CMCapture.framework/NAME` instead of `V54`.
+- One line: `oneios-cmcapture-model: /private/var/oneios/addons/CMCapture over
+  /System/Library/PrivateFrameworks/CMCapture.framework: OneiOS -> V54 (link made 0), stage 5, status 0 (stage 5 status
+  0: mounted, V54's tables visible as OneiOS's)`.
+
+Numbered 0088: 0087 was the last number on main and on every open branch (`git branch -r`, 2026-11-23).
+Tested (the build laptop, 2026-11-23): `HOSTED_OUT=cammodel ONEIOS_CRYPTO=original HOSTED_SERIES=<this series>
+kernel/build-hosted.sh` applied the series with 0088 (no fuzz, no warning in `kern_exec.c`) and built `xnu.macho` in 636 s
+(sha256 `84eb830f9608db41...`; the `oneios-cmcapture-model:` strings are in it). `KERNEL=out/kernel/current-hosted-cammodel/xnu.macho
+OUT=out/kernel/cammodel-24A446 kernel/prelink/build.sh` gave `kernel.kc` 96,272,384 bytes, sha256 `71d7db1449994d58...`
+(`kernel.kc.hashes` `22a4e86ed7bdbbae...`), audit 2,711 paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good,
+0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet. The phone check: `docs/hardware.md` 7, "The model name stopped all
+audio".
+
 ## 0087-bluetoothd-hci-transport.patch (fix-ios-bluetooth-power, 2026-11-23)
 
 The owner's request: Bluetooth must work in iOS sessions (and AirDrop needs it first). In every session bluetoothd

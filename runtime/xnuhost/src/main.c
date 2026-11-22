@@ -908,6 +908,13 @@ static int boot(void)
       else if (!strcmp(config.camera_vm, "hide"))
         LOGI("camera: cameracaptured is not told of the VM (owner-hide-vmm%s): CMCapture keeps the back cameras only outside one", added ? " gets it" : " has it");
       else LOGI("camera: camera-vm=show: cameracaptured sees the VM, and CMCapture drops the back cameras");
+      // /product unique-model (camera-model=): MobileGestalt's HWModelDescriptionForCamera, which both CMCapture's
+      // folder and AVGestalt's table go by. The default is in no AVGestalt table (VirtualAudio starts; the kernel,
+      // hosted 0088, shows CMCapture.framework/<name less AP> as a link to V54); V54AP stops all audio (docs/hardware.md 7).
+      machine.unique_model = config.camera_model;
+      LOGI("camera: unique-model %s (camera-model=): CMCapture's tables %s, AVGestalt %s", config.camera_model,
+           strcmp(config.camera_model, "V54AP") ? "through the kernel's link to V54" : "in V54",
+           strcmp(config.camera_model, "V54AP") ? "has no entry (VirtualAudio builds no webcam subport)" : "answers V54's (its webcam subport stops VirtualAudio)");
     }
   }
   machine.display_width = fb_width;

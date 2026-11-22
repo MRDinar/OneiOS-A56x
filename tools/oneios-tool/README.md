@@ -774,7 +774,7 @@ oneios-tool ioslog boots SOURCE                       # the boots: UUID, start, 
 oneios-tool ioslog checks SOURCE [--boot last|all|UUID] [--examples N]
 oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [--examples N] [-o FILE] [--stage DIR]
                                                       # hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck
-                                                      # idle demotions, encode failures: one line per kind ("health" below)
+                                                      # idle demotions, encode failures, VirtualAudio's start: one line per kind ("health" below)
 oneios-tool ioslog keyboard [SOURCE] [the same options as health]
                                                       # the keyboard's path: key taps by app, hangs, asset locks and
                                                       # queries, language models, keyboard layouts ("keyboard" below)
@@ -852,7 +852,7 @@ oneios-tool ioslog health                                  # on the phone itself
 Its output for the tests' log (`tests/ioslog/health.txt`, **written by hand, not a session**):
 
 ```
-tests/ioslog/health.txt: the entries of a text file (ioslog show's), 36 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)
+tests/ioslog/health.txt: the entries of a text file (ioslog show's), 42 entries, from 2026-11-15 09:00:00.000000Z to 2026-11-15 09:10:00.000000Z (600 s)
 hangs              8  109.7 s in all, longest 61.27 s (Preferences), 5 over 1 s; Preferences 4 (64.9 s, longest 61.27 s, 2 over 1 s), SpringBoard 2 (40.1 s, longest 39.34 s, 1 over 1 s), MobileSafari 2 (4.8 s, longest 3.50 s, 2 over 1 s)
 watchdog           5  chronod 3, SpringBoard 1, backboardd 1; named: com.example.clock.widget 2, com.example.weather.widget 2
 xpc-timeouts       4  SpringBoard 3, Preferences 1; services: com.example.photos.service 2, com.example.settings.service 1
@@ -860,6 +860,7 @@ jetsam             4  MobileSafari 2, Preferences 1, nfcd 1
 crashes            3  chronod 2, Preferences 1
 stuck-idle         3  profiled 2, coreauthd 1
 encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_UnsupportedOperation [-12782] 2, -16993 1
+audio              6  started 0, webcam 1, failed at 1, failed 1, status 1, not ready 2; audiomxd 6; failures: RoutingSettings_N71.cpp:1196 1, webcamRecordingDSPList && "Need valid DSPConfig for webcam recording" 1
 ```
 
 - **The head:** the source (for an image with its volume, as the other commands name it), the boot (`boot UUID`,
@@ -869,7 +870,9 @@ encode-fail        3  chronod 2, SpringBoard 1; errors: kCMBaseObjectError_Unsup
   L s (PROCESS), N over 1 s`; the processes, the largest count first (`NAME COUNT`; for hangs `NAME COUNT (T s,
   longest L s, N over 1 s)`; beyond `--top N`, default 5: `and N more with COUNT`); and for a kind filed by the
   process that logged the line, when its lines name something: `named:`, `services:` or `errors:` and those names.
-  A kind with no line is `NAME 0`. The lines are not indented; everything else below the head is.
+  A kind whose texts are steps of one thing (`audio`) gives each text's count first (`started 0, webcam 1, ...`), so
+  that a step that never came shows as 0. A kind with no line is `NAME 0` (with those counts for such a kind). The lines are not indented;
+  everything else below the head is.
 - **`--detail`** adds, indented under each kind: `counts:` what the kind means; `first T, last T`; `texts:` each
   text's count (for a kind of several texts filed by the logger also who logged it: `extension 3 (chronod 3)`);
   `by process:` every process; the names; `logged by:` for the kernel's kinds; and `e.g.` example lines
@@ -906,9 +909,10 @@ The kinds are one table, `KINDS` in `crates/oneios-ioslog/src/health.rs`:
 | `crashes` | the kernel's `NAME[PID] Corpse allowed N of 5` (`corpse`), `NAME[PID] Corpse failure, too many` (`too many corpses`) | the process the line names | |
 | `stuck-idle` | `timed out stuck process` (`memorystatus_perform_idle_demotion() timed out stuck process PID [NAME], moving to idle band`) | the process the line names | |
 | `encode-fail` | `CMPhotoCompressionSessionAddImage ... err =` | the process that logged the line | `errors:` what follows `err =`: a name of up to three words with its number (`kCMBaseObjectError_UnsupportedOperation [-12782]`, `unknown error [-12900]`), else one word (`-16993`). Until 2026-11-22 a name of more words was cut to its first (`unknown`) |
+| `audio` | VirtualAudio's start in audiomxd (2026-11-23: no sound, volume or haptics in the v0.1.16 boot): `Ending Deferred Initialization` (`started`; 0: VirtualAudio never started), `Creating subport config for webcam recording` (`webcam`: made only when AVFCapture's AVGestalt answers its webcam key, `docs/hardware.md` 7), `FILE:LINE  PRECONDITION FAILURE` (`failed at`), `Precondition failure: TEXT` (`failed`), `VA Init Status: N` with N not 0 (`status`), `VirtualAudio PlugIn is not initialized yet` (`not ready`: each call refused after a failed start) | the process that logged the line (audiomxd) | `failures:` the file and line of a failed precondition and its text; the line gives each text's count (`texts_in_line`) |
 
 **To add a kind, add a row** (name, what it means, the texts, `By::Logger` or `By::Named`, what the names are, the
-expressions that find a name, the "over" limit) and its lines to `tests/ioslog/health.txt` with their numbers in
+expressions that find a name, the "over" limit, whether the line gives each text's count) and its lines to `tests/ioslog/health.txt` with their numbers in
 `health_tests.rs`: the counter, the report, `cycle` and `summary.md` take the table as it is. A text may hold the
 named groups `s` (a number of seconds: the kind then gets a total, a longest and an "over" count) and `who` (the
 process, extension or service the line names).
@@ -947,7 +951,7 @@ new). The stand-in suites, `tests/phone/modes.sh` (with origin/main at `fb4ec88`
 ok, no stand-in session left. The ten new phone checks: `pull-data --ioslog` on the stand-in's `data.img`, which
 is no APFS store (it ends at `ioslog boots`, the copy stays, no `ioslog-health.txt`); `ioslog health` without
 SOURCE (the stage's own `data.img` is the one read; a stage without a store is refused by name; on a stage whose
-`data.img` is the hand-written log: the head and seven lines, the counts per kind and process, nothing on stderr;
+`data.img` is the hand-written log: the head and eight lines (seven before `audio`, 2026-11-23), the counts per kind and process, nothing on stderr;
 `--top 1 -o FILE`); beside a stand-in session (it reads, and says on stderr that the store is being written; a pid
 file of a process that is gone is no session). The five new cycle checks: `cycle --only collect` in a folder that
 holds the hand-written log as `ioslog.txt` (the head and seven lines printed; `ioslog-health.txt` with the
