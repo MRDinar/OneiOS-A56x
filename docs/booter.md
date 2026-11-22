@@ -1536,9 +1536,15 @@ panic. So the main loop never saw the halt's stop either.
 
 **Tests** (build laptop): `make -C runtime/xnuhost test` (`test_health_held`: a handler that blocks on another
 thread; the report comes back, says `held by a request on queue 0 ... (cpu1 in its handler)` once, and `free again`
-after), `make -C runtime/bridges/encoder test` (`test_hung_helper`: the stand-in's open hangs in the helper process
+after; and check-arm64's test kernel, `test_xcall`: vCPU 1 hands off to an iOS thread that spins in user code and
+never traps, so it waits in the hand-off's futex as the phone's vCPUs did; vCPU 0 sends it SGI 7 as the debugger's
+cross-call does, 20 times, and each must be taken within 500 ms: `cross-call to a vCPU in the hand-off: taken 0x14 of
+20, slowest (us) 0x...`), `make -C runtime/bridges/encoder test` (`test_hung_helper`: the stand-in's open hangs in the helper process
 (`ONEIOS_ENCODER_STUB_HANG_OPEN`); the open comes back in its limit, the helper is killed, a new one works, after two
-hangs no helper starts). The stop watch and the second kick have no host test of their own (a host test that stops
+hangs no helper starts). Results on the build laptop, 2026-11-23: `xnuhost tests: 14269 checks, 0 failed`, `TESTKERNEL: all
+passed` under qemu-aarch64 with `cross-call to a vCPU in the hand-off: taken 0x14 of 20, slowest (us) 0x146` (326 us),
+`test_encoder: 218/218 checks passed`, `runtime/host-tests.sh` exit 0, the oneios-tool crates' tests 0 failed. The stop
+watch and the second kick have no host test of their own (a host test that stops
 the process would need a fork of xnuhost's main; not done). **Phone:** the lines to look for in the next boot that
 opens an encoder session are `encoder: helper ... (pid N)`, then either `encoder: session N: HEVC ...` or `encoder:
 the helper (pid N) did not answer an open in 2500 ms (...): killed (1 of 2)`, and never a `virtio media#0: held by`
