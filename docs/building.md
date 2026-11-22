@@ -314,11 +314,12 @@ build passed, `app_process` said `dlopen failed: cannot locate symbol "ANativeWi
 by liboneios-display.so`, and the panel stayed on the OneOS splash (`f7bb1c3` linked `-lnativewindow`). Two things
 now stop such a file on the build machine:
 
-1. **The link rule.** Every crate of the runtime built as a `cdylib` passes `-Wl,-z,defs` to its cdylib link from
-   its `build.rs` (`cargo:rustc-cdylib-link-arg=-Wl,-z,defs`): a symbol that no library named on the line has is a
-   link error (`ld.lld: error: undefined symbol: ...`). The runtime builds one shared object, `liboneios-display.so`
-   (`runtime/display/build.rs`, built by `runtime/display/build-android.sh`); a new one takes the same line, and
-   `runtime/package/elf-check-test.sh` fails when a cdylib crate's `build.rs` has none. Executables need no flag: lld
+1. **The link rule.** Every shared object of the runtime is linked by a `cargo rustc ... --crate-type cdylib`
+   line in a runtime script that passes `-C link-arg=-Wl,-z,defs`: a symbol that no library named on the line has is
+   a link error (`ld.lld: error: undefined symbol: ...`). No Cargo.toml declares a `cdylib` crate-type (that would be
+   a link outside the rule). The runtime builds one shared object, `liboneios-display.so`
+   (`runtime/display/build-android.sh`); a new one takes the same flag, and `runtime/package/elf-check-test.sh` fails
+   when a script's cdylib line has none or a Cargo.toml declares a cdylib. Executables need no flag: lld
    fails on an undefined symbol in an executable by default, a static one (xnuhost, the phone checks) and a dynamic
    one (`oneios-audio`, `oneios-camera`, `camctl`) alike. The test links one of each with a missing symbol and expects
    the failure.
@@ -347,7 +348,8 @@ now stop such a file on the build machine:
    lists it for API 30 is not found by it.
 
 `runtime/package/elf-check-test.sh` (the `links` part of `runtime/host-tests.sh`, and a step of CI) tests both, in a
-temporary folder: that every cdylib crate of the runtime passes `-z defs` from its `build.rs`; the display helper's
+temporary folder: that every cdylib link in the runtime's scripts passes `-Wl,-z,defs` and no Cargo.toml declares a
+cdylib; the display helper's
 library as `runtime/display/build-android.sh` builds it (`-z defs`, needs `libnativewindow.so`, the check passes);
 `runtime/package/elf-fault.rs`, a test input that makes `1f7dd1f`'s two calls, built with rustc and the NDK's clang as
 cargo links the runtime: with `libandroid` only and `-z defs` the link fails, without `-z defs` it links and the check

@@ -63,8 +63,10 @@ xnuhost/check-arm64.sh bench | rpc | parallel | ab   # the trap path's costs (do
 - Tests that need a phone, binderfs, `/dev/udmabuf`, root, the NDK or `ffmpeg` skip with a printed reason (the binder
   tests re-run themselves in a user namespace with a binderfs, `bridges/hal/binderfs.rs`). Test binaries that cannot
   use cargo's harness (the binder ones) are `[[bin]]`s or `harness = false` tests.
-- A shared object (`cdylib`) passes `-Wl,-z,defs` from its `build.rs`; `runtime/package/elf-check-test.sh` fails
-  when one does not, and `runtime/package/elf-check.sh` checks every stage (docs/building.md section 4).
+- A shared object is linked by a `cargo rustc ... --crate-type cdylib -- -C link-arg=-Wl,-z,defs` line in a runtime
+  script (today only `display/build-android.sh`, for `liboneios-display.so`); no Cargo.toml declares a `cdylib`.
+  `runtime/package/elf-check-test.sh` fails when a cdylib line lacks the flag or a Cargo.toml declares one, and
+  `runtime/package/elf-check.sh` checks every stage (docs/building.md section 4).
 
 ## Conventions
 

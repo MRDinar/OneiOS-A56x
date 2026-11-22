@@ -11,55 +11,44 @@ What the guest shows comes from its framebuffer driver (`kernel/patches/oneios-h
 console until `backboardd`'s first frame, then iOS. On the PC, `oneios-tool kernel display-capture` (tools/oneios-tool) is a
 client of `display.sock` in this helper's place: it says when the picture changed and writes it as PNGs.
 
+The helper is Rust, the crate `oneios-display` of the runtime's workspace ([runtime/RUST.md](../RUST.md)), ported 1:1
+from C on 2026-11-23 (every log line, default and protocol layout). **The Rust helper has not run on the phone yet**:
+every phone result below is of the C helper.
+
 ```sh
-make               # build/android: oneios-display, liboneios-display.so, oneios-display.dex, displayctl
-make test          # host tests: the socket protocol, the fit, the damage rectangles, the copy, displayctl,
-                   # and the choice of the panel's native mode (tests/TestModes.java, on the host's JVM)
+runtime/display/build-android.sh OUT   # OUT/bin/{oneios-display,displayctl,liboneios-display.so}, OUT/lib/oneios-display.dex
+runtime/package/elf-check.sh OUT       # the .so: NEEDED libandroid, libnativewindow, libdl, libm, libc; 0 failures
+cd runtime && cargo test -p oneios-display   # host: the socket protocol, the fit, the damage rectangles, the copy,
+                                             # displayctl, and the choice of the panel's native mode (TestModes.java)
 ```
 
-Needs NDK 28.2, a JDK (`javac`) and `d8` from the Android SDK's build-tools (`ANDROID_SDK_ROOT`, `ANDROID_HOME`,
-or the SDK the NDK is in). No `android.jar`: the Java source reaches the framework by reflection only.
-`liboneios-display.so` links `-landroid -lnativewindow -lm` (the dataspace calls are libnativewindow's) with `../host.mk`'s `ANDROID_SO_LDFLAGS` (`-Wl,-z,defs`: a symbol that none of them has fails the link), and `runtime/build.sh` checks its NEEDED libraries and undefined symbols against the NDK's API 30 stubs (`runtime/package/elf-check.sh`; `docs/building.md` section 4).
+`runtime/build.sh STAGE` runs `build-android.sh` and strips the four files into the stage. Needs NDK 28.2, rustup's
+`aarch64-linux-android` target, a JDK (`javac`) and `d8` from the Android SDK's build-tools (`ANDROID_SDK_ROOT`,
+`ANDROID_HOME`, or the SDK the NDK is in). No `android.jar`: the Java source reaches the framework by reflection only.
+`build-android.sh` links the library with `cargo rustc --release --target aarch64-linux-android -p oneios-display
+--lib --features jni --crate-type cdylib -- -C link-arg=-Wl,-z,defs -C link-arg=-Wl,-soname,liboneios-display.so`
+(`-z defs`: a symbol that none of its libraries has fails the link; the dataspace calls are libnativewindow's),
+builds the two programs with `+crt-static` in a target dir of their own (`$CARGO_TARGET_DIR-static`, default
+`runtime/target/display-static`), and the dex with javac and d8 (min API 30). `runtime/build.sh` then checks the
+library's NEEDED libraries and undefined symbols against the NDK's API 30 stubs (`runtime/package/elf-check.sh`;
+`docs/building.md` section 4).
 
 | File | What it is |
 |---|---|
-| `src/xhd.c`, `xhd.h` | the portable core: `display.sock` client (and the serving side for the tests), hello checks, damage rectangles, letterbox fit, row copy |
-| `src/jni.c` | `liboneios-display.so`: the socket, the mapped frame, the copy into the layer's buffers, the stop signals |
+| `src/xhd/` | the portable core, shared with xnuhost (which links this crate): `mod.rs` (formats, dataspaces, `Rect`, `fit`, `copy`, `hold_first`), `protocol.rs` (the `display.sock` messages, `check_hello`, `connect`, `send_panel`, `recv_hello`, `drain`/`drain_direct`, `send_done`; xnuhost's side: `listen`, `send_hello`, `send_flush`, `memfd`), `direct.rs` (the direct frames: `Direct`, `Slot`, `Seg`, `copy_direct`), `snapshot.rs` (`Snapshot`, `hash_tile`), `buffers.rs` (`Buffers`); its tests in `src/xhd/tests.rs` |
+| `src/jni.rs` | `liboneios-display.so` (feature `jni`, Android only: the `Java_OneiOSDisplay_n*` exports): the socket, the mapped frame, the copy into the layer's buffers, the stop signals |
+| `src/frame_perf.rs` | the bounded, allocation-free frame-timing statistics |
+| `src/sys.rs` | the system calls the helper and xnuhost's display share |
 | `java/OneiOSDisplay.java` | `oneios-display.dex`: the layers (`SurfaceControl`, `BLASTBufferQueue`), the panel's mode, the placement |
-| `src/launcher.c` | `oneios-display`: finds the dex and the library next to itself and execs `app_process` (same pid) |
-| `src/displayctl.c` | `displayctl`: the phone test; stands in for xnuhost with a moving pattern |
-| `tests/test_display.c` | the host tests |
+| `src/bin/launcher.rs` | `oneios-display`: finds the dex and the library next to itself and execs `app_process` (same pid) |
+| `src/bin/displayctl.rs` | `displayctl`: the phone test; stands in for xnuhost with a moving pattern |
+| `tests/displayctl.rs`, `tests/java_modes.rs`, `tests/TestModes.java` | displayctl's checks (no harness: the binary is also the stand-in helper); the native-mode choice on the host's JVM (skipped without javac and java) |
 
-### The Rust port (`rust-runtime`, crate `oneios-display`, `runtime/RUST.md`)
-
-The same helper in Rust, 1:1 in behaviour (every log line, default and protocol layout). `runtime/build.sh` still
-builds the C with `make` until the lead switches it; the Rust files have not run on the phone yet.
-
-| C | Rust |
-|---|---|
-| `src/xhd.c`, `xhd.h` | `src/xhd/`: `mod.rs` (formats, dataspaces, `Rect`, `fit`, `copy`, `hold_first`), `protocol.rs` (`Message`/`Kind`, `check_hello`, `connect`, `send_panel`, `recv_hello` -> `Frame`, `drain`/`drain_direct`, `send_done`; xnuhost's side: `listen`, `send_hello`, `send_flush`, `memfd`), `direct.rs` (`Direct`, `Slot`, `Seg`, `copy_direct`), `snapshot.rs` (`Snapshot`, `hash_tile`), `buffers.rs` (`Buffers`) |
-| `src/frame_perf.c`, `.h` | `src/frame_perf.rs` |
-| `src/jni.c` | `src/jni.rs` (feature `jni`, Android only: the cdylib's `Java_OneiOSDisplay_n*` exports) |
-| `src/launcher.c` | `src/bin/launcher.rs` (bin `oneios-display`) |
-| `src/displayctl.c` | `src/bin/displayctl.rs` |
-| `tests/test_display.c` | `src/xhd/tests.rs` (13 tests) and `tests/displayctl.rs` (no harness: the binary is also the stand-in helper) |
-| `tests/test_frame_perf.c` | `frame_perf.rs`'s test |
-| `make test`'s `TestModes` | `tests/java_modes.rs` (javac and java; skipped without them) |
-| `pixels.h` (the parts used) | `src/pixels.rs`, until xh-core's `pixels` lands (then a re-export) |
-
-```sh
-cd runtime
-CARGO_TARGET_DIR=target/display cargo test -p oneios-display   # host: 14 unit tests, 22 displayctl checks, TestModes
-display/build-android.sh OUT     # OUT/bin/{oneios-display,displayctl,liboneios-display.so}, OUT/lib/oneios-display.dex
-package/elf-check.sh OUT         # the .so: NEEDED libandroid, libnativewindow, libdl, libm, libc; 0 failures
-```
-
-`build-android.sh` runs `cargo rustc --release --target aarch64-linux-android -p oneios-display --lib --features jni
---crate-type cdylib -- -C link-arg=-Wl,-soname,liboneios-display.so -C link-arg=-Wl,-z,defs` (copied to
-`liboneios-display.so`), `cargo build --release --target aarch64-linux-android -p oneios-display --bins` with
-`+crt-static` in `target/display-static`, and javac + d8 for the dex as the Makefile does. Changes from the C: a
-direct slot whose row offsets would wrap a 64-bit sum is refused (EINVAL) where the C let them wrap; a pixel split
-across two guest pages is swapped whole by `copy_direct` (the C swapped whole pixels of each piece only).
+The pixel formats and conversions are xh-core's (`xh_core::pixels`, the mirror of
+`runtime/xnuhost/include/xnuhost/pixels.h`). Changes from the C: a direct slot whose row offsets would wrap a 64-bit
+sum is refused (EINVAL) where the C let them wrap; a pixel split across two guest pages is swapped whole by
+`copy_direct` (the C swapped whole pixels of each piece only). The C files the names below come from (`xhd.c`,
+`jni.c`, `launcher.c`, `displayctl.c`, `frame_perf.c`, `tests/test_display.c`) are in git history before 2026-11-23.
 
 ## How the layer is made, and why
 
@@ -130,7 +119,7 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   surfaceflinger has taken the last, so the loop runs at the panel's vsync and every flush that came meanwhile is
   one post.
 - **The first post waits for `session/ready` (since 2026-11-15).** With `--session DIR` the helper posts nothing
-  until `DIR/ready` exists (`xhd_hold_first`): xnuhost makes it at the guest's first frame of its own that is not
+  until `DIR/ready` exists (`hold_first`): xnuhost makes it at the guest's first frame of its own that is not
   all black, or `ready-content-wait` seconds (120) after its first black one (`docs/booter.md` 2.8, "the ready
   rule"). Until then the layer is up but has no buffer, so the OneOS boot screen under it stays on the panel. The
   flushes that come meanwhile add up to the damage (the first post is the whole frame anyway); the helper looks for
@@ -196,15 +185,14 @@ The test path launches the helper with `--socket` (never `--session`: a standalo
 session's `ready` hold would wait for a marker XNU never makes). Extra helper options are allowlisted to
 `--hz`, `--format`, `--dataspace` and `--no-projection`; `--takeover`, `--session`, `--socket`, `--lib`,
 `--wait` and `--logical` are refused before any helper starts. Each animation step sends one union damage
-flush (erased + drawn square together), not two per-rectangle flushes. `src/frame_perf.c` is a bounded,
-allocation-free frame-timing statistics module with host unit tests (`test_frame_perf`); helper-side log
-wiring is still open.
+flush (erased + drawn square together), not two per-rectangle flushes. `src/frame_perf.rs` is a bounded,
+allocation-free frame-timing statistics module with a host unit test; helper-side log wiring is still open.
 
 ```sh
-make -C runtime/display
+runtime/display/build-android.sh out/display
 adb shell 'mkdir -p /data/local/tmp/oneios-display-test'
-adb push runtime/display/build/android/oneios-display runtime/display/build/android/liboneios-display.so \
-         runtime/display/build/android/oneios-display.dex runtime/display/build/android/displayctl \
+adb push out/display/bin/oneios-display out/display/bin/liboneios-display.so \
+         out/display/lib/oneios-display.dex out/display/bin/displayctl \
          /data/local/tmp/oneios-display-test/
 adb shell su -c 'chmod 0755 /data/local/tmp/oneios-display-test/oneios-display /data/local/tmp/oneios-display-test/displayctl'
 adb shell su -c '/data/local/tmp/oneios-display-test/displayctl test'
@@ -258,8 +246,8 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
 
 ## Not done
 
-- The dataspaces, `RGBA_FP16` buffers and the half-float path (2026-11-13) are host-tested only (`make test`: 110 +
-  10 checks): whether this phone's surfaceflinger takes an `RGBA_FP16` BLAST layer, and how One UI's screen modes
+- The dataspaces, `RGBA_FP16` buffers and the half-float path (2026-11-13) are host-tested only (the C helper's `make test` then: 110 +
+  10 checks; today `cargo test -p oneios-display`): whether this phone's surfaceflinger takes an `RGBA_FP16` BLAST layer, and how One UI's screen modes
   show `SRGB` and `SCRGB_LINEAR` layers, is the wide-colour test above. No HDR headroom is asked for.
 - Not every framework call has been seen working on Android 17 (the native-mode request and the projection, `--takeover`, have no log of a run here): the hidden methods used are all
   in `java/OneiOSDisplay.java`, and each has a fallback or a logged failure.
@@ -273,14 +261,14 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   to in the layer mean 10.4-11.5 ms, 0 not answered within 100 ms. A sign of wrong offsets: 100% of the rows
   copied in every frame on a still screen. Whether answering the flush after the post slows the guest's swaps is
   not measured yet.
-- **The snapshot (2026-11-22).** The helper's own copy of the picture (`struct xhd_snapshot`, 18 MB at 1440x3120
+- **The snapshot (2026-11-22).** The helper's own copy of the picture (`Snapshot`, `src/xhd/snapshot.rs`, 18 MB at 1440x3120
   and one hash per tile, made before the first post), which every post is filled from. A direct frame is read into
-  it in one pass right when it comes (`xhd_snapshot_update`): each tile of each row (4 a row) is copied from the
+  it in one pass right when it comes (`Snapshot::update`): each tile of each row (4 a row) is copied from the
   guest's pages into a one-tile buffer, hashed there, and copied on only when its hash differs. So the hash always
   says what the snapshot holds, and the guest's pages are read once. Before, the hash read all 18 MB and then the
   changed tiles were read a second time (from 2026-11-22 morning; before that, after the buffer wait): `guest pages
   read for mean 5.2-6.0 ms, max 8.6-21.2 ms` on the phone. xnuhost's own pixels (the memfd) are put over it
-  (`xhd_snapshot_put`), and their tiles lose their hashes, so the next direct frame takes them from the guest again.
+  (`Snapshot::put`), and their tiles lose their hashes, so the next direct frame takes them from the guest again.
   The 10 s line says how long the read took and how long after xnuhost's send it began (`from X ms after xnuhost
   sent the frame`: `XHDS`'s fifth word is the send time since 2026-11-22). On the build host (Apple M4, in the
   host tests' container, `-O2`, a 1440x3120 frame of stride 5888 in scattered 16 KiB pages) the one pass costs
@@ -291,7 +279,7 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   a frame's surface while the helper reads it. Its display driver lands the frame in flight (waits for the flush's
   answer, which xnuhost holds until `done`) before it posts the next one (`DroidVMVirtioGpuDisplay.cpp`, `land()`),
   and the compositor needs that next swap to free the surface again. The first-read delay on the phone checks this.
-  Tests: `test_display.c` (the first update copies all of it, an unchanged frame nothing, a changed pixel its tile,
+  Tests: `src/xhd/tests.rs` (from `test_display.c`; the first update copies all of it, an unchanged frame nothing, a changed pixel its tile,
   the X byte alone no change, the guest's write after the read stays out until the next read, a put tile is taken
   from the guest again, a fault halfway keeps what was read, a reused slot reads nothing).
 - **The layer's buffers (2026-11-22): the fix of "when the UI changes it glitches and updates".** Until then the
@@ -303,9 +291,9 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   picture of itself and then updates. xnuhost's own copy never did this, because the guest flushes its whole surface,
   so every post was whole. Now the buffer is locked whole (Surface copies nothing back) and the helper fills what
   that buffer lacks from the snapshot: the union of what every post changed since it was last filled, and this post's
-  change (`struct xhd_buffers`). Buffers are told apart by the address the lock maps them at. A buffer not seen yet,
+  change (`Buffers`, `src/xhd/buffers.rs`; C: `struct xhd_buffers`). Buffers are told apart by the address the lock maps them at. A buffer not seen yet,
   or forgotten (more than 8), is filled whole, and so is every buffer when one is not of the frame's size. The 10 s
-  line has `B buffers seen (K forgotten)` and `F% filled`. Test: `test_display.c` `test_buffers`, a model of
+  line has `B buffers seen (K forgotten)` and `F% filled`. Test: `test_buffers` in `src/xhd/tests.rs` (from `test_display.c`), a model of
   `Surface::lock` on an 8x8 picture through 300 frames of changing rectangles. The old way shows a wrong picture
   with 3 and 4 buffers and none with 2, and the new way none with 1 to 5 buffers, in turn or in any order. How many
   buffers this phone's queue has is not known yet: the phone's line says it.
