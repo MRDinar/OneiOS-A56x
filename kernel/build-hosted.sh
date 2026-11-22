@@ -79,6 +79,10 @@ stage_tool
 #             Digitizer service.
 #   audio     The speaker and the microphone (no numbered patch: oneios_drivers_start calls oneios_audio_start):
 #             UniXNU-droidvm's virtio-snd transport and its two IOAudio2Devices from xnuhost's /arm-io/virtio-snd.
+#   codec     The video encoder and decoder (no numbered patch: oneios_drivers_start calls oneios_codec_start, which
+#             has a weak default for a kernel without this archive): UniXNU-droidvm's virtio-media transport from
+#             xnuhost's /arm-io/virtio-media-0 (encoder=auto) and its AppleVideoToolboxParavirtualizationDriver, iOS's
+#             own paravirtualized VideoToolbox codecs (README.md in the patch folder; docs/hardware.md 7g).
 #   gpu       The GPU (0005-gpu-3d.patch): Droid-VM's virtio-gpu 3D driver, force-loaded like the board's others.
 #   display   The display (0020-display.patch): UniXNU's NativeMobileDisplay under the collection's
 #             IOMobileFramebufferLegacy, with Droid-VM's probe and virtio-gpu scanout client.
@@ -91,11 +95,11 @@ stage_tool
 # scripts until 2026-11-13 (build-oneios-NAME.py, copied into the device repository); their output is frozen in
 # tools/oneios-tool/tests/kernelgen/golden.
 ENTRIES=()
-for name in storage board aes keystore net hid audio gpu display; do
+for name in storage board aes keystore net hid audio codec gpu display; do
   ENTRIES+=("oneios-tool kernel gen $name")
 done
 # The archives: the committed list ends with the board's own entry; the hosted list takes its place. The defconfig:
-# the archives the kernel force-loads beside the committed ones, in the link order (gpu aes keystore net hid audio),
+# the archives the kernel force-loads beside the committed ones, in the link order (gpu aes keystore net hid audio codec),
 # and CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y. Refused (nothing written) when either file is not as expected.
 "$ONEIOS_TOOL" kernel hosted-archives "$DEVICE/board.toml" "$DEVICE/configs/oneios_hosted_defconfig" "${ENTRIES[@]}"
 # ONEIOS_CRYPTO=original: a kernel with none of the source corecrypto in it. The source-mode bootstrap

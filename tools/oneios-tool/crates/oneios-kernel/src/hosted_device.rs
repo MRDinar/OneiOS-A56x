@@ -7,7 +7,7 @@
 //!   hosted-archives  board.toml's [kernel] archives: the committed list ends with the board's own entry
 //!                    (`"oneios-tool kernel gen board",`); the ENTRYs take its place, in their order. The defconfig's
 //!                    CONFIG_XNU_EXTRA_LD_ARCHIVES gets the force-loads of the hosted archives (gpu, aes, keystore,
-//!                    net, hid, audio: the link order) and CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y is added at the end.
+//!                    net, hid, audio, codec: the link order) and CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y is added at the end.
 //!
 //! A file whose text is not what the edit expects is refused with build-hosted's message, and nothing is written.
 //! The files are read as Python's text mode read them (universal newlines: "\r\n" and "\r" become "\n").
@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 use regex::{Captures, Regex};
 
 /// The archives the hosted kernel force-loads beside the committed ones, in this order (the link order).
-pub const FORCE_LOADED: [&str; 6] = ["gpu", "aes", "keystore", "net", "hid", "audio"];
+pub const FORCE_LOADED: [&str; 7] = ["gpu", "aes", "keystore", "net", "hid", "audio", "codec"];
 
 fn read(path: &Path) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
