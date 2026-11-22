@@ -126,89 +126,26 @@ pub fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
 
 /// The most descriptors one message brings that are kept; any more are closed.
 pub const MAX_FDS: usize = 4;
-const CONTROL_BYTES: usize = 128; // >= CMSG_SPACE(4 ints)
 
-#[repr(C, align(8))]
-struct Control([u8; CONTROL_BYTES]);
-
-/// send (or sendmsg with SCM_RIGHTS when `fds` is not empty) of one packet.
+/// send (or sendmsg with SCM_RIGHTS when `fds` is not empty) of one packet, with MSG_NOSIGNAL; EINTR is retried.
 pub fn send_packet(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>], flags: libc::c_int) -> Result<()> {
     assert!(fds.len() <= MAX_FDS);
-    let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut libc::c_void, iov_len: bytes.len() };
-    let mut control = Control([0; CONTROL_BYTES]);
-    // SAFETY: msghdr is plain data; all zeros is a valid value.
-    let mut msg: libc::msghdr = unsafe { zeroed() };
-    msg.msg_iov = &mut iov;
-    msg.msg_iovlen = 1;
-    if !fds.is_empty() {
-        let data = (fds.len() * size_of::<RawFd>()) as u32;
-        msg.msg_control = control.0.as_mut_ptr() as *mut libc::c_void;
-        // SAFETY: CMSG_SPACE only computes a length.
-        msg.msg_controllen = unsafe { libc::CMSG_SPACE(data) } as _;
-        // SAFETY: the control buffer is aligned and at least CMSG_SPACE(data) bytes, so the first header and its data
-        // fit in it.
-        unsafe {
-            let cm = libc::CMSG_FIRSTHDR(&msg);
-            (*cm).cmsg_level = libc::SOL_SOCKET;
-            (*cm).cmsg_type = libc::SCM_RIGHTS;
-            (*cm).cmsg_len = libc::CMSG_LEN(data) as _;
-            let out = libc::CMSG_DATA(cm) as *mut RawFd;
-            for (i, f) in fds.iter().enumerate() {
-                ptr::write_unaligned(out.add(i), f.as_raw_fd());
-            }
+    loop {
+        match xh_core::fd::send_with_fds(fd, &[io::IoSlice::new(bytes)], fds, flags | libc::MSG_NOSIGNAL) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            r => return r.map(drop).map_err(Errno::from),
         }
     }
-    // SAFETY: msg points at the iovec and control buffer above, which live across the call.
-    retry(|| unsafe { libc::sendmsg(fd.as_raw_fd(), &msg, flags | libc::MSG_NOSIGNAL) })?;
-    Ok(())
 }
 
-/// What one recvmsg brought.
-pub struct Received {
-    /// The packet's length (0: the peer closed).
-    pub length: usize,
-    /// Every descriptor that came, up to MAX_FDS (the rest were closed); ours to close.
-    pub fds: Vec<OwnedFd>,
-    /// MSG_TRUNC or MSG_CTRUNC.
-    pub truncated: bool,
-}
+/// What one recvmsg brought: its length (0: the peer closed), every descriptor that came up to MAX_FDS (the rest
+/// were closed; ours to close), and whether MSG_TRUNC or MSG_CTRUNC was set.
+pub use xh_core::fd::Received;
 
-/// One recvmsg into `buf` with MSG_CMSG_CLOEXEC and `flags` (EINTR is the caller's to retry).
+/// One recvmsg into `buf` with MSG_CMSG_CLOEXEC and `flags`, room for MAX_FDS descriptors as the C asked for (EINTR
+/// is the caller's to retry).
 pub fn recv_packet(fd: BorrowedFd<'_>, buf: &mut [u8], flags: libc::c_int) -> Result<Received> {
-    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
-    let mut control = Control([0; CONTROL_BYTES]);
-    // SAFETY: msghdr is plain data; all zeros is a valid value.
-    let mut msg: libc::msghdr = unsafe { zeroed() };
-    msg.msg_iov = &mut iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = control.0.as_mut_ptr() as *mut libc::c_void;
-    // SAFETY: CMSG_SPACE only computes a length; 4 descriptors' space, as the C asked for.
-    msg.msg_controllen = unsafe { libc::CMSG_SPACE((MAX_FDS * size_of::<RawFd>()) as u32) } as _;
-    // SAFETY: msg points at buf and the control buffer, which live across the call.
-    let n = unsafe { libc::recvmsg(fd.as_raw_fd(), &mut msg, flags | libc::MSG_CMSG_CLOEXEC) };
-    if n < 0 {
-        return Err(Errno::last());
-    }
-    let mut fds = Vec::new();
-    // SAFETY: the kernel filled msg's control buffer; the CMSG_* macros walk it within msg_controllen.
-    unsafe {
-        let mut cm = libc::CMSG_FIRSTHDR(&msg);
-        while !cm.is_null() {
-            if (*cm).cmsg_level == libc::SOL_SOCKET && (*cm).cmsg_type == libc::SCM_RIGHTS {
-                let count = ((*cm).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / size_of::<RawFd>();
-                let data = libc::CMSG_DATA(cm) as *const RawFd;
-                for i in 0..count {
-                    // Each descriptor that came is ours: kept up to MAX_FDS, the rest closed when dropped here.
-                    let got = OwnedFd::from_raw_fd(ptr::read_unaligned(data.add(i)));
-                    if fds.len() < MAX_FDS {
-                        fds.push(got);
-                    }
-                }
-            }
-            cm = libc::CMSG_NXTHDR(&msg, cm);
-        }
-    }
-    Ok(Received { length: n as usize, fds, truncated: msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 })
+    Ok(xh_core::fd::recv_with_fds(fd, buf, MAX_FDS, flags)?)
 }
 
 /// poll of `fds` (fd, events) for `timeout_ms` (-1: no end); EINTR is retried when `retry`. The revents, or the error.

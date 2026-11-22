@@ -12,8 +12,8 @@
 //! - Helpers several crates need: [`bytes`] (numbers in byte buffers, per byte order), [`fs`] (small sysfs and /proc
 //!   files, meminfo-style values), [`parse`] (numbers and sizes as strtoull, strtol, atoi and xh_parse_size),
 //!   [`text`] (C's fixed-size cuts, C strings in buffers), [`thread`] (named threads), [`fd`] (O_NONBLOCK,
-//!   FD_CLOEXEC, EINTR, memfds), [`sys`] (errno, its texts, [`sys::Errno`], the page size), [`ioctl`] (the numbers
-//!   and the call), [`time`] (the monotonic clock).
+//!   FD_CLOEXEC, EINTR, memfds, SCM_RIGHTS), [`sys`] (errno, its texts, [`sys::Errno`], the page size), [`ioctl`]
+//!   (the numbers and the call), [`time`] (the monotonic clock).
 pub mod bytes;
 pub mod fd;
 pub mod fs;
