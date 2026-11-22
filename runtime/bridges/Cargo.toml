@@ -28,3 +28,8 @@ path = "brightness/brightctl.rs"
 [[test]]
 name = "brightness_inspect"
 path = "brightness/test_inspect.rs"
+
+# bridges-net: wifi, bt, hal
+[[bin]]
+name = "fake-hal"
+path = "tests/fake_hal.rs"
