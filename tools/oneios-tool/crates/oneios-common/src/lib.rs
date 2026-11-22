@@ -94,7 +94,7 @@ mod panic_head_tests {
         // The phone's line of 2026-11-23 (its `p` lost), and shorter cuts.
         let cut = "anic(cpu 0 caller 0xfffffff00ade5440): DebuggerXCallEnter>Debugger synch pending on cpu 1";
         assert_eq!(panic_head(cut).map(|at| &cut[at..at + 1]), Some("0"));
-        assert_eq!(panic_head("  ic(cpu 7 caller 0x2): y"), Some(10));
+        assert_eq!(panic_head("  ic(cpu 7 caller 0x2): y"), Some(9));
         assert_eq!(panic_head("(cpu 3 caller 0x2): y"), Some(5));
         // Not a panic: running text, a head without its caller, a cut head inside a line.
         assert_eq!(panic_head("the panic (cpu 3) was"), None);
