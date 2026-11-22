@@ -2911,6 +2911,13 @@ stale (`stage_tool` in `kernel/lib/stage.sh`; `ONEIOS_TOOL=PATH` for another bin
 | `kernel host-cc SETUP_TOOLCHAIN CLT CLANG` | the inline `python3` block of `kernel/linux/unixnu-layout.sh` (it imported UniXNU's `scripts/linux/setup-toolchain.py`) | `host_cc.rs` | **retired 2026-11-21**: `xnu-host-cc`, `unixnu-host-prefix.h` and `copyfile.h` from that file's text (read, never run) |
 | `kernel display-capture --session DIR [--out PREFIX] [--seconds N] [--every S]` | `kernel/patches/oneios-hosted/display/display-capture.py` | `display_capture.rs` | **retired 2026-11-21**: the PC viewer of xnuhost's `display.sock` (Linux); also reads half-float frames, which the script refused |
 
+`kernel gen audio`'s edit list (`staged/audio.rs`) gained the Speaker's hardware volume control on 2026-11-22
+(fix-audio-volume-haptics, `docs/hardware.md` section 6, "Volume"): `synthetic/audio.in` has three more raw anchors and
+`audio.out` the result (`cargo test -p oneios-kernel`, 14 of 14), and `staged.sha256` the staged `DroidVMAudio.cpp` of
+`HOSTED_OUT=audio` (`9feea520...`, 37,706 bytes). That build's `stdout.txt` and the rest of `staged.sha256` were not
+re-recorded (its log paths are the main checkout's through the worktree's `out` link, and its net line counts 7 slots
+of IO80211Interface against the golden's 6: not this change).
+
 Shared: `gen.rs` (where a generator runs, Python's file and process calls as the scripts used them, the steps every
 script repeated), `drivers_build.rs` (`drivers/build.py`: `record`, `command`, and since 2026-11-13 the whole script), `macho_object.rs` (a compiled
 object's symbols and the signed entries of a vtable), `staged/` (the edit lists of the staged sources).

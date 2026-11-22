@@ -171,3 +171,16 @@ air + the microphone) median N ms, MIN..MAX, K of N clicks`. The round trip incl
 is an upper bound of the speaker's; the helper's `end-to-end` (stderr) is the speaker's part from AAudio's
 timestamps, and the difference is the microphone's and the air's (about 0.5 ms for the phone's speaker to its
 microphone). `not heard` for every click: the media volume at 0, or the microphone silenced.
+
+Since 2026-11-22 (fix-audio-volume-haptics; host-tested, not run on the phone) the helper plays at full scale and
+iOS's volume is the one that counts (applied in the guest, `drivers/audio/README.md`): at the speaker's first open it
+sets the audio policy's index of USAGE_MEDIA on the speaker to its maximum (libaudioclient's `AudioSystem`, looked
+up by mangled name: `setVolumeIndexForAttributes` with `muted` (Android 16 and later) or without, `get...` and
+`getMaxVolumeIndexForAttributes`) and sets the index it found back when it ends. Only the audio policy's live index
+changes: One UI's saved volume (system_server's settings) is not written, and [I] system_server sets every saved
+index again as it starts, should the return kill the helper first. Lines: `oneios-audio: host volume: One UI's media
+volume on the speaker was index N of M; set to the maximum for the session: ...`, `... is at its maximum (index N)`,
+`... libaudioclient's AudioSystem volume calls not found (...)`, `... the audio policy did not say ...`, and at the
+end `... put back to index N of M (status S)`. `ONEIOS_AUDIO_HOST_VOLUME=keep`: not touched (One UI's media volume,
+the path before). Beside One UI (system_server runs: `bridgectl audio`) it is not touched either (`... kept:
+system_server runs`): there the volume is AudioService's.

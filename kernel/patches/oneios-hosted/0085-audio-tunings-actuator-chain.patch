@@ -1,0 +1,116 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -9661,6 +9661,81 @@
+ extern int oneios_kern_symlink(const char *target, const char *path, vfs_context_t ctx);      /* 0004 */
+ static volatile int oneios_audio_tunings_stage = 0;
+ static volatile int oneios_audio_tunings_status = -1;
++/*
++ * OneiOS hosted (0085): the Actuator's DSP chain. With 0078 the haptic server starts, plays its synth and runs I/O on
++ * the Actuator device, and every period it gets is silence ("0 with samples" in each ONEIOS HAPTIC counters line,
++ * audiomxd's RTAID "node=Actuator-Output ... rms:[-120.000000], peaks:[-240.000000]", phone 2026-11-22). VirtualAudio
++ * makes the Actuator's virtual stream with the DSP chain "d42_actuator_general" (this identity's chain name) and
++ * finds no strips file for it: "RoutingSettings_Aspen.cpp:700 Cannot find strips file oneios,xnuhost/VAD/
++ * d42_actuator_general" (the lookup is /Library/Audio/Tunings/<hardware model>/VAD/<chain>, then Generic/VAD/<chain>).
++ * The chain is what turns the haptic synth's two channels into the actuator's one: the iPhone's own
++ * /Library/Audio/Tunings/AID8022/VAD/actuator_general.{austrip,dspg} (AID8022: the V54's /product/audio acoustic-id;
++ * the dspg wires "in" 2 channels -> AUHapticsProtection -> 1 channel -> AUVolumeForHaptics -> "out", the same in
++ * graph_configurations.plist: busChannelCounts 2 -> 1). So oneios,xnuhost is now a folder of links instead of 0078's
++ * one link to the board:
++ *   oneios,xnuhost/Haptics -> ../<board>/Haptics      (the haptic engine's preset, as 0078)
++ *   oneios,xnuhost/VAD/d42_actuator_general.austrip -> ../../AID8022/VAD/actuator_general.austrip
++ *   oneios,xnuhost/VAD/d42_actuator_general.dspg    -> ../../AID8022/VAD/actuator_general.dspg
++ * resolved in the union over /Library/Audio/Tunings (the sealed folders below). 0078's link (a link at
++ * oneios,xnuhost) is replaced by the folder; an entry that is there already is left as it is. Nothing of Apple's is
++ * copied. oneios-audio-tunings-vad=0: the VAD links are not made (the folder keeps only Haptics). Returns how many
++ * entries were made, or -errno.
++ */
++extern int oneios_kern_unlink(const char *path, vfs_context_t ctx);      /* 0004 */
++static int
++oneios_audio_tunings_folder(const char *board, const char *folder, vfs_context_t ctx)
++{
++	static const char *const vad[][2] = {
++		{ "VAD/d42_actuator_general.austrip", "../../AID8022/VAD/actuator_general.austrip" },
++		{ "VAD/d42_actuator_general.dspg", "../../AID8022/VAD/actuator_general.dspg" },
++	};
++	char path[160], target[64];
++	int made = 0, error;
++	uint32_t with_vad = 1;
++	(void)PE_parse_boot_argn("oneios-audio-tunings-vad", &with_vad, sizeof(with_vad));
++	vnode_t vp = NULLVP;
++	if (vnode_lookup(folder, VNODE_LOOKUP_NOFOLLOW, &vp, ctx) == 0) {
++		int is_link = vnode_islnk(vp);
++		vnode_put(vp);
++		if (is_link && (error = oneios_kern_unlink(folder, ctx)) != 0) {
++			return -error;                    /* 0078's link stays: the preset as before */
++		}
++	}
++	error = oneios_kern_mkdir(folder, 0755, ctx);
++	if (error && error != EEXIST) {
++		return -error;
++	}
++	made += error == 0;
++	snprintf(path, sizeof(path), "%s/Haptics", folder);
++	snprintf(target, sizeof(target), "../%s/Haptics", board);
++	if (vnode_lookup(path, VNODE_LOOKUP_NOFOLLOW, &vp, ctx) == 0) {
++		vnode_put(vp);
++	} else if ((error = oneios_kern_symlink(target, path, ctx)) != 0) {
++		return -error;
++	} else {
++		made++;
++	}
++	if (!with_vad) {
++		return made;
++	}
++	snprintf(path, sizeof(path), "%s/VAD", folder);
++	error = oneios_kern_mkdir(path, 0755, ctx);
++	if (error && error != EEXIST) {
++		return -error;
++	}
++	made += error == 0;
++	for (unsigned i = 0; i < sizeof(vad) / sizeof(vad[0]); i++) {
++		snprintf(path, sizeof(path), "%s/%s", folder, vad[i][0]);
++		if (vnode_lookup(path, VNODE_LOOKUP_NOFOLLOW, &vp, ctx) == 0) {
++			vnode_put(vp);
++		} else if ((error = oneios_kern_symlink(vad[i][1], path, ctx)) != 0) {
++			return -error;
++		} else {
++			made++;
++		}
++	}
++	return made;
++}
+ static void
+ oneios_audio_tunings(proc_t p, user_addr_t scratch)
+ {
+@@ -9695,18 +9770,22 @@
+ 			return;
+ 		}
+ 	}
+-	vnode_t vp = NULLVP;
+-	if (vnode_lookup(link, VNODE_LOOKUP_NOFOLLOW, &vp, ctx) == 0) {
+-		vnode_put(vp);                        /* an earlier boot's link (or the owner's own entry): left as it is */
+-	} else {
+-		made = oneios_kern_symlink(board, link, ctx);
++	made = oneios_audio_tunings_folder(board, link, ctx);   /* 0085: a folder of links (was 0078's one link) */
++	if (made < 0) {
++		printf("oneios-audio-tunings: oneios,xnuhost's folder: error %d (0078's link, if there, kept)\n", -made);
+ 	}
+ 	/* Scratch 0xa00..0xb28, as 0056's mount (done by now): the mount's type, point and source. */
+ 	native_gpu_addon_mount(p, scratch, 0xa00, source, sizeof(source), point, sizeof(point), visible, own,
+ 	    &oneios_audio_tunings_stage, &oneios_audio_tunings_status);
+-	printf("oneios-audio-tunings: %s over %s: oneios,xnuhost -> %s (%s %d), stage %d, status %d (stage 5 status 0: mounted, "
+-	    "the iPhone's haptics preset visible as oneios,xnuhost's)\n", source, point, board,
+-	    made < 0 ? "link there already" : "link made", made < 0 ? 0 : made, oneios_audio_tunings_stage,
++	vnode_t vp = NULLVP;
++	int strip = vnode_lookup("/Library/Audio/Tunings/oneios,xnuhost/VAD/d42_actuator_general.austrip", 0, &vp, ctx) == 0;
++	if (strip) {
++		vnode_put(vp);
++	}
++	printf("oneios-audio-tunings: %s over %s: oneios,xnuhost/Haptics -> %s/Haptics, oneios,xnuhost/VAD/d42_actuator_general -> "
++	    "AID8022/VAD/actuator_general (%d entries made%s), the Actuator's strip %s; stage %d, status %d (stage 5 status 0: "
++	    "mounted, the iPhone's haptics preset visible as oneios,xnuhost's)\n", source, point, board, made < 0 ? 0 : made,
++	    made < 0 ? ", an error" : "", strip ? "visible" : "NOT visible", oneios_audio_tunings_stage,
+ 	    oneios_audio_tunings_status);
+ }
+ #endif /* XNU_HOSTED */

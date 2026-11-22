@@ -36,6 +36,8 @@
 //     price is the phone's speaker path kept on with silence for that minute.
 // Input: a reader thread reads the microphone in periods of 240 frames (blocking AAudioStream_read) and sends each
 // one to xnuhost.
+// Volume (2026-11-22): iOS's volume is applied in the guest (the Speaker's hardware volume control); the helper sets
+// One UI's media index on the speaker to its maximum for its run and back at its end (host_volume_full below).
 //
 // The way back to One UI (docs/hardware.md section 6): no thread of this process may run realtime. AAudio makes
 // a realtime (SCHED_FIFO) thread only for a data callback (AudioStream::createThread_l -> registerThread, which
@@ -215,6 +217,108 @@ static void *aaudio_symbol(const char *name)
   void *lib = dlopen("libaaudio.so", RTLD_NOW | RTLD_NOLOAD);
   void *f = lib ? dlsym(lib, name) : NULL;
   return f ? f : dlsym(RTLD_DEFAULT, name);
+}
+
+// ---- One UI's media volume on the speaker (fix-audio-volume, 2026-11-22) -------------------------------------
+// The speaker stream is usage MEDIA, so AudioFlinger plays it at One UI's media volume of the speaker: the index the
+// audio policy had when system_server stopped (nothing changes it in a session). That was the "low volume" of the
+// 2026-11-22 report, and iOS's own volume could not change anything (audiomxd threw at every volume set). iOS's
+// volume is now applied in the guest (the Speaker's hardware volume control, DroidVMAudio.cpp as staged by
+// `oneios-tool kernel gen audio`), so the host plays at full scale: at the speaker's first open the helper sets the
+// audio policy's index of USAGE_MEDIA on the speaker to its maximum, through libaudioclient's AudioSystem (the call
+// system_server's AudioService makes; only the policy's live index changes, One UI's saved volume is in
+// system_server's settings and is not touched), and sets the index it found back when it ends (xnuhost closes the
+// socket). [I] When the return kills the namespace instead, system_server's AudioService sets every saved index
+// again as it starts (AudioService.checkAllAliasStreamVolumes, AOSP; not read in One UI's build).
+// The functions are looked up by their mangled names, which carry the parameter types, so a build whose signature
+// differs is not called: Android 16 and later have the `bool muted` form of the set. Only libaudioclient as already
+// loaded (libaaudio's dependency) is used: a second copy would open the binder driver again.
+// ONEIOS_AUDIO_HOST_VOLUME=keep: not touched (the path before 2026-11-22).
+typedef struct __attribute__((packed)) {                // system/audio.h's audio_attributes_t
+  uint32_t content_type, usage, source, flags;
+  char tags[256];
+} host_attributes;
+enum { HOST_CONTENT_MUSIC = 2, HOST_USAGE_MEDIA = 1, HOST_DEVICE_OUT_SPEAKER = 0x2 };
+typedef int32_t (*host_get_index_fn)(const host_attributes *attr, int *index, uint32_t device);
+typedef int32_t (*host_get_max_fn)(const host_attributes *attr, int *index);
+typedef int32_t (*host_set_index_fn)(const host_attributes *attr, int index, uint32_t device);
+typedef int32_t (*host_set_index_muted_fn)(const host_attributes *attr, int index, bool muted, uint32_t device);
+#define HOST_GET_INDEX "_ZN7android11AudioSystem27getVolumeIndexForAttributesERK18audio_attributes_tRi15audio_devices_t"
+#define HOST_GET_MAX "_ZN7android11AudioSystem30getMaxVolumeIndexForAttributesERK18audio_attributes_tRi"
+#define HOST_SET_INDEX "_ZN7android11AudioSystem27setVolumeIndexForAttributesERK18audio_attributes_ti15audio_devices_t"
+#define HOST_SET_INDEX_MUTED "_ZN7android11AudioSystem27setVolumeIndexForAttributesERK18audio_attributes_tib15audio_devices_t"
+static struct { bool tried, changed; int found, max; host_set_index_fn set; host_set_index_muted_fn set_muted; } host_volume;
+static bool system_server_up(void);
+
+static void *audioclient_symbol(const char *name)
+{
+  void *lib = dlopen("libaudioclient.so", RTLD_NOW | RTLD_NOLOAD);
+  void *f = lib ? dlsym(lib, name) : NULL;
+  return f ? f : dlsym(RTLD_DEFAULT, name);
+}
+
+static int32_t host_volume_set(const host_attributes *attr, int index)
+{
+  return host_volume.set_muted ? host_volume.set_muted(attr, index, false, HOST_DEVICE_OUT_SPEAKER)
+                               : host_volume.set(attr, index, HOST_DEVICE_OUT_SPEAKER);
+}
+
+static const host_attributes host_media = { .content_type = HOST_CONTENT_MUSIC, .usage = HOST_USAGE_MEDIA };
+
+// At the speaker's first open of this run: One UI's media index on the speaker to its maximum.
+static void host_volume_full(void)
+{
+  if (host_volume.tried) return;
+  host_volume.tried = true;
+  const char *keep = getenv("ONEIOS_AUDIO_HOST_VOLUME");
+  if (keep && !strcmp(keep, "keep")) {
+    fprintf(stderr, "oneios-audio: host volume: kept (ONEIOS_AUDIO_HOST_VOLUME=keep): the speaker plays at One UI's media volume\n");
+    return;
+  }
+  if (system_server_up()) {                              // beside One UI (bridgectl): its volume is AudioService's
+    fprintf(stderr, "oneios-audio: host volume: kept: system_server runs (One UI's media volume is its AudioService's)\n");
+    return;
+  }
+  host_get_index_fn get = (host_get_index_fn)audioclient_symbol(HOST_GET_INDEX);
+  host_get_max_fn get_max = (host_get_max_fn)audioclient_symbol(HOST_GET_MAX);
+  host_volume.set_muted = (host_set_index_muted_fn)audioclient_symbol(HOST_SET_INDEX_MUTED);
+  host_volume.set = (host_set_index_fn)audioclient_symbol(HOST_SET_INDEX);
+  if (!get || !get_max || (!host_volume.set && !host_volume.set_muted)) {
+    fprintf(stderr, "oneios-audio: host volume: libaudioclient's AudioSystem volume calls not found (get %d, max %d, set %d/%d): the "
+            "speaker plays at One UI's media volume\n", get != NULL, get_max != NULL, host_volume.set != NULL, host_volume.set_muted != NULL);
+    return;
+  }
+  int index = -1, max = -1;
+  int32_t rc_get = get(&host_media, &index, HOST_DEVICE_OUT_SPEAKER), rc_max = get_max(&host_media, &max);
+  if (rc_get || rc_max || index < 0 || max <= 0) {
+    fprintf(stderr, "oneios-audio: host volume: the audio policy did not say One UI's media volume (index %d status %d, maximum %d status %d): "
+            "not changed\n", index, (int)rc_get, max, (int)rc_max);
+    return;
+  }
+  host_volume.found = index;
+  host_volume.max = max;
+  if (index >= max) {
+    fprintf(stderr, "oneios-audio: host volume: One UI's media volume on the speaker is at its maximum (index %d): the stream plays at "
+            "full scale, iOS's volume is the one that counts\n", index);
+    return;
+  }
+  int32_t rc = host_volume_set(&host_media, max);
+  host_volume.changed = rc == 0;
+  fprintf(stderr, "oneios-audio: host volume: One UI's media volume on the speaker was index %d of %d; %s (One UI's saved volume is "
+          "not changed; the index is put back when the helper ends)\n", index, max,
+          rc ? "set to the maximum refused" : "set to the maximum for the session: the stream plays at full scale, iOS's volume is the one that counts");
+  if (rc) fprintf(stderr, "oneios-audio: host volume: setVolumeIndexForAttributes(media, %d, speaker): status %d\n", max, (int)rc);
+}
+
+// When the helper ends: the index it found back.
+static void host_volume_restore(void)
+{
+  if (host_volume.changed) {
+    int32_t rc = host_volume_set(&host_media, host_volume.found);
+    fprintf(stderr, "oneios-audio: host volume: One UI's media volume on the speaker put back to index %d of %d (status %d)\n",
+            host_volume.found, host_volume.max, (int)rc);
+  }
+  host_volume = (__typeof__(host_volume)){ 0 };
 }
 
 // AAudio_setMMapPolicy (process-wide, read at each open): 1 NEVER, 2 AUTO. Returns whether it took.
@@ -810,6 +914,7 @@ static int start_dir(bool output, unsigned rate, unsigned channels)
   } else in_sent = in_lost = in_short = 0;
   d->stream = open_stream(output, rate, channels);
   if (!d->stream) return EIO;
+  if (output) host_volume_full();                        // One UI's media volume to full scale, once a run
   if (output) {                                          // the path's floor (open_stream)
     pthread_mutex_lock(&ring_lock);
     // On MMAP a new stream starts 5 ms above its floor: it comes down once a quiet while shows the guest's periods
@@ -987,6 +1092,7 @@ int main(int argc, char **argv)
   }
   stop_dir(true);
   stop_dir(false);
+  host_volume_restore();
   fprintf(stderr, "oneios-audio: socket closed: exit\n");
   return 0;
 }

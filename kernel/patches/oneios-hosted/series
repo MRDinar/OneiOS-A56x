@@ -351,3 +351,12 @@
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush
 # thread, not on the vCPU that sent the flush (docs/booter.md 2.7, "Disks"). Reads and writes are unchanged.
+# fix-audio-volume-haptics (2026-11-22): the Actuator's DSP chain. With 0078 the haptic server plays and the Actuator
+# runs I/O, and every period is silence (ONEIOS HAPTIC counters "0 with samples", RTAID Actuator-Output -120 dB):
+# VirtualAudio finds no strips file for the Actuator's chain ("Cannot find strips file oneios,xnuhost/VAD/
+# d42_actuator_general"), the chain that turns the haptic synth's 2 channels into the actuator's 1 (the iPhone's
+# AID8022/VAD/actuator_general: AUHapticsProtection, AUVolumeForHaptics). 0078's link oneios,xnuhost -> V54 becomes a
+# folder of links: Haptics -> ../V54/Haptics and VAD/d42_actuator_general.{austrip,dspg} -> ../../AID8022/VAD/
+# actuator_general.*; nothing of Apple's copied. oneios-audio-tunings-vad=0: only the Haptics link. README.md, "0085".
+# Numbered 0085 (0084 is held by the camera helper's MobileGestalt cache patch; both apply in either order).
+0085-audio-tunings-actuator-chain.patch

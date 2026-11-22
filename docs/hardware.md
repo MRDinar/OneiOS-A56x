@@ -22,8 +22,8 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
-| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
-| Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
+| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0085, not yet on the phone (section 5) |
+| Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
@@ -1619,6 +1619,62 @@ the haptics folder.
 
 PC_RESULTS_HERE
 
+### The Actuator played silence: no DSP chain for it (fix-audio-volume-haptics, hosted 0085, 2026-11-22; built, not on the phone)
+
+**The fault (phone, 2026-11-22, kernel with 0082 + 0083, 0078 in place):** no haptic is felt. 0078 works: audiomxd's
+haptic server starts (`=== Initializing Haptic 2.0 Engine ===` and no failure), clients connect, and SpringBoard's and
+Settings' players start with haptics on (`start: client ID: 0x... audio: 0 haptic: 1`, `startSynthRunning: Calling
+startRunning(0, 1, 0x1) on synth`). The Actuator device runs I/O (`ONEIOS HAPTIC: counters: Actuator 1 opens ..., 9
+selectors (4 StartIO, 3 StopIO, ...), 61920 periods (309600 ms), 0 with samples, 0 loud`), and every period is
+silence: audiomxd's own meter says the same at the HAL (`RTAID [ ... node=Actuator-Output ... ] -- [ rms:[-120.000000],
+peaks:[-240.000000] ]`, 30 times in the s7 boot). xnuhost's `haptics: 60 s: +1 requests (+0 vibrate, +1 stop, ...),
++0 played` follows from it. Not the cause: the keyboard (its client is in audio-only mode, `Muting haptics on client
+ID ... AudioOnly 1`: iOS's keyboard haptic feedback is off by default, Settings > Sounds & Haptics > Keyboard Feedback),
+the device's format (no refused selector, no format asked), the Actuator's open (1 open, its memory mapped).
+
+**The cause [F iOS's log; V 24A446's VirtualAudio.plugin and the OS volume's tunings]:** VirtualAudio makes the
+Actuator's virtual stream with a DSP chain and finds no strips file for it:
+```
+audiomxd StreamUtilities.cpp:402  Created virtual stream for [vzzz] (cbkg/imdf) port pact with DSP chain 'd42_actuator_general', ...
+audiomxd RoutingSettings_Aspen.cpp:700  Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general
+```
+(the lookup is `/Library/Audio/Tunings/<hardware model>/VAD/<chain>`, then `Generic/VAD/<chain>`: the two `Cannot find
+strips file` formats of the plug-in). The virtual stream has 2 channels (`forced virt chans: 2`, the haptic synth's
+2-channel haptic bus: `LegacyHapticSynth ... haptic output bus format to 2-chan`) and the physical Actuator 1; the
+chain is what turns one into the other. The iPhone's own chain is on the OS volume:
+`/Library/Audio/Tunings/AID8022/VAD/actuator_general.dspg` wires `in` (2 channels) -> `AUHapticsProtection` -> 1
+channel -> `AUVolumeForHaptics` -> `out`, its `.austrip` holds the two units' presets, and `AID8022/VAD/
+graph_configurations.plist` says the same (`actuator_general`: busChannelCounts 2 -> 1). AID8022 is the V54's
+`/product/audio acoustic-id 8022`; the guest has no `/product/audio` (`IORegistryEntryFromPath IODeviceTree:/product/
+audio returned MACH_PORT_NULL`), so VirtualAudio uses the hardware model and its legacy chain name. [I] Without the
+chain the stream's two channels do not reach the one-channel device; that this is the only cause is not proven until
+the phone boot below.
+
+**The fix (hosted 0085, `kernel/patches/oneios-hosted/README.md` "0085"):** 0078's link `oneios,xnuhost -> V54` in the
+Data folder `/private/var/oneios/addons/AudioTunings` becomes a folder of links, still shown read-only over
+`/Library/Audio/Tunings`: `Haptics -> ../V54/Haptics` (the preset, as before), `VAD/d42_actuator_general.austrip ->
+../../AID8022/VAD/actuator_general.austrip` and `.dspg` the same. Nothing of Apple's is copied; an existing store's
+0078 link is replaced at the next boot. `oneios-audio-tunings-vad=0`: only the Haptics link. Not chosen:
+`/product/audio acoustic-id 8022` in the guest tree, which would hand every route the iPhone's tunings (the speaker's
+protection needs its `syscfg` Thiele-Small values, the microphones' beam forming three microphones; we have one).
+
+**Tested:** the patch applies after 0083 with and without the camera helper's 0084 (both orders);
+`HOSTED_OUT=audio kernel/build-hosted.sh` (Mac, 2026-11-23, 962 s: `xnu.macho` sha256 `dbf9fc9f...`, no warning in
+the new code, its strings in the kernel); `KERNEL=out/kernel/current-hosted-audio/xnu.macho OUT=out/kernel/audio-24A446
+kernel/prelink/build.sh`: `kernel.kc` 96,845,824 bytes, sha256
+`a50202ea0aa3a71c3529222abf4fc74a9e5bced8e8c80a59f6252369072101c8`, audit 2712 paired, 0 failures; `prelink
+stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. The same `kernel.kc` has the Speaker's volume control
+(section 6, "Volume"). Not on the phone.
+
+**The phone check:** in `xnuhost.log` `oneios-audio-tunings: ... oneios,xnuhost/Haptics -> V54/Haptics,
+oneios,xnuhost/VAD/d42_actuator_general -> AID8022/VAD/actuator_general (N entries made), the Actuator's strip
+visible; stage 5, status 0`; in iOS's log (`oneios-tool phone pull-log`) no `Cannot find strips file
+oneios,xnuhost/VAD/d42_actuator_general`, and RTAID's `node=Actuator-Output` with a level above -120 dB when a haptic
+plays (a toggle in Settings, a long press on an icon); then `ONEIOS HAPTIC: counters: ... N with samples, N loud,
+... N requests to the motor` with N > 0, and xnuhost's `haptics: 60 s: ... +N played` with N > 0. Keyboard taps need
+Settings > Sounds & Haptics > Keyboard Feedback > Haptic on (iOS's default is off). If the strip is visible and the
+Actuator still gets silence, the next reading is VirtualAudio's DSP set-up lines for `[vzzz]` in the same log.
+
 ### The bridge (`runtime/bridges/haptics/haptic.c`)
 
 - Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the
@@ -2073,6 +2129,73 @@ a PC boot with the null back end), the round trip through air.
 - Beside One UI: `bridgectl audio /data/local/tmp/oneios-audio 12` (the probe, the path) and `bridgectl audio-loop
   /data/local/tmp/oneios-audio 10` (the round trip); then the keyboard-click recording above, before and after.
 
+### Volume: the Speaker's hardware volume control, the host at full scale (fix-audio-volume-haptics, 2026-11-22; host-tested and built, not on the phone)
+
+**The fault (owner, 2026-11-22):** the volume keys do nothing, iOS's level cannot be changed (keys or slider), sound
+plays at a low volume. The keys reach iOS (`input: volume up down: to the guest`, 10 up and 4 down presses;
+`oneios-hid: buttons: Consumer Control, Built-In published`, backboardd holds the event service), sound plays
+(`oneios-audio: speaker open: ... MMAP exclusive`, `speaker stopped by the guest`).
+
+**The cause, iOS's side [F iOS's log of the s6, s7 and s8 boots; V 24A446 VirtualAudio.plugin and CoreAudio]:** every
+volume set of audiomxd throws (10-17 times a boot, at each `vaemSetDeviceVolume: Setting cmsvolume = 0.500 for device
+UID: VirtualAudioDevice_Default`):
+```
+audiomxd OutputVolumeControl_HAL_Common.cpp:1091  Reconfiguring volume curve with dB range {0, 0} and transfer function 0
+audiomxd OutputVolumeControl_HAL_Common.cpp:2090  OutputVolumeControl_HAL_Common::ReconfigureInternal() - unable to lock software volume command.
+audiomxd OutputVolumeControl_HAL_Common.cpp:1423  EXCEPTION (std::invalid_argument) [mSoftwareVolumeMode == VolumeControl::SoftwareVolumeMode::kHardwareOnly
+         && !HasExternalVolumeHandler() && !mPhysicalDeviceSupportsHardwareVolume is true]: "Volume Mode is HardwareOnly but physical device does not support HW volume"
+```
+The speaker route's software volume mode is HardwareOnly (VirtualAudio's routing database), and UniXNU-droidvm's
+Speaker publishes an empty `controls` array: no volume control, a dB range of {0, 0}. So MediaExperience's volume never
+reaches anything, the volume HUD has nothing to move, and no volume key or slider changes the sound (the earlier
+reading, "VirtualAudio's software volume [I from iOSPlus10]", was iOS 16's and is wrong for iOS 27).
+
+**The cause, the host's side [F code]:** the helper's stream is usage MEDIA, so AudioFlinger plays it at One UI's
+media volume of the speaker, the audio policy's index when system_server stopped (nothing changes it in a session):
+the "low volume". iOS's own volume could not lower or raise it (above).
+
+**The fix:**
+- **The Speaker's volume control** (the staged `DroidVMAudio.cpp`, `tools/oneios-tool/crates/oneios-kernel/src/staged/
+  audio.rs`, the block "fix-audio-volume"; `drivers/audio/README.md`): `controls` holds one control in the HAL's
+  IOAudio2 form (read in 24A446's CoreAudio: `HALS_IOA2Control::SynchronizeWithDictionary` reads `control ID`,
+  `base class`, `class`, `scope`, `element`, `read only`, `value`, `minimum value`, `maximum value` and a `range map`
+  of `start int value` (SInt32), `start db value` (Fixed64), `integer steps` (UInt32), `db per step` (Fixed64)):
+  class `vlme`, base class `levl`, scope `outp`, element 0, steps 0..128 over -64..0 dB in 0.5 dB steps; step 0 is
+  silence. The HAL sets it with selector 2 (`HALS_IOA2UCDevice::SetControlValue`: two scalars in, control ID and
+  value, one out, the value taken), which was refused before. The speaker engine scales each 5 ms period by the
+  step's gain (a Q16 table, 480 multiplies, nothing at 0 dB) before the transport. It starts at 0 dB; iOS sets its
+  own level at its start. Log: `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain N of 65536), change N: iOS's
+  volume, applied here (the host plays at full scale)` (the first 16 changes, then every 64th).
+- **The host at full scale** (`runtime/bridges/audio/aaudio_helper.c`, `runtime/bridges/README.md`): at the speaker's
+  first open the helper sets the audio policy's index of USAGE_MEDIA on the speaker to its maximum through
+  libaudioclient's `AudioSystem` (the call AudioService makes; looked up by mangled name, the Android 16 form with
+  `muted` first), and sets the index it found back when it ends (xnuhost closes its socket). One UI's saved volume is
+  in system_server's settings and is not written. [I] If the return kills the namespace before the helper ends,
+  system_server's AudioService sets every saved index again as it starts (AOSP's `checkAllAliasStreamVolumes`; not
+  read in One UI's build). `ONEIOS_AUDIO_HOST_VOLUME=keep`, or system_server running (`bridgectl audio` beside One
+  UI): not touched. Only the speaker device (`AUDIO_DEVICE_OUT_SPEAKER`): a headset keeps One UI's index.
+
+**The volume keys:** they go backboardd -> SpringBoard -> MediaExperience's volume up/down -> the same VAD volume set
+that threw; `Volume button client session: None` is normal (no app claimed the buttons). [I] With the control the
+set succeeds and the HUD moves; the key path itself could not be read in these boots: `pull-log`'s iOS log holds only
+the first 2-3 s of userland and the last seconds, not the presses minutes later.
+
+**Tested:** `runtime/bridges/tests/host.sh` in the host-test container (2026-11-23): `test_audio_helper` 20310
+checks, 0 failed (the fake `AudioSystem` of the test gets the index set to its maximum once a run, set back when the
+helper ends, not touched with `ONEIOS_AUDIO_HOST_VOLUME=keep`, at the maximum already, or with system_server up),
+bridges 377, wifi 162, brightness 126, battery 83, thermal 99, hal binder 46, hw_backend 120, 0 failed; `make -C
+runtime/bridges all` (the NDK build of `oneios-audio`) builds; `cargo test -p oneios-kernel` (the edit list on its
+synthetic source against `golden/synthetic/audio.out`) 14 of 14; the kernel build and `kernel.kc` `a50202ea...` of
+section 5's 0085 (the staged `DroidVMAudio.cpp`, sha256 `9feea520...` in `tests/kernelgen/golden/staged.sha256`,
+compiled without a warning). Not on the phone.
+
+**The phone check:** in `xnuhost.log` `oneios-audio: host volume: One UI's media volume on the speaker was index N of
+M; set to the maximum for the session` (or `... is at its maximum`, or the reason it could not), at the end `... put
+back to index N`; `DroidVMAudio: speaker volume N of 128 (...)` at iOS's start and at each key press or slider move;
+in iOS's log no `Volume Mode is HardwareOnly but physical device does not support HW volume`, `Reconfiguring volume
+curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
+up to the phone's full loudness. Back in One UI: the media volume as it was.
+
 ### Missing, unknown
 
 - **Not run yet in a test cycle of mine:** `owner-hide-vmm=audiomxd,com.apple.WebKit.GPU` (VirtualAudio's Null device
@@ -2086,8 +2209,8 @@ a PC boot with the null back end), the round trip through air.
 - [U] Whether VirtualAudio of iPhone18,2 builds its speaker route on "Speaker" and "Mic" (UniXNU-droidvm's iPad
   UIDs). iOSPlus10's iOS 16 iPhone needed "Speaker" with a silent stereo input and "Hawking"; the UIDs are boot
   arguments now, a third device would be a change of the staged source.
-- Volume: iOS's volume keys scale the samples in iOS (VirtualAudio's software volume [I from iOSPlus10]); the
-  Android media stream stays at One UI's last volume (14 of 15 on 2026-11-12). Nothing turns it down for a session.
+- Volume (corrected 2026-11-22): iOS 27's speaker route wants hardware volume, not software volume; the Speaker's
+  volume control and the host stream at full scale: "Volume" above.
 - Latency: 131-142 ms on the phone before 2026-11-13, 105-123 ms (host side) in the 8644ae9 session; since
   2026-11-15 MMAP exclusive and the smaller speaker ring ("Latency end to end" above): [U] what the phone's HAL gives
   and the real figures, until the phone runs it. A FAST track needs a callback's realtime thread (not done).
