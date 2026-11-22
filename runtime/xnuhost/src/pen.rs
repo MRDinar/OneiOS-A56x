@@ -708,7 +708,7 @@ pub fn describe(d: &Device) -> String {
 /// The device's state now, by ioctl on its descriptor (after SYN_DROPPED).
 pub fn read_state<S>(s: &Source<S>) -> Option<State> {
     let fd = s.device.fd.as_ref()?.as_raw_fd();
-    let mut key = [0u8; evdev::KEY_MAX / 8 + 1];
+    let mut key = [0u8; KEY_MAX / 8 + 1];
     if !evdev::keys(fd, &mut key) {
         return None;
     }
@@ -740,8 +740,8 @@ pub fn lookup_evdev() -> Result<(Device, String), String> {
     for i in 0..64 {
         let Some((path, fd)) = evdev::open(i) else { continue };
         let raw = fd.as_raw_fd();
-        let (mut key, mut abs) = ([0u8; evdev::KEY_MAX / 8 + 1], [0u8; evdev::ABS_MAX / 8 + 1]);
-        let name = evdev::name(raw);
+        let (mut key, mut abs) = ([0u8; KEY_MAX / 8 + 1], [0u8; ABS_MAX / 8 + 1]);
+        let name = evdev::name(raw, 63).unwrap_or_default();
         evdev::bits(raw, EV_KEY, &mut key);
         evdev::bits(raw, EV_ABS, &mut abs);
         match rank(&name, &key, &abs) {
@@ -761,7 +761,7 @@ pub fn lookup_evdev() -> Result<(Device, String), String> {
         ));
     };
     let raw = fd.as_raw_fd();
-    let (mut key, mut abs) = ([0u8; evdev::KEY_MAX / 8 + 1], [0u8; evdev::ABS_MAX / 8 + 1]);
+    let (mut key, mut abs) = ([0u8; KEY_MAX / 8 + 1], [0u8; ABS_MAX / 8 + 1]);
     evdev::bits(raw, EV_KEY, &mut key);
     evdev::bits(raw, EV_ABS, &mut abs);
     let mut d = Device {
@@ -772,7 +772,7 @@ pub fn lookup_evdev() -> Result<(Device, String), String> {
         ..Device::default()
     };
     // The pen's garage switch, when it has one (Samsung's sec_e-pen: SW_PEN_INSERT, 1 with the pen out): for the log.
-    let (mut sw, mut sw_now) = ([0u8; evdev::SW_MAX / 8 + 1], [0u8; evdev::SW_MAX / 8 + 1]);
+    let (mut sw, mut sw_now) = ([0u8; SW_MAX / 8 + 1], [0u8; SW_MAX / 8 + 1]);
     if evdev::bits(raw, EV_SW, &mut sw) && byte_bit(&sw, SW_PEN_INSERTED) && evdev::switches(raw, &mut sw_now) {
         d.garage = true;
         d.pen_out = byte_bit(&sw_now, SW_PEN_INSERTED);

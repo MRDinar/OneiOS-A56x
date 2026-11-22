@@ -14,7 +14,10 @@
 //!   [`text`] (C's fixed-size cuts, C strings in buffers), [`thread`] (named threads), [`fd`] (O_NONBLOCK,
 //!   FD_CLOEXEC, EINTR, memfds, SCM_RIGHTS), [`sys`] (errno, its texts, [`sys::Errno`], the page size), [`ioctl`]
 //!   (the numbers and the call), [`time`] (the monotonic clock).
+//! - [`evdev`]: Linux's input devices: the event codes, input_event, the EVIOC* ioctls (xnuhost's input path, the
+//!   haptics and brightness bridges, bridgectl).
 pub mod bytes;
+pub mod evdev;
 pub mod fd;
 pub mod fs;
 pub mod hooks;

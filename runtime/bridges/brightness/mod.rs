@@ -81,16 +81,7 @@ fn level_of(value: u32, floor: u32, ceiling: u32) -> u32 {
 // ---- the light sensor's events (pure) -----------------------------------------------------------
 
 // The kernel's input codes (linux/input-event-codes.h).
-const EV_SYN: u16 = 0;
-const EV_REL: u16 = 2;
-const EV_ABS: u16 = 3;
-const SYN_REPORT: u16 = 0;
-const REL_X: u16 = 0;
-const REL_RX: u16 = 3;
-const REL_RY: u16 = 4;
-const ABS_Y: u16 = 1;
-const ABS_Z: u16 = 2;
-const ABS_RX: u16 = 3;
+use xh_core::evdev::codes::{ABS_RX, ABS_Y, ABS_Z, EV_ABS, EV_REL, EV_SYN, REL_RX, REL_RY, REL_X, SYN_REPORT};
 
 /// One report of the STK6D2x driver (drivers/optics/stk6d2x_sec.c, stk_sec_report): the averages of the clear,
 /// infrared and UV channels, already divided by the gain, each sent as value + 1 on EV_REL (REL_RY clear, REL_X

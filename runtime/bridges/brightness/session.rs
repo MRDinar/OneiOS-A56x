@@ -5,7 +5,7 @@ use super::{level_of, map, AlsFrame, FULL, TREBLE_NAMES};
 use crate::hw::{self, Backend, Bridge};
 use crate::{br_error, br_info};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use xh_core::bytes::ne;
-use xh_core::{ioctl, parse};
+use xh_core::{evdev, parse};
 
 const STEP: Duration = Duration::from_millis(16);
 const TOUCH_MAX: usize = 4;
@@ -286,17 +285,16 @@ impl Als {
         let now_ms = || start.elapsed().as_millis() as u64;
         let (mut last_sent, mut sent_at, mut sent) = (0u32, 0u64, false);
         let (mut heard_at, mut enabled_at) = (0u64, 0u64);
-        let mut buf = [0u8; 32 * EVENT_SIZE];
+        let mut events = [evdev::InputEvent::default(); 32];
         while !self.stop.load(Ordering::Relaxed) {
             let listener = lock(&self.listener).clone();
             let ready = poll_in(&self.file, 200);
             let now = now_ms();
             match ready {
                 Ready::In => {
-                    let n = (&self.file).read(&mut buf).unwrap_or(0);
-                    for ev in buf[..n].chunks_exact(EVENT_SIZE) {
-                        let (kind, code, value) = event_fields(ev);
-                        if !frame.feed(kind, code, value) {
+                    let n = evdev::read(self.file.as_raw_fd(), &mut events).unwrap_or(0);
+                    for ev in &events[..n] {
+                        if !frame.feed(ev.kind, ev.code, ev.value) {
                             continue;
                         }
                         heard_at = now;
@@ -822,20 +820,9 @@ fn pen_find(dir: &Path) -> Option<PathBuf> {
 
 // ---- evdev --------------------------------------------------------------------------------------
 
-/// struct input_event: a struct timeval, then type, code (u16) and value (i32).
-const EVENT_SIZE: usize = std::mem::size_of::<libc::input_event>();
-
-fn event_fields(ev: &[u8]) -> (u16, u16, i32) {
-    let at = EVENT_SIZE - 8;
-    (ne::u16(ev, at), ne::u16(ev, at + 2), ne::i32(ev, at + 4))
-}
-
 /// The device's name (EVIOCGNAME), at most 79 bytes.
 fn evdev_name(file: &File) -> Option<String> {
-    let mut name = [0u8; 80];
-    // SAFETY: EVIOCGNAME(len) writes at most name.len() bytes into the buffer, which lives across the call.
-    unsafe { ioctl::ioctl(file.as_raw_fd(), ioctl::ior(b'E', 0x06, name.len()), name.as_mut_ptr()) }.ok()?;
-    Some(xh_core::text::nul_text(&name))
+    evdev::name(file.as_raw_fd(), 80)
 }
 
 /// The first <dir>/event* whose name is `name`: opened read only, non-blocking, and never grabbed.

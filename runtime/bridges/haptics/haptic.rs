@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicI8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use xh_core::ioctl::{ior, iow};
+use xh_core::evdev::{self, codes::*, FfEffect, InputEvent};
 use xh_core::sys::strerror;
 
 pub const PERIOD_MIN_MS: u32 = 4; // CS40L26_BUZZGEN_PER_MIN
@@ -506,48 +506,6 @@ impl HapticBackend for SimBackend {
 }
 
 // ---- the evdev force-feedback back end ----------------------------------------------------------
-const EV_FF: u16 = 0x15;
-const FF_PERIODIC: u16 = 0x51;
-const FF_SINE: u16 = 0x5a;
-const FF_GAIN: u16 = 0x60;
-const FF_MAX: usize = 0x7f;
-
-/// struct ff_effect (linux/input.h) with its union as struct ff_periodic_effect: 48 bytes on a 64-bit kernel.
-#[repr(C)]
-#[derive(Default)]
-struct FfEffect {
-    kind: u16,
-    id: i16,
-    direction: u16,
-    trigger_button: u16,
-    trigger_interval: u16,
-    replay_length: u16,
-    replay_delay: u16,
-    _pad: u16,
-    waveform: u16,
-    period: u16,
-    magnitude: i16,
-    offset: i16,
-    phase: u16,
-    envelope: [u16; 4],
-    custom_len: u32,
-    custom_data: usize,
-}
-
-const fn eviocgbit(ev: u16, len: usize) -> u32 {
-    ior(b'E', 0x20 + ev as u8, len)
-}
-const fn eviocgname(len: usize) -> u32 {
-    ior(b'E', 0x06, len)
-}
-const EVIOCSFF: u32 = iow(b'E', 0x80, std::mem::size_of::<FfEffect>());
-
-/// ioctl(fd, request, arg) -> its result, or the errno of its -1.
-fn ioctl<T>(fd: &OwnedFd, request: u32, arg: *mut T) -> Result<i32, Errno> {
-    // SAFETY: the callers pass a request whose size matches the buffer `arg` points to.
-    unsafe { xh_core::ioctl::ioctl(fd.as_raw_fd(), request, arg) }.map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))
-}
-
 fn open_rw(path: &str) -> Result<OwnedFd, Errno> {
     std::fs::OpenOptions::new()
         .read(true)
@@ -557,19 +515,15 @@ fn open_rw(path: &str) -> Result<OwnedFd, Errno> {
         .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))
 }
 
-fn bit(bits: &[u8], n: u16) -> bool {
-    bits[usize::from(n) / 8] >> (n % 8) & 1 != 0
-}
-
 fn has_periodic(fd: &OwnedFd) -> bool {
     let mut bits = [0u8; FF_MAX / 8 + 1];
-    ioctl(fd, eviocgbit(EV_FF, bits.len()), bits.as_mut_ptr()).is_ok() && bit(&bits, FF_PERIODIC) && bit(&bits, FF_SINE)
+    evdev::bits(fd.as_raw_fd(), EV_FF, &mut bits)
+        && evdev::bit(&bits, FF_PERIODIC.into())
+        && evdev::bit(&bits, FF_SINE.into())
 }
 
 fn device_name(fd: &OwnedFd) -> String {
-    let mut name = [0u8; 80];
-    let _ = ioctl(fd, eviocgname(name.len()), name.as_mut_ptr());
-    xh_core::text::nul_text(&name)
+    evdev::name(fd.as_raw_fd(), 80).unwrap_or_default()
 }
 
 /// The evdev backend's device search: the node path of the first device whose EV_FF bits have FF_PERIODIC and
@@ -602,19 +556,8 @@ struct EvdevBackend {
 
 impl EvdevBackend {
     fn event(&self, code: u16, value: i32) -> Result<(), Errno> {
-        // SAFETY: an all-zero input_event is a valid one.
-        let mut ev: libc::input_event = unsafe { std::mem::zeroed() };
-        ev.type_ = EV_FF;
-        ev.code = code;
-        ev.value = value;
-        let size = std::mem::size_of::<libc::input_event>();
-        // SAFETY: `ev` is a valid input_event of `size` bytes.
-        let n = unsafe { libc::write(self.fd.as_raw_fd(), (&ev as *const libc::input_event).cast(), size) };
-        if n == size as isize {
-            Ok(())
-        } else {
-            Err(xh_core::sys::errno())
-        }
+        let ev = InputEvent { kind: EV_FF, code, value, ..InputEvent::default() };
+        evdev::write(self.fd.as_raw_fd(), &ev).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))
     }
 }
 
@@ -629,7 +572,7 @@ impl HapticBackend for EvdevBackend {
             magnitude: magnitude as i16,
             ..FfEffect::default()
         };
-        ioctl(&self.fd, EVIOCSFF, &mut effect)?;
+        evdev::upload(self.fd.as_raw_fd(), &mut effect).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
         Ok(effect.id.into())
     }
     fn play(&mut self, id: i32, on: bool) -> Result<(), Errno> {

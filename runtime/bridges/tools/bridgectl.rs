@@ -36,7 +36,10 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use xh_core::ioctl::ioctl;
+use xh_core::evdev::{
+    self,
+    codes::{EV_FF, FF_CUSTOM, FF_GAIN, FF_MAX, FF_PERIODIC, FF_SINE},
+};
 use xh_core::parse::atoi;
 use xh_core::sys::{error_text, strerror};
 
@@ -129,16 +132,6 @@ fn cpu(args: &[String]) -> i32 {
 }
 
 // ---- haptics: the evdev node's bits, read only ---------------------------------------------------
-const EV_FF: u8 = 0x15;
-const FF_PERIODIC: usize = 0x51;
-const FF_SINE: usize = 0x5a;
-const FF_CUSTOM: usize = 0x5d;
-const FF_GAIN: usize = 0x60;
-const FF_MAX: usize = 0x7f;
-/// _IOR('E', nr, size): an evdev query.
-const fn ior(nr: u8, size: usize) -> u32 {
-    xh_core::ioctl::ior(b'E', nr, size)
-}
 
 /// Strictly passive probe. Unlike Haptic::open_as, this does NOT send FF_GAIN, upload a waveform, create a worker or
 /// play an effect.
@@ -163,20 +156,18 @@ fn haptic_inspect() -> i32 {
         };
         let fd = file.as_raw_fd();
         let mut bits = [0u8; FF_MAX / 8 + 1];
-        // SAFETY: EVIOCGBIT(EV_FF) fills at most bits.len() bytes.
-        let ok = unsafe { ioctl(fd, ior(0x20 + EV_FF, bits.len()), bits.as_mut_ptr()) }.is_ok();
-        let bit = |n: usize| ok && bits[n / 8] >> (n % 8) & 1 != 0;
+        let ok = evdev::bits(fd, EV_FF, &mut bits);
+        let bit = |n: u16| ok && evdev::bit(&bits, n.into());
         if bit(FF_PERIODIC) && bit(FF_SINE) {
             found += 1;
-            let mut dev = [0u8; 128];
-            // SAFETY: EVIOCGNAME fills at most dev.len() bytes.
-            let _ = unsafe { ioctl(fd, ior(0x06, dev.len()), dev.as_mut_ptr()) };
-            let mut effects: i32 = -1;
-            // SAFETY: EVIOCGEFFECTS writes one int.
-            let effects_ok = unsafe { ioctl(fd, ior(0x84, 4), &mut effects) }.is_ok();
+            let dev = evdev::name(fd, 128).unwrap_or_default();
+            let (effects, effects_ok) = match evdev::effects(fd) {
+                Some(n) => (n, true),
+                None => (-1, false),
+            };
             println!(
                 "haptic-inspect: {path} \"{}\" FF_PERIODIC=1 FF_SINE=1 FF_CUSTOM={} FF_GAIN={} max_effects={effects}{}",
-                xh_core::text::nul_text(&dev),
+                dev,
                 u8::from(bit(FF_CUSTOM)),
                 u8::from(bit(FF_GAIN)),
                 if !effects_ok { " (query unavailable)" } else { "" }

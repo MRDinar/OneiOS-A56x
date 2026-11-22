@@ -25,42 +25,10 @@ use std::sync::Mutex;
 
 use xh_core::logi;
 
-/// Linux's event codes (linux/input-event-codes.h), the ones the input path uses (input.rs, pen.rs, input_script.rs,
-/// virtio_input.rs).
-pub mod ev {
-    pub const EV_SYN: u16 = 0;
-    pub const EV_KEY: u16 = 1;
-    pub const EV_ABS: u16 = 3;
-    pub const EV_MSC: u16 = 4;
-    pub const EV_SW: u16 = 5;
-    pub const SYN_REPORT: u16 = 0;
-    pub const SYN_DROPPED: u16 = 3;
-    pub const MSC_TIMESTAMP: u16 = 5;
-    pub const SW_PEN_INSERTED: u16 = 0x0f;
-    pub const KEY_MUTE: u16 = 113;
-    pub const KEY_VOLUMEDOWN: u16 = 114;
-    pub const KEY_VOLUMEUP: u16 = 115;
-    pub const KEY_POWER: u16 = 116;
-    pub const KEY_HOMEPAGE: u16 = 172;
-    pub const BTN_TOOL_PEN: u16 = 0x140;
-    pub const BTN_TOOL_RUBBER: u16 = 0x141;
-    pub const BTN_TOUCH: u16 = 0x14a;
-    pub const BTN_STYLUS: u16 = 0x14b;
-    pub const BTN_STYLUS2: u16 = 0x14c;
-    pub const ABS_X: u16 = 0;
-    pub const ABS_Y: u16 = 1;
-    pub const ABS_PRESSURE: u16 = 0x18;
-    pub const ABS_DISTANCE: u16 = 0x19;
-    pub const ABS_TILT_X: u16 = 0x1a;
-    pub const ABS_TILT_Y: u16 = 0x1b;
-    pub const ABS_MT_SLOT: u16 = 0x2f;
-    pub const ABS_MT_TOUCH_MAJOR: u16 = 0x30;
-    pub const ABS_MT_POSITION_X: u16 = 0x35;
-    pub const ABS_MT_POSITION_Y: u16 = 0x36;
-    pub const ABS_MT_TRACKING_ID: u16 = 0x39;
-    pub const ABS_MT_PRESSURE: u16 = 0x3a;
-}
 use ev::*;
+/// Linux's event codes (linux/input-event-codes.h), the ones the input path uses (input.rs, pen.rs, input_script.rs,
+/// virtio_input.rs): xh-core's.
+pub use xh_core::evdev::codes as ev;
 
 /// Where a filter's events go: the guest's virtio-input device ([`crate::virtio_input`]), or a test's capture.
 pub trait EventSink {
@@ -497,123 +465,8 @@ impl<S: EventSink> Source<S> {
     }
 }
 
-// ---- evdev's ioctls (input.rs and pen.rs) ---------------------------------------------------------------------------
-/// The few evdev ioctls of the input path, on byte arrays of bits (little-endian longs are bytes in order).
-pub(crate) mod evdev {
-    use std::os::fd::RawFd;
-    use xh_core::ioctl::{ioctl, ior, iow};
-
-    pub const ABS_MAX: usize = 0x3f;
-    pub const KEY_MAX: usize = 0x2ff;
-    pub const SW_MAX: usize = 0x10;
-    pub const INPUT_PROP_DIRECT: usize = 0x01;
-
-    /// struct input_absinfo
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct AbsInfo {
-        pub value: i32,
-        pub minimum: i32,
-        pub maximum: i32,
-        pub fuzz: i32,
-        pub flat: i32,
-        pub resolution: i32,
-    }
-
-    /// struct input_event of a 64-bit process
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct RawEvent {
-        pub sec: i64,
-        pub usec: i64,
-        pub kind: u16,
-        pub code: u16,
-        pub value: i32,
-    }
-
-    fn call(fd: RawFd, request: u32, arg: *mut libc::c_void) -> bool {
-        // SAFETY: each caller passes an argument of the size its request encodes.
-        unsafe { ioctl(fd, request, arg) }.is_ok()
-    }
-
-    pub fn bit(bits: &[u8], n: usize) -> bool {
-        n / 8 < bits.len() && bits[n / 8] >> (n % 8) & 1 != 0
-    }
-
-    /// EVIOCGNAME: the device's name ("" when it has none).
-    pub fn name(fd: RawFd) -> String {
-        let mut b = [0u8; 64];
-        call(fd, ior(b'E', 0x06, 63), b.as_mut_ptr().cast());
-        xh_core::text::nul_text(&b[..63])
-    }
-
-    /// EVIOCGBIT(ev): the event type's code bits.
-    pub fn bits(fd: RawFd, ev: u16, out: &mut [u8]) -> bool {
-        call(fd, ior(b'E', 0x20 + ev as u8, out.len()), out.as_mut_ptr().cast())
-    }
-
-    /// EVIOCGPROP: the device's property bits.
-    pub fn props(fd: RawFd, out: &mut [u8]) -> bool {
-        call(fd, ior(b'E', 0x09, out.len()), out.as_mut_ptr().cast())
-    }
-
-    /// EVIOCGKEY: the keys held.
-    pub fn keys(fd: RawFd, out: &mut [u8]) -> bool {
-        call(fd, ior(b'E', 0x18, out.len()), out.as_mut_ptr().cast())
-    }
-
-    /// EVIOCGSW: the switches' state.
-    pub fn switches(fd: RawFd, out: &mut [u8]) -> bool {
-        call(fd, ior(b'E', 0x1b, out.len()), out.as_mut_ptr().cast())
-    }
-
-    /// EVIOCGABS(axis)
-    pub fn abs(fd: RawFd, axis: u16) -> Option<AbsInfo> {
-        let mut info = AbsInfo::default();
-        let req = ior(b'E', 0x40 + axis as u8, std::mem::size_of::<AbsInfo>());
-        call(fd, req, (&mut info as *mut AbsInfo).cast()).then_some(info)
-    }
-
-    /// EVIOCGMTSLOTS for one code: the values of the first 16 slots.
-    pub fn mt_slots(fd: RawFd, code: u16) -> Option<[i32; 16]> {
-        let mut slots = [0i32; 17];
-        slots[0] = code as i32;
-        call(fd, ior(b'E', 0x0a, std::mem::size_of_val(&slots)), slots.as_mut_ptr().cast()).then(|| {
-            let mut v = [0i32; 16];
-            v.copy_from_slice(&slots[1..]);
-            v
-        })
-    }
-
-    /// EVIOCGRAB
-    pub fn grab(fd: RawFd, on: bool) -> bool {
-        // SAFETY: EVIOCGRAB takes its argument by value.
-        unsafe { ioctl(fd, iow(b'E', 0x90, 4), usize::from(on) as *mut libc::c_void) }.is_ok()
-    }
-
-    /// EVIOCSCLOCKID: this reader's event times on CLOCK_MONOTONIC.
-    pub fn clock_monotonic(fd: RawFd) -> bool {
-        let mut clock: libc::c_int = libc::CLOCK_MONOTONIC;
-        call(fd, iow(b'E', 0xa0, 4), (&mut clock as *mut libc::c_int).cast())
-    }
-
-    /// /dev/input/eventN, opened read only and non-blocking.
-    pub fn open(n: u32) -> Option<(String, std::os::fd::OwnedFd)> {
-        let path = format!("/dev/input/event{n}");
-        let c = std::ffi::CString::new(path.as_str()).ok()?;
-        // SAFETY: a NUL-terminated path.
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK) };
-        // SAFETY: a new descriptor of ours.
-        (fd >= 0).then(|| (path, unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) }))
-    }
-
-    /// Up to `out.len()` events, or None.
-    pub fn read(fd: RawFd, out: &mut [RawEvent]) -> Option<usize> {
-        // SAFETY: reads into our array of plain structs.
-        let n = unsafe { libc::read(fd, out.as_mut_ptr().cast(), std::mem::size_of_val(out)) };
-        (n > 0).then(|| n as usize / std::mem::size_of::<RawEvent>())
-    }
-}
+/// evdev's ioctls and its input_event (input.rs and pen.rs): xh-core's.
+pub(crate) use xh_core::evdev;
 
 // ---- the reader ------------------------------------------------------------------------------------------------------
 use crate::pen;
@@ -661,7 +514,7 @@ static READER: Mutex<Option<Reader>> = Mutex::new(None);
 fn native_touch_present() -> bool {
     (0..32).filter_map(evdev::open).any(|(_, fd)| {
         let fd = fd.as_raw_fd();
-        if evdev::name(fd) != "sec_touchscreen" {
+        if evdev::name(fd, 63).unwrap_or_default() != "sec_touchscreen" {
             return false;
         }
         let (mut abs, mut props) = ([0u8; 8], [0u8; 8]);
@@ -669,7 +522,7 @@ fn native_touch_present() -> bool {
             && evdev::props(fd, &mut props)
             && evdev::bit(&abs, ABS_MT_POSITION_X as usize)
             && evdev::bit(&abs, ABS_MT_POSITION_Y as usize)
-            && evdev::bit(&props, evdev::INPUT_PROP_DIRECT)
+            && evdev::bit(&props, ev::INPUT_PROP_DIRECT as usize)
     })
 }
 
@@ -677,7 +530,7 @@ fn native_touch_present() -> bool {
 fn read_state(s: &Source<InputDev>) -> Option<State> {
     let fd = s.fd.as_ref()?.as_raw_fd();
     let mut st = State::default();
-    let mut key = [0u8; evdev::KEY_MAX / 8 + 1];
+    let mut key = [0u8; ev::KEY_MAX / 8 + 1];
     if !evdev::keys(fd, &mut key) {
         return None;
     }
@@ -712,7 +565,7 @@ fn reader_main(mut devices: Devices, running: std::sync::Arc<AtomicBool>) {
         .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
         .collect();
     let pen_index = devices.pen.as_ref().map(|_| devices.sources.len());
-    let mut raw = [evdev::RawEvent::default(); 64];
+    let mut raw = [evdev::InputEvent::default(); 64];
     let mut batch = [Event::default(); 64];
     let hz = crate::hostcalls::info().timebase_hz;
     while running.load(Ordering::Acquire) {
@@ -774,7 +627,7 @@ pub fn start(
         let (mut abs, mut key) = ([0u8; 8], [0u8; 96]);
         evdev::bits(raw, EV_ABS, &mut abs);
         evdev::bits(raw, EV_KEY, &mut key);
-        let name = evdev::name(raw);
+        let name = evdev::name(raw, 63).unwrap_or_default();
         let mut touch = evdev::bit(&abs, ABS_MT_POSITION_X as usize) && evdev::bit(&abs, ABS_MT_POSITION_Y as usize);
         // Keep physical side keys on Android during the interactive bench. Skipping all key-only nodes also reserves
         // the reader's limited slots for sec_touchscreen even if it was assigned a late eventN number.
@@ -784,7 +637,7 @@ pub fn start(
         // device as the screen's (one slot state for two sources) and its ranges replaced the screen's. Not taken.
         if touch {
             let mut props = [0u8; 8];
-            let direct = evdev::props(raw, &mut props) && evdev::bit(&props, evdev::INPUT_PROP_DIRECT);
+            let direct = evdev::props(raw, &mut props) && evdev::bit(&props, ev::INPUT_PROP_DIRECT as usize);
             if !accept_touch(Some(&name), direct, have_touch, native_touch)
                 || (touch_exclusive && !exclusive_touch_allowed(Some(&name), direct, have_touch))
             {
