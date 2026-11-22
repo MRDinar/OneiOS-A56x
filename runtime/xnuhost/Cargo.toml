@@ -1,0 +1,32 @@
+[package]
+name = "xnuhost"
+description = "XNU as a process on Android's Linux kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+xh-core.workspace = true
+xnuhost-abi.workspace = true
+xnuloader.workspace = true
+onebridges.workspace = true
+onecamera.workspace = true
+oneencoder.workspace = true
+oneios-display.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xnuhost"
+path = "src/main.rs"

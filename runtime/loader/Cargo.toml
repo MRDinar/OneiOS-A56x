@@ -1,0 +1,22 @@
+[package]
+name = "xnuloader"
+description = "The XNU loader: Mach-O, the Apple device tree, the boot arguments, the machine layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+xnuhost-abi.workspace = true
+
+[lints]
+workspace = true

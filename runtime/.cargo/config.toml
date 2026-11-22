@@ -1,0 +1,5 @@
+# aarch64-linux-android links with the NDK's clang (runtime/ndk-cc). The static binaries (xnuhost, the phone checks)
+# are built with crt-static in a target dir of their own (runtime/build.sh); the dynamic ones (oneios-audio,
+# oneios-camera, the display helper's library) without.
+[target.aarch64-linux-android]
+linker = "./ndk-cc"

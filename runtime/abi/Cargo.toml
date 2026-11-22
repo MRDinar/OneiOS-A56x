@@ -1,0 +1,21 @@
+[package]
+name = "xnuhost-abi"
+description = "The ABI xnuhost shares with the hosted kernel and the task stub (hostcall.h, stub_abi.h, free_report*.h); no_std"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+
+[lints]
+workspace = true
