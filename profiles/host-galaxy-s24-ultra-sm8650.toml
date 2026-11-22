@@ -1,0 +1,64 @@
+# Host profile for OneiOS on the Galaxy S24 Ultra (Snapdragon 8 Gen 3 for Galaxy), the home device. Not Apple's IPSW
+# profile. A record for the port docs; no code reads it. What xnuhost does on this phone comes from its row in
+# runtime/bridges/hw/host_device.c (galaxy-s24-ultra: no defaults, today's behaviour; docs/hardware.md 7h). The guest
+# image stays profiles/ios-27.0.1-iPhone18,2.toml.
+#
+# One file for every S24 Ultra model number: there is no separate config for the SM-S928W (or the U, U1, N, 0). They
+# all match the same row by ro.product.model's prefix "SM-S928" (host-tested 2026-11-23: test_hw_backend.c, host.rs,
+# scripts/port/test-verify-host.sh, tools/oneios-tool/tests/phone/run.sh; the OneOS fork's OneiosTest, ProfilesTest,
+# OneiosScriptTest). Marks as in docs/s25.md: [F] read on a phone or in a source, [I] inferred, [U] unknown.
+
+[host]
+label = "Galaxy S24 Ultra"
+model_prefix = "SM-S928"
+codename = "e3q"
+soc = "SM8650"
+platform = "pineapple"   # [F] the stock device tree, qcom/pineapple-v2.dts
+oneos_profile_id = "s-ultra-8650"
+form = "bar"
+
+[models]
+# ro.product.model of each S24 Ultra; every one is this file's row.
+"SM-S928B" = "Europe, Asia (global). [F] the owner's phone: every session in this tree"
+"SM-S928U" = "US carrier. e3q, SM8650 [I]; no iOS session"
+"SM-S928U1" = "US unlocked. e3q, SM8650 [I]; no iOS session"
+"SM-S928W" = "Canada (CSC XAC). Stock firmware S928WVLU6EZIF with the US carrier model's bootloader (ro.bootloader S928USQU6EZIF) and vendor partition (ro.product.vendor.model SM-S928U) [F per the OneOS fork's public issue 128]; nothing in the runtime reads either, and the fork's custom-ROM rule takes it (0.4.89). e3q, SM8650, pineapple [I]; no iOS session"
+"SM-S928N" = "Korea. e3q, SM8650 [I]; no iOS session"
+"SM-S9280" = "China. e3q, SM8650 [I]; no iOS session"
+# The Japanese S24 Ultras (SC-52E docomo, SCG26 au) are not SM-S928 and their codename is [U]: the runtime gives them
+# this row by the SoC (SM8650); the OneOS fork's iOS 27 card warns them as another phone.
+
+[firmware]
+# The owner's SM-S928B (docs/agents.md, 2026-11-10). Another model's build differs; the runtime does not depend on it.
+build = "CP2A.260605.016.S928BXXU6EZIF"
+one_ui = "9.0"
+kernel = "6.1.162-android14-11-34343818-abS928BXXU6EZIF, 4 KiB pages"
+selinux = "enforcing"
+root = "KernelSU (3.3.0 on the owner's phone). Root on another model is the user's own matter: whether the SM-S928W's or the SM-S928U's bootloader can be unlocked is [U]"
+
+[gpu]
+# [F] docs/gpu.md (the owner's phone, 2026-11-11)
+chip_name = "Adreno 750"
+kgsl_device = "/dev/kgsl-3d0"
+path = "virtio-gpu 3D -> drm2kgsl -> KGSL"
+chip_id = "0x43051400"
+gpu_id = 6770
+
+[display]
+# [F] the display helper's report on the owner's phone: one panel, 1440x3120
+native_resolution = "1440x3120"
+oneios_display = "oneios-display + surfaceflinger layer"
+
+[input]
+# [F] the owner's phone, 2026-11-12 (getevent -lp). The numbers can change between boots: xnuhost finds the devices by
+# their bits, not by number, so another model's numbering does not matter. On the other models: the same [I].
+touch = "sec_touchscreen (event8, direct, MT; Synaptics S3916T)"
+touchpad = "sec_touchpad (event9, not taken)"
+pen = "sec_e-pen (event11)"
+volume_up = "gpio-keys (event0)"
+power = "pmic_pwrkey (event1)"
+volume_down = "pmic_resin (event2)"
+
+[switch]
+stage = "/data/local/tmp/oneios"
+session_abi = 1

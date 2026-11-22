@@ -6,7 +6,7 @@
 # What it checks: one phone only (none, several, --serial, ANDROID_SERIAL, a phone that is not ready); root is
 # asked for first and its absence said; status; `stage runtime|runtime-asis|image` and `sums` against
 # scripts/phone/stage.sh on a second, equal stand-in phone (the same output, the same stage afterwards); the
-# refusals while a session is open; status's host phone line (crates/oneios-phone/src/host.rs: the S24 Ultra, S26 Ultra,
+# refusals while a session is open; status's host phone line (crates/oneios-phone/src/host.rs: the S24 Ultra (B, and the W with its US vendor model), S26 Ultra,
 # A56, S25 Ultra, an unknown phone, soc0's machine; the stand-in's getprop reads .fake/props); switch (the versionCode is the installed app's) and a refused preflight;
 # return (the restore line, no session, a return that hangs); the session's own commands (session-cmds.sh:
 # display-restart with --lib and --dex, touch status and wake, backlight status and set, each refused without a
@@ -71,6 +71,8 @@ else echo "skipped status (no fork root script)"; fi
 # would log, from getprop and soc0 (with or without the fork's root script: the line comes before it)
 hs() { sh -c "'$TOOL' phone status 2>&1; true"; }
 check "status: host S24 Ultra (the default stand-in)" 0 "^host: galaxy-s24-ultra \(Galaxy S24 Ultra \(SM-S928, SM8650\)\), matched by ro.product.model=SM-S928B; defaults: none \(today's\)$" hs
+printf '[ro.product.model]: [SM-S928W]\n[ro.product.vendor.model]: [SM-S928U]\n[ro.bootloader]: [S928USQU6EZIF]\n[ro.product.device]: [e3q]\n[ro.board.platform]: [pineapple]\n[ro.soc.model]: [SM8650]\n' > "$P/.fake/props"
+check "status: host S24 Ultra SM-S928W (Canada, the US vendor model)" 0 "^host: galaxy-s24-ultra \(Galaxy S24 Ultra \(SM-S928, SM8650\)\), matched by ro.product.model=SM-S928W; defaults: none \(today's\)$" hs
 printf '[ro.product.model]: [SM-S948B]\n[ro.soc.model]: [SM8850]\n' > "$P/.fake/props"
 check "status: host S26 Ultra" 0 "^host: galaxy-s26-ultra .*matched by ro.product.model=SM-S948B; defaults: ONEIOS_BRIGHT_MAX=2300$" hs
 printf '[ro.product.model]: [SM-A566E]\n[ro.product.device]: [a56x]\n[ro.soc.model]: [s5e8855]\n' > "$P/.fake/props"

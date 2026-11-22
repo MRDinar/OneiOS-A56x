@@ -199,6 +199,11 @@ mod tests {
     fn each_phone_and_unknown() {
         let name = |f: &Facts| matched(f).map(|(e, _)| e.name).unwrap_or("unknown");
         assert_eq!(name(&facts("SM-S928B", "e3q", "pineapple", "SM8650")), "galaxy-s24-ultra");
+        // Every S24 Ultra model number, by its own model (host_device.c's record): US, Canada, Korea, China.
+        for model in ["SM-S928U", "SM-S928U1", "SM-S928W", "SM-S928N", "SM-S9280"] {
+            let (e, why) = matched(&facts(model, "e3q", "pineapple", "SM8650")).expect(model);
+            assert_eq!((e.name, why), ("galaxy-s24-ultra", format!("ro.product.model={model}")));
+        }
         assert_eq!(name(&facts("SM-S938B", "pa3q", "sun", "SM8750")), "galaxy-s25-ultra");
         assert_eq!(name(&facts("SM-S931B", "pa1q", "sun", "SM8750")), "galaxy-s25");
         assert_eq!(name(&facts("SM-S948B", "", "", "SM8850")), "galaxy-s26-ultra");

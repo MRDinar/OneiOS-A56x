@@ -27,6 +27,14 @@
 static const br_host_device table[] = {
   // The home device. [F] SM-S928*, e3q, SM8650 (verify-host.sh, the OneOS fork's gate); platform pineapple [F] (the
   // stock device tree, qcom/pineapple-v2.dts, docs/hardware.md). No defaults: everything is today's.
+  // The model prefix takes every S24 Ultra model number (docs/hardware.md 7h, "The S24 Ultra's models"; the record
+  // profiles/host-galaxy-s24-ultra-sm8650.toml): SM-S928B (the owner's phone [F]), SM-S928U and SM-S928U1 (US),
+  // SM-S928W (Canada, CSC XAC), SM-S928N (Korea), SM-S9280 (China).
+  // The SM-S928W runs the US carrier model's bootloader and vendor partition under its own firmware (S928USQU6EZIF,
+  // ro.product.vendor.model=SM-S928U [F per the OneOS fork's public issue 128]): nothing here reads either, so it is
+  // matched by its own ro.product.model. e3q and SM8650 on the U, U1, W, N and 0 [I] (one hardware family; only the B
+  // has booted iOS). The Japanese ones (SC-52E, SCG26) are not SM-S928 and their codename is [U]: they
+  // get this entry by their SoC (SM8650, the SoC's entry), which has no defaults either.
   { .name = "galaxy-s24-ultra", .label = "Galaxy S24 Ultra (SM-S928, SM8650)",
     .models = { "SM-S928" }, .devices = { "e3q" }, .socs = { "SM8650" }, .platforms = { "pineapple" } },
   // docs/s25.md "Galaxy S25 Ultra", profiles/host-galaxy-s25-ultra-sm8750.toml. [F] SM-S938, pa3q, SM8750, platform sun

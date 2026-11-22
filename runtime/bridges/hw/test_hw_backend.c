@@ -77,8 +77,20 @@ static void test_host_device(void)
   // Each known phone by its model (the phone gates' properties).
   phone(tmp, "s24u", "SM-S928B", "e3q", "pineapple", "SM8650", "QTI", props, sizeof props);
   CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s24-ultra") && !strcmp(why, "matched by ro.product.model=SM-S928B"));
-  phone(tmp, "s24u-us", "SM-S928U1", "e3q", "pineapple", "SM8650", "QTI", props, sizeof props);
-  CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s24-ultra"));
+  // Every S24 Ultra model number gets the home entry by its own model (host_device.c's record): the US, Canadian
+  // (SM-S928W, with the US vendor partition that nothing here reads), Korean and Chinese ones.
+  static const char *const s24u_models[] = { "SM-S928U", "SM-S928U1", "SM-S928W", "SM-S928N", "SM-S9280" };
+  for (unsigned i = 0; i < sizeof s24u_models / sizeof *s24u_models; i++) {
+    char want[64];
+    phone(tmp, s24u_models[i], s24u_models[i], "e3q", "pineapple", "SM8650", "QTI", props, sizeof props);
+    snprintf(want, sizeof want, "matched by ro.product.model=%s", s24u_models[i]);
+    CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s24-ultra") && !strcmp(why, want));
+  }
+  // The SM-S928W as its stock firmware reports it (the fork's public issue 128): the US bootloader and vendor model.
+  snprintf(props, sizeof props, "%s/s928w-stock.props", tmp);
+  put(props, "[ro.product.model]: [SM-S928W]\n[ro.product.vendor.model]: [SM-S928U]\n[ro.bootloader]: [S928USQU6EZIF]\n"
+             "[ro.product.device]: [e3q]\n[ro.board.platform]: [pineapple]\n[ro.soc.model]: [SM8650]\n");
+  CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s24-ultra") && !strcmp(why, "matched by ro.product.model=SM-S928W"));
   phone(tmp, "s25u", "SM-S938B", "pa3q", "sun", "SM8750", "QTI", props, sizeof props);
   CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s25-ultra") && strstr(why, "SM-S938B"));
   phone(tmp, "s25", "SM-S931B", "pa1q", "sun", "SM8750", "QTI", props, sizeof props);

@@ -4,7 +4,8 @@ One project, many phones. This file maps every known OneiOS device fork: what ru
 what already flowed back into `main`, and what is still fork-only. Status as of 2026-11-22;
 fork contents move fast and this file will go stale — the dates say when it was true.
 
-Our own target stays the rooted Galaxy S24 Ultra (SM-S928U, SM8650); everything below is
+Our own target stays the rooted Galaxy S24 Ultra (the owner's SM-S928B, SM8650; every SM-S928 model, the Canadian
+SM-S928W too, takes the same path: `docs/hardware.md` 7h, "The S24 Ultra's models"); everything below is
 judged by what it teaches `main` or what runs on more phones without breaking the S24 Ultra.
 
 ## The survey of 2026-11-22 (`port-fork-device-support`)

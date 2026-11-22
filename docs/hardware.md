@@ -3831,8 +3831,9 @@ the helper is the next thing to find from the new line.
 
 One tree for every known host phone: xnuhost finds which phone it runs on at its start and takes that phone's
 defaults from one compiled-in table, `runtime/bridges/hw/host_device.c` (API `runtime/bridges/include/bridges/host_device.h`).
-The table is the source of truth: the host profile files (`profiles/host-galaxy-s25-ultra-sm8750.toml`,
-`profiles/host-galaxy-s25-sm8750.toml`) are records for the port docs and are read by no code. The bridges' ctl tools (`brightctl`, `batteryctl`, `thermalctl`,
+The table is the source of truth: the host profile files (`profiles/host-galaxy-s24-ultra-sm8650.toml`, one for every S24 Ultra model number,
+the SM-S928W too; `profiles/host-galaxy-s25-ultra-sm8750.toml`, `profiles/host-galaxy-s25-sm8750.toml`) are records for
+the port docs and are read by no code (the runtime package carries them in `lib/profiles/`, beside the IPSW profiles). The bridges' ctl tools (`brightctl`, `batteryctl`, `thermalctl`,
 `bridgectl`) and `oneios-tool phone status` use the same table.
 
 **What is read** (once, read only): the properties `ro.product.model`, `ro.product.device`, `ro.board.platform`,
@@ -3856,11 +3857,22 @@ environment variable that is set) > the table's default > the built-in default.
 
 | Name | Matched by | Defaults it changes | Why, and what is not set |
 |---|---|---|---|
-| `galaxy-s24-ultra` | `SM-S928*`, `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
+| `galaxy-s24-ultra` | `SM-S928*` (every S24 Ultra model number: below), `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
 | `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.c`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
 | `galaxy-s25` | `SM-S931*`, `pa1q`, `SM8750`, `sun` [F] (the `S931BXXUCDZIF` vendor_boot DT compatible list) | `panel-fallback=1080x2340@120`, `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] a 1080x2340 panel (xaxaapple/s25ver's device profile and `xnuhost.h`), and the shipped dtbo names it `PA1_S6E3FAE_AMB616FL03` with modes at 120/80/60/48/30/24/10 Hz: only the mode assumed where the panel cannot be read, a panel that is read still wins; without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush (port-forks-gap). The same dtbo has the touch (`stm,stm_ts_spi`, `samsung,ss_touch`) and haptics (`cirrus,cs40l26a`) nodes [F]. Otherwise as the S25 Ultra; its runtime node names and Bluetooth HAL (HIDL or AIDL) are [U]. The SoC rule as the S25 Ultra's [I] (same SM8750): the thresholds come from this phone's own trips, read at the start and logged |
 | `galaxy-s26-ultra` | `SM-S948*`, SoC `SM8850` (codename and platform [U], not matched) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/test_brightness.c`, `test_sm8850_manual_brightness_cap`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
 | `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d`, `panel-fallback=1080x2340@120` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). The panel: 1080x2340 [F] (the fork's `docs/a56-guide.md`), as for the S25. Touch, haptics, battery and thermal names [U]: samsung stays |
+
+**The S24 Ultra's models.** One entry for every model number, matched by `ro.product.model`'s prefix (record: `profiles/host-galaxy-s24-ultra-sm8650.toml`; host-tested for
+each one below: `test_hw_backend.c`, `host.rs`, `scripts/port/test-verify-host.sh`, `tools/oneios-tool/tests/phone/run.sh`):
+
+| Model | Market | What is known |
+|---|---|---|
+| SM-S928B | Europe, Asia (global) | [F] the owner's phone: e3q, SM8650, platform pineapple; every session in this tree |
+| SM-S928U, SM-S928U1 | US carrier, US unlocked | e3q, SM8650 [I] (one hardware family); not booted with iOS |
+| SM-S928W | Canada (CSC XAC) | The same path as the B in the runtime and in the OneOS fork (its profile `s-ultra-8650`, the iOS 27 card, the switch's own check, the custom-ROM rule since fork 0.4.89: host-tested there too). the US carrier model's bootloader and vendor partition under its own firmware: `ro.bootloader` `S928USQU6EZIF`, `ro.product.vendor.model` `SM-S928U`, firmware `S928WVLU6EZIF` [F per the OneOS fork's public issue 128, a stock phone, 2026-11-10]. Nothing in the runtime reads either, so its own model matches. e3q, SM8650, pineapple [I]; its side keys, panel, touch and pen nodes, backlight path, thermal zones and HAL instance names [U] (the B's are kept: same hardware [I]). Root: KernelSU as on the B; whether its bootloader can be unlocked is [U] (the user's own matter). Not booted with iOS |
+| SM-S928N, SM-S9280 | Korea, China | e3q, SM8650 [I]; not booted with iOS |
+| SC-52E, SCG26 | Japan (docomo, au) | not `SM-S928`, codename [U]: they get this entry by their SoC (`SM8650`, the SoC's entry, no defaults either); the OneOS fork's profile (`SM-S928*` and `e3q` and `SM8650`, all three) does not match them, so its iOS 27 card warns them as another phone (not refused) |
 
 Which keys an entry may hold: xnuhost settings that `config.c` merges as device defaults (`gpu`, `hw-backend*`; an
 entry with another key makes xnuhost refuse to start, and `test_xnuhost` forces every entry and checks each default
@@ -3889,7 +3901,7 @@ bad name, a missing file, the environment's defaults taken and kept, the ctl too
 `host-device=none`; the A56's `gpu=2d` under the command line and the image set; the image set's `host-device=none`;
 every entry forced); the stand-in phone (`tools/oneios-tool/tests/phone/hw-backend.sh`: `brightctl` on an S26 Ultra's
 panel, 1..2300 of 12750 detected, 1..12750 with `none` or the S24's properties, a set `ONEIOS_BRIGHT_MAX` kept; `run.sh`:
-`phone status`'s host line for each phone). **Not run on a phone**: the first phone start shows the line above; on the
+`phone status`'s host line for each phone). 2026-11-23, on the build laptop: every S24 Ultra model number above (SM-S928B, U, U1, W, N, 0; the W with its US vendor model and bootloader) in `test_hw_backend.c`, `host.rs`, `test-verify-host.sh` and `run.sh`. **Not run on a phone**: the first phone start shows the line above; on the
 S24 Ultra it must say `galaxy-s24-ultra ... defaults: none (today's)`.
 
 ## 8. Sources

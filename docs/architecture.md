@@ -68,7 +68,8 @@ capabilities, never grabbed). The audit table of every path, and each bridge's s
 Which phone xnuhost runs on is found at its start, not built in: `runtime/bridges/hw/host_device.c` reads the
 properties `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (and as
 fallbacks soc0's `machine` and the device tree's `compatible`) and matches them against one compiled-in table of known
-hosts: the Galaxy S24 Ultra (the home device, no defaults of its own: today's behaviour), S25 Ultra, S25, S26 Ultra and
+hosts: the Galaxy S24 Ultra (the home device, every `SM-S928*` model number: B, U, U1, W, N, 0; no defaults of its own:
+today's behaviour), S25 Ultra, S25, S26 Ultra and
 A56. An entry holds only settings that already exist as options (an xnuhost setting `config.c` merges as a device
 default, or an environment variable a bridge reads), and goes under every explicit setting: the command line > the
 image set's `xnuhost.conf` > the table > the built-in default. `host-device=NAME` forces an entry, `host-device=none`

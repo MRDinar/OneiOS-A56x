@@ -145,9 +145,12 @@ static void test_thermal(void)
     usleep(300000);
     br_thermal_get(t, &s);
     CHECK(s.raw.skin == 445 && s.raw.cpu == 700 && s.level == BR_THERMAL_HEAVY);
+    // The log is cleared before the HAL stops: the worker (50 ms) can read the dead HAL while stop_fake waits, and it
+    // says so once only (hal_failed), so a clear after it could wipe the one line (a full parallel host-tests.sh run
+    // on the build laptop, 2026-11-23: the line printed, the check failed).
+    lines[0] = 0;
     stop_fake(pid);
     pid = -1;
-    lines[0] = 0;
     for (int i = 0; i < 60 && !logged("getTemperatures failed"); i++) usleep(50000);   // the next reading, within 3 s
     usleep(100000);
     br_thermal_get(t, &s);
