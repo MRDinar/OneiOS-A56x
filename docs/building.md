@@ -770,7 +770,7 @@ One UI's. How the screen runs them and what it tests: the fork's `docs/oneios.md
 
 Or by hand, from `STAGE/bin` pushed to `/data/local/tmp`, as root: `gpuctl` (or one step of it:
 `gpuctl nodes|routes|probe|submit|large`, [gpu.md](gpu.md) section 4), `displayctl test`,
-`bridgectl host|cpu|haptic|haptic-pattern|bt|audio`, `wifictl status|scan` (read only; `join NAME PASSPHRASE` takes the Wi-Fi from One UI while it runs), `brightctl info|levels|als`, `batteryctl [watch S]`, `thermalctl [watch -i S -n N | top -i S]`
+`bridgectl host|cpu|haptic|haptic-pattern|bt|audio`, `wifictl status|scan|p2p` (read only; `p2p`: the radio's peer-to-peer paths for AirDrop, [hardware.md](hardware.md) 4a; `join NAME PASSPHRASE` takes the Wi-Fi from One UI while it runs), `brightctl info|levels|als`, `batteryctl [watch S]`, `thermalctl [watch -i S -n N | top -i S]`
 (read only; `watch` logs temperatures, clocks, battery current and the session's CPU, `top` xnuhost's busiest threads), `camctl --backend ndk list|capture`.
 Each tool's README has its exact commands and what a pass looks like. **None of this has run on the phone yet.**
 

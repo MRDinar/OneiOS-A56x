@@ -22,6 +22,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
+| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths, to find One UI 8.5's AWDL for Quick Share | does not work: Bluetooth is off in sessions (sharingd needs it: the toggle cannot switch), and no AWDL path is known on this radio yet; `wifictl p2p` host-tested, not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
@@ -404,6 +405,7 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 | `station.c` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages |
 | `wlan.c` | the back end on the phone: the AF_PACKET socket, nl80211, wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
 | `sim.c` | a made-up radio (`wifi=sim`) |
+| `p2p.c` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
 | `supplicant.c` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
 | `aidl_parcel.c`, `aidl_binder.c` | stable AIDL over `/dev/binder` with no Android library (xnuhost is static): the interface token (strict mode word, work source, `SYST`), `String` as UTF-16, `byte[]`, binder objects with the stability word (VINTF 0x3f), the status header of a reply; the kernel's binder protocol, one looper thread for the calls into our callback, death notifications |
 | `tools/wifictl.c` | the bridge without xnuhost: `status`, `scan`, `join`, `restore` (`runtime/bridges/README.md`) |
@@ -1248,6 +1250,119 @@ addresses are the binary's, unslid):
   `docs/laurel_sprout/bluetooth.md`, last section) are not done: they matter for headsets.
 - SCO audio goes through the HAL as HCI; A2DP is iOS's own stack over ACL. LE Audio (ISO) only with a 1.1 HAL.
 - UniXNU QcaBluetooth is a radio driver for a bare-metal WCN7850: not needed here.
+
+## 4a. AirDrop (airdrop, 2026-11-22)
+
+The owner's request (2026-11-22): AirDrop does not work in iOS, and its Control Center toggle does not switch; "check
+how Android works with AirDrop and port it over". **Result: AirDrop cannot work in a session yet, for two causes in
+our stack and one in the radio. No guest change can make the toggle switch while Bluetooth is off.** What was built:
+`wifictl p2p`, a lasting read-only report of the radio's peer-to-peer paths, for the phone check below.
+
+### How Android does it
+
+- **Google's Quick Share for AirDrop** (Pixel 10, 2025-11-20; Pixel 9 2026-02-17; Samsung from 2026-03-22, the S26
+  first): it talks to an unmodified iPhone in AirDrop's **"Everyone for 10 minutes"** mode only; its core is in Rust and
+  was tested by NetSPI ([Google](https://blog.google/security/android-quick-share-support-for-airdrop-security/)).
+  Google names no radio ("direct and peer-to-peer"). Reports say it is Bluetooth LE discovery with Apple's
+  advertisement and then **AWDL**, Apple's own Wi-Fi link, not Wi-Fi Aware and not Wi-Fi Direct
+  ([9to5Google](https://9to5google.com/2025/11/21/googles-airdrop-support-for-pixel-10-likely-exists-because-of-the-eus-apple-ruling/),
+  [ifanr](https://www.ifanr.com/1649528)) [I: not confirmed by Google]. **The code is not public**: no AOSP source;
+  it ships in Play's Quick Share Extension and GMS.
+- **It needs the chip vendor's work** [I]: Qualcomm said it would come "once enabled on Snapdragon"
+  ([Notebookcheck](https://www.notebookcheck.net/Qualcomm-confirms-Quick-Share-to-AirDrop-file-transfer-feature-is-coming-to-Snapdragon-powered-devices.1168833.0.html));
+  the Galaxy S23 (FastConnect 7800 too) did not get it, the S24 did
+  ([Gadget Hacks](https://samsung.gadgethacks.com/news/galaxy-s23-one-ui-85-missing-airdrop-support-explained/)).
+- **This phone has it in One UI**: One UI 8.5's Quick Share "Share with Apple devices" lists the S24, S25, S26, Z6
+  and Z7 series ([Samsung](https://news.samsung.com/de/sommermomente-auch-ubergreifend-teilen-quick-share-meets-airdrop-in-one-ui-8-5),
+  [heise](https://heise.de/-11252760)). So the S24 Ultra's WCN785x firmware and Samsung's driver carry an
+  AWDL-compatible link for Quick Share [I: from the device list; how the driver offers it is not known: the phone
+  check below reads it].
+- **Ports to other rooted phones**: `thelok1s/mosey-extended` (KSU) takes the Pixel 10's `mosey_server` and a virtual
+  radio named `wonder`; its README says real 802.11 frames need Broadcom's native "wondertap" and lists the S24/S25
+  as "virtual phy only" ([GitHub](https://github.com/thelok1s/mosey-extended)). Nothing open runs AWDL on a Qualcomm
+  chip.
+- **Open projects**: OWL ([seemoo-lab/owl](https://github.com/seemoo-lab/owl), archived 2026-10-12) is AWDL in user
+  space on Linux: it needs a **monitor interface with frame injection** (active monitor for ACKs), channels 6, 44 and
+  149, and it cannot stay joined to an access point at the same time. OpenDrop
+  ([seemoo-lab/opendrop](https://github.com/seemoo-lab/opendrop)) is AirDrop's protocol (Bonjour and HTTPS over
+  `awdl0`, BLE advertisement type 0x05 with contact hashes) on macOS or on OWL; Everyone mode only. Qualcomm's Android
+  driver (qcacld) has monitor mode only as a whole driver mode (`con_mode=4`), with no injection on recent chips
+  ([Kali NetHunter](https://www.kali.org/docs/nethunter/wireless-cards/)), and that mode ends station mode.
+- **AWDL** ([Stute et al., MobiCom'18](https://ar5iv.labs.arxiv.org/html/1808.03156)): vendor action frames
+  (category 127, Apple's OUI 00:17:f2) for sync and service discovery, 16 TU availability windows on a channel sequence
+  of 16 slots, an elected master, data frames with Apple's LLC/SNAP header carrying IPv6 link-local only. The timing
+  is the chip firmware's on Apple's devices.
+- **Wi-Fi Aware (NAN)**: iOS 26 has a Wi-Fi Aware framework for apps (an EU requirement), but no source says AirDrop
+  uses it: AirDrop is AWDL in iOS 26 and 27 [I]. One report: NAN pairing between iOS 26 and an SM8650 phone failed
+  ([Apple forums](https://developer.apple.com/forums/thread/790195)).
+
+### What iOS 27 needs (24A446, read in the image's binaries and the 2026-11-22 boot)
+
+Read with `oneios-tool image apfs-copy out/image/24A446/os.img /usr/libexec/sharingd|wifip2pd`, `llvm-objdump -d`,
+and `ipsw dyld disass|dump` on `out/dsc-24A446-full`; the boot's logs are `out/session-logs/2026-11-22/s8-ioslog/ioslog.txt`
+and `kbd-debug/xnuhost-s8.log`.
+
+1. **sharingd's "ready" test [F, sharingd 0x1001ccac4]**: it logs `AirDrop not ready: wifi=%d, bluetooth=%d,
+   carplay=%d, receivingEnabled=%d, isVirtualMachine=%d isMulticastAdvertisementsDisabled=%d` and is ready only when
+   `wifi && bluetooth && receivingEnabled && !carplay && !multicastDisabled` (and one more flag, not logged). The
+   VM flag is logged only, and `SFDeviceIsVirtualMachine` (Sharing.framework) is true only on an Apple-internal build
+   (`IsAppleInternalBuild()`), so `/defaults/vmm-present` does not block AirDrop. Control Center's toggle asks
+   sharingd, which logs `Turning on AirDrop, turning on WLAN=%d, Bluetooth=%d` and powers both on first [I: the
+   toggle's path is read from the strings, not traced].
+2. **Bluetooth is off in every session [F]**: the 2026-11-22 boot has bluetoothd `PowerState:3 managerState:2`,
+   `Chip APPLE_VIRTUAL`, `BlSt PoweredOff` (section 4: on the VM path an unchanged bluetoothd powers on only its own
+   simulated controller). **This is why the toggle does not switch** [I: the cause from the code above and this
+   fact; no sharingd line of the tap was persisted in the log]. BLE is also AirDrop's discovery (the type 0x05
+   advertisement), so Bluetooth power is the first thing AirDrop needs, before any Wi-Fi work.
+3. **No `awdl0` [F]**: wifip2pd (AWDL's daemon since iOS 15) asks the guest's en0 once, at +163 s:
+   `gets 97: -> 102` (`APPLE80211_IOC_VIRTUAL_IF_PARENT`, EOPNOTSUPP) and `sets 389: -> 102`
+   (`APPLE80211_IOC_USERSPACE_P2P_OPTIONS`); then `gets 19` POWER, `9` BSSID, `51` COUNTRY_CODE, `sets 566`
+   (`HAS_BATTERY`, accepted). It makes `awdl0`, `llw0` and `nan0` itself on a parent interface with
+   `VIRTUAL_IF_CREATE` (94) when a client wants AWDL (`No AWDL interface found. Creating AWDL interface`, `Cannot
+   create %s interface because the parent interface %s is missing`), then programs it with about 100 `AWDL_*`
+   requests (115 to 262: sync, election, channel sequence, service parameters, peer database, keys). The guest's
+   driver refuses every one of them (`kRefusedSets` in `kernel/patches/oneios-hosted/net/OneiOSWifi.cpp`), on
+   purpose: nothing behind it can do AWDL. The refusals cost nothing (wifip2pd asked once, 3% of a CPU for 10 s at its
+   start).
+   The names of the request numbers are 24A446's table (`_convertApple80211IOCTLToString`, 607 pointers at
+   0x2d01b32f8 in IO80211.framework); the strings in order are not the numbers (they drift by up to 11).
+
+### The port plan, and what cannot be done
+
+| Step | What | Feasible? |
+|---|---|---|
+| 1 | **Bluetooth powered in iOS** (section 4): bluetoothd on the phone's controller. AirDrop's discovery and sharingd's "ready" need it. | Open: the VM path's power init (section 4 "What would reach the controller") |
+| 2 | **The radio's AWDL**: find what One UI 8.5's Quick Share uses on this chip: an interface, nl80211 vendor commands (Qualcomm OUI 00:13:74), or a vendor HAL. `wifictl p2p` (below) prints the radio's paths; run it with "Share with Apple devices" off and on, during a send, and compare. | Unknown until that run. If Samsung's driver has no AWDL interface of its own, **AWDL cannot be made on this phone**: no monitor beside the station, no injection, and AWDL's 16 TU timing cannot be kept from user space through nl80211 |
+| 3 | **Guest `awdl0`**: `VIRTUAL_IF_CREATE` (94) and the `AWDL_*` requests in `OneiOSWifi.cpp`, a second `IO80211Interface` with its own frames over the virtio-net device (a new message type in `oneios_wifi_proto.h`), mapped by the bridge to the vendor's AWDL. | Only after step 2 finds a vendor AWDL; its interface decides the mapping |
+| 4 | **The data**: AirDrop itself (Bonjour on `awdl0`, TLS on IPv6 link-local) is iOS's own: nothing to port once `awdl0` carries frames. | Yes, given steps 1 to 3 |
+
+What cannot be done: Google's Quick Share code cannot be reused (closed); OWL's way needs a monitor interface with
+injection beside the station, which this driver does not offer in a session (qcacld's monitor is a whole-driver
+mode); a guest `awdl0` with no radio behind it would make wifip2pd and sharingd wait on peers that never come (no
+fix, only a probe), so it is not written. Wi-Fi Aware is not AirDrop's link.
+
+### `wifictl p2p` (runtime/bridges/wifi/p2p.c, built 2026-11-22)
+
+Read only, safe beside One UI and in a session: a split `NL80211_CMD_GET_WIPHY` dump of wlan0's radio and a
+`GET_INTERFACE` dump of every interface (those with no network device too), then the network devices, modules and
+processes whose names hint at AWDL or NAN (`awdl`, `aware`, `nan`, `wonder`, `mosey`, `p2p`, `quickshare`,
+`nearby`, `llw`: [I] hints only). It prints the interface types, each interface combination (`combination N: up to
+M interfaces on C channel(s): 1 of {station}; ...`), which interface types may send and receive action frames,
+off-channel sends and remain-on-channel, every vendor command and event by OUI, every interface, and one `p2p:` line
+per path: monitor mode (and whether beside the station), AWDL's action frames on the station, NAN through nl80211,
+Wi-Fi Direct, vendor commands under Apple's OUI, and the verdict for AirDrop. Host-tested (2026-11-22, in the container: `test_wifi` 190 checks, 0 failed; 28 of them `test_p2p` in `runtime/bridges/tests/test_wifi.c`: a split dump, combinations, cut input, the verdicts); **not run on the phone**.
+
+The phone check (no `oneios-tool` command runs `wifictl` yet: adb, as `runtime/bridges/README.md`), One UI running,
+no session:
+
+```sh
+adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p' > p2p-off.txt   # Quick Share "Share with Apple devices" off
+adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p' > p2p-on.txt    # on, Quick Share's sheet open, an iPhone near in "Everyone for 10 minutes"
+diff p2p-off.txt p2p-on.txt
+```
+
+A new `interface:`, `netdev:` or `process:` line in the second run is One UI's AWDL path; the `vendor commands`
+lines say which commands the driver has. Both decide step 2.
 
 ## 5. Vibration and haptics
 

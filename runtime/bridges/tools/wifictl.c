@@ -11,11 +11,17 @@
 //                                    leaves and gives wlan0 back. It takes the Wi-Fi from One UI while it runs: One
 //                                    UI joins its network again by itself after it. Not during a session.
 //   wifictl restore FILE             wlan0's settings back from a session's wifi.state (after a killed xnuhost)
+//   wifictl p2p [IFACE]              read only: what the radio offers for a peer-to-peer link (AirDrop's AWDL:
+//                                    docs/hardware.md "AirDrop"): interface types and combinations, action frames,
+//                                    off-channel sends, NAN, Wi-Fi Direct, vendor commands, every Wi-Fi interface;
+//                                    the network devices, modules and processes whose names hint at AWDL or NAN.
+//                                    Safe beside One UI and in a session.
 // Each ends with "ok" or "failed".
 #define _GNU_SOURCE
 #include "bridges/bridges.h"
 #include "../wifi/supplicant.h"
 #include "../wifi/wifi.h"
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -216,14 +222,73 @@ out:
   return rc;
 }
 
+// ---- p2p: what the radio offers for AirDrop's AWDL (docs/hardware.md "AirDrop") ----
+// A name that hints at a peer-to-peer link of the vendor's or Google's: AWDL, NAN / Wi-Fi Aware, Pixel's "wonder"
+// interface and its mosey_server, Quick Share. [I] hints only: the names are guesses, the nl80211 report is the fact.
+static bool p2p_hint(const char *name)
+{
+  static const char *const words[] = { "awdl", "aware", "nan", "wonder", "mosey", "p2p", "quickshare", "nearby", "llw", NULL };
+  char lower[256];
+  size_t i = 0;
+  for (; name[i] && i + 1 < sizeof lower; i++) lower[i] = (char)(name[i] >= 'A' && name[i] <= 'Z' ? name[i] + 32 : name[i]);
+  lower[i] = 0;
+  for (const char *const *w = words; *w; w++) if (strstr(lower, *w)) return true;
+  return false;
+}
+
+static int p2p(int argc, char **argv)
+{
+  const char *ifname = argc > 2 ? argv[2] : "wlan0";
+  static br_wifi_caps caps;
+  int rc = br_wlan_caps(ifname, &caps);
+  if (rc) { printf("p2p: nl80211 on %s: %s\n", ifname, strerror(-rc)); return 1; }
+  static char text[32768];
+  size_t n = br_wifi_caps_report(&caps, text, sizeof text);
+  fputs(text, stdout);
+  if (n >= sizeof text) printf("(report cut at %zu of %zu bytes)\n", sizeof text, n);
+  // Network devices: one with no wiphy but a hinting name is a virtual one (a tun of a user-space AWDL, Pixel's
+  // "wonder" virtual radio).
+  DIR *d = opendir("/sys/class/net");
+  for (struct dirent *e; d && (e = readdir(d));) {
+    if (e->d_name[0] == '.') continue;
+    char path[320];
+    snprintf(path, sizeof path, "/sys/class/net/%s/phy80211", e->d_name);
+    const bool radio = access(path, F_OK) == 0;
+    if (radio || p2p_hint(e->d_name)) printf("netdev: %s%s\n", e->d_name, radio ? " (a Wi-Fi radio's)" : " (no Wi-Fi radio: virtual)");
+  }
+  if (d) closedir(d);
+  FILE *f = fopen("/proc/modules", "r");
+  char line[512];
+  while (f && fgets(line, sizeof line, f)) {
+    line[strcspn(line, " ")] = 0;
+    if (p2p_hint(line) || strstr(line, "qca") || strstr(line, "cnss")) printf("module: %s\n", line);
+  }
+  if (f) fclose(f);
+  d = opendir("/proc");
+  for (struct dirent *e; d && (e = readdir(d));) {
+    if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+    char path[300], cmd[256] = "";
+    snprintf(path, sizeof path, "/proc/%s/cmdline", e->d_name);
+    FILE *c = fopen(path, "r");
+    if (!c) continue;
+    const size_t got = fread(cmd, 1, sizeof cmd - 1, c);
+    fclose(c);
+    cmd[got] = 0;   // the program's path, up to its first NUL
+    if (*cmd && p2p_hint(cmd)) printf("process: %s %s\n", e->d_name, cmd);
+  }
+  if (d) closedir(d);
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   int rc = 2;
   setvbuf(stdout, NULL, _IOLBF, 0);
   br_log_sink = say;
-  if (argc < 2) { fprintf(stderr, "usage: wifictl status [IFACE] | scan [SECONDS [IFACE]] | join SSID [PASSPHRASE [SECONDS]] | restore FILE\n"); return 2; }
+  if (argc < 2) { fprintf(stderr, "usage: wifictl status [IFACE] | scan [SECONDS [IFACE]] | join SSID [PASSPHRASE [SECONDS]] | restore FILE | p2p [IFACE]\n"); return 2; }
   if (!strcmp(argv[1], "status")) rc = status(argc, argv);
   else if (!strcmp(argv[1], "scan")) rc = scan(argc, argv);
+  else if (!strcmp(argv[1], "p2p")) rc = p2p(argc, argv);
   else if (!strcmp(argv[1], "join") && argc > 2) rc = join(argc, argv);
   else if (!strcmp(argv[1], "restore") && argc > 2) { rc = br_wlan_restore(argv[2]); if (rc == -ENOENT) { printf("nothing to give back (no %s)\n", argv[2]); rc = 0; } else rc = rc ? 1 : 0; }
   printf("%s\n", rc == 0 ? "ok" : rc == 2 ? "unknown command" : "failed");
