@@ -16,7 +16,6 @@ path = "src/lib.rs"
 
 [dependencies]
 libc.workspace = true
-xnuhost-abi.workspace = true
 
 [lints]
 workspace = true
