@@ -8,11 +8,13 @@
 //!   board's MMIO bus and the emulation of a trapped load or store.
 //! - [`virtio`]: the virtio-mmio transport (split queues, the device trait, the queue health report) and its test
 //!   driver ([`virtio::testing`]).
+//! - [`pixels`]: the display protocol's pixel formats and conversions (pixels.h).
 //! - [`sys`], [`time`]: small system helpers (errno texts, the monotonic clock).
 pub mod hooks;
 pub mod insn;
 pub mod log;
 pub mod mmio;
+pub mod pixels;
 pub mod regs;
 pub mod sys;
 pub mod time;
