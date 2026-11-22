@@ -18,6 +18,8 @@ typedef struct {
   struct { int32_t min, max, fuzz, flat, res; bool present; } abs[ABS_COUNT_];
   input_event backlog[BACKLOG];              // events the guest had no buffer for
   unsigned head, count;
+  uint64_t lost;                             // events dropped because the backlog was full (the guest posted no buffers)
+  bool losing;                               // in such an episode: told once, and when it ends
   char name[32], serial[32];                 // the configuration's ID_NAME and ID_SERIAL
   uint16_t keys[8];                          // its EV_KEY bits
   unsigned nkeys;
@@ -89,6 +91,10 @@ static void drain(xh_virtio *dev, input_state *s)
       xh_virtio_push(dev, 0, head, 8);
     } else xh_virtio_push(dev, 0, head, 0);
   }
+  if (s->losing) {                                   // all handed over: the episode ends
+    s->losing = false;
+    LOGI("input: %s: the guest takes events again (%llu lost since the boot)", s->name, (unsigned long long)s->lost);
+  }
 }
 
 static int64_t input_handle(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov *iov, unsigned n)
@@ -138,7 +144,16 @@ void xh_virtio_input_event(xh_virtio *dev, uint16_t type, uint16_t code, int32_t
 {
   input_state *s = xh_virtio_opaque(dev);
   xh_virtio_lock(dev);
-  if (s->count == BACKLOG) { s->head = (s->head + 1) % BACKLOG; s->count--; }      // oldest lost
+  if (s->count == BACKLOG) {                                                         // oldest lost
+    s->head = (s->head + 1) % BACKLOG; s->count--;
+    s->lost++;
+    if (!s->losing) LOGI("input: %s: the guest posted no event buffers for %u events: the oldest are dropped until it does", s->name, BACKLOG);
+    s->losing = true;
+  }
+  // A side key (once per press and release; not the autorepeat): the start of the input path, host to guest.
+  if (type == EV_KEY_ && value != 2 && (code == 114 || code == 115 || code == 116))
+    LOGI("input: %s %s: to the guest (%u event(s) waiting for its buffers)", code == 116 ? "power key" : code == 115 ? "volume up" : "volume down",
+         value ? "down" : "up", s->count);
   s->backlog[(s->head + s->count++) % BACKLOG] = (input_event){ type, code, value };
   // Events are handed over at a report boundary, so the guest never sees half a touch frame.
   if (type == EV_SYN_) drain(dev, s);

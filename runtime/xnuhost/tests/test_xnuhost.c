@@ -893,6 +893,7 @@ static void test_virtio_gpu3d(void)
   CHECK(G(24, 24) == 1 && resp[0] == 0x1203);                                                             // not the renderer's own
   cmd[11] = 20;
   CHECK(G(24, 24) == 1 && resp[0] == 0x1100);
+  frame_answer = false;                                                                                    // not ready yet: the next frames are asked about too
   CLEAR(); cmd[0] = 0x104; cmd[1] = 1; cmd[2] = 5; cmd[6] = 1; cmd[7] = 2; cmd[8] = 3; cmd[9] = 2; cmd[10] = 20;                    // flush (1,2) 3x2, fenced
   CHECK(G(12, 24) == 1 && resp[0] == 0x1100 && resp[2] == 5 && ready_count == 1);
   CHECK(flush_rect[0] == 1 && flush_rect[1] == 2 && flush_rect[2] == 3 && flush_rect[3] == 2);
@@ -902,13 +903,19 @@ static void test_virtio_gpu3d(void)
   fake_direct = true;
   memset(fake_display.pixels, 0, 4 * 32);
   flush_rect[2] = 0;
+  pixels[2 * 10 + 4] = 0;                                                                                 // the one pixel an 8x4 frame is sampled at: black
   CLEAR(); cmd[0] = 0x104; cmd[6] = 0; cmd[7] = 1; cmd[8] = 8; cmd[9] = 3; cmd[10] = 20;                 // (0,1) 8x3
   CHECK(G(12, 24) == 0 && fake_post.posts == 1 && flush_rect[2] == 0 && fake_display.pixels[1 * 32] == 0);
+  // ... and whether it is lit is read in the guest's pages, not in the display's buffer (never copied to: black)
+  CHECK(ready_count == 2 && !last_lit);
+  pixels[2 * 10 + 4] = 0x00102000u | 24;
   CHECK(fake_post.n == 1 && fake_post.entries[0].addr == GUEST_PA + 0x40000 && fake_post.stride == 40 && fake_post.offset == 0);
   CHECK(fake_post.width == 8 && fake_post.height == 4 && fake_post.x == 0 && fake_post.y == 1 && fake_post.w == 8 && fake_post.h == 3);
   uint64_t first_seq = fake_post.seq;
   CLEAR(); cmd[0] = 0x104; cmd[8] = 8; cmd[9] = 4; cmd[10] = 20;
   CHECK(G(12, 24) == 0 && fake_post.posts == 2 && fake_post.seq == first_seq + 1);                       // a second one, held too
+  CHECK(ready_count == 3 && last_lit);                                                                    // lit in the guest's pages
+  frame_answer = true;
   fake_post.done(fake_post.opaque, first_seq);
   CHECK((uint16_t)(used[1] - d.used_seen[0]) == 1);                                                       // the first answered
   fake_post.done(fake_post.opaque, fake_post.seq);
@@ -1223,6 +1230,67 @@ static void test_virtio_input(void)
   CHECK(used[1] == 4 && ev[3].type == 1 && ev[3].code == 116);                 // only one buffer was left: the report waits
   driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0x50000, 8, 1 } }, 1, true);
   CHECK(used[1] == 5 && ev[0].type == 0);
+}
+
+// The lasting health lines (docs/booter.md "Health lines"): the tasks' line, the virtio queues' line and episodes.
+static char health_lines[4096];
+static void health_sink(void *ctx, const char *line)
+{
+  (void)ctx;
+  size_t used = strlen(health_lines);
+  snprintf(health_lines + used, sizeof health_lines - used, "%s\n", line);
+}
+static int64_t keep_chain(xh_virtio *dev, unsigned queue, uint16_t head, xh_viov *iov, unsigned n)
+{
+  (void)dev; (void)queue; (void)head; (void)iov; (void)n;
+  return -1;                                                     // held: the device returns it later (xh_virtio_push)
+}
+
+static void test_health(void)
+{
+  // tasks: nothing moved, no line; a move, one line with the differences and the live count
+  xh_task_counts before = { 10, 0, 4, 0, 1, 6, 7 }, now = before;
+  char line[256] = "";
+  CHECK(!xh_tasks_health_line(&now, &before, 60, line, sizeof line) && !line[0]);
+  now.made += 3; now.ended += 2; now.died = 1; now.live = 7; now.most = 8;
+  CHECK(xh_tasks_health_line(&now, &before, 60, line, sizeof line));
+  CHECK(!strcmp(line, "tasks: 60 s: +3 made, +2 ended by the kernel, +1 died on their own, +0 fatal traps, +0 refused; live 7 (most 8)"));
+
+  // virtio: a device whose queue 0 holds the chains it is given
+  static const xh_virtio_ops ops = { .device_id = 99, .nqueues = 1, .handle = keep_chain };
+  driver d = { .dev = xh_virtio_create(0, 50, &ops, NULL, "virtio-testq") };
+  CHECK(d.dev && driver_init(&d, 0, 1, GUEST_PA + 0xa0000));
+  health_lines[0] = 0;
+  xh_virtio_health(1000, health_sink, NULL);                     // the baseline (the other tests' devices moved)
+  health_lines[0] = 0;
+  xh_virtio_health(61000, health_sink, NULL);
+  CHECK(!strstr(health_lines, "testq"));                         // nothing moved: not named
+  driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0xa8000, 8, 1 } }, 1, true);
+  driver_send(&d, 0, (const uint64_t[][3]){ { GUEST_PA + 0xa8008, 8, 1 } }, 1, true);
+  health_lines[0] = 0;
+  xh_virtio_health(121000, health_sink, NULL);
+  CHECK(strstr(health_lines, "virtio: 60 s: ") && strstr(health_lines, "testq#0 q0 +0 (in flight 2)"));
+  CHECK(!strstr(health_lines, "virtio testq#0"));                // taken in this span: no episode yet
+  health_lines[0] = 0;
+  xh_virtio_health(181000, health_sink, NULL);
+  CHECK(strstr(health_lines, "virtio testq#0: queue 0: 2 chain(s) in flight and none returned in 60 s (taken 2, returned 0 since the boot)"));
+  CHECK(!strstr(health_lines, "testq#0 q0"));                    // nothing moved: not in the summary
+  health_lines[0] = 0;
+  xh_virtio_health(241000, health_sink, NULL);
+  CHECK(!strstr(health_lines, "testq"));                         // told once
+  xh_virtio_push(d.dev, 0, 0, 8);                                // the device answers one
+  health_lines[0] = 0;
+  xh_virtio_health(301000, health_sink, NULL);
+  CHECK(strstr(health_lines, "testq#0 q0 +1 (in flight 1)") && strstr(health_lines, "virtio testq#0: queue 0 returns chains again (after 180 s)"));
+  // posted and never taken (a queue the transport pops on the kick): the guest posts without a kick
+  static const xh_virtio_ops ops2 = { .device_id = 98, .nqueues = 1, .handle = keep_chain };
+  driver e = { .dev = xh_virtio_create(0, 51, &ops2, NULL, "virtio-testq") };
+  CHECK(e.dev && driver_init(&e, 0, 1, GUEST_PA + 0xb0000));
+  driver_send(&e, 0, (const uint64_t[][3]){ { GUEST_PA + 0xb8000, 8, 1 } }, 1, false);
+  health_lines[0] = 0;
+  xh_virtio_health(361000, health_sink, NULL);
+  xh_virtio_health(421000, health_sink, NULL);
+  CHECK(strstr(health_lines, "virtio testq#1: queue 0: 1 chain(s) posted by the guest and not taken in 60 s"));
 }
 
 // input.c's filter of one device: what reaches the guest, the scan time, SYN_DROPPED.
@@ -2948,6 +3016,7 @@ int main(void)
   test_virtio_gpu();
   test_virtio_gpu3d();
   test_virtio_input();
+  test_health();
   test_input_filter();
   test_pen();
   test_input_script();

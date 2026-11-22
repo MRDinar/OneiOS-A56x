@@ -177,6 +177,10 @@ int xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, ui
 out:
   pthread_mutex_unlock(&client_lock);
   answer(over, nover);
+  // input.c's touch-to-frame measurement, as xh_display_flush does for a copied frame. Without it a session with
+  // direct frames (the default since the helper copies them) said "no guest frame after the touch-down" for every
+  // gesture (out/session-logs/2026-11-22/kbd-debug: all 66 gestures, the helper showing 153 frames in 10 s).
+  if (!result) xh_input_frame_shown();
   return result;
 }
 

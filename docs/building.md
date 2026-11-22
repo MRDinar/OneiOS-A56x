@@ -1151,6 +1151,18 @@ archives (CSV byte for byte what `unifiedlog_iterator` writes) and on a Data sto
 the PC. The first run on the phone's store (2026-11-13) failed with `short read at 1152903912689233920`: fixed
 (README "The APFS reader"); **the phone's own store has not been read again since** (it stays on the Mac).
 
+A session's health on one screen (2026-11-22): the boot's stages and their times, then each part of xnuhost, the
+bridges and iOS's report lines with its count of lines, its last line and its first problem, the crashes and kills,
+the gestures and the `xnuhost E` lines (which line each part writes: [booter.md](booter.md) 2.9b; the output:
+tools/oneios-tool/README.md "log"):
+
+```sh
+oneios-tool log summary xnuhost.log                 # the last boot (--all: every boot)
+oneios-tool log summary xnuhost.log --since +120    # the rows from 120 s after the boot's start (--since 4900: log second)
+oneios-tool log summary xnuhost.log --last 60       # the rows of the boot's last 60 s
+oneios-tool log timeline xnuhost.log                # the same stages among every milestone, in the log's order
+```
+
 A kernel panic of a session (`panic(cpu N caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in
 the `kernel.kc` that ran and the `xnu.macho` it was prelinked from: member and segment, function + offset,
 file:line and inlined frames. The first call for a pair of files builds an index under `out/ksym-index/` (2 to 9 s);

@@ -655,6 +655,19 @@ uint64_t   xh_virtio_driver_features(xh_virtio *dev);
 extern void *(*xh_virtio_translate)(uint64_t pa, uint64_t len);
 uint64_t   xh_virtio_mmio_read(xh_virtio *dev, uint64_t offset, unsigned size);
 void       xh_virtio_mmio_write(xh_virtio *dev, uint64_t offset, unsigned size, uint64_t value);
+// A lasting line's sink: the health reports below hand each line to it (xnuhost: LOGI; the tests: a buffer).
+typedef void (*xh_line_fn)(void *ctx, const char *line);
+// The queues' health, every XH_VIRTIO_REPORT_MS (docs/booter.md "Health lines"), only when something changed:
+//   virtio: 60 s: gpu#0 q0 +1200 q1 +30, input#0 q0 +5400, blk#3 q0 +544 (in flight 1)
+// (+N: chains returned to the guest in the span), and once per episode a queue that holds chains with none returned
+// for a whole span (`virtio gpu#0: queue 0: 2 chain(s) in flight and none returned in 60 s ...`), a queue whose
+// posted chains nobody took, and the line that says it moves again. xh_virtio_tick calls it from the main loop.
+#define XH_VIRTIO_REPORT_MS 60000u
+void       xh_virtio_health(uint64_t now_ms, xh_line_fn out, void *ctx);
+void       xh_virtio_tick(void);
+// Where virtio.c's lines go (the driver's state changes, xh_virtio_tick's report): main.c sets it to its log. NULL (the
+// default, and in the bridges' own builds of virtio.c): no lines.
+extern xh_line_fn xh_virtio_log;
 
 // xh_blk_late_flush (set before the disks are made): offer VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) on a writable disk; a flush the driver sends after
 // accepting it is run on the disk's flush thread and completed from there (config blk-late-flush; docs/booter.md "Disks").
@@ -829,6 +842,13 @@ bool    xh_tasks_seccomp(void);        // ... trapped by a seccomp filter (the p
 extern bool xh_text_fixup_svc;
 uint64_t xh_tasks_va_limit(void);
 void    xh_tasks_shutdown(void);
+// The tasks' lasting line (docs/booter.md "Health lines"), every 60 s when one of the counts moved:
+//   tasks: 60 s: +12 made, +10 ended by the kernel, +1 died on their own, +2 fatal traps, +0 refused; live 187 (most 190)
+// "died on their own": the Linux process of an iOS task ended without the kernel's destroy (each one also has a line
+// of its own, the first 32). xh_tasks_health_line formats it (portable, tested); xh_tasks_tick runs it.
+typedef struct { uint64_t made, refused, ended, died, fatal; unsigned live, most; } xh_task_counts;
+bool    xh_tasks_health_line(const xh_task_counts *now, const xh_task_counts *before, unsigned seconds, char *line, size_t max);
+void    xh_tasks_tick(void);
 int64_t xh_task_create(uint64_t *task);
 int64_t xh_task_destroy(uint64_t task);
 int64_t xh_task_map(uint64_t task, uint64_t va, uint64_t size, uint32_t prot, uint64_t phys);

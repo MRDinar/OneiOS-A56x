@@ -1135,7 +1135,8 @@ force-feedback device (`haptics: on: /dev/input/eventN ...`) when the bridges ar
 the PC) is a stand-in actuator (`runtime/bridges/haptics/haptic.c`) that takes, counts and logs every request
 (`haptics: on: a stand-in actuator (haptics=sim)`), behind the same bridge channel; with the bridges off xnuhost
 makes a bridge device that serves only the stand-ins (with `bluetooth=sim` one device serves both). Each played
-effect is logged for the first 8, then at 16, 32, ...; `haptics: counters: ...` at those points and at the end
+effect is logged for the first 8, then at 16, 32, ...; `haptics: counters: ...` at those points and at the end, and
+`haptics: 60 s: +N requests ...` every 60 s when they moved (section 2.9b)
 ([hardware.md](hardware.md) section 5). With `haptics-native-impacts=1` (the table above; ported from the S26 Ultra fork's session opt-in, 2026-11-21) the
 start says `haptics: native impacts asked for (...)` and the bridge `haptics: native impacts enabled ...` once the HAL
 has the three presets; without them the bridge stays on VIB/STOP.
@@ -1324,7 +1325,10 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   drawn there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but never counts,
   lit or not (`virtio_gpu.c` `frame_shown`). "Shows something" is `xh_pixels_lit` (`include/xnuhost/pixels.h`): a grid
   of every 16th pixel of every 16th row (90 x 195 = 17,550 pixels at 1440x3120, not the 18 MB frame) with one of R, G,
-  B above 16 of 255 (half floats through the clamp to 8-bit sRGB); a lit 16x16 area is always seen. The check runs on
+  B above 16 of 255 (half floats through the clamp to 8-bit sRGB); a lit 16x16 area is always seen. A frame the display
+  helper copies itself (the direct path) is sampled on the same grid where it lies, in the guest's pages (`blob_lit`,
+  2026-11-22): before that the check read the display's own buffer, which a direct frame never reaches, and every
+  session with direct frames waited the whole `ready-content-wait` (section 2.9b). The check runs on
   each frame of the guest's own until ready, on the device's thread, before the frame goes to the display helper (so
   `session/ready` is there when the helper sees the frame); the timeout is checked by the main loop's 100 ms tick, so
   an iOS that draws one black frame and nothing more is still ready. `ready-content-wait=0` is the rule before
@@ -1435,6 +1439,95 @@ On the PC (no property area: the host build, or the Android binary under qemu-aa
 logged or read again while the serials and the file stay, a change of the file alone and of one property, a value
 read only through its serial, a property that goes away, a controller name that is a path (`../../../proc/self`:
 its file is never opened), and `usb-log`'s default and range. **Not run on the phone yet.**
+
+### 2.9b Health lines: one session's log, part by part (2026-11-22)
+
+The goal: any boot problem can be traced from one session's `xnuhost.log`. Each part of the boot and the session
+writes a cheap lasting line that says its state: once per event, or a count every 10-60 s that is printed only when
+it moved. `oneios-tool log summary xnuhost.log` (tools/oneios-tool/README.md, "log") reads them back on one screen:
+the boot's stages and their times, then each part's count of lines, its last line and its first problem;
+`--since T` / `--last S` narrow it to a window. `oneios-tool log timeline` lists the same stages among the other
+milestones.
+
+**Boot stages** (summary's `stages:`; the first line that shows each): xnuhost starts (`xnuhost: session ABI`), the
+RAM is held and locked (`memory: the guest's RAM is held:`), the kernel starts (`cpu0: entering the kernel`, the
+guest's `Darwin Kernel Version`), BSD root (`BSD root:`), launchd is loaded (`load_init_program: attempting to load
+/sbin/launchd`) and writes its first line (`com.apple.xpc.launchd|`), the first virtio driver is up (`virtio NAME:
+the guest's driver is up`), SpringBoard and backboardd are first seen (the first guest line that names them: no line
+of their own, see "Still missing"), backboardd opens the framebuffer (`oneios-display: framebuffer opened by
+backboardd`), the first swap (`oneios-display: swap 1`), the guest's first frame (`display: the guest's first frame
+of its own`), guest ready (`guest ready:`), the first gesture (`input: touch:`), and the end (`exit N`,
+`stopping:`, a panic, or none: the session still ran or xnuhost was killed).
+
+**The inventory** (from `out/session-logs/2026-11-22/kbd-debug/xnuhost.log` and `gpu-debug/xnuhost-*.log`, iOS's own
+log `kbd-debug/ioslog-last.txt`): the part, the line that shows its state, how often, and whether it was there
+before this change.
+
+| Part | The line | How often | Before | Now |
+| --- | --- | --- | --- | --- |
+| xnuhost start, the host phone | `xnuhost: session ABI`, `host:`, `hw: NAME: backend`, `placed:` | once | present | present |
+| RAM held and locked, host memory | `memory: the guest's RAM is held: ... locked`, `memory: host MemAvailable ...`, `memory: fixed RAM: ...` | once; 30 s | present | present |
+| kernel start | `cpu0: entering the kernel`, guest `Darwin Kernel Version` | once | present | present |
+| BSD root, launchd | guest `BSD root:`, `load_init_program:`, `com.apple.xpc.launchd|... Doing boot task` | once each | present (launchd's console lines end with its boot tasks) | present |
+| launchd jobs that crash-loop or are disabled | none on the console: launchd writes them to logd | - | **missing** | still missing in xnuhost.log (`oneios-tool ioslog` reads them from the Data store after the session); the host side now counts them: `tasks: 60 s` and `tasks: pid N died on its own` |
+| iOS processes as Linux processes | `tasks: pid N (tid T): trap kind ...` (the first 64 fatal traps) | per event | partial: no counts, nothing for a task process that died by itself | `tasks: 60 s: +N made, +N ended by the kernel, +N died on their own, +N fatal traps, +N refused; live N (most N)` (60 s, when moved); `tasks: pid N died on its own (wait status 0x..: signal N), not asked by the kernel` (per event, the first 32) |
+| backboardd, SpringBoard | the first guest line that names them | - | indirect | indirect ("first seen") |
+| the first frame, ready | `display: the guest's first frame of its own: ...`, `guest ready: ...` | once | present, **wrong with direct frames** (below) | fixed |
+| display | `display: 10 s: N frames copied by the helper ... N not answered within 100 ms` | 10 s | present | present |
+| GPU | `gpu: 10 s ...`, guest `oneios-gpu-report: 10 s` and the other `oneios-gpu-*` lines | 10 s | present; drm2kgsl's facts were `xnuhost E` lines (below) | `xnuhost I` |
+| CPU, the trap path | `perf:`, `cpuN:`, guest `oneios-cpu: 10 s`, `oneios-top:` | periodic | present | present |
+| thermal | `thermal: 30 s: host CPU ...; battery ...; case ..., SoC ...` | 30 s | present | present |
+| disks, the Data store | `disk N: PATH, SIZE, role ROLE` (once), `disk NAME: 30 s: ...`, `disk N: 61 s: ...`, `disk NAME: a flush took N ms` | once; 30/60 s; per event | present | present |
+| the Data store's file system in iOS | Apple's own `nx_mount`, `apfs_*` console lines; `oneios-tool ioslog health` afterwards | per event | indirect | indirect |
+| virtio queues (stuck or full) | none | - | **missing** | `virtio: 60 s: gpu#0 q0 +N q1 +N, input#0 q0 +N, blk#3 q0 +N (in flight N)` (60 s, when moved: chains returned in the span); `virtio NAME: queue Q: N chain(s) in flight and none returned in 60 s (...)`, `virtio NAME: queue Q: N chain(s) posted by the guest and not taken in 60 s`, `virtio NAME: queue Q returns chains again (after N s)` (once per episode); `virtio NAME: the guest's driver is up (features 0x.., N queue(s) ready)`, `... set FAILED`, `... reset by the guest's driver (it was up)` (per event) |
+| input: the host's evdev | `input: /dev/input/eventN "NAME" ...` (once), `input: touch: N frames ... the guest's next frame N ms after the touch-down` (per gesture), `input: NAME: events dropped by the kernel` | per gesture | present, **wrong with direct frames** (below) | fixed |
+| input: the side keys | none | - | **missing** | `input: power key down: to the guest (N event(s) waiting for its buffers)` (each press and release, no autorepeat) |
+| input: the virtio-input backlog | none: the oldest event was dropped without a word | - | **missing** | `input: NAME: the guest posted no event buffers for 1024 events: the oldest are dropped until it does`, `input: NAME: the guest takes events again (N lost since the boot)` (once per episode) |
+| input: the guest's HID to backboardd | guest `oneios-hid: touch screen: N virtio-input events, N frames, ... N HID reports`, `... queued for the service's client(s), N dropped`, `oneios-hid: buttons: N user client(s) ... (pid 53, backboardd)` | periodic, per event | present | present |
+| Wi-Fi | `wifi: ...` (each step), guest `ONEIOS WIFI: 60 s: ...` | per event; 60 s | present | present |
+| audio | `audio: on: helper ...`, the helper's `oneios-audio: speaker open/running/closed ...` | per event | present | present |
+| haptics | `haptics: on: ...`; `haptics: counters: ...` at 16, 32, ... effects and at the stop | stop | partial: nothing during a session that ended by a kill | `haptics: 60 s: +N requests (+N vibrate, +N stop, +N impacts), +N played, +N failed` (60 s, when moved) |
+| camera | `camera: helper ...`, `camera: the helper has N cameras`; the helper's counters at its stop | once | start only | unchanged |
+| video encoder | `encoder:` and the helper's lines when iOS uses it | per event | none in these logs (not used) | unchanged |
+| Bluetooth | `bluetooth: on: ...` | once | start only | unchanged |
+| battery | `battery: on: ... read every 3000 ms while iOS listens`; the host's battery in `thermal: 30 s` | once; 30 s | start only | unchanged |
+| brightness | `brightness: iOS's display on/off ...`, `brightness: panel on: ...` | per event | present | present |
+| the guest's memory pressure | guest `oneios-mem: free N MiB ...`, `memorystatus: sending ... SIGKILL` (jetsam) | periodic; per event | present | present (summary counts the kills) |
+| USB | `usb: state ...` | on change | present | present |
+| the return | `return: ...`, `stopping: ...`, `wifi: wlan0 given back`, `memory: the guest's RAM: ... gives all of it back`, `exit N`; after the exit the fork's `switch.log` | once | present | present |
+
+**Three wrong readings, fixed with the lines (2026-11-22).** All three were in the kbd-debug session:
+
+1. *Touch to frame with direct frames.* Since the display helper copies frames itself from guest RAM (the direct
+   path, `xh_display_post`), xnuhost's own `xh_display_flush` no longer ran for iOS's frames, and only it ended
+   input.c's touch-to-frame wait. So every gesture said `no guest frame after the touch-down` (66 of 66, while the
+   helper showed 153 frames in 10 s). `xh_display_post` now ends the wait when a frame is posted
+   (`test_display_mode`: a posted frame, and only it, counts as shown).
+2. *Ready with direct frames.* The ready rule asked whether the frame is lit (`xh_pixels_lit`) of the display's own
+   buffer, which a direct frame never reaches: it stayed black, and session/ready waited the whole
+   `ready-content-wait` (first frame at +51.4 s, ready at +171.5 s, "no frame with content in 120 s"). virtio_gpu.c's
+   `blob_lit` now samples the posted blob where it lies in the guest's pages, on the same grid and level
+   (`test_xnuhost`: a direct frame black at the sampled pixel reads black, a lit one reads lit, with the display's
+   buffer black both times).
+3. *drm2kgsl's facts as errors.* Our drm2kgsl patches print their once-per-event facts at virglrenderer's WARNING
+   level (the library's threshold passes them), and xnuhost mapped WARNING to `xnuhost E`: all 28 `E` lines of the
+   kbd-debug log were such facts, so a real error had no `E` of its own. Only ERROR (`drm_err`) is an `E` line now.
+
+**Cost.** The virtio, tasks and haptics lines are checked once per main-loop pass and run every 60 s: one walk of
+about 12 devices' queue counters (under each device's lock, a few loads each) and one copy of the task counts. The
+per-event lines come at boot (one per device), at a key press, or at a fault. The counters are plain increments in
+code that already holds the device's or the tasks' lock.
+
+**Tested:** `test_xnuhost`'s `test_health` (the tasks' line and its silence when nothing moved; a virtio device
+that holds the chains it is given: the summary, the in-flight count, the episode told once, the line when it moves
+again, a queue whose posted chains nobody took), the direct-frame cases above, the Rust tests of `log summary`
+(`tests/synthetic.rs` `summary_of_a_boot`, the unit test `problems_and_zero_counts`), and `log summary` on the
+2026-11-22 logs. **Not run on the phone**: the new lines have not been seen in a session yet.
+
+**Still missing** (each needs the hosted kernel, a numbered patch under `kernel/patches/oneios-hosted`): a line per
+launchd job that exits, crashes or is disabled (launchd writes those to logd, not the console), and a line when
+backboardd and SpringBoard are spawned and when they exit; today the summary finds them by the first guest line
+that names them, and `oneios-tool ioslog` reads the job states from the Data store after the session.
 
 ## 3. What each XNU subsystem gets from the host
 

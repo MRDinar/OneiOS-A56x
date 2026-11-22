@@ -17,8 +17,10 @@
 #include <time.h>
 #include <unistd.h>
 
-// display.c ends input.c's touch-to-frame measurement at each shown frame; input.c is not linked here.
-void xh_input_frame_shown(void) {}
+// display.c ends input.c's touch-to-frame measurement at each shown frame (copied or posted); input.c is not linked
+// here: the count of the calls.
+static atomic_int frames_shown;
+void xh_input_frame_shown(void) { frames_shown++; }
 
 struct message { char magic[4]; uint32_t a, b, c, d; };
 static struct { char path[300]; uint32_t w, h, stride, format; off_t memfd_size; int ok; } helper;
@@ -145,8 +147,10 @@ static int run_direct(const char *dir, int answer)
   if (!xh_display_direct()) _exit(3);
   const xh_gpu_entry segs[] = { { RAM_PA + 0x3000, 0x1000, 0 }, { RAM_PA + 0x1000, 0x2000, 0 } };   // pages 3, then 1 and 2
   const xh_gpu_entry outside[] = { { RAM_PA + RAM_BYTES, 0x1000, 0 } };
+  int shown_before = frames_shown;
   if (xh_display_post(outside, 1, 0, DSTRIDE, DW, DH, 0, 0, DW, DH, 1, on_done, NULL) != -1) _exit(4);   // not RAM: not posted
   if (xh_display_post(segs, 2, 0, DSTRIDE, DW, DH, 0, 0, DW, DH, 2, on_done, NULL)) _exit(5);
+  if (frames_shown != shown_before + 1) _exit(8);                    // the posted frame (only it) ends a touch's wait
   for (int i = 0; i < 300 && !answered; i++) usleep(10000);
   if (!answered || answered_seq != 2 || !dh.copied || !dh.ok || dh.seq != 2) _exit(6);
   if (answer == 2) {                                   // it said it could not copy: xnuhost copies again

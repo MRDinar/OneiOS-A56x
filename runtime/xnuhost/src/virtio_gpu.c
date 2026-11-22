@@ -205,11 +205,34 @@ static bool backing_read(const resource *r, uint64_t offset, uint8_t *out, uint6
 // frames are black, and the guest is ready (session/ready) at the first that is not (2026-11-15). Called before the
 // frame is posted to the display helper, so that session/ready is there when the helper sees the frame.
 // `ready` (g->first_frame) stops the calls once the rule has said yes.
-static void frame_shown(gpu_state *g, const gpu_entry *entries, unsigned n)
+// xh_pixels_lit of a B,G,R,X (or B,G,R,A) blob scanout read where it lies, in the guest's pages: a frame the display
+// helper copies itself (the direct path) never reaches the display's own buffer, so that buffer cannot say whether it
+// is lit. Before this, every session with direct frames read the stale buffer as black and session/ready waited the
+// whole ready-content-wait (out/session-logs/2026-11-22/kbd-debug: the first frame at 4768.157 s, ready at 4888.240 s,
+// "no frame with content in 120 s" while the helper showed iOS's frames). The same grid and level as xh_pixels_lit.
+static bool blob_lit(const gpu_state *g, const gpu_entry *entries, unsigned n)
+{
+  uint32_t w = g->scan.width, h = g->scan.height;
+  uint32_t x0 = w >= XH_LIT_STEP ? XH_LIT_STEP / 2 : w / 2, y0 = h >= XH_LIT_STEP ? XH_LIT_STEP / 2 : h / 2;
+  unsigned seg = 0;
+  uint64_t seg_start = 0;                             // the blob offset at which entries[seg] begins
+  for (uint32_t y = y0; y < h; y += XH_LIT_STEP)
+    for (uint32_t x = x0; x < w; x += XH_LIT_STEP) {
+      uint64_t at = g->scan.offset + (uint64_t)y * g->scan.stride + (uint64_t)x * 4;    // rising: the segments walked once
+      while (seg < n && at >= seg_start + entries[seg].length) seg_start += entries[seg++].length;
+      if (seg >= n) return false;
+      if (at + 4 > seg_start + entries[seg].length) continue;                           // a pixel split between segments
+      const uint8_t *p = xh_virtio_translate(entries[seg].addr + (at - seg_start), 4);
+      if (p && (p[0] > XH_LIT_LEVEL || p[1] > XH_LIT_LEVEL || p[2] > XH_LIT_LEVEL)) return true;
+    }
+  return false;
+}
+
+static void frame_shown(gpu_state *g, const gpu_entry *entries, unsigned n, bool direct)
 {
   if (g->first_frame || (n && g_info.video[0] && entries[0].addr == g_info.video[0])) return;
   xh_display *d = xh_display_get();
-  bool lit = d && xh_pixels_lit(d->pixels, d->stride, d->width, d->height, d->format);
+  bool lit = direct ? blob_lit(g, entries, n) : d && xh_pixels_lit(d->pixels, d->stride, d->width, d->height, d->format);
   if (xh_guest_frame(lit)) g->first_frame = true;
 }
 
@@ -336,7 +359,7 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   gpu_rect clipped = { rect->x, rect->y, w, hgt };
   if (g->b && (g->scan.format == FMT_BGRX || g->scan.format == FMT_BGRA) && xh_display_direct()) {
     g->post.on = true; g->post.b = b; g->post.rect = clipped; g->post.seq = ++g->display_seq;
-    frame_shown(g, b->entries, b->nentries);
+    frame_shown(g, b->entries, b->nentries, true);
     return RESP_OK_NODATA;
   }
   // Rows straight from the guest's pages into the display's buffer, the blob's segments walked once for the whole
@@ -375,7 +398,7 @@ static uint32_t flush_blob(gpu_state *g, const blob *b, const gpu_rect *rect)
   }
   flush_note(flush_now_us() - t0, (uint64_t)w * hgt * gbpp);
   if (status == RESP_OK_NODATA && w && hgt) {
-    frame_shown(g, b->entries, b->nentries);     // first: session/ready before the helper is told of the frame
+    frame_shown(g, b->entries, b->nentries, false);     // first: session/ready before the helper is told of the frame
     xh_display_flush(rect->x, rect->y, w, hgt);
   }
   return status;
@@ -706,7 +729,7 @@ static uint32_t command(gpu_state *g, const uint8_t *req, size_t size, uint8_t *
       for (uint32_t y = 0; y < hgt && w; y++)
         memcpy(d->pixels + (size_t)(rect.y + y) * d->stride + (size_t)rect.x * r->dbpp,
                r->pixels + ((size_t)(rect.y + y) * r->width + rect.x) * r->dbpp, (size_t)w * r->dbpp);
-      frame_shown(g, r->backing, r->nbacking);   // first: session/ready before the helper is told of the frame
+      frame_shown(g, r->backing, r->nbacking, false);   // first: session/ready before the helper is told of the frame
       if (w && hgt) xh_display_flush(rect.x, rect.y, w, hgt);
     }
     return RESP_OK_NODATA;

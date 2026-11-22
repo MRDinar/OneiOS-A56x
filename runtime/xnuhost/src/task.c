@@ -73,6 +73,19 @@ unsigned xh_task_filter(struct xs_filter_insn *f, uint64_t text_lo, uint64_t tex
   return n;
 }
 
+// ---- the tasks' lasting line (portable: unit-tested) ----------------------------------------------------------------
+// One line when a count moved since `before` (false and nothing written when none did).
+bool xh_tasks_health_line(const xh_task_counts *now, const xh_task_counts *before, unsigned seconds, char *line, size_t max)
+{
+  uint64_t made = now->made - before->made, ended = now->ended - before->ended, died = now->died - before->died;
+  uint64_t fatal = now->fatal - before->fatal, refused = now->refused - before->refused;
+  if (!made && !ended && !died && !fatal && !refused) return false;
+  snprintf(line, max, "tasks: %u s: +%llu made, +%llu ended by the kernel, +%llu died on their own, +%llu fatal traps, +%llu refused; live %u (most %u)",
+           seconds, (unsigned long long)made, (unsigned long long)ended, (unsigned long long)died, (unsigned long long)fatal,
+           (unsigned long long)refused, now->live, now->most);
+  return true;
+}
+
 // XH_HOST_TEST: the host unit tests (tests/test_xnuhost.c) take the filter alone, also on an arm64 Linux host.
 #if defined(__aarch64__) && defined(__linux__) && !defined(XH_HOST_TEST)
 #include <fcntl.h>
@@ -99,6 +112,7 @@ extern const uint8_t xh_stub_blob[], xh_stub_blob_end[];
 typedef struct {
   bool used, dead;
   bool zombie;                               // destroyed by the kernel, its process not yet reported dead
+  bool killing;                              // the kernel destroys it (xh_task_destroy): its exit is not "on its own"
   int pid;
   uint32_t exit_status;
   uint32_t service_slot;
@@ -153,6 +167,7 @@ static struct {
   thread threads[MAX_SLOTS];
   uint8_t slots[MAX_SLOTS / 8];
   pthread_t reader;
+  xh_task_counts counts;                     // the lasting line (xh_tasks_tick); under lock
 } T = { .lock = PTHREAD_MUTEX_INITIALIZER, .reply = PTHREAD_COND_INITIALIZER, .trap_fd = -1, .sock = -1 };
 
 struct message { uint32_t kind; int32_t pid; uint32_t slot, status; };
@@ -265,6 +280,13 @@ static void *reader_main(void *arg)
     } else if (m.kind == M_EXITED) {
       for (unsigned i = 0; i < MAX_TASKS; i++)
         if (T.tasks[i].used && T.tasks[i].pid == m.pid && !T.tasks[i].dead) {
+          if (!T.tasks[i].killing) {
+            // Not asked: the Linux process of an iOS task ended by itself (a host signal, the stub's exit). The iOS
+            // process is gone at once; the kernel finds out at its next trap or destroy.
+            if (T.counts.died++ < 32)
+              LOGI("tasks: pid %d died on its own (wait status 0x%x: %s %u), not asked by the kernel", m.pid, m.status,
+                   (m.status & 0x7f) ? "signal" : "exit", (m.status & 0x7f) ? m.status & 0x7f : (m.status >> 8) & 0xff);
+          }
           mark_dead(&T.tasks[i], m.status);
           if (T.tasks[i].zombie) task_release(&T.tasks[i]);
         }
@@ -352,6 +374,25 @@ int xh_tasks_init(const xh_config *c)
        (unsigned)(T.spin_host * 1000000 / hz), (unsigned)(T.spin_task * 1000000 / hz),
        T.map_defer ? "carried by the next release (map-defer=1)" : "ordered one by one (map-defer=0)");
   return 0;
+}
+
+// Every 60 s from the main loop: the tasks' line when a count moved (xh_tasks_health_line).
+void xh_tasks_tick(void)
+{
+  static xh_task_counts shown;
+  static struct timespec last;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  if (!last.tv_sec) { last = now; return; }
+  if (now.tv_sec - last.tv_sec < 60) return;
+  pthread_mutex_lock(&T.lock);
+  xh_task_counts c = T.counts;
+  pthread_mutex_unlock(&T.lock);
+  c.fatal = __atomic_load_n(&T.counts.fatal, __ATOMIC_RELAXED);
+  char line[256];
+  if (xh_tasks_health_line(&c, &shown, (unsigned)(now.tv_sec - last.tv_sec), line, sizeof line)) LOGI("%s", line);
+  shown = c;
+  last = now;
 }
 
 void xh_tasks_shutdown(void)
@@ -473,6 +514,9 @@ int64_t xh_task_create(uint64_t *handle)
   static pthread_mutex_t creating = PTHREAD_MUTEX_INITIALIZER;
   pthread_mutex_lock(&creating);
   int64_t created = task_create_one(handle);
+  pthread_mutex_lock(&T.lock);
+  if (created) T.counts.refused++;
+  pthread_mutex_unlock(&T.lock);
   pthread_mutex_unlock(&creating);
   return created;
 }
@@ -499,6 +543,8 @@ static int64_t task_create_one(uint64_t *handle)
   if (!T.reply_ready || T.reply_pid <= 0) { slot_free((uint32_t)slot); pthread_mutex_unlock(&T.lock); return T.reply_ready ? T.reply_pid : -ETIMEDOUT; }
   t->pid = T.reply_pid;
   t->used = true;
+  T.counts.made++;
+  if (++T.counts.live > T.counts.most) T.counts.most = T.counts.live;
   pthread_mutex_unlock(&T.lock);
   struct xs_service_page *sp = slot_page((uint32_t)slot);
   int rc = wait_word(t, &sp->ready, 10);
@@ -550,6 +596,7 @@ static bool seconds_passed(const struct timespec *since, int seconds)
 // answer the orders, or run the register state, of whoever gets the slot next. T.lock held.
 static void task_release(task *t)
 {
+  if (t->used && T.counts.live) T.counts.live--;
   for (unsigned s = 0; s < MAX_SLOTS; s++)
     if (T.threads[s].used && T.threads[s].task == t - T.tasks) { T.threads[s].used = false; slot_free(s); }
   slot_free(t->service_slot);
@@ -560,6 +607,10 @@ int64_t xh_task_destroy(uint64_t handle)
 {
   task *t = task_of(handle);
   if (!t) return -ESRCH;
+  pthread_mutex_lock(&T.lock);
+  t->killing = true;
+  T.counts.ended++;
+  pthread_mutex_unlock(&T.lock);
   if (!t->dead) {
     struct message m = { .kind = M_KILL, .pid = t->pid };
     send(T.sock, &m, sizeof m, MSG_NOSIGNAL);
@@ -1003,6 +1054,7 @@ int64_t xh_thread_run(xh_vcpu *v, uint64_t handle, struct xh_user_state *state, 
   // does not log that process's exceptions (the first 64 of a run).
   static unsigned told;
   bool outside = trap->kind == XH_TRAP_FAULT && (trap->far < 0x100000000ull || trap->far >= T.base);
+  if (outside || trap->kind == XH_TRAP_ILLEGAL || trap->kind == XH_TRAP_BRK) __atomic_fetch_add(&T.counts.fatal, 1, __ATOMIC_RELAXED);
   if ((outside || trap->kind == XH_TRAP_ILLEGAL || trap->kind == XH_TRAP_BRK) && __atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 64)
     LOGI("tasks: pid %d (tid %u): trap kind %u signal %u far 0x%llx esr 0x%llx access %u insn 0x%x; pc 0x%llx lr 0x%llx sp 0x%llx fp 0x%llx "
          "x0 0x%llx x1 0x%llx x2 0x%llx x3 0x%llx x8 0x%llx x16 0x%llx x17 0x%llx", t->pid, __atomic_load_n(&tp->tid, __ATOMIC_ACQUIRE),
@@ -1021,5 +1073,6 @@ bool xh_tasks_seccomp(void) { return false; }
 void xh_tasks_dump(void) {}
 uint64_t xh_tasks_va_limit(void) { return 0; }
 void xh_tasks_shutdown(void) {}
+void xh_tasks_tick(void) {}
 
 #endif

@@ -1725,8 +1725,76 @@ Limits:
 
 ## log
 
-`oneios-tool log stacks|timeline|diff|gpu|cpu|display|perf LOG...` reads an xnuhost session log
+`oneios-tool log stacks|timeline|summary|diff|gpu|cpu|display|perf LOG...` reads an xnuhost session log
 ([todo_rust.md](todo_rust.md) has each subcommand). No Python original.
+
+**`log summary` (2026-11-22): a session's health on one screen.** For the log's last boot (`--all`: every boot) it
+prints the boot's stages with their time after the boot's start and their line (xnuhost starts, the RAM held, the
+kernel, BSD root, launchd loaded and its first line, the first virtio driver up, SpringBoard and backboardd first
+seen, backboardd's framebuffer, the first swap, the guest's first frame, guest ready, the first gesture, the end),
+then one row per part (start, memory, disks, virtio, tasks, cpu, perf, thermal, display, gpu, input, brightness,
+haptics, battery, bluetooth, wifi, audio, camera, encoder, usb, return, and iOS's own report lines: launchd, memory,
+cpu, gpu, display, hid, wifi, iokit): how many lines it wrote, the problems among them (`xnuhost E` lines, and lines
+with a word such as `failed`, `dropped`, `none returned`, `died on its own` that is not a zero count), its last line
+and its first problem. Then the crashes and kills (panics, `sheng-exc` exceptions, the tasks' fatal traps, tasks
+that died on their own, jetsam kills, virtio queues that held chains), the gestures and how many had no guest frame,
+and the `xnuhost E` lines with the first one. Which line each part writes: docs/booter.md 2.9b.
+
+```sh
+oneios-tool log summary xnuhost.log                 # the last boot
+oneios-tool log summary xnuhost.log --all           # every boot
+oneios-tool log summary xnuhost.log --since 4900    # the rows from log second 4900 (the stages stay the whole boot's)
+oneios-tool log summary xnuhost.log --since +120    # ... from 120 s after the boot's start
+oneios-tool log summary xnuhost.log --last 60       # ... the boot's last 60 s
+```
+
+On `out/session-logs/2026-11-22/kbd-debug/xnuhost.log` (4584 lines, 0.09 s; written before the fixes of
+docs/booter.md 2.9b, so it shows two of the wrong readings), shortened:
+
+```text
+boot 1 of 1 (lines 1-4584), 647.8 s of log
+stages:
+  xnuhost starts                         +0.0 s  line     19
+  RAM held and locked                    +3.8 s  line     96
+  the kernel starts                      +4.9 s  line    104
+  BSD root mounted                       +6.4 s  line    349
+  launchd loaded                         +6.7 s  line    486
+  launchd's first line                  +28.9 s  line    555
+  the guest's drivers: first up               -  (no line)
+  SpringBoard first seen                +40.7 s  line    822
+  backboardd first seen                 +47.1 s  line    841
+  backboardd opens the framebuffer      +47.1 s  line    841
+  the guest's first swap                +51.2 s  line    903
+  the guest's first frame               +51.4 s  line    905
+  guest ready                          +171.5 s  line   1514
+  the first gesture                    +191.0 s  line   1606
+  the end                              +647.8 s  (no stop line: the session still ran, or xnuhost was killed)
+  NOTE: ready came 120.1 s after the guest's first frame (ready-content-wait: the frames read as black)
+parts (lines, problems, the last line, the first problem):
+  memory          73        -  +634.3 s memory: fixed RAM: held and locked; prefaulted 5632 of 5632 MiB, ...
+  display         57       12  +644.4 s display: 10 s: 153 frames copied by the helper from guest RAM ...
+                      +10.9 s  first: display: 10 s: 0 frames copied by the helper ... (line 494)
+  gpu            188 28 (28 E)  +646.0 s gpu: 10 s level: frames 171, at the top 171; ...
+                      +48.4 s  first: drm2kgsl: DRM2KGSL_PWR_CONSTRAINT: queues that ask (line 863)
+  ...
+crashes and kills: 0 panic(s), 0 exception(s) (sheng-exc), 0 fatal trap line(s) of tasks, 0 task(s) died on their
+  own, 4 jetsam kill(s); 0 virtio queue(s) held chains
+gestures: 66, 66 with no guest frame after the touch-down (xnuhost's word)
+`xnuhost E` lines: 28; the first at +48.4 s (line 863): drm2kgsl: DRM2KGSL_PWR_CONSTRAINT: queues that ask
+```
+
+The `NOTE`, the 66 of 66 gestures and the 28 `E` lines are the three wrong readings fixed on 2026-11-22 (direct
+frames read as black, direct frames not seen by the touch measure, drm2kgsl's facts at the error level). The
+display's 12 problems are real: `N not answered within 100 ms` by the display helper. On
+`gpu-debug/xnuhost-1795133100.log` (7040 lines, a session that ended with `exit 0`) the end is `+922.4 s line 7040
+exit 0`, and the problems are the helper's `socket is gone` at the stop, 3 fatal trap lines of tasks and 22 touch
+events dropped in the guest's HID queue. Tested: `tests/synthetic.rs` `summary_of_a_boot` (two boots, the stages,
+the parts' counts and first problems, `--all`, `--since` both ways, `--last`, a refused `--since`) and the unit test
+`problems_and_zero_counts` (`0 failed`, `refused 0 calls`, `timed out 0`, `-no_slto_panic` are not problems).
+
+`log timeline` has the same new milestones since 2026-11-22: the RAM held, the guest's first frame, the first virtio
+driver up, `return:` lines, tasks that died on their own, virtio queues that held chains or set FAILED, and input that
+was dropped.
 
 `oneios-tool log panic LOG [--kc PATH] [--kernel PATH]` prints the log's kernel panics named through `sym kernel`
 ("sym kernel" above), and `log stacks` ends with the same part when the log has a panic (`--no-sym` leaves it
