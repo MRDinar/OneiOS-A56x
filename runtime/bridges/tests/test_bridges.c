@@ -217,6 +217,33 @@ static void test_cpu(const char *tmp)
   CHECK(br_cpu_plan_make(&t, 2, false, &plan) == 0 && plan.n_e == 1 && plan.n_p == 1);
   CHECK(br_cpu_plan_make(&t, 1, false, &plan) == 0 && plan.n_e == 0 && plan.v[0].type == 'P');
 
+  // The Galaxy S26 Ultra's SM8850 (docs/s26.md), as YMGPwcca/OneiOS read it on its SM-S948B (port-sm8850-s26): cpu0-5
+  // capacity 741, 384000..3628800 kHz; cpu6-7 capacity 1024, 768000..4742400 kHz; every MIDR 0x510f0021 (Qualcomm
+  // Oryon). [F] the values; the related_cpus lists [I] (the fork wrote the policy's first CPU only). The same Oryon rule
+  // as the S25: all P on the host, the two slowest lent as E vCPUs; nothing of the host's cpufreq is written.
+  char s26[400];
+  snprintf(s26, sizeof s26, "%s/sm8850", tmp);
+  for (unsigned i = 0; i < 8; i++) {
+    bool prime = i >= 6;
+    char rel[128];
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpu_capacity", i); put_file(s26, rel, prime ? "1024\n" : "741\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", i); put_file(s26, rel, prime ? "4742400\n" : "3628800\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/cpuinfo_min_freq", i); put_file(s26, rel, prime ? "768000\n" : "384000\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/cpufreq/related_cpus", i); put_file(s26, rel, prime ? "6 7\n" : "0 1 2 3 4 5\n");
+    snprintf(rel, sizeof rel, "devices/system/cpu/cpu%u/regs/identification/midr_el1", i); put_file(s26, rel, "0x510f0021\n");
+  }
+  CHECK(br_cpu_read(s26, &t) == 0 && t.ncpu == 8 && t.n_e == 0 && t.n_p == 8);
+  CHECK(t.cpu[0].implementer == 0x51 && t.cpu[0].capacity == 741 && t.cpu[0].type == 'P' && t.cpu[6].capacity == 1024);
+  CHECK(br_cpu_plan_make(&t, 8, false, &plan) == 0 && plan.n_e == 2 && plan.n_p == 6 && plan.nvcpu == 8);
+  CHECK(plan.v[0].type == 'E' && plan.v[1].type == 'E' && plan.v[2].type == 'P' && plan.v[7].type == 'P');
+  CHECK(plan.v[0].affinity == 0x30 && plan.v[1].affinity == 0x30 && plan.v[2].affinity == 0xcf && plan.v[7].affinity == 0xcf);
+  CHECK(plan.v[0].host_cpu == 4 && plan.v[1].host_cpu == 5 && plan.v[2].host_cpu == 0 && plan.v[7].host_cpu == 7);
+  CHECK(plan.v[0].max_khz == 3628800 && plan.v[7].max_khz == 4742400);
+  CHECK(br_cpu_plan_make(&t, 8, true, &plan) == 0 && plan.v[0].affinity == 0x10 && plan.v[1].affinity == 0x20 &&
+        plan.v[2].affinity == 0x40 && plan.v[3].affinity == 0x80 && plan.v[4].affinity == 0x01 && plan.v[7].affinity == 0x08);
+  CHECK(br_cpu_plan_make(&t, 4, false, &plan) == 0 && plan.n_e == 1 && plan.n_p == 3 && plan.v[0].type == 'E');
+  CHECK(plan.v[0].host_cpu == 5 && plan.v[0].affinity == 0x20);            // one lent core; the prime ones stay P
+
   // A host with one kind of core: all P.
   char flat[400];
   snprintf(flat, sizeof flat, "%s/flat", tmp);

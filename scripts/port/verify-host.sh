@@ -5,6 +5,7 @@
 #   SM-S928* e3q  SM8650   Galaxy S24 Ultra (home)                       Adreno 750, KGSL
 #   SM-S938* pa3q SM8750   Galaxy S25 Ultra (docs/s25.md)                Adreno 830, KGSL
 #   SM-S931* pa1q SM8750   Galaxy S25 (docs/s25.md)                      Adreno 830, KGSL
+#   SM-S948* m3q  SM8850   Galaxy S26 Ultra (docs/s26.md)            Adreno 840, KGSL
 #   SM-A566* a56x s5e8855  Galaxy A56 (docs/a56.md)                      Xclipse 540, amdgpu (no 3D host backend here)
 # Stand-in (host tests, scripts/port/test-verify-host.sh): VERIFY_HOST_GETPROP names the getprop to run,
 # VERIFY_HOST_ROOT is prefixed to every /sys and /dev path.
@@ -24,8 +25,9 @@ case "$MODEL" in
   SM-S928*) HOST=s24-ultra WANT_DEVICE=e3q WANT_SOC=SM8650 ;;
   SM-S938*) HOST=s25-ultra WANT_DEVICE=pa3q WANT_SOC=SM8750 ;;
   SM-S931*) HOST=s25 WANT_DEVICE=pa1q WANT_SOC=SM8750 ;;
+  SM-S948*) HOST=s26-ultra WANT_DEVICE=m3q WANT_SOC=SM8850 ;;
   SM-A566*) HOST=a56 WANT_DEVICE=a56x WANT_SOC=s5e8855 ;;
-  *) echo "verify-host: unsupported model (need SM-S928, SM-S938, SM-S931 or SM-A566)" >&2; exit 2 ;;
+  *) echo "verify-host: unsupported model (need SM-S928, SM-S938, SM-S931, SM-S948 or SM-A566)" >&2; exit 2 ;;
 esac
 [ "$SOC" = "$WANT_SOC" ] || { echo "verify-host: $MODEL but soc=$SOC (expected $WANT_SOC)" >&2; exit 2; }
 [ "$DEVICE" = "$WANT_DEVICE" ] || { echo "verify-host: $WANT_SOC but device=$DEVICE (expected $WANT_DEVICE)" >&2; exit 2; }

@@ -1555,8 +1555,42 @@ static void test_pen(void)
   CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, mt, sizeof mt, &why) == 0 && strstr(why, "multitouch"));
   SETBIT(keys, 116);                                                            // KEY_POWER: never the pen's device
   CHECK(xh_pen_rank("sec_e-pen", keys, sizeof keys, abs, sizeof abs, &why) == 0 && strstr(why, "side keys"));
+  // The Galaxy S26 Ultra's S Pen (docs/s26.md; YMGPwcca/OneiOS on its SM-S948B, port-sm8850-s26): sec_e-pen with key
+  // 0x140 (getevent calls it BTN_DIGI, the kernel's BTN_TOOL_PEN), tip and side button, x/y, pressure, distance, tilt.
+  uint8_t s26keys[96] = { 0 }, s26abs[8] = { 0 };
+  SETBIT(s26keys, 0x140); SETBIT(s26keys, 0x14a); SETBIT(s26keys, 0x14b);
+  SETBIT(s26abs, 0); SETBIT(s26abs, 1); SETBIT(s26abs, 0x18); SETBIT(s26abs, 0x19); SETBIT(s26abs, 0x1a); SETBIT(s26abs, 0x1b);
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) >= full);
+  SETBIT(s26keys, 115);                                                         // with Volume Up: never the pen
+  CHECK(xh_pen_rank("sec_e-pen", s26keys, sizeof s26keys, s26abs, sizeof s26abs, &why) == 0 && strstr(why, "side keys"));
 #undef SETBIT
   CHECK(xh_pen_lookup == xh_pen_lookup_evdev);                                  // the default lookup, replaceable
+
+  // The S26 Ultra's digitizer in its own units (x 0..7330, y 0..15881, pressure 0..4095, distance 0..255, tilt +-63) and a
+  // stroke the fork read on it: a hover at height 77, a contact at pressure 156, a hover at 28, then out of range.
+  xh_pen_device m3q = { .fd = -1, .stylus = true };
+  m3q.axis[XH_PEN_X] = (xh_pen_axis){ 0, 7330, 0, true };
+  m3q.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 15881, 0, true };
+  m3q.axis[XH_PEN_PRESSURE] = (xh_pen_axis){ 0, 4095, 0, true };
+  m3q.axis[XH_PEN_DISTANCE] = (xh_pen_axis){ 0, 255, 0, true };
+  m3q.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+  m3q.axis[XH_PEN_TILT_Y] = (xh_pen_axis){ -63, 63, 0, true };
+  xh_pen_state ms = { .tool = true };
+  ms.value[XH_PEN_X] = 5924; ms.value[XH_PEN_Y] = 10584; ms.value[XH_PEN_DISTANCE] = 77;
+  ms.value[XH_PEN_TILT_X] = -1; ms.value[XH_PEN_TILT_Y] = 13;
+  xh_pen_sample msa;
+  xh_pen_sample_of(&m3q, 0, false, &ms, &msa);
+  CHECK(msa.in_range && !msa.touch && msa.pressure == 0 && msa.distance == 77 &&
+        msa.x == 5924 * 32767 / 7330 && msa.y == 10584 * 32767 / 15881);
+  ms.touch = true; ms.value[XH_PEN_PRESSURE] = 156; ms.value[XH_PEN_DISTANCE] = 0;
+  xh_pen_sample_of(&m3q, 0, false, &ms, &msa);
+  CHECK(msa.in_range && msa.touch && msa.pressure == 156 && msa.distance == 0);
+  ms.touch = false; ms.value[XH_PEN_PRESSURE] = 0; ms.value[XH_PEN_DISTANCE] = 28;
+  xh_pen_sample_of(&m3q, 0, false, &ms, &msa);
+  CHECK(msa.in_range && !msa.touch && msa.distance == 28);
+  ms.tool = false;
+  xh_pen_sample_of(&m3q, 0, false, &ms, &msa);
+  CHECK(!msa.in_range && !msa.touch);
 
   // The sample: a digitizer of 0..16000 x 0..34000, pressure 0..8191, height 0..255, tilt +-63 without a resolution.
   xh_pen_device d = { .fd = -1, .stylus = true };

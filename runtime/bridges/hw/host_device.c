@@ -59,7 +59,8 @@ static const br_host_device table[] = {
   { .name = "galaxy-s25", .label = "Galaxy S25 (SM-S931, SM8750)",
     .models = { "SM-S931" }, .devices = { "pa1q" }, .socs = { "SM8750" }, .platforms = { "sun" },
     .config = { "panel-fallback=1080x2340@120" }, .env = { "ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3" } },
-  // docs/forks.md (the S26 row), the port-sm8850 commits. [F] SM-S948B, SM8850; codename and platform [U] (not matched).
+  // docs/s26.md, profiles/host-galaxy-s26-ultra-sm8850.toml, the port-sm8850 commits. [F] SM-S948B, m3q, SM8850, platform
+  // canoe (YMGPwcca/OneiOS: the fork's SM-S948B, S948BXXS4BZIG, measured 2026-11-16; port-sm8850-s26, 2026-11-23).
   // ONEIOS_BRIGHT_MAX=2300 [F]: the fork's phone with One UI in control, screen_brightness 255 (One UI's manual top)
   // wrote 2300 to panel0-backlight, whose max_brightness is 12750 (brightness/test_brightness.c,
   // test_sm8850_manual_brightness_cap). Without it the iOS slider's top writes 12750, 5.5 times One UI's manual top
@@ -67,7 +68,7 @@ static const br_host_device table[] = {
   // Not set: touch-exclusive (bench-only, config.c refuses it in a takeover); the native-touchscreen priority
   // (xh_input_accept_touch) and the cpu-hw-trip-* exclusion (thermal.c) already apply on every phone.
   { .name = "galaxy-s26-ultra", .label = "Galaxy S26 Ultra (SM-S948, SM8850)",
-    .models = { "SM-S948" }, .socs = { "SM8850" },
+    .models = { "SM-S948" }, .devices = { "m3q" }, .socs = { "SM8850" }, .platforms = { "canoe" },
     .env = { "ONEIOS_BRIGHT_MAX=2300" } },
   // docs/a56.md, profiles/ios-*-a56.toml, docs/a56-oneos-fork.md. [F] SM-A566E, a56x, s5e8855 (the fork's gate:
   // ro.soc.model); platform s5e8855 [I]. gpu=2d [F]: no KGSL (Xclipse 540 on amdgpu, /dev/dri/renderD128) and xnuhost's

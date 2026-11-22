@@ -97,6 +97,11 @@ static void test_host_device(void)
   CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s25") && strstr(why, "SM-S931B"));
   phone(tmp, "s26u", "SM-S948B", "", "", "SM8850", "QTI", props, sizeof props);
   CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s26-ultra") && strstr(why, "SM-S948B"));
+  // The S26 Ultra by its codename and by its platform alone (docs/s26.md: m3q, canoe [F]), as a ROM that renames it.
+  phone(tmp, "s26u-rom", "Galaxy S26 Ultra", "m3q", "", "", "", props, sizeof props);
+  CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s26-ultra") && !strcmp(why, "matched by ro.product.device=m3q"));
+  phone(tmp, "s26u-board", "", "", "canoe", "", "", props, sizeof props);
+  CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-s26-ultra") && strstr(why, "ro.board.platform=canoe"));
   phone(tmp, "a56", "SM-A566E", "a56x", "s5e8855", "s5e8855", "Samsung", props, sizeof props);
   CHECK(!strcmp(detect(props, empty, why, sizeof why), "galaxy-a56") && strstr(why, "SM-A566E"));
   // Then the codename, then the SoC (a phone of the same SoC gets its entry: the S24 on SM8650 the home device's).

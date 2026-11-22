@@ -57,9 +57,9 @@ pub const TABLE: &[HostDevice] = &[
         name: "galaxy-s26-ultra",
         label: "Galaxy S26 Ultra (SM-S948, SM8850)",
         models: &["SM-S948"],
-        devices: &[],
+        devices: &["m3q"],
         socs: &["SM8850"],
-        platforms: &[],
+        platforms: &["canoe"],
         config: &[],
         env: &["ONEIOS_BRIGHT_MAX=2300"],
     },
@@ -207,6 +207,9 @@ mod tests {
         assert_eq!(name(&facts("SM-S938B", "pa3q", "sun", "SM8750")), "galaxy-s25-ultra");
         assert_eq!(name(&facts("SM-S931B", "pa1q", "sun", "SM8750")), "galaxy-s25");
         assert_eq!(name(&facts("SM-S948B", "", "", "SM8850")), "galaxy-s26-ultra");
+        // The S26 Ultra by its codename and platform alone (port-sm8850-s26: m3q, canoe [F]), as a ROM that renames it.
+        assert_eq!(name(&facts("Galaxy S26 Ultra", "m3q", "", "")), "galaxy-s26-ultra");
+        assert_eq!(name(&facts("", "", "canoe", "")), "galaxy-s26-ultra");
         assert_eq!(name(&facts("SM-A566E", "a56x", "s5e8855", "s5e8855")), "galaxy-a56");
         assert_eq!(name(&facts("", "pa1q", "", "")), "galaxy-s25");
         assert_eq!(name(&facts("SM-S921B", "e1q", "pineapple", "SM8650")), "galaxy-s24-ultra");
