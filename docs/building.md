@@ -1129,6 +1129,9 @@ oneios-tool ioslog health data.img [--detail] [-o FILE]             # the last b
                                                                     #   kills, crashes, stuck idle demotions, encode failures:
                                                                     #   one line per kind (count, total, longest, top processes)
 oneios-tool ioslog health                                           # on the phone itself, as root: the staged data/data.img
+oneios-tool ioslog keyboard data.img [--detail] [-o FILE]           # the keyboard's path: key taps by app (downs, ups), hangs,
+                                                                    #   asset locks and queries, language models, keyboard layouts
+                                                                    #   sent again (tools/oneios-tool/README.md "keyboard")
 oneios-tool ioslog save data.img out/session.logarchive             # the .logarchive the manual steps made
 oneios-tool image apfs-checkpoints data.img                         # the store's checkpoints: which pass the checks, and why the others do not
 ```

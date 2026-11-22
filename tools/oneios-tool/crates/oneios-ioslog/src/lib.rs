@@ -9,6 +9,7 @@
 
 mod checks;
 pub mod health;
+pub mod keyboard;
 #[cfg(test)]
 mod lib_tests;
 mod source;
@@ -70,6 +71,9 @@ pub enum Command {
     /// Count a boot's hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck idle demotions and encode
     /// failures: one line per kind with its count, its total and longest, and its top processes
     Health(Box<health::Args>),
+    /// The keyboard's path in a boot: key taps by app (downs and ups), hangs, MobileAsset lock failures and asset
+    /// queries, language models, keyboard screen errors, keyboard layouts sent again, text input requests
+    Keyboard(Box<keyboard::Args>),
 }
 
 #[derive(Args)]
@@ -178,6 +182,7 @@ pub fn main(command: Command) -> i32 {
         Command::Boots { from } => cmd_boots(from),
         Command::Checks { from, boot, examples } => checks::run(from, &boot, examples),
         Command::Health(args) => health::run(*args),
+        Command::Keyboard(args) => keyboard::run(*args),
     };
     match result {
         Ok(()) => 0,

@@ -775,6 +775,9 @@ oneios-tool ioslog checks SOURCE [--boot last|all|UUID] [--examples N]
 oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [--examples N] [-o FILE] [--stage DIR]
                                                       # hangs, watchdog kills, XPC timeouts, jetsam kills, crashes, stuck
                                                       # idle demotions, encode failures: one line per kind ("health" below)
+oneios-tool ioslog keyboard [SOURCE] [the same options as health]
+                                                      # the keyboard's path: key taps by app, hangs, asset locks and
+                                                      # queries, language models, keyboard layouts ("keyboard" below)
 oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual steps made, for other tools
 # every subcommand: [--volume N|NAME] [--block0 | --checkpoint XID] [--apfs own|fuse|auto] [-v]
 ```
@@ -951,6 +954,38 @@ oneios-tool ioslog health out/session-logs/2026-11-15/main-8644ae9-b/data.img --
 # a number that differs: `texts:` under the kind has each text's count and who logged it; the same count by hand is
 #   oneios-tool ioslog show .../data.img --boot last --proc chronod --grep 'watchdog' | grep -c watchdog
 ```
+
+### keyboard: the keyboard's path in one boot
+
+`ioslog keyboard` (2026-11-22, the owner's report: typing lags, a key comes out twice, the keyboard goes away in
+Spotlight, keys do nothing in the captive portal's sheet) counts, for one boot, the lines of the keyboard's path with the
+same counter and report as `health` (`crates/oneios-ioslog/src/keyboard.rs`, its own table `KEYBOARD`; health.rs's
+`Counter::with` and `read_with` take any table). Its options are health's. One line per kind:
+
+| Kind | What it counts |
+|---|---|
+| `key-taps` | UIKit's `KeyboardTouch` `touch down` / `touch up`, by the app that had the keyboard (`--detail`: downs and ups apart, per app). More ups than downs is where doubled keys start |
+| `hangs` | HangTracer's main-thread hangs, as in health: a key waits for the app's main thread |
+| `asset-lock` | MobileAsset's short-term lock of an asset set that failed (`_shortTermOpenSharedLockFile} (SYMLINK) ... errno:2`); the names are the asset sets |
+| `asset-query` | UnifiedAssetFramework's queries (`UAF.retrieveAssetSetWithToken`, `assetsForQuery: <query: NAME`); the names are the asset types |
+| `language-model` | `LM model is not valid yet`, `Unable to load ... model`, `embedding generation timeout` |
+| `kb-screen` | UIKit's `Keyboard screen not found for window` |
+| `kb-placement` | the keyboard laid out again: `endPlacementForInputViewSet` and `Notifying observers of geometry update` |
+| `text-input` | TextInputUI's requests of the app's input session (`TUIInputSessionProxy handleRequest`, `TUIKeyboardInputManagerMux forwardInvocation`) |
+
+```sh
+oneios-tool ioslog keyboard data.img                        # the last boot of a copy of the Data store
+oneios-tool ioslog keyboard ioslog.txt --detail -o kb.txt   # a text file that `ioslog show -o` wrote; details in kb.txt
+```
+
+The first run, on the 2026-11-22 20:28 session (runtime 0.1.15, `ioslog show --boot last -o` of its Data store, 262923
+entries): `key-taps 72` (WebSheet 66: 12 downs and 54 ups; Spotlight 6), `hangs 114` (434.5 s; WebSheet 48 with 321.3 s,
+the longest 52.21 s; Spotlight 30 with 76.9 s; SpringBoard 30), `asset-lock 94` (kbd 57; asset sets
+com.apple.linguisticdata 71), `asset-query 165` (kbd 112), `language-model 8`, `kb-screen 25` (Spotlight 21),
+`kb-placement 481` (WebSheet 231, SpringBoard 137, Spotlight 77), `text-input 90`. As in health, a count is a number of
+log lines. That session's log times ran slow against the wall (11 minutes of session in 55 s of log time): read orders
+and counts there, not gaps. Tests: `cargo test -p oneios-ioslog` (keyboard_tests.rs: lines written by hand in the
+shapes of that session's lines, no Apple file).
 
 ### The comparison
 

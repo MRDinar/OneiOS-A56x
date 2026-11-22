@@ -220,6 +220,8 @@ const NOT_NAMED: &str = "(not named)";
 
 /// Counts entries as they come.
 pub struct Counter {
+    /// The kinds counted: KINDS (health), or another table (keyboard.rs).
+    table: &'static [Kind],
     /// Every text of every kind, for one pass over a message.
     any: RegexSet,
     /// Per text of `any`: its kind, its place in the kind's texts, and the expression itself when it has groups.
@@ -241,10 +243,15 @@ fn sorted(map: HashMap<String, Tally>) -> Vec<(String, Tally)> {
 impl Counter {
     /// `examples`: how many example lines to keep per kind.
     pub fn new(examples: usize) -> Result<Counter> {
+        Counter::with(KINDS, examples)
+    }
+
+    /// A counter of another table of kinds (`ioslog keyboard`'s).
+    pub fn with(table: &'static [Kind], examples: usize) -> Result<Counter> {
         let mut flat = Vec::new();
         let mut texts = Vec::new();
         let mut who = Vec::new();
-        for (k, kind) in KINDS.iter().enumerate() {
+        for (k, kind) in table.iter().enumerate() {
             for (t, (_, text)) in kind.texts.iter().enumerate() {
                 let re = Regex::new(text).with_context(|| format!("health: {}'s text {text}", kind.name))?;
                 let groups = re.capture_names().flatten().next().is_some();
@@ -253,7 +260,7 @@ impl Counter {
             }
             who.push(kind.who.iter().map(|w| Regex::new(w).with_context(|| format!("health: {}'s name {w}", kind.name))).collect::<Result<Vec<_>>>()?);
         }
-        let building = KINDS
+        let building = table
             .iter()
             .map(|kind| Building {
                 all: Tally::default(),
@@ -267,7 +274,7 @@ impl Counter {
                 examples: Vec::new(),
             })
             .collect();
-        Ok(Counter { any: RegexSet::new(flat)?, texts, who, building, examples, entries: 0, first: f64::MAX, last: f64::MIN })
+        Ok(Counter { table, any: RegexSet::new(flat)?, texts, who, building, examples, entries: 0, first: f64::MAX, last: f64::MIN })
     }
 
     /// One entry: its time (nanoseconds since 1970), the process that logged it (the last part of its path) and
@@ -284,7 +291,7 @@ impl Counter {
                 continue;
             }
             last_kind = *k;
-            let kind = &KINDS[*k];
+            let kind = &self.table[*k];
             let found = groups.as_ref().and_then(|re| re.captures(message));
             let seconds = found.as_ref().and_then(|c| c.name("s")).and_then(|s| s.as_str().parse::<f64>().ok());
             let named = found
@@ -314,7 +321,8 @@ impl Counter {
     }
 
     pub fn finish(self, source: String, boot: String) -> Report {
-        let kinds = KINDS
+        let kinds = self
+            .table
             .iter()
             .zip(self.building)
             .map(|(kind, b)| Count {
@@ -515,7 +523,12 @@ pub fn count_text(text: impl BufRead, counter: &mut Counter) -> Result<()> {
 /// Read `source` and count: an image, a `.logarchive` or a folder (one boot of it: `last`, `all`, or the start of
 /// a UUID), or a text file of `ioslog show` (every entry of it).
 pub fn read(source: &str, how: &How, boot: &str, examples: usize) -> Result<Report> {
-    let mut counter = Counter::new(examples)?;
+    read_with(KINDS, source, how, boot, examples)
+}
+
+/// `read` with another table of kinds (`ioslog keyboard`).
+pub fn read_with(table: &'static [Kind], source: &str, how: &How, boot: &str, examples: usize) -> Result<Report> {
+    let mut counter = Counter::with(table, examples)?;
     if is_text(source) {
         if boot != "last" && boot != "all" {
             bail!("{source}: a text file names no boots; choose the boot when the file is written (ioslog show --boot {boot})");
@@ -590,7 +603,7 @@ pub struct Args {
 
 /// The staged Data store, for a command without SOURCE. Says on stderr when a session is open: the store is then
 /// being written, and what is read is its newest checkpoint that passes the reader's checks.
-fn staged(stage: &str) -> Result<String> {
+pub(crate) fn staged(stage: &str) -> Result<String> {
     let image = format!("{stage}/data/data.img");
     if !Path::new(&image).is_file() {
         bail!("no SOURCE, and no staged Data store at {image} (without SOURCE the command reads the stage's own store: the form for the phone itself, as root; --stage DIR names another stage)");
