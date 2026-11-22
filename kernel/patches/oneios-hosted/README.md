@@ -1529,6 +1529,35 @@ store's boot without 0083 (21:28): key taps in Spotlight 30 (0 before); Spotligh
 (103-107% all the time before). Still in the log, for later: `Keyboard screen not found for window (null)` 21 times at
 Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s).
 
+## 0090-camera-plugin-boot-addon.patch (fix-camera-preview-stream, 2026-11-23)
+
+- **Why.** The capture plug-in lived only in the Data seed (`/private/var/oneios/addons/MediaCapture`, 0056), so a
+  rebuilt plug-in reached the phone only with a new seed, which starts the Data store over. The phone boot of 2026-11-23
+  ran the old plug-in for that reason. UniXNU already writes a boot addon into the Data volume before launchd
+  (`native_gpu_addon_install`: the `kernel.kc.gpuaddon` sidecar, format NGPUADD2, every file under `/private/var/ngpu`
+  whose content or mode differs), but 0056 never looked there, and 0031 switched the Metal plug-in's folder to
+  `/private/var/ngpu/addons` for any addon at all.
+- **What.** (`bsd/kern/kern_exec.c`) The install loop counts the files that are on the volume after it (written or
+  already equal) by top folder: `addons/` (the Metal plug-in) and `camera/` (the capture plug-in). 0031's union takes
+  `/private/var/ngpu/addons` only when the addon carried Metal files; 0056's takes `/private/var/ngpu/camera/MediaCapture`
+  when it carried camera files, else the seed's folders, as before. Nothing of Apple's is written. The plug-in's CDHash
+  must be in the image's `overlay/userland/owner-trust.json` (xnuhost's owner trust module), as the seed's must.
+- **Tools.** `oneios-tool ios addon OUT --camera out/userland/camera [--metal out/userland/NativeAdrenoMetal.bundle]`
+  writes the sidecar and `OUT.cdhashes`; `oneios-tool phone addon OUT` stages it as `image/kernel.kc.gpuaddon` with the
+  phone's `owner-trust.json` plus those CDHashes and a manifest for both (`phone addon --remove` takes the sidecar away).
+- **Log.** `oneios-camera-addon: boot addon: N files (-1 none), C of the capture plug-in (camera/), M of the Metal
+  plug-in (addons/)`, then 0056's line, whose source is `/private/var/ngpu/camera/MediaCapture` with such an addon.
+  0031's `oneios-gpu-addon: ... over /System/Library/Extensions` keeps `/private/var/oneios/addons/Extensions` for a
+  camera-only addon.
+- **Off.** Without the sidecar nothing changes. `oneios-camera-plugin=0` and `sheng-gpu-addon=0` as for 0056.
+
+Numbered 0090: 0089 was the last number on main (2026-11-23); the frame-rate helper's 0091 applies after it.
+Tested (the build laptop, 2026-11-23): `HOSTED_OUT=cam2 ONEIOS_CRYPTO=original kernel/build-hosted.sh` applied the series
+with 0090 (no fuzz, no compiler warning from the kernel sources) and built `xnu.macho` (sha256 `3ebbc5637e4ee3de...`; both
+new strings in it). `KERNEL=out/kernel/current-hosted-cam2/xnu.macho OUT=out/kernel/cam2-24A446 kernel/prelink/build.sh`:
+`kernel.kc` 96,239,616 bytes, sha256 `c50ca941a445b494...` (`kernel.kc.hashes` `61096d9322aa59d1...`), audit 2,711 paired,
+93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet.
+
 ## 0088-cmcapture-model-folder.patch (fix-audio-camera-model, 2026-11-23)
 
 The v0.1.16 boot had no sound, no volume and no haptics: VirtualAudio never started (`Precondition failure:

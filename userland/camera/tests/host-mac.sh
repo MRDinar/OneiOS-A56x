@@ -11,6 +11,6 @@ dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
 clang -fobjc-arc -fblocks -O1 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -I. -I../../drivers/camera -DONEIOS_CAMERA_SAY_STDERR \
   "-DONEIOS_CAMERA_NODE_PATH=getenv(\"ONEIOS_TEST_NODE\")" "-DONEIOS_CAMERA_SESSION_PLIST=getenv(\"ONEIOS_TEST_PLIST\")" \
-  OneiOSCamera.c OneiOSCaptureDevice.c oneios_camera_reader.c tests/test_device_mac.m \
+  OneiOSCamera.c OneiOSCaptureDevice.c oneios_camera_formats.c oneios_camera_scale.c oneios_camera_reader.c tests/test_device_mac.m \
   -framework Foundation -framework CoreMedia -framework CoreVideo -o "$dir/test"
 ONEIOS_TEST_NODE=$dir/node ONEIOS_TEST_PLIST=$dir/AVCaptureSession.plist "$dir/test"

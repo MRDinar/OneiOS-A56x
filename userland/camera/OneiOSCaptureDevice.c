@@ -25,11 +25,13 @@
  *
  * A frame: the kernel's newest (NV12, at most 1920x1080, BT.601 full range) is scaled into a buffer of the pool
  * the graph gave each output (VideoOutputConfigurations' BufferPool) and handed to that output's
- * PixelBufferHandler with the host time of its arrival. 420f, 420v and BGRA buffers are filled; others are said once
- * and skipped.
+ * PixelBufferHandler with the host time of its arrival. 420f, 420v, x420, x422 and BGRA buffers are filled
+ * (oneios_camera_scale.c); others are said once and skipped. The camera is opened by the graph's Start only.
  *
- * NOT RUN in iOS. Built for arm64e-apple-ios27.0 with Xcode, and run on the Mac against macOS 27's own CMCapture
- * (tests/host-mac.sh: BWFigCaptureDeviceVendor makes our device and the streams answer).
+ * The stream formats are the plist's named formats and their companions with the keys CMCapture's resolver compares
+ * (oneios_camera_formats.c), and each stream answers ModuleInfo with its sensor ID (CameraSetup.plist DefaultSensorIDs).
+ * Run in iOS on the phone since 2026-11-22 (userland/camera/README.md has what each boot showed); the Mac test
+ * (tests/host-mac.sh) runs it against macOS 27's own CMCapture.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMedia/CoreMedia.h>
@@ -43,6 +45,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "OneiOSCamera.h"
+#include "oneios_camera_formats.h"
 #include "oneios_camera_proto.h"
 #include "oneios_camera_reader.h"
 
@@ -94,6 +97,7 @@ static CMBaseClassIDRef (*stream_class_id)(void);
 static CFStringRef port_back, port_front;
 static CFStringRef md_attachment;       /* kFigCaptureSampleBufferAttachmentKey_MetadataDictionary */
 static CFStringRef md_port;             /* kFigCaptureStreamMetadata_PortType */
+static CFStringRef md_sensor_id;        /* kFigCapturePropertyValue_SensorID ("sensorID"): ModuleInfo's key */
 
 static CFStringRef
 symbol_string(const char *name)
@@ -117,6 +121,7 @@ find_functions(void)
 	port_front = symbol_string("kFigCapturePortType_FrontFacingSuperWideCamera");
 	md_attachment = symbol_string("kFigCaptureSampleBufferAttachmentKey_MetadataDictionary");
 	md_port = symbol_string("kFigCaptureStreamMetadata_PortType");
+	md_sensor_id = symbol_string("kFigCapturePropertyValue_SensorID");
 	if (port_back == NULL) {
 		port_back = CFSTR("PortTypeBack");
 	}
@@ -228,7 +233,9 @@ struct prop {
 };
 
 static const struct prop stream_props[] = {
-	{ "PortType", "String", "ReadOnly" }, { "UniqueID", "String", "ReadOnly" }, { "NonLocalizedName", "String", "ReadOnly" },
+	/* ModuleInfo must be listed: BWFigCaptureStream asks it with requireSupported, and answers -12787 itself for a name
+	 * that is not here (phone 2026-11-23: "failed to copy ModuleInfo (err=-12787)") */
+	{ "PortType", "String", "ReadOnly" }, { "ModuleInfo", "Collection", "ReadOnly" }, { "UniqueID", "String", "ReadOnly" }, { "NonLocalizedName", "String", "ReadOnly" },
 	{ "SupportedFormatsArray", "Collection", "ReadOnly" }, { "FocalLength", "Number", "ReadOnly" },
 	{ "LensFNumber", "Number", "ReadOnly" }, { "PixelSize", "Number", "ReadOnly" },
 	{ "MaxZoomFactor", "Number", "ReadOnly" }, { "SupportedColorSpaces", "Collection", "ReadOnly" },
@@ -274,6 +281,8 @@ supported(const struct prop *p, size_t n)
 /* ---- the cameras ---- */
 #define PF_420F 0x34323066u     /* '420f' */
 #define PF_420V 0x34323076u     /* '420v' */
+#define PF_X420 0x78343230u     /* 'x420': 10-bit 4:2:0 video range (V54's -10Bit device formats) */
+#define PF_X422 0x78343232u     /* 'x422': 10-bit 4:2:2 video range (V54's -422-10Bit device formats) */
 #define PF_BGRA 0x42475241u     /* 'BGRA' */
 #define MAX_STREAMS 2
 #define OUTPUTS 3
@@ -286,19 +295,27 @@ struct camera {
 	const char *unique_id;
 	bool front;
 	double focal_length, f_number, pixel_size;
+	int sensor_id;                  /* when CameraSetup.plist's DefaultSensorIDs has none for the port */
 };
 
-/* The back wide camera and the front camera, named as V54's plist names the devices whose stream formats they take. */
+/*
+ * The back wide camera and the front camera, named as V54's plist names the devices whose stream formats they take.
+ * The sensor IDs are V54's own (CameraSetup.plist DefaultSensorIDs: PortTypeBack 0x0903, PortTypeFrontSuperWide 0x0914):
+ * CMCapture keys every camera table by port type and "0x%04x" of the stream's ModuleInfo sensorID.
+ */
 static const struct camera known[MAX_STREAMS] = {
-	{ ONEIOS_CAMERA_WIDE, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 6.3, 1.7, 1.0 },
-	{ ONEIOS_CAMERA_FRONT, "Front Ultra Wide Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 3.3, 2.2, 1.0 },
+	{ ONEIOS_CAMERA_WIDE, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 6.3, 1.7, 1.0, 0x0903 },
+	{ ONEIOS_CAMERA_FRONT, "Front Ultra Wide Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 3.3, 2.2, 1.0, 0x0914 },
 };
 
 #ifndef ONEIOS_CAMERA_SESSION_PLIST
 #define ONEIOS_CAMERA_SESSION_PLIST "/System/Library/PrivateFrameworks/CMCapture.framework/V54/AVCaptureSession.plist"
 #endif
+#ifndef ONEIOS_CAMERA_SETUP_PLIST
+#define ONEIOS_CAMERA_SETUP_PLIST "/System/Library/PrivateFrameworks/CMCapture.framework/V54/CameraSetup.plist"
+#endif
 
-static CFPropertyListRef session_plist;
+static CFPropertyListRef session_plist, setup_plist;
 
 static CFPropertyListRef
 read_plist(const char *path)
@@ -320,6 +337,25 @@ read_plist(const char *path)
 	}
 	CFRelease(s);
 	return p;
+}
+
+/* The sensor ID of a port: CameraSetup.plist's DefaultSensorIDs ("0x0903"), else the camera's own. */
+static int
+sensor_id_for(CFStringRef port, const struct camera *c)
+{
+	CFDictionaryRef ids = setup_plist != NULL && CFGetTypeID(setup_plist) == CFDictionaryGetTypeID() ?
+	    CFDictionaryGetValue(setup_plist, CFSTR("DefaultSensorIDs")) : NULL;
+	CFStringRef text = ids != NULL && CFGetTypeID(ids) == CFDictionaryGetTypeID() ? CFDictionaryGetValue(ids, port) : NULL;
+	char buffer[24];
+
+	if (text != NULL && CFGetTypeID(text) == CFStringGetTypeID() && CFStringGetCString(text, buffer, sizeof(buffer), kCFStringEncodingUTF8)) {
+		long id = strtol(buffer, NULL, 16);
+
+		if (id > 0 && id < 0x10000) {
+			return (int)id;
+		}
+	}
+	return c->sensor_id;
 }
 
 /* The plist's FigCaptureStreamFormats of the device with this uniqueName (or the first back/front one), or NULL. */
@@ -361,10 +397,10 @@ static CFDictionaryRef
 output_info(int width, int height)
 {
 	CFMutableDictionaryRef o = new_dict();
-	CFNumberRef pf[3] = { number_i(PF_420F), number_i(PF_420V), number_i(PF_BGRA) };
+	CFNumberRef pf[5] = { number_i(PF_420F), number_i(PF_420V), number_i(PF_X420), number_i(PF_X422), number_i(PF_BGRA) };
 
-	put(o, "SupportedPixelFormats", CFArrayCreate(NULL, (const void **)pf, 3, &kCFTypeArrayCallBacks));
-	for (int i = 0; i < 3; i++) {
+	put(o, "SupportedPixelFormats", CFArrayCreate(NULL, (const void **)pf, 5, &kCFTypeArrayCallBacks));
+	for (int i = 0; i < 5; i++) {
 		CFRelease(pf[i]);
 	}
 	put(o, "NativeWidth", number_i(width));
@@ -376,58 +412,115 @@ output_info(int width, int height)
 	return o;
 }
 
-static void
-copy_entry(const void *key, const void *value, void *context)
+static int
+int_at(CFDictionaryRef d, const char *key)
 {
-	CFDictionarySetValue(context, key, value);
+	CFStringRef k = CFStringCreateWithCString(NULL, key, kCFStringEncodingUTF8);
+	double v = number_of(d != NULL ? CFDictionaryGetValue(d, k) : NULL, 0);
+
+	CFRelease(k);
+	return (int)v;
 }
 
-/* One stream format: the plist's entry (all its keys kept), with the keys a stream's own format carries. */
+/* A named stream format of the plist as CMCapture's resolver reads it (oneios_camera_formats.h). */
+static void
+params_of(CFDictionaryRef e, struct ocf_params *p)
+{
+	*p = (struct ocf_params){
+		.sensor_w = int_at(e, "SensorWidth"), .sensor_h = int_at(e, "SensorHeight"), .fes = int_at(e, "FES") != 0,
+		.fes_w = int_at(e, "FESWidth"), .fes_h = int_at(e, "FESHeight"), .binned = int_at(e, "Binned") != 0,
+		.hdr = int_at(e, "HDR") != 0, .max_fps = int_at(e, "MaxFrameRate"), .sifr = int_at(e, "SIFREnabled") != 0,
+		.sifr_bf = int_at(e, "SIFRBinningFactor"), .qbf = int_at(e, "QuadraBinningFactor"),
+		.mid_sync = int_at(e, "OptimizedForMidFrameSynchronization") != 0,
+		.signing = int_at(e, "SecureSigningFaceIDSupported") != 0, .unsupported = int_at(e, "Unsupported") != 0,
+	};
+}
+
+/* The plist entry's own scalar keys (numbers, booleans, strings): a companion's and a stream format's start. */
+static void
+copy_scalar(const void *key, const void *value, void *context)
+{
+	CFTypeID t = CFGetTypeID(value);
+
+	if (t == CFNumberGetTypeID() || t == CFBooleanGetTypeID() || t == CFStringGetTypeID()) {
+		CFDictionarySetValue(context, key, value);
+	}
+}
+
+/*
+ * One stream format for a named format of the plist: the entry's scalar keys, then the keys CMCapture's resolver
+ * compares (ocf_format_for: without FrontEndScalerOutputWidth/Height and SIFRBinningFactor no V54 format resolved,
+ * phone 2026-11-23), and the keys a stream's own format carries.
+ */
 static CFDictionaryRef
-format(CFStringRef name, CFDictionaryRef entry)
+format(CFStringRef name, CFDictionaryRef entry, struct ocf_format *k)
 {
 	CFMutableDictionaryRef f = new_dict(), outputs = new_dict();
-	int w = (int)number_of(entry ? CFDictionaryGetValue(entry, CFSTR("SensorWidth")) : NULL, 1920);
-	int h = (int)number_of(entry ? CFDictionaryGetValue(entry, CFSTR("SensorHeight")) : NULL, 1080);
-	double fps = number_of(entry ? CFDictionaryGetValue(entry, CFSTR("MaxFrameRate")) : NULL, 30);
-	bool binned = number_of(entry ? CFDictionaryGetValue(entry, CFSTR("Binned")) : NULL, 0) != 0;
+	struct ocf_params p = { 0 };
 	CMVideoFormatDescriptionRef fd = NULL;
+	int w, h, native_w, native_h, crop_w, crop_h;
 
 	if (entry != NULL) {
-		CFDictionaryApplyFunction(entry, copy_entry, f);
+		params_of(entry, &p);
+		CFDictionaryApplyFunction(entry, copy_scalar, f);
 	}
+	ocf_format_for(&p, k);
+	w = k->sensor_w;
+	h = k->sensor_h;
+	native_w = k->fes_out_w > 0 ? k->fes_out_w : w;
+	native_h = k->fes_out_h > 0 ? k->fes_out_h : h;
+	crop_w = int_at(entry, "SensorCropWidth") > 0 ? int_at(entry, "SensorCropWidth") : w;
+	crop_h = int_at(entry, "SensorCropHeight") > 0 ? int_at(entry, "SensorCropHeight") : h;
 	if (name != NULL) {
 		CFDictionarySetValue(f, CFSTR("FormatName"), name);
 	}
 	if (CMVideoFormatDescriptionCreate(NULL, PF_420F, w, h, NULL, &fd) == 0 && fd != NULL) {
 		put(f, "FormatDescription", fd);
 	}
+	/* what the resolver compares (kFigCaptureStreamVideoFormatKey_*, kFigSupportedFormat_*: their CMCaptureCore names) */
+	put(f, "SensorWidth", number_i(w));
+	put(f, "SensorHeight", number_i(h));
+	if (k->fes_out_w > 0) {
+		put(f, "FrontEndScalerOutputWidth", number_i(k->fes_out_w));
+		put(f, "FrontEndScalerOutputHeight", number_i(k->fes_out_h));
+	}
+	put(f, "VideoIsBinned", CFRetain(k->binned ? kCFBooleanTrue : kCFBooleanFalse));
+	if (k->hdr_mode > 0) {
+		put(f, "SensorHDRMode", number_i(k->hdr_mode));
+	}
+	put(f, "VideoMaxFrameRate", number_i(k->max_fps));
+	put(f, "SIFREnabled", CFRetain(k->sifr ? kCFBooleanTrue : kCFBooleanFalse));
+	if (k->sifr_bf > 0) {
+		put(f, "SIFRBinningFactor", number_i(k->sifr_bf));
+	}
+	if (k->qbf > 0) {
+		put(f, "QuadraBinningFactor", number_i(k->qbf));
+	}
+	put(f, "OptimizedForMidFrameSynchronization", CFRetain(k->mid_sync ? kCFBooleanTrue : kCFBooleanFalse));
+	put(f, "SensorSigningEnabled", CFRetain(k->signing ? kCFBooleanTrue : kCFBooleanFalse));
+	put(f, "Experimental", CFRetain(kCFBooleanFalse));
+	/* the rest of a stream format */
 	put(f, "VideoMinFrameRate", number_f(2));
-	put(f, "VideoMaxFrameRate", number_f(fps));
-	put(f, "VideoIsBinned", CFRetain(binned ? kCFBooleanTrue : kCFBooleanFalse));
-	put(f, "VideoBinningFactorHorizontal", number_i(binned ? 2 : 1));
-	put(f, "VideoBinningFactorVertical", number_i(binned ? 2 : 1));
+	put(f, "VideoBinningFactorHorizontal", number_i(k->binned ? 2 : 1));
+	put(f, "VideoBinningFactorVertical", number_i(k->binned ? 2 : 1));
 	put(f, "VideoFieldOfView", number_f(78));
 	put(f, "VideoMinIntegrationTime", number_i(100));
 	put(f, "VideoMaxIntegrationTime", number_i(1000000 / 15));
 	put(f, "VideoRawBitDepth", number_i(10));
-	put(f, "VideoMaxWidth", number_i(w));
-	put(f, "VideoMaxHeight", number_i(h));
-	put(f, "Experimental", CFRetain(kCFBooleanFalse));
-	put(f, "SensorWidth", number_i(w));
-	put(f, "SensorHeight", number_i(h));
+	put(f, "VideoMaxWidth", number_i(native_w));
+	put(f, "VideoMaxHeight", number_i(native_h));
 	put(f, "ISOBase", number_f(32));
 	put(f, "DefaultAEMaxGain", number_f(64));
-	put(f, "SensorCropWidth", number_i(w));
-	put(f, "SensorCropHeight", number_i(h));
-	put(f, "PreGDCSensorCropWidth", number_i(w));
-	put(f, "PreGDCSensorCropHeight", number_i(h));
-	put(f, "PostGDCCropWidth", number_i(w));
-	put(f, "PostGDCCropHeight", number_i(h));
-	put(f, "GeometricDistortionCorrectedNativeWidth", number_i(w));
-	put(f, "GeometricDistortionCorrectedNativeHeight", number_i(h));
-	put(outputs, "PrimaryScaler", output_info(w / 2, h / 2));
-	put(outputs, "SecondaryScaler", output_info(w / 2, h / 2));
+	put(f, "SensorCropWidth", number_i(crop_w));
+	put(f, "SensorCropHeight", number_i(crop_h));
+	put(f, "PreGDCSensorCropWidth", number_i(crop_w));
+	put(f, "PreGDCSensorCropHeight", number_i(crop_h));
+	put(f, "PostGDCCropWidth", number_i(native_w));
+	put(f, "PostGDCCropHeight", number_i(native_h));
+	put(f, "GeometricDistortionCorrectedNativeWidth", number_i(native_w));
+	put(f, "GeometricDistortionCorrectedNativeHeight", number_i(native_h));
+	put(outputs, "PrimaryScaler", output_info(native_w, native_h));
+	put(outputs, "SecondaryScaler", output_info(native_w, native_h));
 	put(outputs, "StillImage", output_info(w, h));
 	put(f, "SupportedOutputs", outputs);
 	return f;
@@ -440,13 +533,108 @@ compare_names(const void *a, const void *b, void *context)
 	return CFStringCompare(a, b, 0);
 }
 
-/* The stream's formats: one for each of the plist's stream formats of this camera (so that every AVCaptureDevice
- * format of the plist resolves to one), sorted by name; without the plist, 1920x1080 at 30. */
+/* What formats_for builds: the stream formats with their compared keys, and every name of the plist with its params. */
+struct format_list {
+	CFMutableArrayRef out;
+	struct ocf_format *keys;
+	int n, room;
+	struct ocf_params *asked;
+	CFMutableArrayRef asked_names;
+	int n_asked, room_asked, companions;
+};
+
+static void
+list_ask(struct format_list *l, CFStringRef name, CFDictionaryRef entry)
+{
+	struct ocf_format k;
+	CFDictionaryRef f = format(name, entry, &k);
+	bool known = false;
+
+	if (l->n_asked == l->room_asked) {
+		l->room_asked = l->room_asked ? 2 * l->room_asked : 64;
+		l->asked = realloc(l->asked, (size_t)l->room_asked * sizeof(*l->asked));
+	}
+	params_of(entry, &l->asked[l->n_asked++]);
+	CFArrayAppendValue(l->asked_names, name);
+	/* one stream format for each distinct set of compared keys: the resolver takes the first match anyway */
+	for (int i = 0; i < l->n && !known; i++) {
+		known = ocf_same(&l->keys[i], &k);
+	}
+	if (!known && !l->asked[l->n_asked - 1].unsupported) {
+		if (l->n == l->room) {
+			l->room = l->room ? 2 * l->room : 64;
+			l->keys = realloc(l->keys, (size_t)l->room * sizeof(*l->keys));
+		}
+		l->keys[l->n++] = k;
+		CFArrayAppendValue(l->out, f);
+	}
+	CFRelease(f);
+}
+
+struct companion_context {
+	struct format_list *list;
+	CFStringRef parent_name;
+	CFDictionaryRef parent;
+};
+
+/* A companion is its parent's keys with its own over them: "Photo[DepthCompanionFormat]" names the sensor size only
+ * where it differs (V54). An array of them (FESCompanionFormats) gives one each, named without the "s". */
+static void
+companion(CFStringRef key, CFDictionaryRef value, struct companion_context *c)
+{
+	CFMutableDictionaryRef merged = new_dict();
+	CFStringRef name;
+	char text[96] = "";
+
+	CFStringGetCString(key, text, sizeof(text), kCFStringEncodingUTF8);
+	if (text[0] != '\0' && text[strlen(text) - 1] == 's') {
+		text[strlen(text) - 1] = '\0';
+	}
+	CFDictionaryApplyFunction(c->parent, copy_scalar, merged);
+	CFDictionaryRemoveValue(merged, CFSTR("Unsupported"));
+	CFDictionaryApplyFunction(value, copy_scalar, merged);
+	name = CFStringCreateWithFormat(NULL, NULL, CFSTR("%@[%s]"), c->parent_name, text);
+	list_ask(c->list, name, merged);
+	c->list->companions++;
+	CFRelease(name);
+	CFRelease(merged);
+}
+
+static void
+companions_of(const void *key, const void *value, void *context)
+{
+	struct companion_context *c = context;
+
+	if (CFGetTypeID(key) != CFStringGetTypeID() || CFStringFind(key, CFSTR("CompanionFormat"), 0).location == kCFNotFound) {
+		return;
+	}
+	if (CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+		companion(key, value, c);
+	} else if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+		for (CFIndex i = 0; i < CFArrayGetCount(value); i++) {
+			CFDictionaryRef one = CFArrayGetValueAtIndex(value, i);
+
+			if (CFGetTypeID(one) == CFDictionaryGetTypeID()) {
+				companion(key, one, c);
+			}
+		}
+	}
+}
+
+/*
+ * The stream's formats: one for each distinct named format of the plist's stream formats of this camera and of their
+ * companions (so that every AVCaptureDevice format of the plist resolves to one), the named ones in name order first;
+ * without the plist, 1920x1080 at 30. Then CMCapture's own rule is run over them for every name (a lasting check,
+ * one line per camera): "all resolve", or the names that do not.
+ */
 static CFArrayRef
 formats_for(const struct camera *c)
 {
 	CFDictionaryRef list = plist_stream_formats(c);
-	CFMutableArrayRef out = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+	struct format_list l = { .out = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks),
+		.asked_names = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks) };
+	int named = 0, resolved = 0;
+	char missing[200] = "";
 
 	if (list != NULL) {
 		CFIndex n = CFDictionaryGetCount(list);
@@ -460,26 +648,51 @@ formats_for(const struct camera *c)
 		CFArraySortValues(names, CFRangeMake(0, n), compare_names, NULL);
 		for (CFIndex i = 0; i < n; i++) {
 			CFStringRef name = CFArrayGetValueAtIndex(names, i);
-			CFDictionaryRef entry = CFDictionaryGetValue(list, name), f;
+			CFDictionaryRef entry = CFDictionaryGetValue(list, name);
 
-			if (CFGetTypeID(entry) != CFDictionaryGetTypeID()) {
-				continue;
+			if (CFGetTypeID(entry) == CFDictionaryGetTypeID()) {
+				list_ask(&l, name, entry);
+				named++;
 			}
-			f = format(name, entry);
-			CFArrayAppendValue(out, f);
-			CFRelease(f);
+		}
+		for (CFIndex i = 0; i < n; i++) {
+			CFStringRef name = CFArrayGetValueAtIndex(names, i);
+			CFDictionaryRef entry = CFDictionaryGetValue(list, name);
+			struct companion_context cc = { &l, name, entry };
+
+			if (CFGetTypeID(entry) == CFDictionaryGetTypeID()) {
+				CFDictionaryApplyFunction(entry, companions_of, &cc);
+			}
 		}
 		CFRelease(names);
 		free(keys);
 		free(values);
 	}
-	if (CFArrayGetCount(out) == 0) {
-		CFDictionaryRef f = format(NULL, NULL);
+	if (CFArrayGetCount(l.out) == 0) {
+		struct ocf_format k;
+		CFDictionaryRef f = format(NULL, NULL, &k);
 
-		CFArrayAppendValue(out, f);
+		CFArrayAppendValue(l.out, f);
 		CFRelease(f);
 	}
-	return out;
+	for (int i = 0; i < l.n_asked; i++) {
+		if (l.asked[i].unsupported || ocf_resolve(&l.asked[i], l.keys, l.n) >= 0) {
+			resolved++;
+		} else if (strlen(missing) < sizeof(missing) - 40) {
+			char text[80] = "";
+
+			CFStringGetCString(CFArrayGetValueAtIndex(l.asked_names, i), text, sizeof(text), kCFStringEncodingUTF8);
+			strlcat(missing, missing[0] ? ", " : ": ", sizeof(missing));
+			strlcat(missing, text, sizeof(missing));
+		}
+	}
+	oneios_camera_say("stream %s: %d stream formats for %d named formats and %d companions of the plist; %d of %d resolve by "
+	    "CMCapture's rule%s%s", c->name, (int)CFArrayGetCount(l.out), named, l.companions, resolved, l.n_asked,
+	    resolved == l.n_asked ? " (all)" : ", these do not", missing);
+	free(l.keys);
+	free(l.asked);
+	CFRelease(l.asked_names);
+	return l.out;
 }
 
 /* ---- the stream ---- */
@@ -501,6 +714,7 @@ struct stream {
 	CFStringRef port;
 	CFArrayRef formats;
 	CFDictionaryRef supported, colour_info;
+	int sensor_id;                  /* ModuleInfo sensorID (CameraSetup.plist DefaultSensorIDs) */
 	int format_index;
 	double min_fps, max_fps, zoom;
 	unsigned stills_wanted;
@@ -551,6 +765,16 @@ stream_copy_property(CMBaseObjRef o, CFStringRef key, CFAllocatorRef allocator, 
 	(void)allocator;
 	if (key_is(key, "PortType")) {
 		value = CFRetain(s->port);
+	} else if (key_is(key, "ModuleInfo")) {
+		/* CMCapture reads the sensor ID out of it (+[FigCaptureCameraParameters sensorIDStringFromModuleInfo:]: "0x%04x" of
+		 * kFigCapturePropertyValue_SensorID) and finds the camera's tables by port type and that string; without it every
+		 * named format failed ("Unexpected sensor ID ((null)) found for PortTypeBack", phone 2026-11-23). */
+		CFMutableDictionaryRef m = new_dict();
+		CFNumberRef id = number_i(s->sensor_id);
+
+		CFDictionarySetValue(m, md_sensor_id != NULL ? md_sensor_id : CFSTR("sensorID"), id);
+		CFRelease(id);
+		value = m;
 	} else if (key_is(key, "UniqueID") || key_is(key, "ModelID")) {
 		value = CFStringCreateWithCString(NULL, s->camera->unique_id, kCFStringEncodingUTF8);
 	} else if (key_is(key, "NonLocalizedName") || key_is(key, "LocalizedName")) {
@@ -742,73 +966,6 @@ output_buffer(struct output *out)
 	return pb;
 }
 
-static inline uint8_t
-clamp8(int v)
-{
-	return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
-}
-
-int
-oneios_camera_scale_nv12(const struct oneios_camera_frame *h, const uint8_t *picture, uint8_t *y, size_t y_stride, uint8_t *cbcr,
-    size_t cbcr_stride, uint32_t width, uint32_t height, bool video_range)
-{
-	const uint8_t *src_c = picture + (size_t)h->stride * h->height;
-
-	if (width < 2 || height < 2 || y_stride < width || cbcr_stride < width) {
-		return -EINVAL;
-	}
-	for (uint32_t row = 0; row < height; row++) {
-		const uint8_t *src = picture + (size_t)(row * h->height / height) * h->stride;
-		uint8_t *dst = y + row * y_stride;
-
-		for (uint32_t x = 0; x < width; x++) {
-			int v = src[x * h->width / width];
-
-			dst[x] = video_range ? (uint8_t)(16 + v * 219 / 255) : (uint8_t)v;
-		}
-	}
-	for (uint32_t row = 0; row < height / 2; row++) {
-		const uint8_t *src = src_c + (size_t)(row * (h->height / 2) / (height / 2)) * h->stride;
-		uint8_t *dst = cbcr + row * cbcr_stride;
-
-		for (uint32_t x = 0; x < width / 2; x++) {
-			uint32_t sx = x * (h->width / 2) / (width / 2);
-			int cb = src[2 * sx], cr = src[2 * sx + 1];
-
-			dst[2 * x] = video_range ? (uint8_t)(16 + cb * 224 / 255) : (uint8_t)cb;
-			dst[2 * x + 1] = video_range ? (uint8_t)(16 + cr * 224 / 255) : (uint8_t)cr;
-		}
-	}
-	return 0;
-}
-
-int
-oneios_camera_scale_bgra(const struct oneios_camera_frame *h, const uint8_t *picture, uint8_t *bgra, size_t stride, uint32_t width,
-    uint32_t height)
-{
-	const uint8_t *src_c = picture + (size_t)h->stride * h->height;
-
-	if (width < 1 || height < 1 || stride < (size_t)width * 4) {
-		return -EINVAL;
-	}
-	for (uint32_t row = 0; row < height; row++) {
-		uint32_t sy = row * h->height / height;
-		const uint8_t *ys = picture + (size_t)sy * h->stride, *cs = src_c + (size_t)(sy / 2) * h->stride;
-		uint8_t *dst = bgra + row * stride;
-
-		for (uint32_t x = 0; x < width; x++) {
-			uint32_t sx = x * h->width / width;
-			int Y = ys[sx], cb = cs[sx & ~1u] - 128, cr = cs[(sx & ~1u) + 1] - 128;     /* BT.601 full range */
-
-			dst[4 * x + 0] = clamp8(Y + (1772 * cb) / 1000);
-			dst[4 * x + 1] = clamp8(Y - (344 * cb + 714 * cr) / 1000);
-			dst[4 * x + 2] = clamp8(Y + (1402 * cr) / 1000);
-			dst[4 * x + 3] = 255;
-		}
-	}
-	return 0;
-}
-
 static void
 deliver(struct stream *s, struct output *out, const struct oneios_camera_frame *f, const uint8_t *picture)
 {
@@ -826,6 +983,9 @@ deliver(struct stream *s, struct output *out, const struct oneios_camera_frame *
 		if ((pf == PF_420F || pf == PF_420V) && CVPixelBufferGetPlaneCount(pb) == 2) {
 			e = oneios_camera_scale_nv12(f, picture, CVPixelBufferGetBaseAddressOfPlane(pb, 0), CVPixelBufferGetBytesPerRowOfPlane(pb, 0),
 			    CVPixelBufferGetBaseAddressOfPlane(pb, 1), CVPixelBufferGetBytesPerRowOfPlane(pb, 1), width, height, pf == PF_420V);
+		} else if ((pf == PF_X420 || pf == PF_X422) && CVPixelBufferGetPlaneCount(pb) == 2) {
+			e = oneios_camera_scale_10bit(f, picture, CVPixelBufferGetBaseAddressOfPlane(pb, 0), CVPixelBufferGetBytesPerRowOfPlane(pb, 0),
+			    CVPixelBufferGetBaseAddressOfPlane(pb, 1), CVPixelBufferGetBytesPerRowOfPlane(pb, 1), width, height, pf == PF_X422);
 		} else if (pf == PF_BGRA) {
 			e = oneios_camera_scale_bgra(f, picture, CVPixelBufferGetBaseAddress(pb), CVPixelBufferGetBytesPerRow(pb), width, height);
 		}
@@ -927,7 +1087,7 @@ worker(void *context)
 
 static OSStatus stream_stop(CMBaseObjRef o);
 
-/* Frames are read from the reservation on (the camera takes a moment to open); given out once the graph starts. */
+/* Frames are read from the graph's Start on and given out while it runs (stream_stop ends both). */
 static OSStatus
 stream_begin(CMBaseObjRef o, bool graph)
 {
@@ -1071,6 +1231,7 @@ stream_create(CFAllocatorRef allocator, const struct camera *camera)
 	pthread_mutex_init(&s->lock, NULL);
 	s->camera = camera;
 	s->port = camera->front ? port_front : port_back;
+	s->sensor_id = sensor_id_for(s->port, camera);
 	s->min_fps = 2;
 	s->max_fps = 30;
 	s->zoom = 1;
@@ -1127,10 +1288,12 @@ device_request_streams(CMBaseObjRef o, CFArrayRef streams, CFDictionaryRef optio
 	(void)o;
 	(void)options;
 	oneios_camera_say("device: streams asked for (%ld)", streams ? (long)CFArrayGetCount(streams) : 0L);
-	/* The graph configures and reserves the streams here; HakiOS: frames begin with the reservation. */
-	for (CFIndex i = 0; streams != NULL && i < CFArrayGetCount(streams); i++) {
-		(void)stream_begin((CMBaseObjRef)CFArrayGetValueAtIndex(streams, i), false);
-	}
+	/*
+	 * The vendor reserves the streams for each device it publishes too (every start of cameracaptured), not only for a
+	 * capture session: HakiOS opened the camera here, so each start of cameracaptured opened the phone's camera for
+	 * frames nobody took ("reading frames through AppleH9CamIn", then "no frame", phone 2026-11-23). The camera is
+	 * opened by the graph's Start (stream_start) only.
+	 */
 	return 0;
 }
 
@@ -1143,6 +1306,16 @@ device_relinquish_streams(CMBaseObjRef o, CFArrayRef streams, CFDictionaryRef op
 	(void)options;
 	if (said++ < 5) {
 		oneios_camera_say("device: streams given back (%ld)", streams ? (long)CFArrayGetCount(streams) : 0L);
+	}
+	/* a stream given back is not read any more: the phone's camera closes with it */
+	for (CFIndex i = 0; streams != NULL && i < CFArrayGetCount(streams); i++) {
+		CMBaseObjRef stream = (CMBaseObjRef)CFArrayGetValueAtIndex(streams, i);
+
+		for (int k = 0; k < MAX_STREAMS; k++) {
+			if (all_streams[k] == stream && stream_of(stream)->running) {
+				(void)stream_stop(stream);
+			}
+		}
 	}
 	return 0;
 }
@@ -1239,7 +1412,9 @@ H9ISPCaptureDeviceCreate(CFAllocatorRef allocator, CFDictionaryRef options, CMBa
 			tried = true;
 			usable = find_functions();
 			session_plist = read_plist(ONEIOS_CAMERA_SESSION_PLIST);
-			oneios_camera_say("%s: %s", ONEIOS_CAMERA_SESSION_PLIST, session_plist ? "read" : "not read: formats of our own");
+			setup_plist = read_plist(ONEIOS_CAMERA_SETUP_PLIST);
+			oneios_camera_say("%s: %s; %s: %s", ONEIOS_CAMERA_SESSION_PLIST, session_plist ? "read" : "not read: formats of our own",
+			    ONEIOS_CAMERA_SETUP_PLIST, setup_plist ? "read" : "not read: V54's sensor IDs");
 		}
 		if (!usable) {
 			return ERR_UNSUPPORTED;

@@ -13,7 +13,7 @@
 # session, and the return after them); `phone wifi p2p|wonder` (wifi.sh: the stand-in wifictl, the refused arguments, the
 # report and its summary, the streamed lines, --save); `procs`, the process list with CPU and RAM on a made-up /proc (procs.sh);
 # the bridges' hardware backends, samsung and treble (hw-backend.sh); pull-data (the copy is the phone's file, sparse;
-# a size that does not match; --ioslog, and `ioslog health` without SOURCE on a stage, as on the phone itself); sparse-write. The session check's command is the phone's, byte for byte, and a pid
+# a size that does not match; --ioslog, and `ioslog health` without SOURCE on a stage, as on the phone itself); sparse-write; `phone addon` (the boot addon, its CDHashes in owner-trust.json, --remove). The session check's command is the phone's, byte for byte, and a pid
 # that is not an xnuhost's is no session. Every case ends the stand-in session it left (end_case), and at the
 # end, a failure or Ctrl-C none is left running (lib.sh's traps).
 # With the OneOS fork's checkout at hand (lib.sh's fork_dir: the one `oneios-tool app dir` finds from this checkout:
@@ -157,6 +157,31 @@ phone manifest "$I" --out "$W/manifest.json" > /dev/null 2>&1
   && [ "$("$TOOL" json get "$W/manifest.json" build)" = 24A446 ] && ok "manifest --out: every entry and key kept, in order" || bad "manifest --out: the file"
 check "manifest DIR --stage: the files and their manifest, then the check" 0 "image: manifest.json and the 4 files it lists agree" phone manifest "$I" --stage
 check "image-check: the set agrees again" 0 "image: manifest.json and the 4 files it lists agree" phone image-check
+
+# ---- phone addon (hosted 0090): a boot addon beside the set, its CDHashes in owner-trust.json; on a copy of the phone
+# whose set lists an owner-trust.json, as a real set does
+PA=$W/phone-addon; cp -a "$P" "$PA"; SA=$PA/data/local/tmp/oneios
+echo '{"cdhashes": ["0000000000000000000000000000000000000001"], "files": [], "schema": 1}' > "$SA/image/overlay/userland/owner-trust.json"
+"$TOOL" json set "$SA/image/manifest.json" . "{\"format\":1,\"build\":\"24A446\",\"files\":[$(file_entries "$SA/image" data.seed kernel.kc kernel.kc.hashes overlay/userland/owner-trust.json overlay/userland/xnuhost.conf)]}"
+(cd "$SA/image" && : > ../image.sha256 && : > ../image.ids && for f in kernel.kc kernel.kc.hashes manifest.json data.seed overlay/userland/owner-trust.json overlay/userland/xnuhost.conf; do
+  sha256sum "$f" >> ../image.sha256; echo "$(stat -c '%d:%i:%s:%Y' "$f") $f" >> ../image.ids; done)
+cam=$W/camera-out; mkdir -p "$cam"; echo "a capture plug-in (stand-in)" > "$cam/H9ISP.mediacapture"
+"$TOOL" ios addon "$W/cam.gpuaddon" --camera "$cam" > /dev/null
+echo "3927e183aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa camera/MediaCapture/H9ISP.mediacapture" > "$W/cam.gpuaddon.cdhashes"
+pa() { FAKE_PHONE=$PA "$TOOL" phone "$@"; }
+check "addon: staged with the new CDHash, the set agrees" 0 "image: manifest.json and the 5 files it lists agree" sh -c "FAKE_PHONE='$PA' '$TOOL' phone addon '$W/cam.gpuaddon' 2>&1"
+cmp -s "$W/cam.gpuaddon" "$SA/image/kernel.kc.gpuaddon" && grep -q "  kernel.kc.gpuaddon$" "$SA/image.sha256" && grep -q " kernel.kc.gpuaddon$" "$SA/image.ids" \
+  && ok "addon: image/kernel.kc.gpuaddon and its two list lines" || bad "addon: the sidecar" "$(tail -n 3 "$SA/image.sha256" | tr '\n' '|')"
+OT=$SA/image/overlay/userland/owner-trust.json
+[ "$("$TOOL" json len "$OT" cdhashes)" = 2 ] && [ "$("$TOOL" json get "$OT" cdhashes.0)" = 0000000000000000000000000000000000000001 ] \
+  && [ "$("$TOOL" json get "$OT" cdhashes.1)" = 3927e183aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ] \
+  && [ "$("$TOOL" json get "$SA/image/overlay/userland/owner-trust.json" schema)" = 1 ] && ok "addon: owner-trust.json has the old and the new CDHash, its other keys kept" || bad "addon: owner-trust.json"
+check "addon: again, nothing new" 0 "1 CDHashes of the addon, 0 new" pa addon "$W/cam.gpuaddon"
+[ "$(grep -c "  kernel.kc.gpuaddon$" "$SA/image.sha256")" = 1 ] && ok "addon: staged twice, one list line" || bad "addon: staged twice"
+check "addon: a file that is not an addon is refused" 1 "not a boot addon" pa addon "$cam/H9ISP.mediacapture"
+check "addon --remove: gone, the set agrees" 0 "image: manifest.json and the 5 files it lists agree" pa addon --remove
+[ ! -e "$SA/image/kernel.kc.gpuaddon" ] && ! grep -q "kernel.kc.gpuaddon" "$SA/image.sha256" "$SA/image.ids" && ok "addon --remove: the file and its lines" || bad "addon --remove"
+check "addon: a set without owner-trust.json is refused" 1 "lists no overlay/userland/owner-trust.json" phone addon "$W/cam.gpuaddon"
 
 # ---- the app's one process on this stage (tests/phone/serve.sh): its local forms against the adb forms
 . "$HERE/serve.sh"; serve_checks_closed

@@ -783,6 +783,40 @@ server's phase lines), whole; before 0039 each character was an `oneios-gpu-open
 `oneios-gpu-clients` got no device (the list did not name it, the open was refused, or the device failed: its
 `oneios-gpu-text` line says which).
 
+**The boot addon carries more than the Metal plug-in (hosted 0090, 2026-11-23).** `oneios-tool ios addon OUT --metal
+out/userland/NativeAdrenoMetal.bundle --camera out/userland/camera` writes one sidecar with both (`addons/...` and
+`camera/MediaCapture/H9ISP.mediacapture`) and `OUT.cdhashes`; `oneios-tool phone addon OUT` stages it as
+`image/kernel.kc.gpuaddon` with the phone's `owner-trust.json` plus those CDHashes. 0031 now takes
+`/private/var/ngpu/addons` only when the addon has files under `addons/` (before 0090: any addon), so a camera-only addon
+leaves the seed's Metal plug-in in place; `oneios-camera-addon: boot addon: N files (-1 none), C of the capture plug-in
+(camera/), M of the Metal plug-in (addons/)` says what this boot's addon held. `phone addon --remove` takes it away.
+
+**What the camera needs (fix-camera-preview-stream, 2026-11-23).** cameracaptured's capture graph (CMCapture,
+CMImaging) is a Metal client; on the phone (main 44d9c49) two answers of the frontend at b0d6a07 stopped it, and
+cameracaptured crashed (SIGSEGV) about 2 s later, again at each restart. Both are fixed as text edits of the staged
+frontend (`oneios-tool ios metal-stage-edit`, `frontend_camera_edits` in `crates/oneios-ios/src/metal.rs`; build.sh's
+stage step prints one `metal: staged ...` line for each):
+- `native-metal: heap refused: resource options: ... UndefinedValue { ty: "MTLResourceOptions", raw: 6291968 }`, then
+  `Fig assert: "_heap" ... Failed to allocate metal heap` (FigMetalAllocator.m:878): FigMetalAllocator's heaps set bits
+  21 and 22 (0x600000 over `0x200`, tracked), which metal2vulkan's `ResourceOptions::from_raw` refuses (it takes only
+  bits 0-9 and the private bit 24). The frontend now takes such bits off for heaps, heap buffers, buffers, no-copy
+  buffers, texture descriptors and heap size queries (`nbKnownOptions`), and says each new set once:
+  `native-metal: heap options 0x600200: bits 0x600000 are not Metal's known ones; made without them`. [U] what the
+  two bits ask Apple's driver for; the heap works without them.
+- `native-metal: missing NBLibrary newFunctionWithName:constantValues:pipelineLibrary:error: (answered nil)` and
+  `Fig assert: "function" ... function is nil` (FigMetalContext.m:565): CMImaging's `-[FigMetalContext
+  computePipelineStateFor:constants:additionalPipelineOptions:reflection:]` (read in the 24A446 cache) makes each compute
+  function with that selector when it has a pipeline library. NBLibrary answers it (and its `completionHandler:` form)
+  with the function `newFunctionWithName:constantValues:error:` makes; the pipeline library is not used.
+Tested: the edits' unit test (`cargo test -p oneios-ios`), and on the build laptop `userland/metal/build.sh` staged all ten
+edits (one `metal: staged ...` line each). **Not built yet:** the laptop's Mesa step stops before the frontend is
+compiled, in `ir3_lexer.c` (`use of undeclared identifier 'Dl_info'`, `disk_cache.h:86`): the laptop's flex 2.6.10 writes
+`#define _POSIX_C_SOURCE 1` into the lexer, and Darwin's `dlfcn.h` then hides `Dl_info` and `dladdr` (`_DARWIN_C_SOURCE`
+would show them). Not caused by these edits; the Metal bundle with them still has to be built (that fix, or the
+Mac's Xcode path), then `oneios-tool ios addon OUT --metal ... --camera ...` and `phone addon OUT`.
+The stage step also stopped at once in a fresh `METAL_WORK` (the Turnip trace patch was applied before the Mesa
+clone); `build.sh` applies it after the clone now.
+
 Reading them, in order: `oneios-gpu-addon` stage 5 means iOS can see the plug-in; `oneios-gpu-plugin` is dyld loading it (no
 line: nobody tried, or the vnode had no name; an error on the first line is the trust cache, on the second AMFI's library
 validation); `oneios-gpu-open` with `0x41476800` is the plug-in's code running in that process.
