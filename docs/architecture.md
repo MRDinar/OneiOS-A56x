@@ -77,6 +77,17 @@ turns detection off; an unknown phone keeps today's defaults. xnuhost logs one `
 entry, the property that matched, each default taken or not); the bridges' ctl tools and `oneios-tool phone status`
 use the same table (the Rust copy is checked against the C one by a test). A new phone is a new table row plus its
 record, never a fork: [hardware.md](hardware.md) 7h has the table, what is marked unverified per phone, and the tests.
+A row may also allow the opt-in Android takeover (`.takeover = true`: the S24 Ultra and the S26 Ultra), which
+`xnuhost --host-info` tells the OneOS switch before it stops anything.
+
+## Two session modes: hosted (the default) and the opt-in Android takeover
+
+`session-mode=hosted` is the session below. `session-mode=takeover` (the app's box on the Switch sheet, or the image's
+`xnuhost.conf`; [oneos/interface.md](../oneos/interface.md) 4a) is the same session with more of the phone given to
+iOS: today the native touchscreen grabbed for iOS alone and a CPU cap of the fork's from the case temperature (put back
+by the return); later the stages of [plan-ios-first-session.md](plan-ios-first-session.md) (5a). The way back is the
+same in both: the chord and the in-place return first, a restart only where the in-place return cannot put One UI
+back. xnuhost's part: [booter.md](booter.md) 2.9d.
 
 ## A session, step by step
 

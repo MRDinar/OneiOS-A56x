@@ -38,6 +38,10 @@ typedef struct {
   const char *platforms[BR_HOST_MATCH];   // ro.board.platform, whole, any case ("pineapple")
   const char *config[BR_HOST_SETTINGS];   // xnuhost settings KEY=VALUE (only keys config.c merges as device defaults)
   const char *env[BR_HOST_SETTINGS];      // environment defaults NAME=VALUE for the bridges (a variable already set wins)
+  // session-mode=takeover (the opt-in "Android takeover" session, docs/booter.md 2.9d) is allowed on this phone. false:
+  // xnuhost refuses that mode at its start (exit 2) and `xnuhost --host-info` says takeover=no, which the OneOS switch
+  // reads before it stops anything. The default session (session-mode=hosted) never reads this.
+  bool takeover;
 } br_host_device;
 
 typedef struct {

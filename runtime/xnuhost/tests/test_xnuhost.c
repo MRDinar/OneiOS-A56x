@@ -2230,6 +2230,125 @@ static void test_host_device(const char *dir)
   CHECK(xh_config_args(&c, 2, selftest) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.gpu, "auto") && !*c.host_line);
 }
 
+// session-mode= (docs/booter.md 2.9d): hosted is the default and changes nothing; takeover only in the OneOS session,
+// only on a phone whose host-table row allows it (the S24 Ultra, the S26 Ultra), and it turns the native touchscreen's
+// grab on unless touch-exclusive= was given; the image set's session-mode= under the command line's. And --host-info,
+// the one line the OneOS switch reads before it stops anything.
+static int mode_finish(xh_config *c, const char *image, const char *meminfo, const char *props, const char *const *extra)
+{
+  char ram_meminfo[400], host_props[400];
+  snprintf(ram_meminfo, sizeof ram_meminfo, "ram-meminfo=%s", meminfo);
+  snprintf(host_props, sizeof host_props, "host-props=%s", props);
+  char *argv[24] = { "xnuhost", "--image", (char *)image, "--ram", "4G", "--set", ram_meminfo, "--set", host_props };
+  int argc = 9;
+  for (unsigned i = 0; extra && extra[i] && argc < 22; i++) argv[argc++] = (char *)extra[i];
+  xh_config_defaults(c);
+  return xh_config_args(c, argc, argv) || xh_config_finish(c) ? -1 : 0;
+}
+
+static void host_info_line(const char *props, const char *device, char *out, size_t size)
+{
+  char *argv[8] = { "xnuhost", "--host-info", "--host-props", (char *)props };
+  int argc = 4;
+  if (device) { argv[argc++] = "--host-device"; argv[argc++] = (char *)device; }
+  xh_config c;
+  xh_config_defaults(&c);
+  out[0] = 0;
+  FILE *f = tmpfile();
+  if (!f) return;
+  if (xh_config_args(&c, argc, argv) == 0 && c.host_info && xh_config_host_info(&c, f) == 0) {
+    rewind(f);
+    if (!fgets(out, (int)size, f)) out[0] = 0;
+  } else snprintf(out, size, "refused");
+  fclose(f);
+}
+
+static void test_session_mode(const char *dir)
+{
+  char image[300], meminfo[300], path[400], s24[400], s26[400], s25u[400], pixel[400], line[600];
+  snprintf(image, sizeof image, "%s/mode-image", dir);
+  mkdir(image, 0700);
+  static const char *const files[] = { "kernel.kc", "os.img", "systemos.img", "data.seed" };
+  for (unsigned i = 0; i < 4; i++) { snprintf(path, sizeof path, "%s/%s", image, files[i]); FILE *f = fopen(path, "w"); fputs("x", f); fclose(f); }
+  snprintf(meminfo, sizeof meminfo, "%s/mode-meminfo", dir);
+  FILE *m = fopen(meminfo, "w");
+  if (m) { fputs("MemTotal:       11746000 kB\nMemAvailable:    9000000 kB\n", m); fclose(m); }
+  host_props(dir, "mode-s24u", "SM-S928B", "SM8650", s24, sizeof s24);
+  host_props(dir, "mode-s26u", "SM-S948B", "SM8850", s26, sizeof s26);
+  host_props(dir, "mode-s25u", "SM-S938B", "SM8750", s25u, sizeof s25u);
+  host_props(dir, "mode-pixel", "Pixel 11 Pro", "Tensor G5", pixel, sizeof pixel);
+
+  // The table: the S24 Ultra and the S26 Ultra allow it, no other row.
+  unsigned n = 0;
+  const br_host_device *t = br_host_table(&n);
+  for (unsigned i = 0; i < n; i++)
+    CHECK(t[i].takeover == (!strcmp(t[i].name, "galaxy-s24-ultra") || !strcmp(t[i].name, "galaxy-s26-ultra")));
+
+  // hosted: the default, and the same config as no setting at all, on the S24 Ultra too.
+  xh_config c, plain;
+  CHECK(mode_finish(&plain, image, meminfo, s24, NULL) == 0 && !strcmp(plain.session_mode, "hosted") && !plain.touch_exclusive);
+  static const char *const hosted[] = { "--set", "session-mode=hosted", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, hosted) == 0 && !strcmp(c.session_mode, "hosted") && !c.touch_exclusive);
+  c.session_mode_given = false;
+  CHECK(!memcmp(&c, &plain, sizeof c));
+  xh_config_defaults(&c);
+  CHECK(xh_config_set(&c, "session-mode", "android") != 0 && xh_config_set(&c, "session-mode", "") != 0 && !strcmp(c.session_mode, "hosted"));
+
+  // takeover on the two phones that allow it: the touchscreen grab on, the session's mode unchanged.
+  static const char *const takeover[] = { "--set", "session-mode=takeover", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, takeover) == 0 && !strcmp(c.session_mode, "takeover") && c.touch_exclusive &&
+        c.input && !strcmp(c.mode, "takeover") && c.host == br_host_find("galaxy-s24-ultra"));
+  CHECK(mode_finish(&c, image, meminfo, s26, takeover) == 0 && c.touch_exclusive && c.host == br_host_find("galaxy-s26-ultra"));
+  // touch-exclusive=0 given: kept off, before or after session-mode=.
+  static const char *const no_grab[] = { "--set", "touch-exclusive=0", "--set", "session-mode=takeover", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, no_grab) == 0 && !strcmp(c.session_mode, "takeover") && !c.touch_exclusive);
+  // Refused: a phone whose row does not allow it, an unknown phone, detection off, the bench, no input.
+  CHECK(mode_finish(&c, image, meminfo, s25u, takeover) != 0);
+  CHECK(mode_finish(&c, image, meminfo, pixel, takeover) != 0);
+  static const char *const off[] = { "--set", "session-mode=takeover", "--set", "host-device=none", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, off) != 0);
+  static const char *const forced[] = { "--set", "session-mode=takeover", "--set", "host-device=galaxy-s24-ultra", NULL };
+  CHECK(mode_finish(&c, image, meminfo, pixel, forced) == 0 && c.touch_exclusive);      // a forced row is that row
+  static const char *const bench[] = { "--set", "session-mode=takeover", "--mode", "bench", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, bench) != 0);
+  static const char *const no_input[] = { "--set", "session-mode=takeover", "--no-input", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, no_input) != 0);
+  // hosted still refuses the grab in a session, as before session-mode existed.
+  static const char *const grab_hosted[] = { "--set", "touch-exclusive=1", NULL };
+  CHECK(mode_finish(&c, image, meminfo, s24, grab_hosted) != 0);
+
+  // The image set's overlay/userland/xnuhost.conf may say it; the command line's session-mode= wins.
+  snprintf(path, sizeof path, "%s/overlay", image);
+  mkdir(path, 0700);
+  snprintf(path, sizeof path, "%s/overlay/userland", image);
+  mkdir(path, 0700);
+  snprintf(path, sizeof path, "%s/overlay/userland/xnuhost.conf", image);
+  FILE *f = fopen(path, "w");
+  if (f) { fputs("session-mode=takeover\n", f); fclose(f); }
+  CHECK(mode_finish(&c, image, meminfo, s24, NULL) == 0 && !strcmp(c.session_mode, "takeover") && c.touch_exclusive);
+  CHECK(mode_finish(&c, image, meminfo, s24, hosted) == 0 && !strcmp(c.session_mode, "hosted") && !c.touch_exclusive);
+  CHECK(mode_finish(&c, image, meminfo, s25u, NULL) != 0);
+  unlink(path);
+
+  // --host-info: one line, no image needed.
+  host_info_line(s24, NULL, line, sizeof line);
+  CHECK(!strcmp(line, "host-info: device=galaxy-s24-ultra takeover=yes (matched by ro.product.model=SM-S928B)\n"));
+  host_info_line(s26, NULL, line, sizeof line);
+  CHECK(!strcmp(line, "host-info: device=galaxy-s26-ultra takeover=yes (matched by ro.product.model=SM-S948B)\n"));
+  host_info_line(s25u, NULL, line, sizeof line);
+  CHECK(!strcmp(line, "host-info: device=galaxy-s25-ultra takeover=no (matched by ro.product.model=SM-S938B)\n"));
+  host_info_line(pixel, NULL, line, sizeof line);
+  static const char unknown[] = "host-info: device=none takeover=no (unknown phone; read: ro.product.model=Pixel 11 Pro ";
+  CHECK(!strncmp(line, unknown, sizeof unknown - 1));
+  host_info_line(s24, "none", line, sizeof line);
+  static const char none[] = "host-info: device=none takeover=no (host-device=none: detection off; read: ";
+  CHECK(!strncmp(line, none, sizeof none - 1));
+  host_info_line(pixel, "galaxy-s26-ultra", line, sizeof line);
+  CHECK(!strcmp(line, "host-info: device=galaxy-s26-ultra takeover=yes (host-device=galaxy-s26-ultra (forced))\n"));
+  host_info_line(s24, "pixel-11", line, sizeof line);
+  CHECK(!strcmp(line, "refused"));
+}
+
 static void test_config(const char *dir)
 {
   xh_config c;
@@ -3425,6 +3544,7 @@ int main(void)
   if (!freopen("/dev/null", "w", stderr)) failures++;   // the refusals below print their reasons
   test_config(dir);
   test_host_device(dir);
+  test_session_mode(dir);
   char command[300];
   snprintf(command, sizeof command, "rm -rf %s", dir);
   if (system(command)) failures++;

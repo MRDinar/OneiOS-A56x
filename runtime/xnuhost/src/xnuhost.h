@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include "xnuhost/hostcall.h"
@@ -111,7 +112,14 @@ typedef struct {
   unsigned text_fixups_length;
   bool  input;              // read /dev/input
   int   display_direct;     // 1: a helper that can copies frames from guest RAM itself (display.c); 0: xnuhost copies; -1 unset (1)
-  bool  touch_exclusive;    // touch-exclusive=1: bench+SHM only, EVIOCGRAB sec_touchscreen so Android cannot also tap; default off
+  bool  touch_exclusive;    // touch-exclusive=1: EVIOCGRAB the native sec_touchscreen only (never a key device); default off.
+                            // Allowed in a bench+SHM preview (bridges=0; the side keys are then not read at all) and in
+                            // session-mode=takeover, which turns it on (the side keys still read, never grabbed)
+  bool  touch_exclusive_given; // set here: touch-exclusive= was given (session-mode=takeover then keeps that value)
+  char  session_mode[12];   // session-mode=hosted (default: the session as before, byte for byte) or takeover (the
+                            // opt-in Android takeover, docs/booter.md 2.9d: the host table must allow it, mode=takeover)
+  bool  session_mode_given; // set here: the command line wins over the image set's
+  bool  host_info;          // --host-info: print the host table's answer for this phone (host-info: device=... takeover=...) and exit
   bool  touch_sleep;        // touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
   char  input_script[512];  // a file of scripted touches and keys (input_script.c), "" = none
   char  pen[8];             // pen=off (the default until a phone session proves it) | auto: the host's pen digitizer (pen.c,
@@ -185,6 +193,9 @@ int  xh_config_set(xh_config *c, const char *key, const char *value);
 int  xh_config_args(xh_config *c, int argc, char **argv);
 // Fills what depends on other values (kernel path, the image set's disks). Returns -1 on a problem.
 int  xh_config_finish(xh_config *c);
+// --host-info: the host table's row for this phone, one line ("host-info: device=NAME takeover=yes|no (why)"); -1 on a bad
+// host-device=. Needs no image (config.c).
+int  xh_config_host_info(const xh_config *c, FILE *out);
 uint64_t xh_parse_size(const char *text, bool *ok);
 // ram=auto (docs/booter.md 1): min(percent % of total, total - floor), rounded down to 256 MiB, at most XH_RAM_MAX;
 // 0 when that leaves the guest less than 1 GiB. Portable (unit-tested).
@@ -736,15 +747,17 @@ int   xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, 
 void  xh_display_close(void);
 
 // Input (input.c): /dev/input/event* into the virtio-input device; with `pen` (NULL: none) the pen's device too, read on
-// the same thread into its own guest device (pen.c). touch_exclusive grabs only the native sec_touchscreen (bench+SHM).
+// the same thread into its own guest device (pen.c). touch_exclusive grabs only the native sec_touchscreen (a bench+SHM
+// preview, or session-mode=takeover); read_keys false (the bench preview only) leaves every side-key device to Android.
 struct xh_input_pen;
-int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive);
+int   xh_input_start(xh_virtio *dev, const struct xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive,
+                     bool read_keys);
 void  xh_input_stop(void);
 // The display showed a guest frame (display.c): the end of input.c's touch-to-frame measurement.
 void  xh_input_frame_shown(void);
 // A candidate evdev direct touchscreen, against a native Samsung touchscreen when present.
 bool  xh_input_accept_touch(const char *name, bool direct, bool have_touch, bool native_present);
-// The bench+SHM exclusive grab admits only the native sec_touchscreen.
+// The exclusive grab (a bench+SHM preview, session-mode=takeover) admits only the native sec_touchscreen.
 bool  xh_input_exclusive_touch_allowed(const char *name, bool direct, bool have_touch);
 // Called on the input thread at each press of the power key (KEY_POWER down) that is passed to the guest: the brightness
 // bridge wakes the touch IC (br_bright_key). NULL: nothing.
