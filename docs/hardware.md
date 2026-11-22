@@ -7,7 +7,13 @@ vendor HALs, audioserver, cameraserver and surfaceflinger keep running in a sess
 app are gone. So each device has two halves:
 
 - a **driver in the kernel** (`drivers/`, or one taken unchanged from UniXNU-droidvm) that iOS's daemons talk to;
-- a **host bridge** in xnuhost (`runtime/bridges/`) that uses the Linux or Android interface.
+- a **host bridge** in xnuhost (`runtime/bridges/`) that uses the Linux or Android interface. The host side (xnuhost,
+  the bridges, the helpers) is Rust since 2026-11-23 (`runtime/RUST.md`: a port of the C, one module per C file, every
+  log line byte for byte); **no phone run of the Rust runtime yet**: every phone result in this file is of the C build.
+  So are the host-test names and check counts given with a date (`test_bridges` 377, `test_wifi` 301, `test_xnuhost`,
+  ASan and UBSan, `make test`): each C test is now a Rust test with the same cases (`cd runtime && cargo test -p
+  onebridges`, `-p xnuhost`, ...; `runtime/tests/host.sh` runs them all), and the C files named in dated records are
+  now the Rust modules of the same names (`hci.c` -> `runtime/bridges/bt/hci.rs`).
 
 Marks: **[F]** read in a source at a pinned commit, or reported from the owner's phone (SM-S928B, kernel
 `6.1.162-android14-11`, board notes of 2026-11-10 in `docs/agents.md`). **[I]** inference. **[U]** unknown until tried
@@ -19,32 +25,33 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Device | Kernel side | Host side | State |
 |---|---|---|---|
 | CPU | `droidvm-amp.patch` + `DroidVMCpufreq.c` (UniXNU-droidvm, unchanged) | `runtime/bridges/cpu`: topology, vCPU plan, thread placement, the cpufreq device | host built and tested; kernel side waits for release-kernel (series, archive) and booter (device tree, placement calls) |
-| GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
+| GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `runtime/xnuhost/src/virtio_gpu.rs` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted |
 | AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): every radio's peer-to-peer paths and Google's Wonder radio (its subcommands, who holds it); `wifictl wonder`: a session on Wonder's raw path beside wlan0, AWDL's frames counted, everything closed after it and wlan0's link checked (`oneios-tool phone wifi p2p\|wonder`) | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. The Wonder tools are built and host-tested, not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
-| Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
+| Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.rs`, `audio/aaudio_helper.rs` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (`H9ISPCaptureDeviceCreate`) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; in iOS (2026-11-22) the plug-in makes its device, CMCapture made no source (no `/product unique-model`: fixed with the camera nodes, not run yet, section 7); one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
 | Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
-| Host device (2026-11-21) | - | `runtime/bridges/hw/host_device.c`: which known phone xnuhost runs on (properties, soc0, the device tree) and its defaults from one table; `host-device=auto\|none\|NAME` (section 7h) | host-tested; not run on a phone |
-| Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.c` (evdev, no grab) and `virtio_input.c`; `input_script.c` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
-| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); first phone session 2026-11-22: device found, the pen service published and opened by backboardd, no pen event yet (the pen IC asleep [I]: the brightness bridge now wakes it, `phone pen wake` by hand; section 7f) |
+| Host device (2026-11-21) | - | `runtime/bridges/hw/host_device.rs`: which known phone xnuhost runs on (properties, soc0, the device tree) and its defaults from one table; `host-device=auto\|none\|NAME` (section 7h) | host-tested; not run on a phone |
+| Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.rs` (evdev, no grab) and `virtio_input.rs`; `input_script.rs` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
+| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.rs`: one replaceable lookup by bits (`pen::lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); first phone session 2026-11-22: device found, the pen service published and opened by backboardd, no pen event yet (the pen IC asleep [I]: the brightness bridge now wakes it, `phone pen wake` by hand; section 7f) |
 
 Common pieces:
 
 - **The bridge channel** (`drivers/bridge/oneios_bridge_proto.h`): one virtio-mmio device, `/arm-io/bridge`, compatible
   `oneios,bridge`, carrying small messages (haptic requests, HCI packets). Guest end `drivers/bridge/OneiOSBridge.c`,
-  host end `runtime/bridges/devices/bridge_dev.c`. Devices that already have a virtio driver in UniXNU-droidvm
+  host end `runtime/bridges/devices/bridge_dev.rs`. Devices that already have a virtio driver in UniXNU-droidvm
   (network, sound) use standard virtio devices instead.
-- **Tests**: `runtime/bridges/tests/host.sh` (CI runs it): 198 checks (and 48 in `brightness/`, 65 in `battery/`) with ASan and UBSan, the virtio devices driven
-  through xnuhost's real transport (`runtime/xnuhost/src/virtio.c`) by a guest made of plain memory; then the Android
-  build. `oneios-tool kernel drivers --check` compiles the kernel sources with the kernel build's own compile records
+- **Tests**: `cd runtime && cargo test -p onebridges` (part of `runtime/tests/host.sh`, which CI runs; the C suite had 198
+  checks, and 48 in `brightness/`, 65 in `battery/`, with ASan and UBSan: every one is a Rust test now), the virtio devices driven
+  through xnuhost's real transport (`xh_core::virtio`, `runtime/core/src/virtio.rs`) by a guest made of plain memory; the Android
+  build is `runtime/build.sh STAGE`. `oneios-tool kernel drivers --check` compiles the kernel sources with the kernel build's own compile records
   (xnu-12377, arm64e, `-Wall -Wextra -Werror`); the archive's 292 undefined symbols all resolve in `xnu.macho`.
-- **On the phone**: `runtime/bridges/build/android/bridgectl` (static) tries each bridge without xnuhost:
+- **On the phone**: `bridgectl` (static; `bin/bridgectl` of `runtime/build.sh STAGE`) tries each bridge without xnuhost:
   `bridgectl cpu|haptic|haptic-pattern|bt|net|audio`. It is the first thing to run when the phone is attached.
 
 ### 0.1 Baseline on the phone (2026-11-12, bringup)
@@ -136,28 +143,29 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
   "0085").
 - `l2-cache-size`, `l3-cache-size` of a cpu node are read by XNU when present.
 
-### The bridge (`runtime/bridges/cpu/topology.c`)
+### The bridge (`runtime/bridges/cpu/topology.rs`)
 
-- `br_cpu_read("/sys", &t)`: per CPU `cpu_capacity`, `cpufreq/cpuinfo_{min,max}_freq`,
+- `Topology::read("/sys")`: per CPU `cpu_capacity`, `cpufreq/cpuinfo_{min,max}_freq`,
   `scaling_available_frequencies`, `related_cpus`, `regs/identification/midr_el1`, `cache/index*`. CPUs of the lowest
   capacity are E when capacities differ: on this phone cpu0-1 are E, cpu2-7 P.
-- `br_cpu_plan_make(&t, nvcpu, pin, &plan)`: the guest's vCPUs, **E first** (an iPhone's boot CPU is an E core), then P.
+- `CpuPlan::make(&t, nvcpu, pin)`: the guest's vCPUs, **E first** (an iPhone's boot CPU is an E core), then P.
   8 vCPUs: 2 E + 6 P. Fewer: one E per four vCPUs, at least one. Each vCPU carries `type`, `cluster_id` (0 E, 1 P),
   the host CPUs it may use (`affinity`: all cores of its kind; with `pin` one core each, the X4 first), the frequency
   table and cache sizes of the core cpu-pin gives it (the rank-th of its kind, vCPU *i* on CPU *i* here; before
   2026-11-15 the fastest core in the mask), the boost frequencies included (`scaling_boost_frequencies`).
-- `br_cpu_place(tid, &plan, vcpu)`: `sched_setaffinity`. For the vCPU thread, and for the Linux thread of the iOS
-  thread a vCPU runs (iOS threads are threads of other processes; booter's `xh_thread_run`).
-- `br_cpufreq_*`: the register window. A write of a frequency sets the utilisation clamp
+- `cpu::set_affinity(tid, mask)` with the plan's mask (`CpuPlan::pin_mask` with cpu-pin): `sched_setaffinity`. For the vCPU thread, and for the Linux thread of the iOS
+  thread a vCPU runs (iOS threads are threads of other processes; booter's `thread_run`, `runtime/xnuhost/src/task.rs`).
+- `Cpufreq` (an `xh_core::mmio::MmioDevice`): the register window. A write of a frequency sets the utilisation clamp
   (`sched_setattr`, `SCHED_FLAG_UTIL_CLAMP_MIN`, capacity x kHz / max kHz) of the vCPU's thread; the lowest table
-  entry drops the request. Linux's governor keeps clock control. `br_cpufreq_requested(d, vcpu)` lets booter apply
-  the same clamp to the iOS thread it runs (`br_cpu_request`).
+  entry drops the request. Linux's governor keeps clock control. `Cpufreq::requested(vcpu)` lets booter apply
+  the same clamp to the iOS thread it runs (`CpuPlan::request`, `CpuPlan::util_for`).
 
 ### Missing
 
 - release-kernel: `droidvm-amp.patch` in the series, `DroidVMCpufreq.c` in the board archive.
 - booter: `cpu_cluster[]` and the cache properties of the cpu nodes from the plan; the `/arm-io/cpufreq` node
-  (`reg` = nvcpu x 0x1000) and its MMIO region forwarded to `br_cpufreq_read/write`; `br_cpu_place` on its threads.
+  (`reg` = nvcpu x 0x1000) and its MMIO region on the `Cpufreq` device; the placement on its threads. [Done since: xnuhost's
+  `plan_cpus` in `runtime/xnuhost/src/session/bridges.rs` does all three.]
 - [U] whether `uclamp` is writable from KernelSU's domain on Samsung's kernel (`CONFIG_UCLAMP_TASK`); `bridgectl cpu`
   says.
 - [I] `hw.perflevel*` cache sizes come from the kernel reading `CCSIDR_EL1` on the running CPU, which under xnuhost
@@ -167,7 +175,7 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
 
 Not owned here. The references agent found the working path on this SoC (`docs/references.md` section 1): the guest's
 NativeMetal plug-in, metal2vulkan and Turnip over virtio-gpu's DRM native context, served on the host by
-virglrenderer's `drm2kgsl` on `/dev/kgsl-3d0`. That is the 3D half of booter's `runtime/xnuhost/src/virtio_gpu.c`;
+virglrenderer's `drm2kgsl` on `/dev/kgsl-3d0`. That is the 3D half of booter's `runtime/xnuhost/src/virtio_gpu.rs`;
 the KGSL proxy (NativeAdreno's own user client) was retired upstream and our metal2vulkan/reims-vgpu path is the
 fallback only. Facts for it from the phone [F]: Adreno 750 v2 (`Adreno750v2`, 1.0 GHz top), `/dev/kgsl-3d0`
 (crw-rw-rw-, `msm_kgsl`), `/dev/udmabuf` present (`CONFIG_UDMABUF=y`), `/dev/dma_heap/system` and the qcom heaps
@@ -246,7 +254,7 @@ the old route; xnuhost runs them only with `wifi=tap`.
    roaming inside an ESS). The bridge is its only client in a session, as the framework is in One UI:
    - join: `addNetwork`, then on the network `setSsid`, `setKeyMgmt`, `setProto`, `setPairwiseCipher`,
      `setGroupCipher`, the secret, `select`. What to set comes from the key iOS gave and from the network's RSN and
-     WPA elements in the last scan (`br_wifi_plan_join`):
+     WPA elements in the last scan (`supplicant::plan_join`):
 
      | The network offers | iOS gave | Supplicant network |
      |---|---|---|
@@ -293,7 +301,7 @@ the old route; xnuhost runs them only with `wifi=tap`.
    stays as it is (0 on the phone: a frame for iOS's address is dropped by Linux, not forwarded or answered), and
    with no address on wlan0 Linux answers no ARP request for iOS. netd, which keeps running, is not asked for
    anything.
-3. **Return.** xnuhost's stop (`br_wlan_close`): `disconnect` and `removeNetwork` for its network, `removeInterface`
+3. **Return.** xnuhost's stop (`wifi::wlan::close`): `disconnect` and `removeNetwork` for its network, `removeInterface`
    if it added `wlan0`, the binder closed (the supplicant drops a dead client's callback), then GRO and
    `disable_ipv6` back to the values in `/data/session/wifi.state` (written before anything was changed), wlan0 left
    with no address. One UI's framework then sets wlan0 up itself when it starts: IpClient enables IPv6 and runs
@@ -407,31 +415,31 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 
 | File | What |
 |---|---|
-| `frames.c` | which frames cross (above), and the cut of a coalesced TCP frame |
-| `station.c` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages |
-| `wlan.c` | the back end on the phone: the AF_PACKET socket, nl80211, wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
-| `sim.c` | a made-up radio (`wifi=sim`) |
-| `p2p.c` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
-| `supplicant.c` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
-| `aidl_parcel.c`, `aidl_binder.c` | stable AIDL over `/dev/binder` with no Android library (xnuhost is static): the interface token (strict mode word, work source, `SYST`), `String` as UTF-16, `byte[]`, binder objects with the stability word (VINTF 0x3f), the status header of a reply; the kernel's binder protocol, one looper thread for the calls into our callback, death notifications |
-| `tools/wifictl.c` | the bridge without xnuhost: `status`, `scan`, `join`, `restore` (`runtime/bridges/README.md`) |
+| `frames.rs` | which frames cross (above), and the cut of a coalesced TCP frame |
+| `station.rs` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages |
+| `wlan.rs` | the back end on the phone: the AF_PACKET socket, nl80211, wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
+| `sim.rs` | a made-up radio (`wifi=sim`) |
+| `p2p.rs`, `wonder.rs` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
+| `supplicant.rs` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
+| `runtime/bridges/hal/aidl.rs`, `binder.rs` | stable AIDL over `/dev/binder` with no Android library (xnuhost is static): the interface token (strict mode word, work source, `SYST`), `String` as UTF-16, `byte[]`, binder objects with the stability word (VINTF 0x3f), the status header of a reply; the kernel's binder protocol, one looper thread for the calls into our callback, death notifications |
+| `runtime/bridges/tools/wifictl.rs` | the bridge without xnuhost: `status`, `scan`, `join`, `restore`, `p2p`, `wonder` (`runtime/bridges/README.md`) |
 
 xnuhost: `wifi=auto` (the default; `xnuhost.conf` or `--set wifi=...`) takes wlan0 when the bridges are on, `wifi=off`
-makes no network device, `wifi=tap` is the old route, `wifi=sim` is `sim.c`: a made-up radio with two networks
+makes no network device, `wifi=tap` is the old route, `wifi=sim` is `sim.rs`: a made-up radio with two networks
 ("OneiOS open", and "OneiOS WPA2" with the passphrase `password`) for a boot on a PC, where the guest's side can be
 run and read in the log; no frame goes anywhere (unit-tested; not yet run in a boot). Log lines: `wifi: wlan0 is iOS's for the session: ...`, `wifi:
 on: wlan0 (..) is the guest's en0`, `wifi: the vendor's supplicant is the bridge's`, `wifi: the guest's driver is up`,
 `wifi: join: network N in the supplicant, WPA2 (passphrase): selected`, `wifi: supplicant: <state>`, `wifi: join done`
 or `join failed (status S, code C)`, `wifi: link down (reason R)`, `wifi: closed (...)`, `wifi: wlan0 given back`.
 
-Old (only with `wifi=tap`): `runtime/bridges/net/net.c` (tap `oneios0`, DHCP answered in the bridge: 192.168.77.2/24)
+Old (only with `wifi=tap`): `runtime/bridges/net/net.rs` (tap `oneios0`, DHCP answered in the bridge: 192.168.77.2/24)
 and `runtime/bridges/net/oneios-net.sh` (NAT). The script's `ip rule del priority 16000` would delete netd's own rule
 of that priority (netd's `fwmark 0x10063/0x1ffff iif lo lookup local_network` is at 16000 on this phone) when ours is
 absent: a reason not to run it on the phone as it is.
 
 ### Tested
 
-- Host (arm64 Linux container, `runtime/host-tests.sh`): `test_wifi` 162 checks (frame rules; the netlink group reader; the nl80211 band reader (`OW_CHANNELS`); the DHCP reader, with the REQUEST forms
+- Host (arm64 Linux container, `runtime/host-tests.sh`; the C tree's counts, every case now a Rust test beside its module and `tests/test_aidl_binder.rs`): `test_wifi` 162 checks (frame rules; the netlink group reader; the nl80211 band reader (`OW_CHANNELS`); the DHCP reader, with the REQUEST forms
   SELECTING, INIT-REBOOT, RENEWING and REBINDING, iOS's and another station's, and the log line of each; a 4000-byte coalesced
   IPv4 frame and a 3000-byte IPv6 one cut into three with right lengths, sequence numbers and checksums; the station
   against a fake radio; the AIDL parcels byte for byte; the join's plan for WPA2, WPA3, transition, WPA with TKIP,
@@ -439,7 +447,7 @@ absent: a reason not to run it on the phone as it is.
   against a fake service manager and supplicant in another process on a real binder driver (a lazy service found on
   the third lookup, the interface added and removed, the callback's descriptor and version asked for inside
   `registerCallback`, a join, a wrong key, a network not found, a rejection, a link that drops, a look without a
-  callback, a supplicant that dies). Both ends of that test use `aidl.h`.
+  callback, a supplicant that dies). Both ends of that test use `hal::aidl`.
 - **Third session (2026-11-12, about 14:00, with `04ab894`)**: the networks show in Settings (`scan done: 64
   networks`, `event 10 for en0, 0 bytes -> 0`, `wifid[41] gets 11: len 2280 -> 0` for each). The owner joined an
   open network: `join: layout 656, authentication lower 0x1 upper 0x0, key of 0 bytes of kind 0`, xnuhost `join:
@@ -486,7 +494,7 @@ absent: a reason not to run it on the phone as it is.
   - **The bridge listened to the wrong nl80211 group**, so each scan ended by the 8 s timeout and not by the
     radio's event: the kernel writes a multicast group's id before its name, and the reader kept "the last name
     seen", which gave it the id of the group after `scan` (`regulatory`). Fixed and unit-tested
-    (`br_wifi_nl_group`).
+    (`frames::nl_group`).
 - **First session with it (prelink's session 2, 2026-11-12 10:28, `kernel.kc` 66faa3e8 and runtime 0.1.8-dev from
   `924a0d9`)**: worked: `ONEIOS WIFI: classes registered ...`, `on: the phone's Wi-Fi, address a6:a4:20:b8:00:0c`,
   `the host has the phone's radio`; xnuhost: `the vendor's supplicant is the bridge's: joins by its AIDL service`,
@@ -673,7 +681,7 @@ auto-join lists `Interface not up` among its reasons to hold, and Wi-Fi came on 
 `oneios-wifi-up=0` leaves it to configd. Line: `ONEIOS WIFI: en0 brought up by the driver when attached, +S s after the
 driver's start -> 0 (...)`; `first enable (IFF_UP)` then names `kernel_task` at about the naming's time.
 
-**A lasting disk line** (xnuhost `blk.c`): every 30 s per disk with requests, `disk data: 30 s: reads N (M MiB), writes N
+**A lasting disk line** (xnuhost `blk.rs`): every 30 s per disk with requests, `disk data: 30 s: reads N (M MiB), writes N
 (M MiB), flushes N in T ms (max X ms)`, at the stop the same `since the start`, and the first 16 flushes of 500 ms or
 more as they happen (`disk data: a flush took N ms (fdatasync; the guest's other requests to this disk waited)`). A
 guest flush is an `fdatasync` of the whole `data.img`; on a kernel that takes `VIRTIO_BLK_F_LATE_FLUSH`
@@ -722,7 +730,7 @@ type (their messages were not read here).
 
 **Done here (host-tested, in the runtime):** the bridge sends the radio's channel list to the guest after `OW_HELLO`
 (`OW_CHANNELS`, `drivers/net/oneios_wifi_proto.h`): on the phone from nl80211 (a split `NL80211_CMD_GET_WIPHY` dump for
-wlan0, `br_wifi_nl_bands` in `frames.c`: each channel that is not disabled, with passive, radar, indoor-only, no-40
+wlan0, `nl_bands` in `frames.rs`: each channel that is not disabled, with passive, radar, indoor-only, no-40
 and no-80 MHz flags), with `wifi=sim` a fixed list (38 channels). Log line: `wifi: N channels of the radio for the guest
 (F MHz to L MHz)`. The guest drivers of main ignore the message (an unknown type), so it is harmless until the driver
 below is in. `test_wifi`: 162 checks (the band parser on a constructed attribute tree, cut and split cases; the sim's
@@ -987,8 +995,8 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   `service list` has no AIDL `android.hardware.bluetooth.IBluetoothHci`. `bt_addr` is 18 bytes of text
   (`system:bluetooth 0660`, `bluetooth_efs_file`), readable by root in init's namespace; in bringup's session of
   2026-11-12 xnuhost found the HAL 1.1 but logged `made up: /mnt/vendor/efs/bluetooth/bt_addr not read`. Cause [F]:
-  the file is the 17 characters of the address and a NUL (`od -c`), and `br_bt_address` took the NUL for a
-  character that is not part of an address. Fixed 2026-11-12 (`hci.c`: the text ends at the first NUL; a test with
+  the file is the 17 characters of the address and a NUL (`od -c`), and `br_bt_address` (C) took the NUL for a
+  character that is not part of an address. Fixed 2026-11-12 (`hci.c`, now `hci.rs` `bt_address`: the text ends at the first NUL; a test with
   the phone's layout); not yet run on the phone.
 
 ### iOS side (`drivers/bluetooth`, port of iOSPlus10 `patches/laurel/xnu/2600-laurel-bluetooth-wcn3990.patch`)
@@ -1008,7 +1016,7 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
 
 ### The bridge (`runtime/bridges/bt`)
 
-- `hci_hidl.c`: a HIDL client with **no Android library** (xnuhost is static): `/dev/hwbinder` through the kernel's
+- `hci_hidl.rs`: a HIDL client with **no Android library** (xnuhost is static): `/dev/hwbinder` through the kernel's
   binder UAPI, `IServiceManager::get`, `initialize_1_1(callbacks)` (or `initialize` on a 1.0 service),
   `sendHciCommand/AclData/ScoData/IsoData`, and a callback object the HAL calls (events, ACL, SCO, ISO,
   `initializationComplete`, and the base methods `interfaceChain`, `interfaceDescriptor`, `ping`, ...). A death
@@ -1016,13 +1024,13 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   makes our calls (get, initialize, the sends, close) in order from a queue of up to 512 packets, so the guest's
   vCPU, which holds the bridge device's lock, never waits on a binder call, and a HAL that sends an event before its
   `sendHciCommand` returns is answered at once. No `initializationComplete` within 15 s
-  (`ONEIOS_BT_INIT_TIMEOUT_MS`) is a failure with a line naming SELinux. `br_hci_hidl_probe()` asks for the
+  (`ONEIOS_BT_INIT_TIMEOUT_MS`) is a failure with a line naming SELinux. `hci_hidl::probe()` asks for the
   service once at xnuhost's start. `ONEIOS_HWBINDER` names another binder device (the PC test).
-- `bridge_dev.c`: an `OB_HCI_OPEN` while the controller is failed (the HAL died or never finished) closes it and
+- `devices/bridge_dev.rs`: an `OB_HCI_OPEN` while the controller is failed (the HAL died or never finished) closes it and
   opens it again, so a new bluetoothd client starts over.
-- `hidl_parcel.c`: the parcels (interface token, `hidl_string`, `hidl_vec<uint8_t>` as scatter-gather buffer
+- `hidl_parcel.rs` (on `hal/hidl.rs`, `hal/binder.rs`): the parcels (interface token, `hidl_string`, `hidl_vec<uint8_t>` as scatter-gather buffer
   objects, strong binders). Unit-tested byte for byte; the transaction codes are the HIDL order of the methods.
-- `hci.c`: packet length checks both ways, the state, the address file. It logs `bluetooth: the controller hears
+- `hci.rs`: packet length checks both ways, the state, the address file. It logs `bluetooth: the controller hears
   devices: N report(s) so far (LE advertising|inquiry result)` for the first report and for each power of two after
   it: a scan of bluetoothd's that finds devices can be read in xnuhost's log (2026-11-12; not yet seen on the phone).
 
@@ -1324,12 +1332,12 @@ stack (for example `Filter Accept List add error`, `BT VSC init failed`).
   call back into ours (`binder { call transfer }`). KernelSU's domain is allowed most things; if the callback is
   denied, a `ksud sepolicy` rule is needed. `bridgectl bt` shows which step fails.
 - [U] the transaction codes and the callback handshake against the real libhwbinder and the QTI HAL. Tested on the PC
-  (`make -C runtime/bridges test-binder`, 2026-11-11): a fake hwservicemanager and IBluetoothHci 1.1 and 1.0 on a
+  (the C's `make -C runtime/bridges test-binder`, 2026-11-11; now `cargo test -p onebridges --test test_hidl_binder`): a fake hwservicemanager and IBluetoothHci 1.1 and 1.0 on a
   real binder driver (binderfs in a user namespace) that read every parcel with libhwbinder's checks (tokens,
   `readBuffer`/`readEmbeddedBuffer` parent links), call back two-way from their own thread, `interfaceChain` on our
   callback, Reset and Read BD_ADDR answered, ACL echoed, close; no HAL registered; no `initializationComplete`; a
   HAL that dies. First phone test: `bridgectl bt` must print two Command Complete events (`runtime/bridges/README.md`).
-- booter: the tree's node. `runtime/loader/src/machine.c` publishes `/bluetooth` with `transport-encoding` 10 (the
+- booter: the tree's node. `runtime/loader/src/machine.rs` publishes `/bluetooth` with `transport-encoding` 10 (the
   virtual transport of Apple's VMs) or, with the HAL (`bluetooth=hidl`, or `auto` when the HAL is registered, the
   default since 2026-11-11), `transport-encoding` 1 (H4; it was 3, H4BC, until 2026-11-12), `transport-speed` 3000000 and the phone's
   `local-mac-address`; `/defaults/vmm-present` 1 either way. What 24A446's `/usr/sbin/bluetoothd` contains (strings,
@@ -1509,7 +1517,7 @@ radio and names Wonder, and `wifictl wonder` opens and closes a Wonder session b
 phone check ("The phone checks" below), then the engine's choice (the owner's) and "How iOS's `awdl0` maps onto
 Wonder".
 
-### `wifictl p2p` (runtime/bridges/wifi/p2p.c, built 2026-11-22, every radio since 2026-11-23)
+### `wifictl p2p` (runtime/bridges/wifi/p2p.rs, built 2026-11-22, every radio since 2026-11-23)
 
 Read only, safe beside One UI and in a session: a split `NL80211_CMD_GET_WIPHY` dump with no interface named (every
 wiphy: cfg80211 writes `NL80211_ATTR_WIPHY` first in each message, so each message goes to its own radio, also
@@ -1547,7 +1555,7 @@ two wiphys with Wonder's dump between phy0's two messages, Wonder 1.5 and 1.6, W
 its name, a Broadcom-like wiphy that is not Wonder, Wonder in use, a `wondertap0` without a Wonder radio, more
 wiphys than kept, none, a cut report); **not run on the phone**.
 
-### `wifictl wonder` (runtime/bridges/wifi/wonder.c, built 2026-11-23)
+### `wifictl wonder` (runtime/bridges/wifi/wonder.rs, built 2026-11-23)
 
 A session on Wonder's raw 802.11 path beside `wlan0`, as root with One UI running:
 `wifictl wonder [--seconds N] [--freq 2437|5220|5745] [--country CC]` (default 30 s on 2437 MHz). The order is
@@ -1647,7 +1655,7 @@ them:
 
 | Group | The requests (24A446 names, `APPLE80211_IOC_AWDL_` left out) | The engine |
 |---|---|---|
-| On, off, the role | `CONFIG`, `CTL`, `OPER_MODE`, `STRATEGY`, `PRESENCE_MODE`, `QUIET`, `BLOCK_SET_COMMANDS`, `MAC_ADDRESS_IN_USE`, `BSSID`, `OUI`, `DEVICE_CAPABILITIES`, `RSDB_CAPS` | starts and stops the Wonder session (`wonder.c`'s steps, kept open), the address of `awdl0` as the vdev's own, AWDL's BSSID, what we can do (one channel, HT20, one stream) |
+| On, off, the role | `CONFIG`, `CTL`, `OPER_MODE`, `STRATEGY`, `PRESENCE_MODE`, `QUIET`, `BLOCK_SET_COMMANDS`, `MAC_ADDRESS_IN_USE`, `BSSID`, `OUI`, `DEVICE_CAPABILITIES`, `RSDB_CAPS` | starts and stops the Wonder session (`wonder.rs`'s steps, kept open), the address of `awdl0` as the vdev's own, AWDL's BSSID, what we can do (one channel, HT20, one stream) |
 | Synchronization | `SYNC_ENABLED`, `SYNC_PARAMS`, `SYNC_STATE`, `SYNC_FRAME_TEMPLATE`, `SYNC_FRAME_AP_BEACON_ALIGNMENT`, `PERIODIC_SYNC_FRAME_PACKET_LIFETIME`, `MASTER_MODE_SYNC_FRAME_PERIOD`, `NON_ELECTION_MASTER_MODE_SYNC_FRAME_PERIOD`, `GUARD_TIME`, `AVAILABILITY_WINDOW_AP_ALIGNMENT`, `EXTENSION_STATE_MACHINE_PARAMETERS`, `EXPLICIT_AVAILABILITY_WINDOW_EXTENSION_OPT_OUT`, `MAX_NO_MASTER_PERIODS`, `MAX_TREE_DEPTH`, `TOP_MASTER` | the availability windows: 16 TU (16.384 ms) each, counted against the master's TSF from its PSF and MIF (the radiotap TSFT of each received frame), our own PSF (about every 110 ms) and MIF (each window we are in), the window extensions, the sync tree |
 | Election | `ELECTION_ALGORITHM_ENABLED`, `ELECTION_ID`, `PRIVATE_ELECTION_ID`, `ELECTION_METRIC`, `ELECTION_PARAMS`, `ELECTION_MASTER_COUNTS`, `ELECTION_RSSI_THRESHOLDS`, `GET_AWDL_MASTER_DATABASE` | the master election (metrics, counters, the top master), a slave beside an iPhone, the master alone |
 | Channels | `SYNCHRONIZATION_CHANNEL_SEQUENCE`, `MASTER_CHANNEL`, `SECONDARY_MASTER_CHANNEL`, `COMMON_CHANNEL`, `PREFERRED_CHANNELS`, `SOCIAL_TIME_SLOTS`, `SCAN_RESERVED_TIME`, `PIGGYBACK_SCAN_REQ`, `DFSP_CONFIG`, `DFSP_UCSA_CONFIG`, `ENABLE_ROAMING`, `FORCED_ROAM_CONFIG` | the channel sequence it advertises: with Wonder 1.5 one channel only (every slot on 149, or on 6: `SET_FREQUENCY` once; [I] iPhones accept a sequence of one channel, as OWL runs on one); with 1.6 or later the schedule through `SET_CHANNEL_SCHEDULE_REQ` |
@@ -1693,7 +1701,7 @@ receive: firmware -> wondertap0 -> Wonder rx_handler -> mac80211 monitor -> AF_P
 
 The control path (the `AWDL_*` requests and their answers, the peer events) goes as new OW message types on
 `en0`'s control link (`drivers/net/oneios_wifi_proto.h`), as the station's messages do. For the data, a **second
-virtio-net device** for `awdl0` (xnuhost's `runtime/bridges/devices/virtio_net.c`, a second entry in the device tree,
+virtio-net device** for `awdl0` (xnuhost's `runtime/bridges/devices/virtio_net.rs`, a second entry in the device tree,
 its own queues and address) is the better choice [I]: no encapsulation, no shared queue with `en0`, and iOS's own
 interface statistics; an OW message type on `en0` is the smaller change if a second device costs more than it
 seems.
@@ -1794,7 +1802,7 @@ What is built:
   **The session's switch** (2026-11-21, from the S26 Ultra fork's bec7efe, adapted): the OneOS fork starts xnuhost
   with no environment, so the two halves are one xnuhost setting, `haptics-native-impacts=1` in the image set's
   `xnuhost.conf` (or `--set`; [booter.md](booter.md) section 1): it tells the bridge to ask for the presets
-  (`br_haptic_set_native_impacts`, no `setenv`) and appends `oneios_native_impacts=1` to the boot arguments,
+  (`haptics::set_native_impacts`, no `setenv`) and appends `oneios_native_impacts=1` to the boot arguments,
   keeping them whole. xnuhost refuses it (exit 2) unless `hw-backend-haptics=treble`, `hw-backend-fallback=0`,
   `haptics=auto` and the bridges are on, and when the boot arguments already say `oneios_native_impacts=` with
   another value; `=0` turns it off whatever the environment says. Unset (the default on every phone), the
@@ -2134,11 +2142,11 @@ plays (a toggle in Settings, a long press on an icon); then `ONEIOS HAPTIC: coun
 Settings > Sounds & Haptics > Keyboard Feedback > Haptic on (iOS's default is off). If the strip is visible and the
 Actuator still gets silence, the next reading is VirtualAudio's DSP set-up lines for `[vzzz]` in the same log.
 
-### The bridge (`runtime/bridges/haptics/haptic.c`)
+### The bridge (`runtime/bridges/haptics/haptic.rs`)
 
 - Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the
   vibrator HAL `android.hardware.vibrator.IVibrator/default` (`on(ms)`, then `setAmplitude(level / 255)` when its
-  capabilities have amplitude control, `off()`; `br_haptic_open_as`).
+  capabilities have amplitude control, `off()`; `Haptic::open_as`, `haptics/vibrator.rs`).
 - Finds the device by its EV_FF bits (`sec_vibrator_inputff` first), sets `FF_GAIN` 10000 once.
 - One effect, updated for every request: `FF_PERIODIC` / `FF_SINE`, period = 1000 / frequency clamped to 4..10 ms
   (6 ms when iOS names none), magnitude = 40 + 215 x intensity / 1000 (an LRA does not move below a floor), length
@@ -2152,8 +2160,8 @@ Actuator still gets silence, the next reading is VirtualAudio's DSP set-up lines
 - `haptics=` in `xnuhost.conf` (or `--set`): `auto` (the device above, with the bridges on), `off`, `sim`: **a
   stand-in actuator** for a boot with no vibrator (the PC), with the bridges on or off; it takes every request,
   counts and logs it, and makes the guest's whole path run (the hello names the haptic channel, so `drivers/haptics`
-  publishes the Actuator device and `/product/haptics`). Host test: `runtime/bridges/tests/test_bridges.c`
-  (`test_haptic`: the counters of the fake motor and of the stand-in, and the bridge channel's).
+  publishes the Actuator device and `/product/haptics`). Host test: `runtime/bridges/haptics/test_haptic.rs`
+  (the C's `test_haptic` in `test_bridges.c`: the counters of the fake motor and of the stand-in, and the bridge channel's).
 
 | iOS | Reaches the phone as |
 |---|---|
@@ -2223,11 +2231,11 @@ yet: the audio test cycle adds it (below).
 
 ### The bridge
 
-- `runtime/bridges/devices/virtio_snd.c`: the device (control queue: `PCM_INFO`, `SET_PARAMS`, `PREPARE`, `START`,
+- `runtime/bridges/devices/virtio_snd.rs`: the device (control queue: `PCM_INFO`, `SET_PARAMS`, `PREPARE`, `START`,
   `STOP`, `RELEASE`; two streams; output periods go to the back end as they arrive; a capture thread fills the
   receive buffers the guest posted).
-- `runtime/bridges/audio/aaudio_helper.c` -> `bin/oneios-audio`: **a helper process**, because AAudio is a shared
-  library and xnuhost is static. xnuhost starts it (`br_audio_helper(path, &ctx)`, `posix_spawn`, a `SOCK_SEQPACKET`
+- `runtime/bridges/audio/aaudio_helper.rs` (the bin `audio/oneios_audio.rs`) -> `bin/oneios-audio`: **a helper process**, because AAudio is a shared
+  library and xnuhost is static. xnuhost starts it (`AudioHelper::spawn(path)`, `posix_spawn`, a `SOCK_SEQPACKET`
   pair); it lives in xnuhost's namespace and cgroup, and the return's SIGKILL of the namespace (or xnuhost's exit,
   which closes the socket) ends it and with it the stream: audioserver closes a dead client's track.
   - **No realtime thread, by construction.** AAudio makes a SCHED_FIFO thread only for a data callback (an MMAP
@@ -2286,7 +2294,7 @@ yet: the audio test cycle adds it (below).
     (60 s): what the ring holds plays, then silence; iOS stops and starts its device around each sound, and a
     reopened track stalls again. The price is One UI's speaker path kept on with silence for that minute.
   - Input: a reader thread, blocking `AAudioStream_read` of 240 frames, input preset VOICE_RECOGNITION, the first
-    channel to xnuhost, performance mode NONE. `backend.c` drops what an earlier recording left in the socket at
+    channel to xnuhost, performance mode NONE. `audio/backend.rs` drops what an earlier recording left in the socket at
     each input START.
   - Log (xnuhost's log; the numbers are the host test's): `oneios-audio: ready: performance mode low latency, MMAP
     exclusive first (shared only with system_server) (a blocking writer at SCHED_OTHER, uclamp.min 512: no data
@@ -2311,7 +2319,7 @@ yet: the audio test cycle adds it (below).
     `MSG_DONTWAIT` now.
 - Why AAudio and not tinyalsa: on this SoC a PCM device plays only after the AudioReach graph is set up through the
   AGM plug-ins and PAL, which the audio HAL does; opening the card beside it would also fight audioserver.
-- Tests: `runtime/bridges/tests/test_audio_helper.c` (in `make test`, about 50 s of real time): the helper against a
+- Tests: `runtime/bridges/audio/test_audio_helper.rs` (`cargo test -p onebridges audio::`, about 50 s of real time; the C's `tests/test_audio_helper.c`, every section ported; the check counts below are the C's): the helper against a
   fake AAudio whose server thread stands in for AudioFlinger's normal mixer (it starts reading once the track holds
   its buffer size, then takes a whole period of `pull` frames each period and nothing in a period where the track
   holds less; burst and pull set apart): no underrun or overflow at 0 and ±2000 ppm, the drift steered the right way
@@ -2322,7 +2330,7 @@ yet: the audio test cycle adds it (below).
   NONE), LOW_LATENCY only with `ONEIOS_AUDIO_PERF=low`, a clean stop when the socket closes: 11,101 checks (most are the guest's sends; timing checks are skipped, each with a line, when a loaded host runs the test late).
   Since 2026-11-15 the fake HAL can also give MMAP exclusive or shared, and the test checks the path choice, the MMAP
   level, the end-to-end figure, the probe and the target's recovery on MMAP (20,213 checks; "Latency end to end"
-  below). `test_bridges.c` checks
+  below). `devices/test_devices.rs` (the C's `test_bridges.c`) checks
   that virtio-snd takes each output period inside the guest's notify (0 in flight), and that the latency probe of a
   back end other than the helper is `-ENOTSUP`.
 
@@ -2408,14 +2416,14 @@ shows only as video waiting for its sound (sound ahead of the lips), a smaller o
 |---|---|---|---|
 | iOS's HAL: the I/O buffer it writes ahead (1024-3840 frames, 21-80 ms, iOS's choice per client) plus the safety offset (480 frames, 10 ms) | the same | the same | [F] iOS's logs (`vaemCalculateAndSetDeviceBufferDuration: duration = 0.080`), DroidVMAudio.cpp; iOS's own, as on a device |
 | The guest's engine (hands a period on once it has passed) | 0-5 ms | the same | DroidVMAudio.cpp `run()` |
-| virtio-snd, guest to xnuhost | under 0.01 ms, 0 periods in flight | the same | `test_bridges.c`: each period is with the back end before the guest's notify returns (0.7 us on average, 6 us at most); the guest's 16 slots (`SND_SLOTS`) never fill, so fewer slots would cut nothing |
+| virtio-snd, guest to xnuhost | under 0.01 ms, 0 periods in flight | the same | `devices/test_devices.rs` (C: `test_bridges.c`): each period is with the back end before the guest's notify returns (0.7 us on average, 6 us at most); the guest's 16 slots (`SND_SLOTS`) never fill, so fewer slots would cut nothing |
 | Socket and the helper's ring | 10.5 ms (harness; the writer waited for 244 frames and polled every 2 ms; the phone's reports said 1-5 ms) | 0.1-0.7 ms | harness |
 | AAudio's queue, to the server's read | 62.9 ms (harness: the writer filled AAudio to its 2-burst buffer, 3200 frames) | 32.7 ms (the target plus half a pull) | harness |
 | Android after the read: the normal mixer, the HAL, the DSP | 65-73 ms | the same | [I] the phone's AAudio timestamp latency of 2026-11-12 (128-136 ms written to presented) less the old helper's 63 ms in the harness |
 | **Host path** (the helper's `latency about N ms`) | 131-142 ms (phone) | **about 98-106 ms** [I, predicted] | the two rows above |
 | A new stream's first sound (the open and the new track's ~200 ms before the server reads) | late by the stall, the backlog then played 1.25 % faster for about 16 s | the backlog's silence is cut at the sound's first pause: a marker 1 s after a 200 ms stall went from 268 ms to 22 ms (harness) | harness |
 
-The harness: `test_audio_helper.c`'s latency cases (`stage:` lines), the helper of `origin/main` 3d0644f and the new
+The harness: `test_audio_helper.c`'s latency cases (now `audio/test_audio_helper.rs`) (`stage:` lines), the helper of `origin/main` 3d0644f and the new
 one built against the same fake (pulls of 1600 frames, burst 1600, the guest starting at six phases of the pulls, 60
 markers each), averages:
 
@@ -2544,7 +2552,7 @@ expected; the helper's `speaker open` line says it (`sharing exclusive, mmap 1, 
 - The phone check: `bridgectl audio-loop` (runtime/bridges/README.md, "On the phone"): clicks into the helper, heard
   by the microphone: the round trip bounds the speaker's part from above.
 
-**Tested on the PC** (`runtime/bridges/tests/test_audio_helper.c`, 20219 checks, 0 failed; the box had a load of 12-40
+**Tested on the PC** (the C's `runtime/bridges/tests/test_audio_helper.c`, 20219 checks, 0 failed; the box had a load of 12-40
 on 4 CPUs from other agents' qemu boots and builds, so every timing check was skipped with its line and the figures
 below are under that load): a fake HAL with MMAP exclusive (burst 192 taken at once every 4 ms, a timestamp 240
 frames behind the read): one open, `sharing exclusive, mmap 1`, floor 5 ms, a new stream at 10 ms; the probe
@@ -2565,7 +2573,7 @@ its start and a mixer track opened, with it kept; AAudio_setMMapPolicy refused: 
 `ONEIOS_AUDIO_PERF=none` and `ONEIOS_AUDIO_MMAP=off`; a guest 40 ms late every 0.5 s on MMAP: 3 underruns, the
 target up to 10-25 ms and back down as far as the guest's lateness allows. `origin/main`'s helper and test under the same load failed 5
 checks (overflows, the stall's silence cut, the markers): this test now skips those, as the other timing checks,
-when the host ran it late. `test_bridges.c`: the probe of a non-helper back end is `-ENOTSUP`. The kernel's edit
+when the host ran it late. `test_bridges.c` (now `devices/test_devices.rs`): the probe of a non-helper back end is `-ENOTSUP`. The kernel's edit
 list against the pinned `DroidVMAudio.cpp` and the goldens: `cargo test -p oneios-kernel`; the hosted kernel build
 (`HOSTED_OUT=audiolat`, 1229 s; `compare-golden.sh`: the audio files the same) and its prelink (`kernel.kc`
 `ee72d94886023f31`, audit 0 failures). A PC boot of it was not run: the box's qemu queue had five boots of up to 100
@@ -2625,7 +2633,7 @@ the "low volume". iOS's own volume could not lower or raise it (above).
   step's gain (a Q16 table, 480 multiplies, nothing at 0 dB) before the transport. It starts at 0 dB; iOS sets its
   own level at its start. Log: `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain N of 65536), change N: iOS's
   volume, applied here (the host plays at full scale)` (the first 16 changes, then every 64th).
-- **The host at full scale** (`runtime/bridges/audio/aaudio_helper.c`, `runtime/bridges/README.md`): at the speaker's
+- **The host at full scale** (`runtime/bridges/audio/aaudio_helper.rs`, `runtime/bridges/README.md`): at the speaker's
   first open the helper sets the audio policy's index of USAGE_MEDIA on the speaker to its maximum through
   libaudioclient's `AudioSystem` (the call AudioService makes; looked up by mangled name, the Android 16 form with
   `muted` first), and sets the index it found back when it ends (xnuhost closes its socket). One UI's saved volume is
@@ -2639,7 +2647,7 @@ that threw; `Volume button client session: None` is normal (no app claimed the b
 set succeeds and the HUD moves; the key path itself could not be read in these boots: `pull-log`'s iOS log holds only
 the first 2-3 s of userland and the last seconds, not the presses minutes later.
 
-**Tested:** `runtime/bridges/tests/host.sh` in the host-test container (2026-11-23): `test_audio_helper` 20310
+**Tested** (the C tree, before the Rust port): `runtime/bridges/tests/host.sh` in the host-test container (2026-11-23): `test_audio_helper` 20310
 checks, 0 failed (the fake `AudioSystem` of the test gets the index set to its maximum once a run, set back when the
 helper ends, not touched with `ONEIOS_AUDIO_HOST_VOLUME=keep`, at the maximum already, or with system_server up),
 bridges 377, wifi 162, brightness 126, battery 83, thermal 99, hal binder 46, hw_backend 120, 0 failed; `make -C
@@ -2774,7 +2782,7 @@ with no error.
 | Part | Where | State |
 |---|---|---|
 | Helper process `bin/oneios-camera`: opens a camera, NV12 frames with the sensor's time into a memfd ring | `runtime/bridges/camera` | built for Android; 131 host checks with a test picture; on the phone: the list and the open work, no frame yet (above) |
-| xnuhost: the helper's socket and ring, the `oneios,camera` virtio device (`/arm-io/camera`, `XL_DEV_CAMERA`) | `runtime/bridges/camera` (`libonecamera.a`), `runtime/xnuhost/src/main.c` | linked into xnuhost; the device tested on xnuhost's transport against a guest of plain memory |
+| xnuhost: the helper's socket and ring, the `oneios,camera` virtio device (`/arm-io/camera`, `DeviceKind::Camera`) | `runtime/bridges/camera` (the crate `onecamera`, linked statically), `runtime/xnuhost/src/session/bridges.rs` | linked into xnuhost; the device tested on xnuhost's transport against a guest of plain memory |
 | Kernel: the transport and `/dev/oneios-camera` (the `NCFRAME1` layout of iOSPlus10's and HakiOS's node, NV12); `AppleH9CamIn` and its user client (the same session) | `drivers/camera` | compiles with the kernel's records, in the `HOSTED_OUT=cam` kernel; 37 host checks of the pure parts; on the phone (2026-11-12) the transport came up with 3 cameras; the service not run |
 | Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | on the phone (2026-11-22): mounted, `stage 5, status 0` |
 | Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); placed in the seed by the image hook (a new seed) |
@@ -2802,7 +2810,7 @@ with no error.
 
 ### The camera nodes (2026-11-22)
 
-The loader (`runtime/loader/src/machine.c`, `xl_machine.cameras`) adds them only with the `oneios,camera` device and
+The loader (`runtime/loader/src/machine.rs`, `Machine::cameras`) adds them only with the `oneios,camera` device and
 only for the roles the helper lists; xnuhost waits for the list before the tree (at most 3 s; 170 ms on the phone).
 Values are the iPhone18,2's (`out/kernel-inputs/24A446/devicetree.bin`, `xnuloader-inspect adt`):
 
@@ -2819,8 +2827,8 @@ exclave services: no driver may match the node); `/product/camera`'s feature fla
 ...), because the plug-in gives two streams of at most 1920x1080 and no torch: a flag the plug-in cannot honour would
 make the Camera app offer a mode with no device behind it. The ultra-wide and the telephotos get their flags with
 their streams. The S24 Ultra defaults are unchanged (the nodes follow the camera device, which follows the helper).
-Host test: `runtime/loader/tests/test_loader.c` (no nodes without the device; both, rear only, front only with an
-identity; the identity's own `unique-model` kept; the identity hash; 193 checks).
+Host test: `runtime/loader/tests/loader.rs` `machine_cameras_and_identity` (the C's `test_loader.c`; no nodes without the device; both, rear only, front only with an
+identity; the identity's own `unique-model` kept; the identity hash; 193 checks in the C).
 
 ### Missing, unknown
 
@@ -2957,7 +2965,7 @@ Details, the layout header's evidence and the log lines: `kernel/patches/oneios-
 
 ### The path
 
-1. xnuhost (`runtime/xnuhost/src/input.c`) opens every event device that has multitouch positions or one of the
+1. xnuhost (`runtime/xnuhost/src/input.rs`) opens every event device that has multitouch positions or one of the
    three side keys, **read only and without `EVIOCGRAB`**, and puts the events, unchanged, on one virtio-input
    device (`/arm-io/input-0`) with the panel's own axis ranges in its configuration. The switch's Volume Up +
    Volume Down watcher reads the same key devices beside it. Each touch frame also carries its scan time (`EV_MSC` /
@@ -3227,7 +3235,7 @@ The owner's decision of 2026-11-15: the Samsung paths stay the default and keep 
 a second, vendor-neutral backend, `treble`, sits beside them so that the image can later run on other Android phones
 (other Samsung phones first). Device profiles (the fork's) come later: `oneos/interface.md`, "The hardware backend".
 
-**The settings** (`runtime/bridges/include/bridges/hw_backend.h`; xnuhost's `config.c`; `docs/booter.md` 1):
+**The settings** (`runtime/bridges/hw/hw_backend.rs`; xnuhost's `runtime/xnuhost/src/config.rs`; `docs/booter.md` 1):
 
 | Setting | Values | What |
 |---|---|---|
@@ -3252,7 +3260,7 @@ and read only), starts a realtime thread, leaves xnuhost's cgroup, writes under 
 Treble lookups never walk a directory of sysfs or /proc: a HAL is asked for by name from servicemanager
 (`IServiceManager.getService`, handle 0 of `/dev/binder`), a sysfs class device by a named path, an evdev device as
 `/dev/input/eventN` for N = 0..31 probed by its ioctl capabilities. The binder client is the Wi-Fi supplicant's
-(`wifi/aidl_binder.c`, `aidl_parcel.c`): no Android library.
+(`runtime/bridges/hal/binder.rs`, `aidl.rs`): no Android library.
 
 ### The audit table
 
@@ -3263,27 +3271,27 @@ who or what it waits for).
 
 | Path | Where | Samsung form (default) | Treble form | How treble finds it (no walk) | Status |
 |---|---|---|---|---|---|
-| Backend choice | `bridges/hw/`, `xnuhost/src/config.c` | - | - | settings above | **done** (this PR) |
-| Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | **done** (this PR: test_brightness, hw-backend.sh) |
-| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1`; with xnuhost's pen (`ONEIOS_PEN_IC=1`) also the S Pen's `/sys/class/sec/sec_epen/enabled` in the same writes | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
-| Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
-| Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | **done** (test_battery, test_hal_binder, hw-backend.sh) |
-| Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | **done** (test_thermal, test_hal_binder, hw-backend.sh) |
-| Thermal load line | `bridges/thermal/thermal.c` (`br_host_load_read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
-| Thermal policy, CPU step | `thermal.c` (`br_thermal_decide`), `xnuhost/src/main.c` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
-| Vibrator | `bridges/haptics/haptic.c` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | **done** (test_hal_binder, hw-backend.sh) |
-| Touch screen | `xnuhost/src/input.c` | `/dev/input/event0..31`: multitouch X/Y with `INPUT_PROP_DIRECT`, the first one | the same | eventN by ioctl capabilities | same (spen owns the lookup function) |
-| Side keys | `xnuhost/src/input.c` | `/dev/input/event0..31` with `KEY_POWER`, `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN`, read only, never grabbed | the same | eventN by ioctl capabilities | same |
-| Power key -> touch IC | `xnuhost/src/main.c`, `br_bright_key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | **done** (br_bright_key wakes nothing in treble) |
-| CPU topology, placement | `bridges/cpu/topology.c` | `/sys/devices/system/cpu/...` (standard) | the same | named files | same (fix-host-overhead's) |
-| Audio | `bridges/audio/aaudio_helper.c` | AAudio (NDK, `libaaudio.so`) | the same | - | same |
-| Camera | `bridges/camera/backend_hal.c`, `backend_ndk.c` | AIDL `android.hardware.camera.provider.ICameraProvider/internal/0`; Camera2 NDK | the same; another vendor may name its provider otherwise [I]: from servicemanager's list (`listServices`) | servicemanager | same; the instance name next |
+| Backend choice | `bridges/hw/`, `xnuhost/src/config.rs` | - | - | settings above | **done** (this PR) |
+| Panel backlight | `bridges/brightness/` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | **done** (this PR: test_brightness, hw-backend.sh) |
+| Touch IC power | `bridges/brightness/` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1`; with xnuhost's pen (`ONEIOS_PEN_IC=1`) also the S Pen's `/sys/class/sec/sec_epen/enabled` in the same writes | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
+| Ambient light | `bridges/brightness/` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
+| Battery | `bridges/battery/` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | **done** (`battery::tests`, `tests/hal_binder.rs`, hw-backend.sh) |
+| Thermal sensors | `bridges/thermal/` (`Sensors::find`, `Sensors::read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | **done** (test_thermal, test_hal_binder, hw-backend.sh) |
+| Thermal load line | `bridges/thermal/load.rs` (`HostLoad::read`) | `/proc/stat`, `/proc/vmstat`, `/proc/self/stat`, `power_supply/battery/{current_now,status}` | the same (standard Linux, named files) | named files | same |
+| Thermal policy, CPU step | `thermal/` (`thermal::decide`), `xnuhost/src/session/bridges.rs` | Samsung's scale (lrp) | not touched here (fix-ram-locked's) | - | same |
+| Vibrator | `bridges/haptics/` | evdev force feedback: `/dev/input` listed for FF_PERIODIC + FF_SINE, `sec_vibrator_inputff` first | the vibrator HAL: `android.hardware.vibrator.IVibrator/default`, `setAmplitude`, `on(ms)`, `off()` | servicemanager by name | **done** (`tests/hal_binder.rs`, hw-backend.sh) |
+| Touch screen | `xnuhost/src/input.rs` | `/dev/input/event0..31`: multitouch X/Y with `INPUT_PROP_DIRECT`, the first one | the same | eventN by ioctl capabilities | same (spen owns the lookup function) |
+| Side keys | `xnuhost/src/input.rs` | `/dev/input/event0..31` with `KEY_POWER`, `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN`, read only, never grabbed | the same | eventN by ioctl capabilities | same |
+| Power key -> touch IC | `xnuhost/src/session/bridges.rs`, `Bright::key` | wakes the `sec_touchscreen` IC | nothing to wake (no touch IC node in treble) | - | **done** (`Bright::key` wakes nothing in treble) |
+| CPU topology, placement | `bridges/cpu/topology.rs` | `/sys/devices/system/cpu/...` (standard) | the same | named files | same (fix-host-overhead's) |
+| Audio | `bridges/audio/aaudio_helper.rs` | AAudio (NDK, `libaaudio.so`) | the same | - | same |
+| Camera | `bridges/camera/backend_hal.rs`, `backend_ndk.rs` | AIDL `android.hardware.camera.provider.ICameraProvider/internal/0`; Camera2 NDK | the same; another vendor may name its provider otherwise [I]: from servicemanager's list (`listServices`) | servicemanager | same; the instance name next |
 | Wi-Fi | `bridges/wifi/` | `wlan0` (AF_PACKET, nl80211), AIDL `android.hardware.wifi.supplicant.ISupplicant/default` | the same interfaces; the interface's name from nl80211 instead of `wlan0` | nl80211 | next (after fix-settings-wifi-cpu merges) |
-| Bluetooth | `bridges/bt/hci_hidl.c` | HIDL `android.hardware.bluetooth@1.1::IBluetoothHci/default` on `/dev/hwbinder` | AIDL `android.hardware.bluetooth.IBluetoothHci/default` (Android 13+), HIDL as before | servicemanager, hwservicemanager | next (after fix-bt-virtual merges) |
-| Display (drm mode) | `xnuhost/src/display.c` | `/dev/dri/card0` | the DRM card found at run time: `/dev/dri/card0..7` by `DRM_IOCTL_VERSION` and a connected connector | eventN-style probe of named nodes | next (after fix-boot-black merges) |
+| Bluetooth | `bridges/bt/hci_hidl.rs` | HIDL `android.hardware.bluetooth@1.1::IBluetoothHci/default` on `/dev/hwbinder` | AIDL `android.hardware.bluetooth.IBluetoothHci/default` (Android 13+), HIDL as before | servicemanager, hwservicemanager | next (after fix-bt-virtual merges) |
+| Display (drm mode) | `xnuhost/src/display.rs` | `/dev/dri/card0` | the DRM card found at run time: `/dev/dri/card0..7` by `DRM_IOCTL_VERSION` and a connected connector | eventN-style probe of named nodes | next (after fix-boot-black merges) |
 | Display (shm mode) | `runtime/display` (the helper) | SurfaceControl (Java, app_process) | the same | - | same |
-| GPU 3D | `xnuhost/src/gpu3d_kgsl.c`, drm2kgsl | KGSL (`/dev/kgsl-3d0`), `/dev/dma_heap/system`, `/dev/udmabuf` | KGSL when present (Qualcomm), else 2D | named nodes | next (Qualcomm only today) |
-| RAM fix, KGSL memory | `xnuhost/src/ramfix.c` | `/sys/class/kgsl/kgsl/proc/PID`, the session cgroup | the same on Qualcomm | named files | same (fix-ram-locked's) |
+| GPU 3D | `xnuhost/src/gpu3d_kgsl.rs`, drm2kgsl | KGSL (`/dev/kgsl-3d0`), `/dev/dma_heap/system`, `/dev/udmabuf` | KGSL when present (Qualcomm), else 2D | named nodes | next (Qualcomm only today) |
+| RAM fix, KGSL memory | `xnuhost/src/ramfix.rs` | `/sys/class/kgsl/kgsl/proc/PID`, the session cgroup | the same on Qualcomm | named files | same (fix-ram-locked's) |
 | Phone tool: backlight, touch | `oneios-tool phone backlight`, `phone touch` | `/sys/class/backlight/panel0-backlight`, `/sys/class/sec/tsp/enabled` | the backlight names above; no touch IC | named paths | next (the tool) |
 | Session scripts (the fork's; read only) | `switcher/assets/oneios_switch.sh`, `oneios_return.sh`, `oneios_root.sh` | `/sys/class/backlight/*/brightness` (glob), `/sys/kernel/gpu/gpu_max_clock` and `/sys/devices/system/cpu/cpufreq_limit/*` (Samsung's), `/sys/class/kgsl/kgsl-3d0/max_gpuclk`, `/sys/class/power_supply/usb/online`, `/sys/class/udc/*/state`, watchdogs, `/sys/class/input/event*/device/enable` | cpufreq `policy*/scaling_max_freq` (standard), the KGSL devfreq, the backlight names above, `/sys/class/udc` | the fork's device profiles | next (the fork) |
 
@@ -3295,27 +3303,27 @@ how it was tested. Until a bridge's step is done its row above says next.
 **Backlight** (`runtime/bridges/brightness`, README "The two backends"). Treble: the backlight class device by its
 standard names, `/sys/class/backlight/{panel0-backlight,panel1-backlight,backlight,lcd-backlight,panel}/max_brightness`
 read in that order (named files), the whole range, One UI's value back at the close; the touch IC's power is left
-alone and the light sensor is off (one line each). Tested: `test_brightness.c` (both backends on one fake sysfs:
+alone and the light sensor is off (one line each). Tested: `brightness/tests.rs` `treble` (C: `test_brightness.c`; both backends on one fake sysfs:
 samsung takes `panel` and halves 51000, treble takes `panel0-backlight` whole and never writes `tsp/enabled`; a
-vendor's own name: treble's one missing line and NULL, samsung with the fallback; 105 checks), the stand-in phone
+vendor's own name: treble's one missing line and None, samsung with the fallback; 105 checks in the C), the stand-in phone
 (`tests/phone/hw-backend.sh`: an S24, another phone, an odd one; 9 checks). On the phone the default proves itself by
 `hw: backlight: backend samsung (the default)` followed by the same `brightness: panel on: ...` and `brightness:
 touch: 1 IC ...` lines as before; a treble boot (`--hw-backend-backlight treble`) by `brightness: panel on:
 /sys/class/backlight/panel0-backlight/brightness, 1..N of N` and the touch line `treble: no vendor-neutral power node`.
 
-**The HAL client** (`runtime/bridges/hal/`): `br_hal_open` opens `/dev/binder` (the Wi-Fi supplicant's client,
-`wifi/aidl_binder.c`), asks servicemanager for the instance by name (`getService`; no wait, no list walked), checks
+**The HAL client** (`runtime/bridges/hal/`): `Hal::open` opens `/dev/binder` (the binder layer the Wi-Fi supplicant's client uses,
+`hal/binder.rs`, `hal/aidl.rs`), asks servicemanager for the instance by name (`getService`; no wait, no list walked), checks
 the object's descriptor (`_NTF`) and reads its version; then plain calls. Each treble bridge has its own connection (one
 binder looper thread each, SCHED_OTHER, idle: no HAL calls back into it); samsung opens none. A HAL that is not registered is the bridge's
 one missing line. The method codes are the order of AOSP's frozen AIDL files (stable AIDL only appends), [I] until a
-phone answers. The tests' fake servicemanager and HALs: `tests/fake_hal.c` (`build/host/fake-hal DIR`, values read
-from files at every call), used by `tests/test_hal_binder.c` and the stand-in phone.
+phone answers. The tests' fake servicemanager and HALs: `hal/fake.rs` (the bin `fake-hal DIR`, `cargo run -p onebridges --bin fake-hal`, values read
+from files at every call), used by `tests/hal_binder.rs` and the stand-in phone.
 
 **Battery** (`runtime/bridges/battery`, README "The two backends"). Treble: the health HAL,
 `android.hardware.health.IHealth/default`, one `getHealthInfo()` per read; `HealthInfo` becomes what the nodes would
-have said and the same mapping follows. Read only (`update()` and callbacks never called). Tested: `test_battery.c`
-(the parcel both ways, an older HAL's shorter one, a bad one, the mapping; 83 checks, the 65 samsung ones unchanged),
-`test_hal_binder.c` (against the fake on a real binder driver: a read, a change, the HAL's death, not registered, the
+have said and the same mapping follows. Read only (`update()` and callbacks never called). Tested: `battery/tests.rs` `health` (C: `test_battery.c`)
+(the parcel both ways, an older HAL's shorter one, a bad one, the mapping; 83 checks in the C, the 65 samsung ones unchanged),
+`tests/hal_binder.rs` (C: `test_hal_binder.c`; against the fake on a real binder driver: a read, a change, the HAL's death, not registered, the
 fallback), the stand-in phone (6 checks: `batteryctl` on the S24's nodes and through the fake health HAL, a phone
 with only the HAL). On the phone: `hw: battery: backend samsung (the default)` then the same `battery: on:
 /sys/class/power_supply, ...` line; a treble boot by `battery: on: the health HAL
@@ -3324,26 +3332,26 @@ android.hardware.health.IHealth/default (version N), ...` and the same `ONEIOS B
 **Thermal sensors** (`runtime/bridges/thermal`, README "The two backends of the sensors"). Treble: the thermal HAL,
 `android.hardware.thermal.IThermal/default`, one `getTemperatures()` per reading: cpu, gpu, soc (CPU, GPU, SOC), the
 battery, and the case from the HAL's SKIN sensor (samsung: Samsung's `lrp`). The policy is untouched and the same for
-both: a SKIN of 41.2 C gives the level `lrp` 41.2 C gives. Tested: `test_thermal.c` (81 checks, the 72 samsung ones
-unchanged), `test_hal_binder.c` (a reading, a hotter one to HEAVY, the HAL's death, not registered, no
+both: a SKIN of 41.2 C gives the level `lrp` 41.2 C gives. Tested: `thermal/tests.rs` (C: `test_thermal.c`, 81 checks, the 72 samsung ones
+unchanged), `tests/hal_binder.rs` (a reading, a hotter one to HEAVY, the HAL's death, not registered, no
 temperature), the stand-in phone (4 checks: `thermalctl` on the S24's zones and through the fake HAL, another
 phone's CPU/SOC/skin). On the phone: `hw: thermal: backend samsung (the default)` then the same `thermal: on: N zones;
 case ... (lrp)` line; a treble boot by `thermal: on: the thermal HAL android.hardware.thermal.IThermal/default
 (version N), K temperatures; case ... (SKIN)`.
 
-**Vibrator** (`runtime/bridges/haptics/haptic.c`). Treble: the vibrator HAL,
+**Vibrator** (`runtime/bridges/haptics/haptic.rs`, `vibrator.rs`). Treble: the vibrator HAL,
 `android.hardware.vibrator.IVibrator/default`, behind the same worker, mapping and counters: an effect is `on(length)`
 (no callback) then, when `getCapabilities()` has `CAP_AMPLITUDE_CONTROL`, `setAmplitude(level / 255 x gain)` (AOSP's
 vibrator service orders them so); a stop and the close are `off()` (the close always sends one: the motor is stopped
 whatever the worker believed). The period has no place in `on()`: the HAL plays at its own resonance. Not registered:
-one missing line and no actuator for iOS, or the evdev search with `hw-backend-fallback=1`. Tested: `test_hal_binder.c`
+one missing line and no actuator for iOS, or the evdev search with `hw-backend-fallback=1`. Tested: `tests/hal_binder.rs`
 (on and amplitude for two intensities, a stop, the close, no amplitude control, not registered, the fallback), the
-stand-in phone (3 checks: `bridgectl haptic 40` with the fake HAL's call log). The samsung tests (`test_bridges.c`)
+stand-in phone (3 checks: `bridgectl haptic 40` with the fake HAL's call log). The samsung tests (`haptics/test_haptic.rs`, C: `test_bridges.c`)
 unchanged. On the phone: `hw: haptics: backend samsung (the default)` then the same `haptics: on: /dev/input/eventN
 ...` line; a treble boot by `haptics: on: the vibrator HAL android.hardware.vibrator.IVibrator/default (version N,
 capabilities 0x...)` and `haptics: effect N played on the vibrator HAL`.
 
-### Tested (2026-11-15, the hw-backend branch) and what is next
+### Tested (2026-11-15, the hw-backend branch, the C tree) and what is next
 
 - `runtime/host-tests.sh`: all pass (loader, xnuhost incl. the config checks, display, bridges incl. test-binder,
   camera, links, package). One run on a box at load 17 failed one timing check of the virtio-gpu lanes
@@ -3368,7 +3376,7 @@ The S24 Ultra's S Pen (a Wacom EMR digitizer under the panel; writing needs no b
 Apple Pencil in iOS: hover, contact, pressure, tilt, the side button. **Off by default** until a phone session shows it:
 xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which also gives the guest `oneios-pen=1`.
 The phone's image has had `pen=auto` in `overlay/userland/xnuhost.conf` since 2026-11-16, but xnuhost dropped the image
-set's `pen=`, `pen-rotate=` and `pen-mirror=` until 2026-11-22 (`config.c`; test in `tests/test_xnuhost.c`), so the pen
+set's `pen=`, `pen-rotate=` and `pen-mirror=` until 2026-11-22 (then `config.c`, now `config.rs`; test in `config/tests.rs`), so the pen
 had never run on the phone before that fix.
 
 ### The phone
@@ -3404,8 +3412,8 @@ had never run on the phone before that fix.
     (`runtime/bridges/brightness/README.md`). By hand: `oneios-tool phone pen status`, `phone pen wake`.
 - [I] No `EVIOCGRAB` is needed: in a session zygote and system_server are gone, so nothing else reads the device (as for
   the touch screen, `oneos/interface.md` 1); evdev gives every reader every event, and an ungrabbed device is One UI's
-  again at the return as it was. xnuhost never grabs it. input.c never takes it either (no side key, no multitouch), so
-  the pen IC's `KEY_HOMEPAGE` never presses Home; pen.c drops those keys and logs the first (`pen: key N from the pen's
+  again at the return as it was. xnuhost never grabs it. `input.rs` never takes it either (no side key, no multitouch), so
+  the pen IC's `KEY_HOMEPAGE` never presses Home; `pen.rs` drops those keys and logs the first (`pen: key N from the pen's
   IC, not a pen key: its screen-off (AOP) mode ...`).
 - [U] Palm rejection: the touch IC reports a resting hand as fingers; iOS's own handling of fingers while a pencil is in
   range is all there is (the two are separate digitizer services in iOS; nothing of ours drops fingers).
@@ -3429,7 +3437,7 @@ had never run on the phone before that fix.
 
 ### The path
 
-1. **Host** (`runtime/xnuhost/src/pen.c`; `docs/booter.md` 2.8 "The pen"). `xh_pen_lookup` (one function, replaceable by
+1. **Host** (`runtime/xnuhost/src/pen.rs`; `docs/booter.md` 2.8 "The pen"). `pen::lookup` (one function, replaceable by
    another hardware backend) finds the device by its bits (`BTN_TOOL_PEN`, `ABS_X/Y`, `ABS_PRESSURE`; ranked up for
    `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a pen's name; never a device with a side key or multitouch) and opens
    it read only. The filter turns each frame into one sample in fixed units (x, y 0..32767 turned to the panel; pressure
@@ -3437,7 +3445,7 @@ had never run on the phone before that fix.
    only what changed, skips a frame like the last, and reads the state again after `SYN_DROPPED`. It sends at most one frame per
    8.33 ms (the panel's 120 Hz) but the edges, which go at once (see "Lag" below).
 2. **The channel**: a second virtio-input device, `/arm-io/input-1` ("OneiOS pen"), with those fixed ranges, read on
-   input.c's thread. The touch screen's device is unchanged.
+   `input.rs`'s thread. The touch screen's device is unchanged.
 3. **Guest transport**: the staged `DroidVMVirtioInput.c` (UniXNU-droidvm's code, unchanged: `KIND_PEN`) takes a device
    with `INPUT_PROP_DIRECT`, `BTN_TOOL_PEN` and `ABS_X/Y` as a pen and sends each frame to the pen sink: flags, x, y,
    pressure, distance, tilt, and the altitude and azimuth it computes from the tilt.
@@ -3455,7 +3463,7 @@ had never run on the phone before that fix.
 
 ### Tested
 
-- Host: `test_pen` (`make -C runtime/xnuhost test`): the lookup's test (a pen's bits, the rank, never side keys or
+- Host: `pen/tests.rs` (`cd runtime && cargo test -p xnuhost pen::`; the C's `test_pen`): the lookup's test (a pen's bits, the rank, never side keys or
   multitouch), the sample (pressure scaling, hover height never 0 and half way without the axis, tilt by resolution, as
   degrees and by range, the four turns and the mirror, the eraser end, a tip without `BTN_TOOL_PEN`, out of range all
   zero), the frames (only what changed, nothing for a still pen in the air, the tip and the button, `SYN_DROPPED` read
@@ -3490,7 +3498,7 @@ had never run on the phone before that fix.
   `KEY_WAKEUP_UNLOCK` beside the pen's keys: rank 8; `pen-rotate=auto` 0 for the 1440 x 3120 panel; a hover frame in the
   driver's order, a contact whose distance the guest gets as 0, the two-frame leave, the hover height range, the
   screen-off keys and the garage switch never passed on); the coalescing (an edge at once, hover moves held and the newest sent at its
-  time by `xh_pen_tick`, a hover within a pixel not sent, touching frames folded with the most pressure, the tip up and
+  time by the filter's `tick`, a hover within a pixel not sent, touching frames folded with the most pressure, the tip up and
   the leave at once 1 ms apart, a batch read late spaced by its own times: 5 of 40 frames sent and the 41st held, no
   period: every frame, frame times on another clock: the read's time); `test_brightness`: the pen's node woken, slept and woken with
   the touch IC only with `pen_ic`, refused when its `input/name` is not `sec_e-pen`, taken by its folder without an
@@ -3511,10 +3519,10 @@ virtio-input frame, a HID report and a stylus event (`oneios-hid: pen: 10116` at
 sent); backboardd's CPU went to 99 %, 164 % and 126 % (`oneios-cpu`) while drawing, against about 30 to 45 % in sessions
 without the pen.
 
-**Fix (pen.c's filter):** at most one frame per 8.33 ms (`XH_PEN_PERIOD_NS`, the panel's 120 Hz), timed by the frames'
+**Fix (`pen.rs`'s filter, then `pen.c`'s):** at most one frame per 8.33 ms (`pen::PERIOD_NS`, the panel's 120 Hz), timed by the frames'
 own kernel times. An edge (in range or out, the tip down or up, the eraser end, the side button) is sent at once with
-the newest position and never held. Between sends the newest frame is held, a newer one replaces it, and input.c's
-poll wakes when the held one is due (`xh_pen_due`, `xh_pen_tick`), so the last position of a pen that stops is sent too.
+the newest position and never held. Between sends the newest frame is held, a newer one replaces it, and `input.rs`'s
+poll wakes when the held one is due (the filter's `due` and `tick`, `pen.rs`), so the last position of a pen that stops is sent too.
 The pressure sent is the most of the frames folded together while the tip was down. A hovering frame within one guest
 pixel of the last one sent is not sent. The `pen: in range` line counts all of it: `U unchanged frames not sent, C
 coalesced (at most one frame per 8.3 ms but the edges), K hovering frames moved under a pixel; N sent`. Expected on the
@@ -3592,8 +3600,8 @@ buffers live in a 48 MiB **media pool** carved after the GPU pool, inside the 64
 task map (`0024-gpu-pool.patch`, so no new pmap patch). Off by default: `encoder=auto` turns it on, `encoder=sim` gives
 the stand-in encoder (below).
 
-- **Code [F]:** `media_device.c` (the device), `backend_ndk.c` (MediaCodec), `backend_helper.c` + `helper.c` (the
-  helper split), `backend_stub.c` (the stand-in), `encctl.c` (the phone test). The message layout and the V4L2 ioctl
+- **Code [F]:** `runtime/bridges/encoder/`: `media_device.rs` (the device), `backend_ndk.rs` (MediaCodec), `backend_helper.rs` + `helper.rs` (the
+  helper split), `backend_stub.rs` (the stand-in), `encctl.rs` (the phone test); C until 2026-11-23. The message layout and the V4L2 ioctl
   set are what `DroidVMVirtioMedia.c` and `DroidVMVTHost.cpp` issue.
 - **Four faults of the device against the real guest, found by reading `DroidVMVirtioMedia.c` and fixed (hevc-guest,
   2026-11-15)** — each would have stopped the first encode on the phone, and the first host test's guest (written
@@ -3608,13 +3616,13 @@ the stand-in encoder (below).
   guest's buffer, dithered), H.264 as I_PCM or a grey picture. xnuhost runs it in its own process with
   `encoder=auto` when the bridges are off (a PC boot, `--mode bench`), and with `encoder=sim` anywhere; never in a
   session on the phone otherwise.
-- **Tested [F, Linux PC]:** `make test`: `test_standin` 173 checks and **ffmpeg decodes all 16 of its streams
+- **Tested [F, Linux PC, the C build]:** `make test`: `test_standin` 173 checks and **ffmpeg decodes all 16 of its streams
   (64x64 to 1440x3120) to exactly the picture given**; `test_encoder` 214 checks, the device driven over xnuhost's
-  real transport (`virtio.c`) by a guest of plain memory that does MMAP, CLOSE and ENUM_FMT as
+  real transport (`virtio.c`, now `xh_core::virtio`) by a guest of plain memory that does MMAP, CLOSE and ENUM_FMT as
   `DroidVMVirtioMedia.c` does, replaying `DroidVMVTHost`'s encoder sequence (OPEN, S_FMT HEVC+NV12,
   REQBUFS/QUERYBUF/MMAP, STREAMON, QBUF a NV12 test pattern, the coded DQBUF, ENCODER_CMD STOP → EOS, CLOSE, five more
   sessions), through the **real helper process** built for the host and with the stand-in in the device's process;
-  the coded picture is read back and compared. The Android build (`oneios-encoder`, `encctl`, `liboneencoder.a`)
+  the coded picture is read back and compared. The Android build (`oneios-encoder`, `encctl`, `liboneencoder.a`: the C's)
   builds with NDK r28c on the Linux PC; xnuhost links it; `runtime/build.sh` stages both and its ELF check passes.
 - **Guess [I]:** NV12 as `COLOR_FormatYUV420SemiPlanar` ByteBuffer input to `c2.qti.hevc.encoder` (not yet run on the
   phone); the still-image CQ settings; that a frame's unit fits the guest's buffer. `encctl` checks the first two on
@@ -3659,7 +3667,7 @@ frame above about 2.7 megapixels gets no encoder; two sessions at a time; no dec
   0 failures; `prelink stubs-check` 666 good, 0 bad; `_oneios_codec_start` and 0082's `_hosted_dyld_flags_init` in
   it. `runtime/host-tests.sh` passes; ffmpeg on the Mac decodes the 16 stand-in streams to the picture given.
 - **Fixed [F]:** xnuhost read the image set's `encoder=` and then dropped it, and the OneOS app passes no `--set`:
-  no phone session could have turned the encoder on. It applies now (`encoder_given`, `config.c`; host-tested).
+  no phone session could have turned the encoder on. It applies now (`encoder_given`, then `config.c`, now `runtime/xnuhost/src/config.rs`; host-tested).
 - **Not done:** a boot of this kernel. The phone is next (below).
 
 ### On the phone, 2026-11-22: iOS 27's tile session
@@ -3715,13 +3723,13 @@ adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
 ## 7h. The host device (host-device, 2026-11-21)
 
 One tree for every known host phone: xnuhost finds which phone it runs on at its start and takes that phone's
-defaults from one compiled-in table, `runtime/bridges/hw/host_device.c` (API `runtime/bridges/include/bridges/host_device.h`).
+defaults from one compiled-in table, `runtime/bridges/hw/host_device.rs` (its API: `onebridges::hw::host_*`).
 The table is the source of truth: the host profile files (`profiles/host-galaxy-s25-ultra-sm8750.toml`,
 `profiles/host-galaxy-s25-sm8750.toml`) are records for the port docs and are read by no code. The bridges' ctl tools (`brightctl`, `batteryctl`, `thermalctl`,
 `bridgectl`) and `oneios-tool phone status` use the same table.
 
 **What is read** (once, read only): the properties `ro.product.model`, `ro.product.device`, `ro.board.platform`,
-`ro.soc.model`, `ro.soc.manufacturer` (bionic's property area, as `usb.c` reads it: `__system_property_find` and
+`ro.soc.model`, `ro.soc.manufacturer` (bionic's property area, as xnuhost's `usb.rs` reads it: `__system_property_find` and
 `__system_property_read_callback`), and as fallbacks `/sys/devices/soc0/machine`, `/sys/devices/soc0/soc_id` (logged
 only) and `/proc/device-tree/compatible`. Matched in this order, the first entry that matches wins: a model prefix, a
 codename, the SoC (`ro.soc.model`, then soc0's machine), the platform, the device tree's compatible list (an entry
@@ -3742,15 +3750,15 @@ environment variable that is set) > the table's default > the built-in default.
 | Name | Matched by | Defaults it changes | Why, and what is not set |
 |---|---|---|---|
 | `galaxy-s24-ultra` | `SM-S928*`, `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
-| `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.c`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
+| `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.rs`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
 | `galaxy-s25` | `SM-S931*`, `pa1q`, `SM8750`, `sun` [F] (the `S931BXXUCDZIF` vendor_boot DT compatible list) | `panel-fallback=1080x2340@120`, `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] a 1080x2340 panel (xaxaapple/s25ver's device profile and `xnuhost.h`), and the shipped dtbo names it `PA1_S6E3FAE_AMB616FL03` with modes at 120/80/60/48/30/24/10 Hz: only the mode assumed where the panel cannot be read, a panel that is read still wins; without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush (port-forks-gap). The same dtbo has the touch (`stm,stm_ts_spi`, `samsung,ss_touch`) and haptics (`cirrus,cs40l26a`) nodes [F]. Otherwise as the S25 Ultra; its runtime node names and Bluetooth HAL (HIDL or AIDL) are [U]. The SoC rule as the S25 Ultra's [I] (same SM8750): the thresholds come from this phone's own trips, read at the start and logged |
-| `galaxy-s26-ultra` | `SM-S948*`, SoC `SM8850` (codename and platform [U], not matched) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/test_brightness.c`, `test_sm8850_manual_brightness_cap`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
+| `galaxy-s26-ultra` | `SM-S948*`, SoC `SM8850` (codename and platform [U], not matched) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/tests.rs`, `sm8850_manual_brightness_cap`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
 | `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d`, `panel-fallback=1080x2340@120` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). The panel: 1080x2340 [F] (the fork's `docs/a56-guide.md`), as for the S25. Touch, haptics, battery and thermal names [U]: samsung stays |
 
-Which keys an entry may hold: xnuhost settings that `config.c` merges as device defaults (`gpu`, `hw-backend*`; an
-entry with another key makes xnuhost refuse to start, and `test_xnuhost` forces every entry and checks each default
+Which keys an entry may hold: xnuhost settings that `config.rs` merges as device defaults (`gpu`, `hw-backend*`; an
+entry with another key makes xnuhost refuse to start, and the test `config::tests::host_device` forces every entry and checks each default
 lands), and environment variables a bridge reads (`ONEIOS_BRIGHT_MAX`, `ONEIOS_THERMAL_SOC_TRIPS`, `ONEIOS_THERMAL_SOC_SAMPLES`; xnuhost sets them while it has one thread,
-without overwriting a variable the session set). `gpu`'s default moved with this: unset until `xh_config_finish`, so an
+without overwriting a variable the session set). `gpu`'s default moved with this: unset until the config's finish (C: `xh_config_finish`), so an
 image set's `gpu=` is now taken (it was read and dropped before; no image this tree writes has one).
 
 **The log line** (xnuhost's start, right after `xnuhost: session ABI ...`):
@@ -3767,9 +3775,9 @@ host: detection off (host-device=none): today's defaults
 The ctl tools print the same line first (`bridges: host: ...`, or `  host: ...` in `bridgectl`); `bridgectl host` prints
 what was read, the match and the whole table (read only, safe beside One UI and beside a session).
 
-**Tested** (2026-11-21, on the PC; no phone): `runtime/bridges/hw/test_hw_backend.c` (each phone, a codename, a SoC and
+**Tested** (2026-11-21, on the PC, the C build; no phone; the same cases now in Rust): `runtime/bridges/hw/test_hw_backend.c` (now `test_hw_backend.rs` `host_device`) (each phone, a codename, a SoC and
 a platform alone, soc0's machine, the compatible list, an unknown phone, getprop and build.prop dumps, forced, none, a
-bad name, a missing file, the environment's defaults taken and kept, the ctl tools' line); `runtime/xnuhost/tests/test_xnuhost.c`
+bad name, a missing file, the environment's defaults taken and kept, the ctl tools' line); `runtime/xnuhost/tests/test_xnuhost.c` (now `runtime/xnuhost/src/config/tests.rs`)
 `test_host_device` (the S24 Ultra, an unknown phone, no property area, the S25s and the S26 finish to exactly the config of
 `host-device=none`; the A56's `gpu=2d` under the command line and the image set; the image set's `host-device=none`;
 every entry forced); the stand-in phone (`tools/oneios-tool/tests/phone/hw-backend.sh`: `brightctl` on an S26 Ultra's
@@ -3796,7 +3804,7 @@ shallow clone of the 748 KiB devicetrees repository; nothing of them is in this 
 ## Galaxy S25 (SM-S931B, SM8750)
 
 The second target; the facts, what changed for it and what is unknown are in [s25.md](s25.md). Ported here so far:
-the CPU topology rule (`runtime/bridges/cpu/topology.c`: a Qualcomm core, MIDR implementer 0x51, is never E, and a
+the CPU topology rule (`runtime/bridges/cpu/topology.rs`: a Qualcomm core, MIDR implementer 0x51, is never E, and a
 host whose cores are all P but of different speeds lends its slowest cores to the guest as E vCPUs), the
 read-only phone probe (`tools/probe/s25-probe.sh`), and — for the S25 Ultra (SM-S938, pa3q) — the Adreno 830 fence
 default (`0007-a830`), `virgl_fence_table_init`, the host profile, `scripts/port/verify-host.sh`,
