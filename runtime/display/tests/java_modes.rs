@@ -2,7 +2,7 @@
 //! The Makefile's `java -cp build/host/modes TestModes` as a cargo test: the choice among the panel's modes and the
 //! Java half's names for the buffers and dataspaces (tests/TestModes.java against java/OneiOSDisplay.java) are plain
 //! Java, run on the host's JVM. Its values are the library's (src/xhd: buffer_for, dataspace_parse), checked here as
-//! well. Skips with a reason when there is no javac or java ($JDK/bin first when JDK is set, as runtime/host.mk).
+//! well. Skips with a reason when there is no javac or java ($JDK/bin first when JDK is set, as build-android.sh does).
 use oneios_display::xhd;
 use std::path::{Path, PathBuf};
 use std::process::Command;

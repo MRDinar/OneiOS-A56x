@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Direct frames: the helper copies the guest's scanout from guest RAM itself (xnuhost's "memory" and "frame"
-//! messages, runtime/xnuhost/src/display.c).
+//! messages, runtime/xnuhost/src/display.rs).
 use super::protocol::Message;
 use super::Rect;
 use crate::sys::{self, Errno, Map, Result};

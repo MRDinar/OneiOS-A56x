@@ -11,14 +11,14 @@
 # A failure is one line on stderr, and the exit code is 1:
 #   LIB: symbol SYM is in none of its NEEDED libraries (NEEDED: ...); it is in LIBX
 #   LIB: NEEDED library LIBY is not an API N stub of the NDK and not a library the runtime ships
-# Why: a shared object links with symbols left undefined unless the link has -z defs (runtime/host.mk's
-# ANDROID_SO_LDFLAGS), and Android's linker then refuses the file at load time. liboneios-display.so of 1f7dd1f
-# called ANativeWindow_getBuffersDataSpace (libnativewindow's) and linked -landroid only: the build passed and the
-# phone said `dlopen failed: cannot locate symbol "ANativeWindow_getBuffersDataSpace"` (2026-11-14). The link flag
-# stops that at the link; this check stops it in a stage, however the file was made (runtime/package.sh runs it and
+# Why: a shared object links with symbols left undefined unless the link has -z defs (-Wl,-z,defs on
+# the runtime's cargo rustc cdylib lines), and Android's linker then refuses the file at load time.
+# liboneios-display.so of 1f7dd1f called ANativeWindow_getBuffersDataSpace (libnativewindow's) and linked -landroid
+# only: the build passed and the phone said `dlopen failed: cannot locate symbol "ANativeWindow_getBuffersDataSpace"`
+# (2026-11-14). The link flag stops that at the link; this check stops it in a stage, however the file was made (runtime/package.sh runs it and
 # refuses the package; runtime/package/elf-check-test.sh tests it; docs/building.md section 4).
 # Reads with the NDK's llvm-readelf and llvm-nm. NDK: $NDK, else $ANDROID_NDK_ROOT, else $ANDROID_NDK_HOME, else the
-# default place of runtime/host.mk. N: 30 (the API level every runtime Makefile compiles for).
+# SDK's ndk/28.2.13676358 (as runtime/ndk-cc finds it). N: 30 (the API level the runtime links for: runtime/ndk-cc).
 # Exit: 0 all good, 1 a failure, 2 a wrong command line or no NDK.
 set -eu
 LC_ALL=C; export LC_ALL

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! The treble backend's HAL bridges against fake HALs on a real binder driver (C: tests/test_hal_binder.c, the
-//! Makefile's `test-binder`): a binderfs in a user namespace (hal::binderfs::enter; skipped, with the reason printed,
+//! C Makefile's `test-binder`): a binderfs in a user namespace (hal::binderfs::enter; skipped, with the reason printed,
 //! without one). A child (the fake-hal program, hal::fake) plays servicemanager and the HALs, values from files of a
 //! folder, read at every call; this process opens the bridges with hw-backend treble and checks what they read and
 //! call: the lookup by name, the descriptor check, the parcels, a HAL that is not registered (the one missing line,

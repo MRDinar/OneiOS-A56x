@@ -4,7 +4,7 @@
 //!   flush  { "XHDF", x, y, w, h }
 //! and from the helper, straight after connecting (xnuhost waits for it before it sizes the frame in a session):
 //!   panel  { "XHDP", width, height, hz, flags }      flags bit 0 (PANEL_DIRECT): frames may come as "frame" below
-//! Direct frames (runtime/xnuhost/src/display.c): the helper copies the guest's scanout from guest RAM itself.
+//! Direct frames (runtime/xnuhost/src/display.rs): the helper copies the guest's scanout from guest RAM itself.
 //!   memory { "XHDM", RAM bytes low, high, slots, slot bytes } + the RAM memfd and the table memfd (SCM_RIGHTS)
 //!   frame  { "XHDS", slot, seq low, seq high, sent } described by that slot of the table ([`Slot`], then segments);
 //!          sent: the low 32 bits of xnuhost's CLOCK_MONOTONIC in us when it sent this (0 from an xnuhost before

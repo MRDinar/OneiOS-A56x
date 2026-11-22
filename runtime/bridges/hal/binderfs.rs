@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! A private binderfs for the binder tests on the build host (the Makefile's `test-binder`): a test binary that
+//! A private binderfs for the binder tests on the build host (the C Makefile's `test-binder`): a test binary that
 //! finds no binder device in its environment runs itself again in a user namespace (`unshare -Urm`, no root) with
 //! a binderfs mounted there, the device's path in the variable it reads. The mount goes with the namespace. A
 //! kernel without binderfs (no "binder" in /proc/filesystems) or without unprivileged user namespaces skips, with

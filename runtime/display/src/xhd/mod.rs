@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Port of xhd.c and xhd.h: the display helper's portable core. xnuhost's display.sock protocol
-//! (runtime/xnuhost/src/display.c, docs/booter.md 2.8), the letterbox fit, and the row copy. No Android here, so the
+//! (runtime/xnuhost/src/display.rs, docs/booter.md 2.8), the letterbox fit, and the row copy. No Android here, so the
 //! host tests run it; xnuhost (its display device and test_display_mode) uses the same code for its end of the socket.
 //!
 //! - [`protocol`]: the messages, the helper's side (connect, panel, hello, drain, done) and xnuhost's (listen, hello,

@@ -13,13 +13,13 @@
 #             pinned to the same cores, then each BENCH line's mean over the rounds for both and B's difference in %.
 #             One run of each is not a comparison: a boot's numbers move 10-30% with the host cores it lands on (a
 #             hybrid PC's fast and slow cores) and the load; alternate rounds on the same cores move by about 3%.
-#               XNUHOST_B=FILE  the other binary (default the C one, build/android/xnuhost)
+#               XNUHOST_B=FILE  the other binary (its default, build/android/xnuhost, was the C build, which is gone: set it)
 #               AB_ROUNDS=N     rounds (default 4); logs in WORK/ab (A.N.txt, B.N.txt)
 #               PIN=CPUS        the host CPUs (taskset -c); for ab the default is one thread of each fastest core
 #                               (cpufreq's cpuinfo_max_freq within 10% of the top, the first of its siblings)
 # It builds, unless given: the static xnuhost (cargo, aarch64-linux-android, crt-static, target dir target/machine-static),
 # the test kernel (testkernel/build.sh) and its image (the loader crate's mkkernel: kernel.kc, os.img).
-#   XNUHOST=FILE   boot this binary instead (e.g. the C one: make -C runtime/xnuhost build/android/xnuhost)
+#   XNUHOST=FILE   boot this binary instead (e.g. a Rust xnuhost of another commit)
 #   IMAGE=DIR      this test image (kernel.kc, os.img) instead of building one
 #   WORK=DIR       the data store, the logs and the built image (default runtime/target/machine-check)
 #   QEMU=FILE      another qemu-aarch64
@@ -121,7 +121,7 @@ for what in "$@"; do
     done ;;
   ab)
     b=${XNUHOST_B:-$here/build/android/xnuhost}
-    [ -x "$b" ] || { echo "check-arm64 ab: no $b (XNUHOST_B=FILE, or make -C runtime/xnuhost build/android/xnuhost)" >&2; exit 2; }
+    [ -x "$b" ] || { echo "check-arm64 ab: no $b (set XNUHOST_B=FILE: the C build that was its default is gone)" >&2; exit 2; }
     echo "ab: A $XNUHOST"
     echo "ab: B $b"
     echo "ab: ${AB_ROUNDS:-4} rounds, each binary in turn, on host CPUs $PIN"
