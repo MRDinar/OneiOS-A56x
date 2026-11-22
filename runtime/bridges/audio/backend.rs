@@ -153,22 +153,37 @@ impl AudioHelper {
 
 /// posix_spawn of `path 3` with `fd` as the child's descriptor 3 and this process's environment.
 fn spawn_with_fd3(path: &str, fd: &OwnedFd) -> Result<libc::pid_t, i32> {
+    // Declared here: libc has no posix_spawn for Android (bionic has it since API 28). posix_spawn_file_actions_t is a
+    // pointer in bionic and 80 bytes in glibc: 128 bytes, aligned, hold either.
+    #[repr(C, align(8))]
+    struct FileActions([u8; 128]);
     extern "C" {
         static environ: *const *mut libc::c_char;
+        fn posix_spawn_file_actions_init(a: *mut FileActions) -> i32;
+        fn posix_spawn_file_actions_adddup2(a: *mut FileActions, fd: i32, to: i32) -> i32;
+        fn posix_spawn_file_actions_destroy(a: *mut FileActions) -> i32;
+        fn posix_spawn(
+            pid: *mut libc::pid_t,
+            path: *const libc::c_char,
+            actions: *const FileActions,
+            attr: *const libc::c_void,
+            argv: *const *mut libc::c_char,
+            envp: *const *mut libc::c_char,
+        ) -> i32;
     }
     let cpath = CString::new(path).map_err(|_| libc::EINVAL)?;
     let three = c"3";
     let argv = [cpath.as_ptr().cast_mut(), three.as_ptr().cast_mut(), std::ptr::null_mut()];
     let mut pid = 0;
-    // SAFETY: an uninitialised file-actions object for posix_spawn_file_actions_init to set up.
-    let mut actions: libc::posix_spawn_file_actions_t = unsafe { std::mem::zeroed() };
+    // A zeroed file-actions object for posix_spawn_file_actions_init to set up.
+    let mut actions = FileActions([0; 128]);
     // SAFETY: init then adddup2 on our actions object; argv is NULL-terminated and lives across the call; environ is
     // the process's environment; destroy after.
     let rc = unsafe {
-        libc::posix_spawn_file_actions_init(&mut actions);
-        libc::posix_spawn_file_actions_adddup2(&mut actions, fd.as_raw_fd(), 3); // the helper's end is its fd 3
-        let rc = libc::posix_spawn(&mut pid, cpath.as_ptr(), &actions, std::ptr::null(), argv.as_ptr(), environ.cast());
-        libc::posix_spawn_file_actions_destroy(&mut actions);
+        posix_spawn_file_actions_init(&mut actions);
+        posix_spawn_file_actions_adddup2(&mut actions, fd.as_raw_fd(), 3); // the helper's end is its fd 3
+        let rc = posix_spawn(&mut pid, cpath.as_ptr(), &actions, std::ptr::null(), argv.as_ptr(), environ);
+        posix_spawn_file_actions_destroy(&mut actions);
         rc
     };
     if rc != 0 {
