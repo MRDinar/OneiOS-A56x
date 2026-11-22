@@ -1,0 +1,131 @@
+diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
+--- a/osfmk/arm64/hosted/hosted_smp.c
++++ b/osfmk/arm64/hosted/hosted_smp.c
+@@ -132,4 +132,110 @@
+ 	return deadline != UINT64_MAX && __builtin_arm_rsr64("CNTVCT_EL0") >= deadline;
+ }
+ 
++/*
++ * 0084 (fix-launch-control-center-fitness, 2026-11-22): the Edge scheduler's E -> P edges.
++ *
++ * xnuhost gives the guest 2 E vCPUs (the A520s) and 6 P vCPUs (five A720s and the X4), each pinned to its own core.
++ * DroidVMCpufreq gives every thread group the E cluster as its preferred one, and the P cluster only for the UI,
++ * above-UI and realtime classes. XNU's default edges (sched_edge_cpu_init_completed) let P spill to E but not E to P:
++ * no migration and no steal. On an iPhone CLPC changes the edges and the groups' clusters as the load changes; here no
++ * CLPC runs, so every default, user-initiated, utility and background thread (daemons, XPC services, an app's workers,
++ * the render server's GPU submission thread, the widget extensions chronod times) waited for the two slowest cores.
++ * On the phone (2026-11-22, s6, s8, s9) vCPU 0 and 1 were 0% idle in every 30 s period after the first frame,
++ * vCPU 4-7 85-99% idle, the X4 the most idle of all, and the render server drew 20-32 frames a second with 1.5-5 ms
++ * of GPU time each. iOS's own log of the s9 boot: SpringBoard 90 hangs (214.9 s, the longest 21.08 s), chronod 126
++ * watchdog kills of widget extensions that did not answer in time (getAllDescriptors, timelines: 5 to 30 s of wall time).
++ *
++ * Here, once all CPUs are up: E -> P migration and steal are allowed for the fixed-priority, foreground, user-
++ * initiated and default buckets (weight 0: an idle or less loaded P cluster takes the thread) and for utility
++ * (weight 64 us of scheduling latency, as XNU's own P -> E edge) and background (weight 1000 us: only when E's
++ * threads wait a millisecond longer than P's; RunningBoard clamps a widget extension or a suspended app to background
++ * QoS). The load an edge weighs is the cluster's average scheduling latency, 0 with an idle CPU. A thread still starts on
++ * its preferred cluster when that has a free core, and a UI thread preempts background work on a P core as on any
++ * core. oneios-edge-spill=0 keeps XNU's edges (the old way), =1 keeps background on E (an iPhone's rule), =2 (the
++ * default) as above. One line says what was set: `oneios-edge: ...`.
++ */
++#include <kern/misc_protos.h>
++#include <kern/sched.h>
++#include <kern/sched_clutch.h>
++#include <kern/sched_common.h>
++#include <kern/startup.h>
++
++#if CONFIG_SCHED_EDGE
++
++static TUNABLE(uint32_t, hosted_edge_spill, "oneios-edge-spill", 2);
++
++/* The edge of one bucket from E to P under `mode` (1 or 2); allowed = false: leave XNU's. */
++static sched_clutch_edge
++hosted_edge_e_to_p(uint32_t mode, sched_bucket_t bucket)
++{
++	sched_clutch_edge edge = { .sce_edge_packed = 0 };
++	if (bucket == TH_BUCKET_SHARE_BG && mode < 2) {
++		return edge;
++	}
++	edge.sce_migration_allowed = 1;
++	edge.sce_steal_allowed = 1;
++	edge.sce_migration_weight = bucket <= TH_BUCKET_SHARE_DF ? 0 : bucket == TH_BUCKET_SHARE_UT ? 64 : 1000;
++	return edge;
++}
++
++void hosted_sched_edge_spill(void);
++
++void
++hosted_sched_edge_spill(void)
++{
++	static sched_clutch_edge matrix[MAX_PSETS * MAX_PSETS * TH_BUCKET_SCHED_MAX];
++	static bool changed[MAX_PSETS * MAX_PSETS * TH_BUCKET_SCHED_MAX];
++	const uint32_t mode = hosted_edge_spill;
++	const uint32_t n = sched_num_psets;
++	uint32_t edges = 0, e = 0, p = 0;
++
++	if (mode == 0) {
++		printf("oneios-edge: E -> P spill off (oneios-edge-spill=0): XNU's edges, no migration or steal from E to P\n");
++		return;
++	}
++	if (!sched_is_cpu_init_completed()) {
++		printf("oneios-edge: not all CPUs are up yet: the edges stay XNU's\n");
++		return;
++	}
++	for (pset_id_t src = 0; src < n; src++) {
++		const pset_type_t src_type = pset_for_id(src)->pset_type;
++		e += src_type == PSET_AMP_E;
++		p += src_type == PSET_AMP_P;
++		for (pset_id_t dst = 0; dst < n; dst++) {
++			if (src == dst || src_type != PSET_AMP_E || pset_for_id(dst)->pset_type != PSET_AMP_P) {
++				continue;
++			}
++			for (sched_bucket_t bucket = 0; bucket < TH_BUCKET_SCHED_MAX; bucket++) {
++				const sched_clutch_edge edge = hosted_edge_e_to_p(mode, bucket);
++				if (!edge.sce_migration_allowed) {
++					continue;
++				}
++				const uint32_t at = ((uint32_t)src * n + dst) * TH_BUCKET_SCHED_MAX + bucket;
++				matrix[at] = edge;
++				changed[at] = true;
++				edges++;
++			}
++		}
++	}
++	if (edges == 0) {
++		printf("oneios-edge: no E -> P edge to open (%u E and %u P clusters of %u)\n", e, p, n);
++		return;
++	}
++	sched_edge_matrix_set(matrix, changed, 0, n);
++	printf("oneios-edge: E -> P migration and steal allowed on %u edges (%u E and %u P clusters): fixed-priority, foreground, "
++	    "user-initiated and default at weight 0, utility at 64, background %s (us of scheduling latency; "
++	    "oneios-edge-spill=%u; XNU's default: none)\n",
++	    edges, e, p, mode >= 2 ? "at 1000" : "kept on E", mode);
++}
++#else /* !CONFIG_SCHED_EDGE */
++void hosted_sched_edge_spill(void);
++
++void
++hosted_sched_edge_spill(void)
++{
++	/* an SMP kernel has one processor set: nothing to spill to */
++}
++#endif /* CONFIG_SCHED_EDGE */
++
+ #endif /* XNU_HOSTED */
+diff --git a/osfmk/arm64/oneios_host.c b/osfmk/arm64/oneios_host.c
+--- a/osfmk/arm64/oneios_host.c
++++ b/osfmk/arm64/oneios_host.c
+@@ -90,6 +90,13 @@
+ 	/* 0026: the user backtraces asked for with oneios-ubt=NAME,... (off without it) */
+ 	extern void hosted_user_backtrace_start(void);
+ 	hosted_user_backtrace_start();
++	/*
++	 * 0084: E -> P spill. DroidVMCpufreq (above) gives each thread group the E cluster with only the UI, above-UI and
++	 * realtime classes on P; without CLPC nothing opens the Edge scheduler's E -> P edges, so all other work stayed on
++	 * the two E vCPUs (arm64/hosted/hosted_smp.c).
++	 */
++	extern void hosted_sched_edge_spill(void);
++	hosted_sched_edge_spill();
+ #endif /* XNU_HOSTED */
+ }
+ 

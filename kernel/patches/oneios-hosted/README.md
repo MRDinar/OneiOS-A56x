@@ -1229,6 +1229,70 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0084-edge-e-to-p-spill.patch (fix-launch-control-center-fitness, 2026-11-22)
+
+The owner's report (main `23561aa`, kernel 0082 + 0083 + codec): "we are close to 120 Hz but these laggy parts need
+fixes": app opening animations lag, Control Center is laggy, Fitness opens to a black screen. iOS's log of the same
+boot later (`s9b-ioslog`): SpringBoard 90 hangs (214.9 s in all, the longest 21.08 s, 29 over 1 s) and chronod 126
+watchdog kills of widget extensions that did not answer in time (`getAllDescriptors`, timelines; 5 to 30 s of wall time).
+
+What was found (`out/session-logs/2026-11-22/kbd-debug/xnuhost-s9.log`, `-s8-final`, `-s6-final`; `s9-ioslog`,
+`s9b-ioslog`; the backboardd samples of `live10.log` with `oneios-tool log stacks --proc backboardd`):
+
+- **The render server is not GPU-bound.** `gpu: 10 s level:` while it animates: 200-320 frames in 10 s, the frame
+  interval 43-82 ms, GPU time at the top 1.4-5.6 ms (over the 8.3 ms budget only in a few frames); the display helper
+  posts each frame in 10-13 ms (`display: 10 s:`).
+- **Two vCPUs do the work and six wait.** xnuhost's `perf: cpuN:` lines, every 30 s period after the first frame, in
+  all three boots: vCPU 0 and 1 (E, the A520s) 0% idle; vCPU 2 10-28%, 3 5-17%, 4 2-13%, 5 1-8%, 6 0-7%, 7 (the X4)
+  0-5% busy, i.e. 85-99% idle, the fastest core the most idle of all.
+- **Why.** The kernel is AMP (`droidvm-amp`: an E and a P processor set, the Edge scheduler). DroidVMCpufreq
+  (`DroidVMCpufreq: thread groups prefer cluster 0 (E), classes 0x188 cluster 1 (P)`) gives every thread group the E
+  cluster and only the UI, above-UI and realtime classes the P cluster. XNU's default edges
+  (`osfmk/kern/sched_clutch.c` `sched_edge_cpu_init_completed`): P -> E `weighted_spill`, **E -> P `no_spill`** (no
+  migration, no steal). On an iPhone CLPC changes the edges and the groups' clusters as the load changes; here no CLPC
+  runs. So every default, user-initiated, utility and background thread stays on the two A520s however idle the P
+  cores are: daemons and XPC services an app launch waits on, an app's workers, widget extensions, and in the render
+  server metal2vulkan's GPU submission thread (a default-class thread, DroidVMCpufreq's own comment): the render thread
+  waits for it every frame (`CA::OGL::MetalContext::flush` -> `dispatch_group_wait` in the plug-in, `live10.log`).
+
+What the patch changes (`osfmk/arm64/hosted/hosted_smp.c` `hosted_sched_edge_spill`, called from
+`oneios_board_late_start` after `droidvm_cpufreq_attach`, `XNU_HOSTED`): once all CPUs are up
+(`sched_is_cpu_init_completed`), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
+fixed-priority, foreground, user-initiated and default buckets at weight 0, utility at 64 and background at 1000. The
+weight is compared with the clusters' load, their average scheduling latency in us (0 with an idle CPU): a thread goes
+to P when P has an idle CPU or waits less, background only when E's threads wait a millisecond longer (RunningBoard
+clamps a widget extension or a suspended app to background QoS). A thread still starts on its preferred cluster when
+that has a free core. P -> E and the realtime edges stay XNU's. `oneios-edge-spill=0` is the old way, `=1` keeps
+background on E (an iPhone's rule), `=2` is the default. One line: `oneios-edge: E -> P migration and steal allowed on
+6 edges (1 E and 1 P clusters): fixed-priority, foreground, user-initiated and default at weight 0, utility at 64,
+background at 1000 (us of scheduling latency; oneios-edge-spill=2; XNU's default: none)`.
+
+What it costs: background work may now run on the A720s and the X4 when the A520s are behind (more power and heat
+than before; `thermal:` lines watch it, and xnuhost's thermal masks still apply).
+
+Fitness is not a render failure (same logs): SpringBoard logs `scene content state changed: ready` for it (its first
+frame was committed), the app is active (deactivation reasons 0) and in dark mode, and it logs `Waiting to show
+onboarding until initial queries complete`. Its first screen waits for fitcored's Fitness+ queries
+(`WorkoutPlanClient.queryActiveWorkoutPlan ended in 82.3 s`, `UpNextQueueClient.queryUpNextQueue ended in 80.4 s`,
+`ServiceSubscriptionClient.fetchServiceSubscription ended in 93.3 s`), which go through AppleMediaServices' bag with no
+network (`Network is down`, Wi-Fi joined 0) and no storefront (`AMSErrorDomain Code=205`); `CA Telemetry timedout after 20
+seconds due to app launch has not reached all responsive milestones`; then the onboarding comes (`onboarding
+coordinator phase did change: 1 ... is presenting onboarding: 1`). The services it looks up and does not find
+(amsengagementd, itunescloudd's in-app messages, fairplayd) fail at once (`error = 3`); they are the daemon policy's
+on purpose. This patch takes the CPU part out (fitcored and healthd are default and utility threads); the network part
+stays until the guest is on Wi-Fi.
+
+Tested (Mac, 2026-11-23): `HOSTED_OUT=anim kernel/build-hosted.sh` applied the series with 0084 and built `xnu.macho` in
+447 s (25,646,672 bytes, sha256 `555a98d6...`; `_hosted_sched_edge_spill`, `_sched_edge_matrix_set` and the four
+`oneios-edge:` texts are in it; no warning in the new code); no reference kernel (it does not link since 0074, see 0083).
+`KERNEL=out/kernel/current-hosted-anim/xnu.macho OUT=out/kernel/anim-24A446 kernel/prelink/build.sh`: `kernel.kc`
+96,845,824 bytes, sha256 `7b1057e2...`, audit 2,712 paired, 92 on the stub, 9 data unpaired, 0 failures; `prelink
+stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet. On the phone these lines prove it: the
+kernel's `oneios-edge: E -> P migration and steal allowed on 6 edges (1 E and 1 P clusters) ...`; xnuhost's `perf:
+cpuN:` lines with vCPU 2-7 busy whenever vCPU 0-1 are (not 85-99% idle beside two 0%-idle vCPUs); `gpu: 10 s level:`
+during an app launch and Control Center with a frame interval near the GPU time (not 43-82 ms); `oneios-tool ioslog
+health` with SpringBoard's hangs and chronod's watchdog kills far under 90 (214.9 s) and 126; `thermal:` lines for the
+cost.
 ## 0083-dictation-status-navd.patch (fix-spotlight-keyboard, 2026-11-22)
 
 The owner's reports: in Spotlight the keyboard never comes up; in Notes one character comes, then a long lag; on the

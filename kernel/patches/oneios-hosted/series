@@ -347,6 +347,15 @@
 # On the phone 2026-11-22: the keyboard works; Spotlight 30 key taps, hangs 3.8 s in all (86.4 s without it).
 # README.md, "0083".
 0083-dictation-status-navd.patch
+# fix-launch-control-center-fitness (2026-11-22): the Edge scheduler's E -> P edges. DroidVMCpufreq gives every thread
+# group the E cluster (2 vCPUs, the A520s) with only the UI, above-UI and realtime classes on P (6 vCPUs, the A720s and
+# the X4); XNU's default edges allow no migration and no steal from E to P, and without CLPC nothing changes them. On the
+# phone (s6, s8, s9) vCPU 0-1 were 0% idle in every period while vCPU 4-7 were 85-99% idle and the render server drew
+# 20-32 frames a second with 1.5-5 ms of GPU time; iOS's log: SpringBoard 90 hangs (214.9 s), chronod 126 watchdog kills
+# of widget extensions. Once all CPUs are up (oneios_board_late_start), E -> P migration and steal are allowed for
+# fixed-priority, foreground, user-initiated and default (weight 0), utility (64 us of scheduling latency) and background
+# (1000 us). oneios-edge-spill=0 is the old way, =1 keeps background on E. One `oneios-edge:` line. README.md, "0084".
+0084-edge-e-to-p-spill.patch
 # fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush
