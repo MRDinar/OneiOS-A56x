@@ -4,6 +4,7 @@ use std::fmt;
 use std::io;
 
 /// The calling thread's errno.
+#[inline]
 pub fn errno() -> i32 {
     io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
@@ -30,6 +31,7 @@ pub fn error_text(e: &io::Error) -> String {
 }
 
 /// Sets the calling thread's errno (a C caller reads it after a -1 of ours; the tests' stand-ins of a system call).
+#[inline]
 pub fn set_errno(errno: i32) {
     // SAFETY: the location of this thread's errno, always valid to write.
     unsafe {

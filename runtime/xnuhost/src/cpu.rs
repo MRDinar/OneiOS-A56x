@@ -787,12 +787,9 @@ mod machine {
         let (uc, info) = unsafe { (&mut *(context as *mut UContext), &*(info as *const SigInfo)) };
         // SAFETY: xh_sig_entry passes a VCPUS block (from its signal stack's first word) or null.
         let v = (!cpu.is_null()).then(|| unsafe { Vcpu::from_cpu(cpu) });
-        // SAFETY: errno of this thread (the host's TLS is in place).
-        let saved_errno = unsafe { *errno_location() };
-        let restore = || {
-            // SAFETY: as above.
-            unsafe { *errno_location() = saved_errno }
-        };
+        // errno of this thread (the host's TLS is in place), put back when the handler returns.
+        let saved_errno = xh_core::sys::errno();
+        let restore = || xh_core::sys::set_errno(saved_errno);
         if signo == sig_dump() {
             if let Some(v) = v {
                 dump(v, uc);
@@ -890,20 +887,6 @@ mod machine {
         unsafe {
             ptr::write_unaligned(&mut set as *mut libc::sigset_t as *mut u64, mask);
             libc::pthread_sigmask(libc::SIG_SETMASK, &set, ptr::null_mut());
-        }
-    }
-
-    /// This thread's errno (the host's TLS is in place in a handler).
-    fn errno_location() -> *mut libc::c_int {
-        // SAFETY: no arguments; the pointer is this thread's errno.
-        #[cfg(target_os = "android")]
-        unsafe {
-            libc::__errno()
-        }
-        #[cfg(not(target_os = "android"))]
-        // SAFETY: as above.
-        unsafe {
-            libc::__errno_location()
         }
     }
 
@@ -1162,7 +1145,7 @@ mod machine {
     use super::*;
 
     pub fn counter() -> u64 {
-        crate::discard::mono_ns()
+        xh_core::time::monotonic_ns()
     }
     pub fn counter_hz() -> u64 {
         1_000_000_000

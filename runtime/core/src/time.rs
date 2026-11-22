@@ -2,6 +2,7 @@
 //! The monotonic clock (CLOCK_MONOTONIC), as the C runtime read it for its spans and timestamps.
 
 /// A clock's time now (`clock_gettime`).
+#[inline]
 pub fn now(clock: libc::clockid_t) -> libc::timespec {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: a valid timespec to fill; the clocks asked for (MONOTONIC, MONOTONIC_RAW, ...) always exist on Linux.
@@ -10,17 +11,20 @@ pub fn now(clock: libc::clockid_t) -> libc::timespec {
 }
 
 /// Milliseconds of CLOCK_MONOTONIC.
+#[inline]
 pub fn monotonic_ms() -> u64 {
     let ts = now(libc::CLOCK_MONOTONIC);
     ts.tv_sec as u64 * 1000 + ts.tv_nsec as u64 / 1_000_000
 }
 
 /// Microseconds of CLOCK_MONOTONIC.
+#[inline]
 pub fn monotonic_us() -> u64 {
     monotonic_ns() / 1000
 }
 
 /// Nanoseconds of CLOCK_MONOTONIC.
+#[inline]
 pub fn monotonic_ns() -> u64 {
     let ts = now(libc::CLOCK_MONOTONIC);
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64

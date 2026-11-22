@@ -30,8 +30,7 @@ pub static DISCARD: DiscardStats = DiscardStats {
 /// stops its reporting for the boot (0058: "free pages are no longer given back").
 pub static FIXED_REFUSED: AtomicU64 = AtomicU64::new(0);
 
-/// CLOCK_MONOTONIC in nanoseconds (cpu.rs and task.rs call it by this name).
-pub(crate) use xh_core::time::monotonic_ns as mono_ns;
+use xh_core::time::monotonic_ns as mono_ns;
 
 /// [phys, phys + size) of the RAM memfd `fd`, whose first byte is physical address `fd_base`. Allowed only inside the
 /// kernel's window [lo, lo + len) (never the boot framebuffer or the GPU's pool above it) and page-aligned (`page`,

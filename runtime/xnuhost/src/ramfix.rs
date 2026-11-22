@@ -106,7 +106,7 @@ pub struct Ramfix {
 }
 
 fn ms_now() -> u64 {
-    crate::discard::mono_ns() / 1_000_000
+    xh_core::time::monotonic_ms()
 }
 
 impl Ramfix {

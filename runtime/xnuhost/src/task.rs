@@ -173,7 +173,7 @@ mod machine {
     use crate::config::Config;
     use crate::cpu::{self, Vcpu};
     use crate::perf::{self, Count, Step};
-    use crate::{discard, mem, session};
+    use crate::{mem, session};
     use std::ptr::{self, addr_of_mut};
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering::*};
     use std::sync::{Condvar, Mutex, MutexGuard};
@@ -430,10 +430,6 @@ mod machine {
         t.slots[slot as usize / 8] &= !(1 << (slot % 8));
     }
 
-    fn mono_ns() -> u64 {
-        discard::mono_ns()
-    }
-
     // ---- the factory process -----------------------------------------------------------------------------------------
     fn factory_child(sock: i32, slot: u32) -> ! {
         let base = BASE.load(Relaxed);
@@ -621,10 +617,16 @@ mod machine {
             loge!("tasks: bad stub blob ({} bytes)", text);
             return Err(crate::mem::SetupFailed);
         }
-        // SAFETY: memfd_create with a static name.
-        let trap_fd = unsafe { libc::syscall(libc::SYS_memfd_create, c"xnuhost-traps".as_ptr(), 0u32) } as i32;
+        // The trap memfd is held for the process's life (the stub and every task map it): its descriptor is kept raw.
+        let trap_fd = match xh_core::fd::memfd(c"xnuhost-traps", 0) {
+            Ok(fd) => std::os::fd::IntoRawFd::into_raw_fd(fd),
+            Err(e) => {
+                loge!("tasks: trap memfd: {}", xh_core::sys::error_text(&e));
+                return Err(crate::mem::SetupFailed);
+            }
+        };
         // SAFETY: our new descriptor.
-        if trap_fd < 0 || unsafe { libc::ftruncate(trap_fd, (MAX_SLOTS as u64 * XS_SLOT_SIZE) as libc::off_t) } != 0 {
+        if unsafe { libc::ftruncate(trap_fd, (MAX_SLOTS as u64 * XS_SLOT_SIZE) as libc::off_t) } != 0 {
             loge!("tasks: trap memfd: {}", strerror(errno()));
             return Err(crate::mem::SetupFailed);
         }
@@ -774,7 +776,7 @@ mod machine {
     pub fn tick() {
         static LAST: Mutex<(u64, TaskCounts)> =
             Mutex::new((0, TaskCounts { made: 0, refused: 0, ended: 0, died: 0, fatal: 0, live: 0, most: 0 }));
-        let now = mono_ns() / 1_000_000_000;
+        let now = xh_core::time::monotonic_ns() / 1_000_000_000;
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
         if last.0 == 0 {
             last.0 = now;
