@@ -15,6 +15,7 @@ use crate::config::{meminfo, proc_values};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering::*};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use xh_core::fs::read_line;
 use xh_core::logi;
 use xh_core::sys::strerror;
 
@@ -324,10 +325,6 @@ pub fn stop(r: &Ramfix) {
 }
 
 // ---- what Linux says about locking here (read only), once at the start ---------------------------------------------
-fn read_line(path: &str) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    Some(text.lines().next().unwrap_or("").to_owned())
-}
 
 /// CapEff's bit 14 (CAP_IPC_LOCK: mlock past RLIMIT_MEMLOCK); None when unreadable.
 fn cap_ipc_lock() -> Option<bool> {
@@ -364,7 +361,7 @@ pub fn facts() -> String {
         if cg == "?" {
             "?".to_owned()
         } else {
-            read_line(&format!("/sys/fs/cgroup{cg}/{name}")).unwrap_or_else(|| "-".to_owned())
+            read_line(format!("/sys/fs/cgroup{cg}/{name}")).unwrap_or_else(|| "-".to_owned())
         }
     };
     let (max, swap, high) = (file("memory.max"), file("memory.swap.max"), file("memory.high"));
@@ -418,7 +415,7 @@ pub struct HugeChoice {
 pub fn huge_choose(root: &str, want: bool) -> HugeChoice {
     let mut c = HugeChoice::default();
     let thp = format!("{root}/sys/kernel/mm/transparent_hugepage");
-    if let Some(text) = read_line(&format!("{thp}/shmem_enabled")) {
+    if let Some(text) = read_line(format!("{thp}/shmem_enabled")) {
         // "always within_size [advise] never deny force": the bracketed one is in force
         if let Some((_, rest)) = text.split_once('[') {
             if let Some((value, _)) = rest.split_once(']') {
@@ -428,7 +425,7 @@ pub fn huge_choose(root: &str, want: bool) -> HugeChoice {
             }
         }
     }
-    if let Some(text) = read_line(&format!("{thp}/hpage_pmd_size")) {
+    if let Some(text) = read_line(format!("{thp}/hpage_pmd_size")) {
         c.pmd_size = text.trim().bytes().take_while(u8::is_ascii_digit).fold(0u64, |v, d| v * 10 + u64::from(d - b'0'));
     }
     let v = proc_values(format!("{root}/proc/meminfo"), &["HugePages_Free", "Hugepagesize"]);
@@ -517,7 +514,7 @@ pub fn kgsl_memory(pid: i32) -> String {
         if name.starts_with('.') {
             continue;
         }
-        let Some(value) = read_line(&format!("{dir}/{name}")) else { continue };
+        let Some(value) = read_line(format!("{dir}/{name}")) else { continue };
         // one number each, as KGSL prints them
         let digits = value.bytes().take_while(u8::is_ascii_digit).count();
         if digits == 0 || !(value.len() == digits || value.as_bytes()[digits] == b' ') {

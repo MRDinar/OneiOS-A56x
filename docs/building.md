@@ -442,6 +442,16 @@ after):
   `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips
   (`docs/booter.md` 2.6d has the numbers). On the phone: the same command line, as the parallel test's (2.6c step 2).
   Not part of `make test`.
+- The Rust xnuhost (branch `rust-runtime`, runtime/RUST.md): `runtime/xnuhost/check-arm64.sh [smoke|check|bench|parallel|rpc|all]`
+  does what the four targets above did. It builds the static xnuhost (`cargo build --release --target aarch64-linux-android
+  -p xnuhost`, crt-static, `runtime/target/machine-static`), the test kernel (`testkernel/build.sh`) and its image (the
+  loader crate's `mkkernel`), then runs `testkernel/check-arm64.sh` (check: the same three boots and greps) and the
+  bench, parallel and rpc boots with the same settings (`BENCH_SET`, `PAR_CPUS`, `PAR_SET`, `RPC_MODES`, ...; logs in
+  `runtime/target/machine-check`). `XNUHOST=FILE IMAGE=DIR` boot another binary and image, e.g. the C one, for numbers
+  on the same host and load. `smoke` needs no kernel: `examples/machine_smoke.rs` runs a few instructions of
+  hand-written "kernel" on one vCPU through every seam (a trapped `mrs`, host calls, a UART store, an interrupt on a host
+  call's return, a timer signal diverted through frame_resume) and prints `machine-smoke: passed` (passed under
+  qemu-aarch64 on the PC, 2026-11-23).
 - macOS's `tar` is bsdtar (no `--mtime`): `runtime/package.sh` writes the archive with `oneios-tool package archive`
   (`pack.py archive` until 2026-11-13), so GNU tar is not needed. For the same files it is byte-identical to GNU tar 1.35's `--format=ustar` archive (checked).
 - macOS's `wc -l` pads its count: `runtime/package/test.sh` strips it.

@@ -38,3 +38,8 @@ path = "src/main.rs"
 [[bin]]
 name = "gpuctl"
 path = "tools/gpuctl.rs"
+
+# machine-smoke: the vCPU machinery alone, no kernel image (check-arm64.sh smoke)
+[[example]]
+name = "machine-smoke"
+path = "examples/machine_smoke.rs"
