@@ -1221,4 +1221,64 @@ pub(crate) mod tests {
         let ticks = 24_000_000u64 * 86_400 * 3650;
         assert_eq!(super::ticks_to_ns(ticks + 12, 24_000_000), ticks / 24 * 1000 + 500);
     }
+
+    /// test_xnuhost.c's test_cpu_window: the oneios-cpu window's arithmetic (host-overhead 2026-11-15) is the kernel's
+    /// own C (kernel/patches/oneios-hosted/gpu/cpu_window.h, included by gpu/OneiOSAdreno.cpp), so the checks stay C:
+    /// compiled with the host's cc and run. Skipped, with the reason, where there is no cc.
+    #[test]
+    fn cpu_window() {
+        const CHECKS: &str = r#"#include <stdint.h>
+#include <stdio.h>
+#include "cpu_window.h"
+static int failures;
+#define CHECK(c) do { if (!(c)) { failures++; printf("FAIL line %d: %s\n", __LINE__, #c); } } while (0)
+int main(void)
+{
+  const uint64_t S = 1000000000ull;
+  // The phone's window: 8 vCPUs, the report on time (10 s), a stall's lump of 70 s of one task's time absorbed in it.
+  // Before: all = the tasks' sum, 144 s of 10 s = 1441%. Now: the busy time, at most 8 x 10 s.
+  const uint64_t span = oneios_cpu_span_ns(10 * S, 10);
+  CHECK(span == 10 * S);
+  const uint64_t busy = oneios_cpu_busy_ns(span, 8, 6 * S);            // the CPUs idled 6 s of their 80
+  CHECK(busy == 74 * S && oneios_cpu_percent(busy, span) == 740);
+  CHECK(oneios_cpu_percent(oneios_cpu_capped_ns(70 * S, busy, 8), span) == 700);   // a lump: within the busy time
+  CHECK(oneios_cpu_percent(oneios_cpu_capped_ns(90 * S, busy, 8), span) == 740);   // never more than the CPUs did
+  CHECK(oneios_cpu_percent(oneios_cpu_capped_ns(3 * S, busy, 8), span) == 30);
+  // all idle, or more idle than the span (a clock step): 0, never a wrapped number
+  CHECK(oneios_cpu_busy_ns(span, 8, 80 * S) == 0 && oneios_cpu_busy_ns(span, 8, 99 * S) == 0);
+  // the report thread woke late: the measured 30 s, not the nominal 10 (the 2026-11-13 cause)
+  CHECK(oneios_cpu_span_ns(30 * S, 10) == 30 * S && oneios_cpu_percent(oneios_cpu_busy_ns(30 * S, 8, 0), 30 * S) == 800);
+  // no measurement (under a second): the nominal span
+  CHECK(oneios_cpu_span_ns(0, 10) == 10 * S && oneios_cpu_span_ns(S / 2, 10) == 10 * S);
+  // a kernel without hosted 0075 (no processor count): shares are not capped
+  CHECK(oneios_cpu_capped_ns(90 * S, 0, 0) == 90 * S);
+  CHECK(oneios_cpu_percent(5, 0) == 0);
+  printf("cpu_window: %d failed\n", failures);
+  return failures != 0;
+}
+"#;
+        let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernel/patches/oneios-hosted/gpu");
+        let dir = std::env::temp_dir().join(format!("xnuhost-cpu-window-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, exe) = (dir.join("test_cpu_window.c"), dir.join("test_cpu_window"));
+        std::fs::write(&src, CHECKS).unwrap();
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        let built = std::process::Command::new(&cc)
+            .args(["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-I"])
+            .arg(&header)
+            .arg(&src)
+            .arg("-o")
+            .arg(&exe)
+            .status();
+        match built {
+            Err(e) => println!("cpu_window: no C compiler ({cc}: {e}): skipped"),
+            Ok(s) => {
+                assert!(s.success(), "cpu_window.h's checks do not compile");
+                let out = std::process::Command::new(&exe).output().unwrap();
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(out.status.success() && text.contains("cpu_window: 0 failed"), "{text}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
