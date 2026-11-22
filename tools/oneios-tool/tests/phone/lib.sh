@@ -27,7 +27,7 @@ file_entries() {
   local d=$1 p sep=; shift
   for p in "$@"; do
     printf '%s{"path":"%s","size":%s,"sha256":"%s"%s}' "$sep" "$p" "$(stat -c %s "$d/$p")" "$(sha256sum < "$d/$p" | cut -d' ' -f1)" \
-      "$(case "$p" in bin/*) echo ',"mode":"0755"' ;; esac)"
+      "$(case "$p" in (bin/*) echo ',"mode":"0755"' ;; esac)"   # (bin/*): macOS's bash 3.2 cannot read a bare `bin/*)` inside $( )
     sep=,
   done
 }
@@ -65,10 +65,12 @@ SH
   printf '#!/bin/sh\nexec "$@"\n' > "$P/data/adb/ksu/bin/busybox"
   printf '#!/bin/sh\nexit 0\n' > "$P/.fake/bin/chown"
   printf '#!/bin/sh\n[ "$1" = package ] && cat "$FAKE_PHONE/.fake/package.txt" 2>/dev/null\nexit 0\n' > "$P/.fake/bin/dumpsys"
-  # getprop: the S24 Ultra's model, or with .fake/props (a getprop dump, "[key]: [value]" lines) that phone's properties
+  # getprop: the S24 Ultra's model, or with .fake/props (a getprop dump, "[key]: [value]" lines) that phone's properties;
+  # with no argument the whole dump, as on the phone (phone procs reads init's services from it)
   cat > "$P/.fake/bin/getprop" <<'SH'
 #!/bin/sh
 f=$FAKE_PHONE/.fake/props
+if [ $# = 0 ]; then [ ! -f "$f" ] || cat "$f"; exit 0; fi
 if [ -f "$f" ]; then sed -n "s/^\[$1\]: \[\(.*\)\]\$/\1/p" "$f"; exit 0; fi
 case "$1" in ro.product.model) echo SM-S928B ;; esac
 SH

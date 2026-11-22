@@ -32,7 +32,7 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Touch + buttons | Yes | Scripts (`--input-script`) | HID via kernel event driver |
 | Battery | Published to iOS | Stand-in tested | Real readings on phone |
 | Wi-Fi | Joins; scan rate cut 20→5/min (reuse works); late-enable merged, phone proof pending | Sim radio (`wifi=sim`) | [docs/hardware.md](docs/hardware.md) |
-| Haptics / keyboard | Fix merged, phone proof pending | Host-tested | Typing drives Preferences 100%+ (the overheat path); XPC-timeout cause proven from iOS log |
+| Haptics / keyboard | 0078 merged (the haptic server starts); the Actuator then played silence (no DSP chain): hosted 0086, phone proof pending | Host-tested | Typing drives Preferences 100%+ (the overheat path); XPC-timeout cause proven from iOS log |
 | Interrupts / Mach RPC | — | Verified: 41k host-call IPIs vs 110 trapped | `oneios-perf` `rpc:`/`0081:` lines |
 | Return to One UI | Yes — chord, SIGKILL backstop | n/a | Never touches side keys, realtime, or `/sys/power` |
 | Host test suites | n/a | All green (loader, xnuhost, bridges, display, prelink audit 0 failures) | `runtime/host-tests.sh` |
@@ -45,8 +45,9 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Typing overheats the phone (Preferences 100%+, the main bug) | Prime suspect hapticd XPC timeouts; preset fix merged (hosted 0078), phone proof pending; `thermal:` + `oneios-cpu-sys:` lines added for diagnosis | [docs/hardware.md](docs/hardware.md) §5 |
 | Wi-Fi scan slow; enable waits on configd (~3 min) | Scan reuse 20→5/min works; result/join latency still slow on phone (cause open); enable fix merged (`oneios-wifi-up`), phone proof pending | [docs/hardware.md](docs/hardware.md) |
 | Audio: MMAP start gap, lateness metric | Landed on PC, phone proof pending | [docs/hardware.md](docs/hardware.md) |
+| Volume keys and slider do nothing, sound low | Cause from iOS's log: no hardware volume control on the Speaker (audiomxd threw at every volume set), the host at One UI's media volume; the control and the host at full scale built, phone proof pending | [docs/hardware.md](docs/hardware.md) §6 "Volume" |
 | HEVC encode: no real frame encoded yet | Guest side staged, stand-in tested | PR #59 |
-| Camera capture device (iOS side) | Not built | [docs/hardware.md](docs/hardware.md) |
+| Camera: no Camera icon, no source in CMCapture | Phone 2026-11-22: the plug-in loads and makes its device, then CMCapture had no model name (`/product unique-model`) and no device-tree camera nodes; fixed in the loader (the nodes and `unique-model`; hosted 0084 keeps MobileGestalt's cache across boots and drops it once when the tree changes), phone proof pending | [docs/hardware.md](docs/hardware.md) §7 |
 | Auto-brightness via light sensor | Attaches, no readings through it yet | [docs/hardware.md](docs/hardware.md) |
 | Shared-region protect no-op count still 0 | Optimization unproven | kernel README "0080" |
 | Mac kernel panics in first 2 s | Old news, Mac runtime boots with Linux `kernel.kc` | `kernel/prelink/README.md` |

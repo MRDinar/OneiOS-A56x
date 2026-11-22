@@ -225,7 +225,7 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   `./gradlew --max-workers=3 test assembleFullDebug` in `app/app-android` (what `oneios-tool app build` runs); the
   APK's versionName and versionCode from `aapt2 dump badging` (the versionCode must be `app/build.gradle.kts`'s);
   `check-apk.sh` (above). Artifact `oneos-apk`: `OneOS-oneios-<versionName>-debug.apk` and its `.sha256`.
-  The commit recorded for `app/` is `43fc1b3` (2026-11-22: a check that another job blocks waits visibly and starts by itself, the button spins only while a job runs; before it `bc837b4`: status quick by the files' ids, its steps and seconds shown, 20 s without an answer from su is "Root didn't answer", the setup steps on iOS 27's page, clearer runtime and image choices, live hardware-check output, debug builds signed with the shared key; 689 tests, 0 failures, 76 skipped; before it `5ffc71c`, the CI doc on the key, and `84b0ba5`: the pairing files without XnuPrelink's Python sources, kb
+  The commit recorded for `app/` is `0cd45ad` (2026-11-22, fork `oneios`, pushed 2026-11-23: the boot screen's progress bar and the next step's name, `control/bootui/progress` and `next`; before it `43fc1b3`, 2026-11-22: a check that another job blocks waits visibly and starts by itself, the button spins only while a job runs; before it `bc837b4`: status quick by the files' ids, its steps and seconds shown, 20 s without an answer from su is "Root didn't answer", the setup steps on iOS 27's page, clearer runtime and image choices, live hardware-check output, debug builds signed with the shared key; 689 tests, 0 failures, 76 skipped; before it `5ffc71c`, the CI doc on the key, and `84b0ba5`: the pairing files without XnuPrelink's Python sources, kb
   format 2, 688 tests, 0 failures, 76 skipped; before it `7e34fa4`, 2026-11-21: Make iOS image with `make-image` on a
   fresh phone, 688 tests, 0 failures, 74 skipped, an end-to-end test against the real tool; before that `53abb04`): upstream OneOS 0.5.14 to 0.5.31 merged into `oneios`
   (`2d2f26b`, `728db89`), the on-phone kernel update (`133b64a`) and Update the kernel fetching Apple's kernelcache
@@ -465,7 +465,9 @@ Notes on the build:
 ### The debug key
 
 Every OneOS APK in a release is signed with one debug key, `secrets/oneios-debug.keystore`. It was made on the Linux
-build machine on 2026-11-22.
+build machine on 2026-11-22 and copied to the Mac's checkout (the build host now) on 2026-11-23, certificate checked
+with `keytool -list -v`. CI: until fork `2ef79b6` (2026-11-23) the fork's runs did not sign with it (0.5.51 and 0.5.52
+had keys of their own), the fork's `docs/oneios.md` "CI".
 - **The key:** PKCS12, RSA 2048, valid for 10,000 days; alias `androiddebugkey`, store and key password `android`,
   as Android's own debug keys. Certificate SHA-256
   `8b3be966893342e8ca63cbb9b2097e038cfb30c7bccb1296c2baa25654217599`.

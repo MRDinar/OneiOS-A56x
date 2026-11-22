@@ -606,7 +606,7 @@ build.
 
 ```sh
 T=tools/oneios-tool/target/release/oneios-tool        # cargo build --release --manifest-path tools/oneios-tool/Cargo.toml
-$T phone status                    # root, the host phone (host: NAME ... defaults: ...), the installed app, the session, oneios_root.sh status (@@RESULT ready 1: a switch would start)
+$T phone status                    # root, the host phone (host: NAME ... defaults: ...), the installed app, the session, the boot screen (boot screen: step N of 12, P%, next: ...), oneios_root.sh status (@@RESULT ready 1: a switch would start)
 $T phone stage runtime DIR         # an unpacked runtime package        (scripts/phone/stage.sh runtime DIR)
 $T phone stage image DIR           # kernel.kc, kernel.kc.hashes, manifest.json, overlay/... at their paths
 $T phone sums                      # the staged files' sha256
@@ -636,6 +636,9 @@ $T phone backlight status          # the panel's level, max_brightness, and One 
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
 $T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
+$T phone procs                     # every process with its CPU share and RAM (read only, with or without a session):
+                                   #   what of One UI still runs beside iOS and what it costs (docs/plan-ios-first-session.md)
+$T phone procs --seconds 30 --raw > procs.raw; $T phone procs --from procs.raw --sort mem   # keep a capture; its report by RAM
 $T phone pull-log DIR               # iOS's log only, in seconds and beside an open session: the runtime's oneios-tool
                                    #   reads the staged store on the phone (ioslog show), only the gzipped text crosses
                                    #   adb (11 MB for 615713 entries, 9.4 s on 2026-11-22), then DIR/ioslog.txt,
@@ -834,7 +837,7 @@ git -C app switch oneios                   # to work on the fork in app/: a bran
 
 `--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
 `app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). Recorded now: `43fc1b3` (upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
+app`). Recorded now: `0cd45ad` (fork `oneios`, on 43fc1b3, pushed 2026-11-23: the boot screen's progress bar, "Step N of 12" and "Next: ...", fork `docs/oneios.md` "Boot screen"; on the Mac `oneios-tool app build` (after `scripts/build-guest-manager.sh --debug`): 691 tests, 0 failures, 8 skipped, APK 0.5.52 (versionCode 181), not on the phone yet; before it `43fc1b3`: upstream OneOS 0.5.31 merged; Update the kernel fetches Apple's kernelcache on the phone; Make iOS image builds the whole set on a fresh phone;
 the pairing files without Python, kb format 2, 2026-11-22; the shared debug key; a quick status that names its steps and stops after 20 s without root, the setup steps on iOS 27's page, clearer runtime and image choices, live hardware-check output; a check blocked by another job waits visibly). CI does not use the recorded commit: every build takes the head of `oneios` (`git submodule update --init
 --remote app`, [releases.md](releases.md) "CI and releases"). Nothing of OneiOS walks into `app/`:
 `git ls-files` (the CI checks, the host-test loop, `check-tracked-files.sh`) lists it as one entry, the runtime
@@ -1099,7 +1102,8 @@ the drivers' build, the fixup of the linked kernel, the series check and the KDK
 Apple-file check, manifest and archive) and `debug` (the tests' helpers). `image aea-decrypt` (2026-11-21) decrypts the IPSW's AEA images
 (the key from Apple's key service, every byte authenticated), on the PC and, as `serve`'s `aea`, on the phone. Since the third Linux round also `phone` (the adb
 workflow of section 6: status, stage, sums, switch, return, log, the Data store's copy, and in a session the display
-helper's restart, the touch IC's wake and the panel's level), `app` (the fork's app of
+helper's restart, the touch IC's wake and the panel's level; since 2026-11-23 `phone procs`, the process list with CPU
+and RAM), `app` (the fork's app of
 section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
 `image tweaks` (the root tweaks and the image build's userland hook: the port of `userland/roottweak` and
 `userland/image-hook`, `apply`, `hook`, `daemons`, `cdhash`, `boot-check`; compared with the Python by

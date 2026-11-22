@@ -301,6 +301,61 @@ static void test_machine(void)
     CHECK(p && !strcmp((const char *)p->value, "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0"));  // no APPLE2
     CHECK(!strcmp((const char *)xl_adt_get(pr, "model")->value, "oneios,xnuhost"));
   }
+  // the cameras: none without the camera device, whatever m.cameras says; with it /arm-io/isp camera-rear and
+  // camera-front (u32 1, no compatible), an empty /product/camera and /product unique-model V54AP
+  CHECK(!xl_adt_find(t, "arm-io/isp") && !xl_adt_find(t, "product/camera") && !xl_adt_get(xl_adt_find(t, "product"), "unique-model"));
+  {
+    xl_machine c;
+    machine_default(&c);
+    c.cameras = XL_CAMERA_REAR | XL_CAMERA_FRONT;
+    xl_adt_node *ct = xl_machine_tree(&c, &err);
+    CHECK(ct && !xl_adt_find(ct, "arm-io/isp") && !xl_adt_find(ct, "product/camera"));      // no camera device
+    xl_adt_free(ct);
+    static const xl_device_kind kinds[] = { XL_DEV_BLOCK, XL_DEV_DATA_STORE, XL_DEV_GPU, XL_DEV_CAMERA };
+    xl_machine_board(&c, 4, kinds, 4);
+    ct = xl_machine_tree(&c, &err);
+    const xl_adt_node *isp = ct ? xl_adt_find(ct, "arm-io/isp") : NULL;
+    uint32_t rear = 0, front = 0;
+    const xl_adt_prop *q = isp ? xl_adt_get(isp, "camera-rear") : NULL;
+    if (q && q->length == 4) memcpy(&rear, q->value, 4);
+    q = isp ? xl_adt_get(isp, "camera-front") : NULL;
+    if (q && q->length == 4) memcpy(&front, q->value, 4);
+    CHECK(rear == 1 && front == 1 && !xl_adt_get(isp, "compatible") && !xl_adt_get(isp, "device_type"));
+    const xl_adt_node *cam = ct ? xl_adt_find(ct, "product/camera") : NULL;
+    CHECK(cam && cam->nprops == 1 && cam->nchildren == 0);                                   // only its name
+    q = ct ? xl_adt_get(xl_adt_find(ct, "product"), "unique-model") : NULL;
+    CHECK(q && !strcmp((const char *)q->value, "V54AP"));
+    // the identity: another number with the cameras; set in /chosen; the same whatever changes per boot
+    uint64_t with = ct ? xl_machine_identity(ct) : 0, stored = 0;
+    q = ct ? xl_adt_get(xl_adt_find(ct, "chosen"), "oneios-identity") : NULL;
+    if (q && q->length == 8) memcpy(&stored, q->value, 8);
+    CHECK(with && stored == with && with != xl_machine_identity_hash(t));
+    c.dram_size *= 2;                                   // the RAM, the seed, the pools and xnuhost's vector (its ASLR)
+    c.view_size = 0x80000000ull;
+    c.random_seed[0] ^= 0xff;
+    c.host_vector += 0x4000;
+    c.gpu_pool_base = 0x900000000ull; c.gpu_pool_size = 0x10000000;
+    xl_adt_node *again = xl_machine_tree(&c, &err);
+    CHECK(again && xl_machine_identity_hash(again) == with);
+    if (again) {
+      // the memory map's placeholders and /chosen oneios-identity itself are not part of it either
+      static const uint8_t filled[16] = { 1, 2, 3 };
+      xl_adt_set(xl_adt_find(again, "chosen/memory-map"), "TrustCache", filled, 16);
+      CHECK(xl_machine_identity(again) == with && xl_machine_identity(again) == with);
+    }
+    xl_adt_free(again);
+    c.display_scale = 2;                                // the display mode is (MobileGestalt's main-screen-scale)
+    again = xl_machine_tree(&c, &err);
+    CHECK(again && xl_machine_identity_hash(again) != with);
+    xl_adt_free(again);
+    c.display_scale = 0;
+    c.cameras = XL_CAMERA_REAR;                                                               // the rear one only
+    again = xl_machine_tree(&c, &err);
+    isp = again ? xl_adt_find(again, "arm-io/isp") : NULL;
+    CHECK(isp && xl_adt_get(isp, "camera-rear") && !xl_adt_get(isp, "camera-front") && xl_machine_identity_hash(again) != with);
+    xl_adt_free(again);
+    xl_adt_free(ct);
+  }
   p = xl_adt_get(xl_adt_find(t, "chosen/xnuhost"), "vector");
   uint64_t v64;
   memcpy(&v64, p->value, 8);
@@ -358,6 +413,19 @@ static void test_machine(void)
     CHECK(!xl_adt_get(pr, "has-exclaves") && xl_adt_get(pr, "product-name"));
     CHECK(!strcmp((const char *)xl_adt_get(pr, "graphics-featureset-fallbacks")->value, "MTL1,2:GLES2,0"));
     CHECK(xl_adt_get(xl_adt_find(t, "product/audio"), "acoustic-id"));
+    xl_adt_free(t);
+  }
+  // with an identity and cameras: the identity's own unique-model stays
+  {
+    xl_machine c = m;
+    static const xl_device_kind kinds[] = { XL_DEV_BLOCK, XL_DEV_DATA_STORE, XL_DEV_CAMERA };
+    xl_machine_board(&c, 4, kinds, 3);
+    c.cameras = XL_CAMERA_FRONT;
+    xl_adt_set_str(product, "unique-model", "F1AP");
+    t = xl_machine_tree(&c, &err);
+    p = t ? xl_adt_get(xl_adt_find(t, "product"), "unique-model") : NULL;
+    CHECK(p && !strcmp((const char *)p->value, "F1AP") && xl_adt_get(xl_adt_find(t, "arm-io/isp"), "camera-front") &&
+          !xl_adt_get(xl_adt_find(t, "arm-io/isp"), "camera-rear"));
     xl_adt_free(t);
   }
   xl_adt_remove(donor, "product");

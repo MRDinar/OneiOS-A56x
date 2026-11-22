@@ -883,6 +883,21 @@ static int boot(void)
   machine.view_size = view;
   machine.model = "iPhone18,2";
   machine.target_type = "V54";           // its board: iOS finds com.apple.jetsamproperties.V54.plist by it (loader machine.c)
+  // The cameras iOS is told about (the loader's /arm-io/isp and /product/camera): the roles the helper lists.
+  // MobileGestalt answers still-camera and the facing ones once and keeps them in its cache, so they must be in the
+  // tree from the first boot: the list is waited for here, asleep (the phone, 2026-11-22: it came 170 ms after the
+  // helper's start, 115 ms after the tree had been placed), at most 3 s. No list, or no camera in it: no nodes.
+  if (camera) {
+    struct oc_camera list[OC_MAX_CAMERAS];
+    int count = br_camera_list(camera, list, (int)OC_MAX_CAMERAS, 3000);
+    for (int i = 0; i < count; i++) {
+      if (list[i].role == OC_ROLE_FRONT) machine.cameras |= XL_CAMERA_FRONT;
+      else if (list[i].role >= OC_ROLE_WIDE && list[i].role <= OC_ROLE_TELE5) machine.cameras |= XL_CAMERA_REAR;
+    }
+    LOGI("camera: iOS is told of %s%s%s (%d cameras from the helper)", machine.cameras & XL_CAMERA_REAR ? "a rear camera" : "",
+         (machine.cameras & XL_CAMERA_REAR) && (machine.cameras & XL_CAMERA_FRONT) ? " and " : "",
+         machine.cameras & XL_CAMERA_FRONT ? "a front camera" : machine.cameras ? "" : "no camera", count);
+  }
   machine.display_width = fb_width;
   machine.display_height = fb_height;
   machine.display_scale = config.scale;
@@ -970,6 +985,8 @@ static int boot(void)
         xl_adt_set(chosen, their_chosen->props[p].name, their_chosen->props[p].value, their_chosen->props[p].length);
     xl_adt_free(other);
   }
+  // What MobileGestalt's cache depends on, as one number for hosted 0084 (/chosen oneios-identity, loader machine.h).
+  LOGI("identity: %016llx (/chosen oneios-identity: what MobileGestalt reads; hosted 0084 keeps its cache while it stays)", (unsigned long long)xl_machine_identity(tree));
 
   // Each disk's identity for the kernel's storage (imageset.h).
   for (unsigned i = 0, blocks = 0; have_image_set && i < config.ndisk; i++) {
@@ -1349,8 +1366,8 @@ int main(int argc, char **argv)
     LOGE("boot arguments: owner-hide-vmm names bluetoothd: it crashes in a loop that way (docs/hardware.md 4); take it out");
   // bt-transport-override=N replaces the transport-encoding bluetoothd reads. Since 2026-11-23 the guest's Bluetooth driver
   // gives it 10 (in a VM its power init passes only with 10) and the kernel adds BT_HCI_TRANSPORT=H4:POSIX to its
-  // environment (hosted 0084), which keeps its HCI on our transport: so 10 changes nothing, any other N makes its power
-  // init fail (PowerState 3, Bluetooth off). Without the kernel's variable (oneios-bt-hci=0, or a kernel before 0084) 10
+  // environment (hosted 0087), which keeps its HCI on our transport: so 10 changes nothing, any other N makes its power
+  // init fail (PowerState 3, Bluetooth off). Without the kernel's variable (oneios-bt-hci=0, or a kernel before 0087) 10
   // is BTVC, a simulated controller in bluetoothd's own process (main 3233fed, 2026-11-15: exit(1) every 56 s).
   int bt_override = xh_boot_args_bt_transport(config.boot_args);
   if (bt_override >= 0 && bt_override != 10)

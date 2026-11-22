@@ -136,7 +136,7 @@ void oneios_bt_adt_hide(void);
 /* transport-encoding = v on the nub; returns the value it had (0 when none, -1 when there is no nub) */
 int oneios_bt_adt_transport(uint32_t v);
 
-/* ---- bluetoothd's environment (kern_exec.c, hosted 0084) ------------------------------------ */
+/* ---- bluetoothd's environment (kern_exec.c, hosted 0087) ------------------------------------ */
 
 /* "BT_HCI_TRANSPORT=..." added to /usr/sbin/bluetoothd's environment at its exec; empty: nothing added */
 extern char oneios_bluetoothd_env[64];

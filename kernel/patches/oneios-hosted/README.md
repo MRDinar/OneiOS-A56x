@@ -1229,6 +1229,109 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
+
+The fault: no haptic is felt. With 0078 audiomxd's haptic server starts and plays, and the Actuator device runs I/O,
+but every period is silence (`ONEIOS HAPTIC: counters: ... 61920 periods (309600 ms), 0 with samples, 0 loud`;
+audiomxd's `RTAID [ ... node=Actuator-Output ... ] -- [ rms:[-120.000000], peaks:[-240.000000] ]`). VirtualAudio
+makes the Actuator's virtual stream with the DSP chain `d42_actuator_general` and finds no strips file for it:
+`RoutingSettings_Aspen.cpp:700 Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general`. The chain turns
+the haptic synth's 2-channel stream into the actuator's one channel; the iPhone's is
+`/Library/Audio/Tunings/AID8022/VAD/actuator_general.{austrip,dspg}` (in 2 -> AUHapticsProtection -> 1 ->
+AUVolumeForHaptics -> out; AID8022 is the V54's `/product/audio acoustic-id`). `docs/hardware.md` section 5, "The
+Actuator played silence".
+
+What the patch changes (`bsd/kern/kern_exec.c`, `XNU_HOSTED`, in 0078's step before launchd):
+`oneios_audio_tunings_folder()` makes `/private/var/oneios/addons/AudioTunings/oneios,xnuhost` a folder of links
+instead of 0078's one link to the board (an existing link there is removed first; entries already there are kept):
+- `Haptics -> ../V54/Haptics` (`../NAME/Haptics` with `oneios-audio-tunings=NAME`): the preset, as 0078;
+- `VAD/d42_actuator_general.austrip -> ../../AID8022/VAD/actuator_general.austrip` and the same for `.dspg`
+  (`oneios-audio-tunings-vad=0`: not made).
+The links resolve in 0078's read-only union over `/Library/Audio/Tunings` to the sealed folders; nothing of Apple's is
+copied. After the mount the step looks the strip up through `/Library/Audio/Tunings`. One line (replaces 0078's):
+`oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost/Haptics ->
+V54/Haptics, oneios,xnuhost/VAD/d42_actuator_general -> AID8022/VAD/actuator_general (N entries made), the Actuator's
+strip visible; stage 5, status 0 (...)`; an error: `oneios-audio-tunings: oneios,xnuhost's folder: error N (0078's
+link, if there, kept)`. The first boot of a store with 0078's link says 5 entries made (the folder, Haptics, VAD and
+the two strip links), later boots 0.
+
+Numbered 0086 (0085 is the Edge spill patch): 0084 is the camera helper's MobileGestalt cache patch, which adds a function after 0078's; the two
+apply in either order (checked with `patch --dry-run` on the 0083 tree, both orders).
+
+Tested (Mac, 2026-11-23): `HOSTED_OUT=audio kernel/build-hosted.sh` applied the series with 0086 (962 s, `xnu.macho`
+sha256 `dbf9fc9f...`, no warning in the new code); `KERNEL=out/kernel/current-hosted-audio/xnu.macho
+OUT=out/kernel/audio-24A446 kernel/prelink/build.sh`: `kernel.kc` 96,845,824 bytes, sha256 `a50202ea0aa3a71c...`,
+audit 2712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not on the phone. The
+lines that prove it on the phone: the `oneios-audio-tunings:` line above with `the Actuator's strip visible`; in iOS's
+log no `Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general`, RTAID's `node=Actuator-Output` above -120 dB
+while a haptic plays; `ONEIOS HAPTIC: counters: ... N with samples ... N requests to the motor` and xnuhost's
+`haptics: 60 s: ... +N played` with N > 0.
+
+## 0085-edge-e-to-p-spill.patch (fix-launch-control-center-fitness, 2026-11-22)
+
+The owner's report (main `23561aa`, kernel 0082 + 0083 + codec): "we are close to 120 Hz but these laggy parts need
+fixes": app opening animations lag, Control Center is laggy, Fitness opens to a black screen. iOS's log of the same
+boot later (`s9b-ioslog`): SpringBoard 90 hangs (214.9 s in all, the longest 21.08 s, 29 over 1 s) and chronod 126
+watchdog kills of widget extensions that did not answer in time (`getAllDescriptors`, timelines; 5 to 30 s of wall time).
+
+What was found (`out/session-logs/2026-11-22/kbd-debug/xnuhost-s9.log`, `-s8-final`, `-s6-final`; `s9-ioslog`,
+`s9b-ioslog`; the backboardd samples of `live10.log` with `oneios-tool log stacks --proc backboardd`):
+
+- **The render server is not GPU-bound.** `gpu: 10 s level:` while it animates: 200-320 frames in 10 s, the frame
+  interval 43-82 ms, GPU time at the top 1.4-5.6 ms (over the 8.3 ms budget only in a few frames); the display helper
+  posts each frame in 10-13 ms (`display: 10 s:`).
+- **Two vCPUs do the work and six wait.** xnuhost's `perf: cpuN:` lines, every 30 s period after the first frame, in
+  all three boots: vCPU 0 and 1 (E, the A520s) 0% idle; vCPU 2 10-28%, 3 5-17%, 4 2-13%, 5 1-8%, 6 0-7%, 7 (the X4)
+  0-5% busy, i.e. 85-99% idle, the fastest core the most idle of all.
+- **Why.** The kernel is AMP (`droidvm-amp`: an E and a P processor set, the Edge scheduler). DroidVMCpufreq
+  (`DroidVMCpufreq: thread groups prefer cluster 0 (E), classes 0x188 cluster 1 (P)`) gives every thread group the E
+  cluster and only the UI, above-UI and realtime classes the P cluster. XNU's default edges
+  (`osfmk/kern/sched_clutch.c` `sched_edge_cpu_init_completed`): P -> E `weighted_spill`, **E -> P `no_spill`** (no
+  migration, no steal). On an iPhone CLPC changes the edges and the groups' clusters as the load changes; here no CLPC
+  runs. So every default, user-initiated, utility and background thread stays on the two A520s however idle the P
+  cores are: daemons and XPC services an app launch waits on, an app's workers, widget extensions, and in the render
+  server metal2vulkan's GPU submission thread (a default-class thread, DroidVMCpufreq's own comment): the render thread
+  waits for it every frame (`CA::OGL::MetalContext::flush` -> `dispatch_group_wait` in the plug-in, `live10.log`).
+
+What the patch changes (`osfmk/arm64/hosted/hosted_smp.c` `hosted_sched_edge_spill`, called from
+`oneios_board_late_start` after `droidvm_cpufreq_attach`, `XNU_HOSTED`): once all CPUs are up
+(`sched_is_cpu_init_completed`), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
+fixed-priority, foreground, user-initiated and default buckets at weight 0, utility at 64 and background at 1000. The
+weight is compared with the clusters' load, their average scheduling latency in us (0 with an idle CPU): a thread goes
+to P when P has an idle CPU or waits less, background only when E's threads wait a millisecond longer (RunningBoard
+clamps a widget extension or a suspended app to background QoS). A thread still starts on its preferred cluster when
+that has a free core. P -> E and the realtime edges stay XNU's. `oneios-edge-spill=0` is the old way, `=1` keeps
+background on E (an iPhone's rule), `=2` is the default. One line: `oneios-edge: E -> P migration and steal allowed on
+6 edges (1 E and 1 P clusters): fixed-priority, foreground, user-initiated and default at weight 0, utility at 64,
+background at 1000 (us of scheduling latency; oneios-edge-spill=2; XNU's default: none)`.
+
+What it costs: background work may now run on the A720s and the X4 when the A520s are behind (more power and heat
+than before; `thermal:` lines watch it, and xnuhost's thermal masks still apply).
+
+Fitness is not a render failure (same logs): SpringBoard logs `scene content state changed: ready` for it (its first
+frame was committed), the app is active (deactivation reasons 0) and in dark mode, and it logs `Waiting to show
+onboarding until initial queries complete`. Its first screen waits for fitcored's Fitness+ queries
+(`WorkoutPlanClient.queryActiveWorkoutPlan ended in 82.3 s`, `UpNextQueueClient.queryUpNextQueue ended in 80.4 s`,
+`ServiceSubscriptionClient.fetchServiceSubscription ended in 93.3 s`), which go through AppleMediaServices' bag with no
+network (`Network is down`, Wi-Fi joined 0) and no storefront (`AMSErrorDomain Code=205`); `CA Telemetry timedout after 20
+seconds due to app launch has not reached all responsive milestones`; then the onboarding comes (`onboarding
+coordinator phase did change: 1 ... is presenting onboarding: 1`). The services it looks up and does not find
+(amsengagementd, itunescloudd's in-app messages, fairplayd) fail at once (`error = 3`); they are the daemon policy's
+on purpose. This patch takes the CPU part out (fitcored and healthd are default and utility threads); the network part
+stays until the guest is on Wi-Fi.
+
+Tested (Mac, 2026-11-23): `HOSTED_OUT=anim kernel/build-hosted.sh` applied the series with 0085 and built `xnu.macho` in
+447 s (25,646,672 bytes, sha256 `555a98d6...`; `_hosted_sched_edge_spill`, `_sched_edge_matrix_set` and the four
+`oneios-edge:` texts are in it; no warning in the new code); no reference kernel (it does not link since 0074, see 0083).
+`KERNEL=out/kernel/current-hosted-anim/xnu.macho OUT=out/kernel/anim-24A446 kernel/prelink/build.sh`: `kernel.kc`
+96,845,824 bytes, sha256 `7b1057e2...`, audit 2,712 paired, 92 on the stub, 9 data unpaired, 0 failures; `prelink
+stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not booted yet. On the phone these lines prove it: the
+kernel's `oneios-edge: E -> P migration and steal allowed on 6 edges (1 E and 1 P clusters) ...`; xnuhost's `perf:
+cpuN:` lines with vCPU 2-7 busy whenever vCPU 0-1 are (not 85-99% idle beside two 0%-idle vCPUs); `gpu: 10 s level:`
+during an app launch and Control Center with a frame interval near the GPU time (not 43-82 ms); `oneios-tool ioslog
+health` with SpringBoard's hangs and chronod's watchdog kills far under 90 (214.9 s) and 126; `thermal:` lines for the
+cost.
+
 ## 0083-dictation-status-navd.patch (fix-spotlight-keyboard, 2026-11-22)
 
 The owner's reports: in Spotlight the keyboard never comes up; in Notes one character comes, then a long lag; on the
@@ -1305,7 +1408,7 @@ store's boot without 0083 (21:28): key taps in Spotlight 30 (0 before); Spotligh
 (103-107% all the time before). Still in the log, for later: `Keyboard screen not found for window (null)` 21 times at
 Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s).
 
-## 0084-bluetoothd-hci-transport.patch (fix-ios-bluetooth-power, 2026-11-23)
+## 0087-bluetoothd-hci-transport.patch (fix-ios-bluetooth-power, 2026-11-23)
 
 The owner's request: Bluetooth must work in iOS sessions (and AirDrop needs it first). In every session bluetoothd
 logged `Bluetooth is running inside a Virtual Machine, so skipping chip initialization` and `PowerState:3`, and never
@@ -1326,7 +1429,8 @@ Lines: `oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX (docs/hardware.md 4
 bluetoothd's environment names it already, kept: ...`. Off: Bluetooth off, `oneios_bt=0` or `oneios-bt-hci=0` leave the
 string empty, and nothing is added. Cost: one `strcmp` per exec.
 
-Tested (Mac, 2026-11-23): `HOSTED_OUT=bt kernel/build-hosted.sh` applied the series with 0084 and built `xnu.macho` in
+Renumbered 0087 and made again on 0086 (2026-11-23): the same code; it now applies with no fuzz after 0084-0086.
+Tested (Mac, 2026-11-23): `HOSTED_OUT=bt kernel/build-hosted.sh` applied the series with it (then numbered 0084, on a main without 0084-0086) and built `xnu.macho` in
 153 s (25,642,560 bytes, sha256 `be81a8a2...`; the `oneios-bt:` and `ONEIOS BT: bluetoothd: transport-encoding ...`
 strings are in it; no warning in the new lines). `KERNEL=out/kernel/current-hosted-bt/xnu.macho
 OUT=out/kernel/bt-24A446 kernel/prelink/build.sh` gave `kernel.kc` 96,862,208 bytes, sha256 `68b6317f2bc96f56...`,
@@ -1619,4 +1723,37 @@ existing Data store gets it at its next boot. `oneios-audio-tunings=0`: nothing 
 `oneios-audio-tunings=NAME`: the link points at `NAME`. One line:
 `oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost -> V54 (link
 made 0), stage 5, status 0 (stage 5 status 0: ...)`; stage 1 status N: the folder could not be looked up, stage 2: the
-mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found.
+mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found. Since 0086
+(2026-11-22) `oneios,xnuhost` is a folder of links (`Haptics` and the Actuator's VAD strip) and the line says so:
+"0086" above.
+
+## 0084-mobilegestalt-cache-identity.patch (enable-camera-app, 2026-11-22)
+
+MobileGestalt answers from the device tree and keeps the answers in its cache
+(`/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`),
+which it builds again only for another OS build (`CacheVersion` 24A446). The base's `native_gestalt_cache_drop`
+(`bsd/kern/kern_exec.c`, in `native_gpu_addon_prepare`) removed it at every boot, so every boot ran its first seconds
+without one: `Could not open .../com.apple.MobileGestalt.plist: No such file or directory` from 144 processes in the
+first 8 s of the phone's boot of 2026-11-22 17:01 (271 in 21 s at 16:30), until MobileGestaltHelper had made it again.
+
+- xnuhost's loader writes `/chosen oneios-identity` (8 bytes): FNV-1a 64 of what MobileGestalt can read that stays the
+  same from boot to boot (the root's properties, `/product`, `/arm-io`, `/buttons`, `/bluetooth`, `/chosen`'s own
+  properties and its display mode; `xl_machine_identity`, `docs/booter.md`).
+- Before launchd, in place of the drop, `oneios_mg_cache` reads it and compares it with the marker
+  `/private/var/oneios/mobilegestalt-identity` (16 hex digits). They differ, or there is no marker: the cache is removed
+  (the base's `native_gestalt_cache_drop`) and the marker written, so a device-tree change (the camera nodes,
+  `docs/hardware.md` 7) reaches an existing Data store once. The same: the cache stays.
+- `oneios-mg-cache=2`: removed at every boot (the old way, the A/B switch); `=0`: never removed; 1 (default): as above.
+  No `oneios-identity` in the tree (an older xnuhost): removed at every boot, as before.
+- One line: `oneios-mg-cache: identity 1a2b3c4d5e6f7081 (marker none): cache removed (0), marker written (0)`; `...
+  (marker the same): cache kept`; `cache removed (2)` when there was no cache.
+- The phone's proof: the first boot of an existing store has `(marker none): cache removed (0)`; the second has `cache
+  kept` and no `Could not open .../com.apple.MobileGestalt.plist` in iOS's log.
+
+Tested (Mac, 2026-11-22): built in `HOSTED_OUT=cam` from the series (the full build, not `hosted-dev.sh`): `xnu.macho`
+sha256 `ad0a2993d910cdf7...`, 167 patches; prelinked (`KERNEL=out/kernel/current-hosted-cam/xnu.macho
+OUT=out/kernel/cam-24A446 kernel/prelink/build.sh`): `kernel.kc` sha256 `3c66f79ee04fbcbf...`, audit 2712 paired, 92 on
+the stub, 0 failures; `prelink stubs-check`: 666 good, 0 bad. The loader's hash in `runtime/loader/tests/test_loader.c`.
+Not run on the phone yet. Rebased on 0083 (2026-11-23): the camera helper made it on a tree without 0083, so it did not
+apply on main (`patch failed: bsd/kern/kern_exec.c:9710`); now its function comes after 0083's `oneios_dictation_status`,
+the same code, and 0085 and 0086 apply after it.

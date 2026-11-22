@@ -21,11 +21,11 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | CPU | `droidvm-amp.patch` + `DroidVMCpufreq.c` (UniXNU-droidvm, unchanged) | `runtime/bridges/cpu`: topology, vCPU plan, thread placement, the cpufreq device | host built and tested; kernel side waits for release-kernel (series, archive) and booter (device tree, placement calls) |
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
-| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0084); host-tested and built, not yet booted |
+| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted |
 | AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths; it does not yet dump Google's Wonder wiphy | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. Not run on the phone (section 4a) |
-| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
-| Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
-| Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
+| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
+| Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
+| Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (`H9ISPCaptureDeviceCreate`) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; in iOS (2026-11-22) the plug-in makes its device, CMCapture made no source (no `/product unique-model`: fixed with the camera nodes, not run yet, section 7); one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
@@ -128,6 +128,12 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
   unchanged; it compiles with our records) registers a performance-control callout that gives each thread group its
   preferred cluster (UI, above-UI and real-time classes on P) and writes the frequency a vCPU wants into a per-vCPU
   register window, `/arm-io/cpufreq` (Linux's virtual-cpufreq layout).
+- The Edge scheduler's own edges allow no move from E to P (`sched_edge_cpu_init_completed`: E -> P `no_spill`), and
+  without CLPC nothing changes them: until 2026-11-22 every thread outside those three classes stayed on the two E
+  vCPUs (0% idle on the phone) while the six P vCPUs were 85-99% idle. Hosted `0085` opens E -> P migration and steal
+  once all CPUs are up: weight 0 for fixed-priority to default, 64 for utility, 1000 for background (us of
+  scheduling latency); `oneios-edge-spill=0|1|2`, one `oneios-edge:` line (kernel/patches/oneios-hosted/README.md,
+  "0085").
 - `l2-cache-size`, `l3-cache-size` of a cpu node are read by XNU when present.
 
 ### The bridge (`runtime/bridges/cpu/topology.c`)
@@ -1274,7 +1280,7 @@ The owner's request (2026-11-22): Bluetooth must work in iOS sessions; it is als
   BTVC mode (`obt_shim.vsc_empty`: each vendor command Command Complete, status 0, no parameters). One line:
   `ONEIOS BT: bluetoothd: transport-encoding 1 -> 10 (its power init in a VM) and BT_HCI_TRANSPORT=H4:POSIX at its
   start (...)`.
-- `kernel/patches/oneios-hosted/0084-bluetoothd-hci-transport.patch` (`kern_exec.c`): at each exec of
+- `kernel/patches/oneios-hosted/0087-bluetoothd-hci-transport.patch` (`kern_exec.c`): at each exec of
   `/usr/sbin/bluetoothd` the variable is added to its environment, unless its environment names `BT_HCI_TRANSPORT`
   already (then that one is kept and said). One line per exec: `oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX`.
 - Boot argument `oneios-bt-hci`: `0` is the old way (transport-encoding as published, no variable, the iOS 16 answer
@@ -1283,12 +1289,12 @@ The owner's request (2026-11-22): Bluetooth must work in iOS sessions; it is als
 - xnuhost: `bt-transport-override=N` with N other than 10 now gets the error line (power init fails), 10 an
   information line (it is what the driver gives already).
 - Kept as they were: the HAL bridge, the Skywalk pipe, `/defaults/vmm-present`, `owner-hide-vmm` without
-  bluetoothd. A kernel with 0084 and an older runtime work together (xnuhost's tree is not changed); a kernel without
-  0084 is the state before.
+  bluetoothd. A kernel with 0087 and an older runtime work together (xnuhost's tree is not changed); a kernel without
+  0087 is the state before.
 
 **Tested:** `drivers/tests/host.sh` (new `bluetooth/test_bt_env.c`: the variable for each boot-argument value, the
 names bluetoothd would refuse, the longest value; the vendor answers in both modes); the kernel build and prelink
-(`kernel/patches/oneios-hosted/README.md`, "0084": `out/kernel/bt-24A446/kernel.kc`, sha256 `68b6317f2bc96f56...`, audit 0
+(`kernel/patches/oneios-hosted/README.md`, "0087": `out/kernel/bt-24A446/kernel.kc`, sha256 `68b6317f2bc96f56...`, audit 0
 failures, stubs-check 666 good); `runtime/host-tests.sh` (xnuhost's warning). Not booted on the phone or the PC yet.
 
 **What is not known [U]:** how far bluetoothd's stack gets on the real controller after power on. The first boot's
@@ -1904,6 +1910,62 @@ the haptics folder.
 
 PC_RESULTS_HERE
 
+### The Actuator played silence: no DSP chain for it (fix-audio-volume-haptics, hosted 0086, 2026-11-22; built, not on the phone)
+
+**The fault (phone, 2026-11-22, kernel with 0082 + 0083, 0078 in place):** no haptic is felt. 0078 works: audiomxd's
+haptic server starts (`=== Initializing Haptic 2.0 Engine ===` and no failure), clients connect, and SpringBoard's and
+Settings' players start with haptics on (`start: client ID: 0x... audio: 0 haptic: 1`, `startSynthRunning: Calling
+startRunning(0, 1, 0x1) on synth`). The Actuator device runs I/O (`ONEIOS HAPTIC: counters: Actuator 1 opens ..., 9
+selectors (4 StartIO, 3 StopIO, ...), 61920 periods (309600 ms), 0 with samples, 0 loud`), and every period is
+silence: audiomxd's own meter says the same at the HAL (`RTAID [ ... node=Actuator-Output ... ] -- [ rms:[-120.000000],
+peaks:[-240.000000] ]`, 30 times in the s7 boot). xnuhost's `haptics: 60 s: +1 requests (+0 vibrate, +1 stop, ...),
++0 played` follows from it. Not the cause: the keyboard (its client is in audio-only mode, `Muting haptics on client
+ID ... AudioOnly 1`: iOS's keyboard haptic feedback is off by default, Settings > Sounds & Haptics > Keyboard Feedback),
+the device's format (no refused selector, no format asked), the Actuator's open (1 open, its memory mapped).
+
+**The cause [F iOS's log; V 24A446's VirtualAudio.plugin and the OS volume's tunings]:** VirtualAudio makes the
+Actuator's virtual stream with a DSP chain and finds no strips file for it:
+```
+audiomxd StreamUtilities.cpp:402  Created virtual stream for [vzzz] (cbkg/imdf) port pact with DSP chain 'd42_actuator_general', ...
+audiomxd RoutingSettings_Aspen.cpp:700  Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general
+```
+(the lookup is `/Library/Audio/Tunings/<hardware model>/VAD/<chain>`, then `Generic/VAD/<chain>`: the two `Cannot find
+strips file` formats of the plug-in). The virtual stream has 2 channels (`forced virt chans: 2`, the haptic synth's
+2-channel haptic bus: `LegacyHapticSynth ... haptic output bus format to 2-chan`) and the physical Actuator 1; the
+chain is what turns one into the other. The iPhone's own chain is on the OS volume:
+`/Library/Audio/Tunings/AID8022/VAD/actuator_general.dspg` wires `in` (2 channels) -> `AUHapticsProtection` -> 1
+channel -> `AUVolumeForHaptics` -> `out`, its `.austrip` holds the two units' presets, and `AID8022/VAD/
+graph_configurations.plist` says the same (`actuator_general`: busChannelCounts 2 -> 1). AID8022 is the V54's
+`/product/audio acoustic-id 8022`; the guest has no `/product/audio` (`IORegistryEntryFromPath IODeviceTree:/product/
+audio returned MACH_PORT_NULL`), so VirtualAudio uses the hardware model and its legacy chain name. [I] Without the
+chain the stream's two channels do not reach the one-channel device; that this is the only cause is not proven until
+the phone boot below.
+
+**The fix (hosted 0086, `kernel/patches/oneios-hosted/README.md` "0086"):** 0078's link `oneios,xnuhost -> V54` in the
+Data folder `/private/var/oneios/addons/AudioTunings` becomes a folder of links, still shown read-only over
+`/Library/Audio/Tunings`: `Haptics -> ../V54/Haptics` (the preset, as before), `VAD/d42_actuator_general.austrip ->
+../../AID8022/VAD/actuator_general.austrip` and `.dspg` the same. Nothing of Apple's is copied; an existing store's
+0078 link is replaced at the next boot. `oneios-audio-tunings-vad=0`: only the Haptics link. Not chosen:
+`/product/audio acoustic-id 8022` in the guest tree, which would hand every route the iPhone's tunings (the speaker's
+protection needs its `syscfg` Thiele-Small values, the microphones' beam forming three microphones; we have one).
+
+**Tested:** the patch applies after 0083 with and without the camera helper's 0084 (both orders);
+`HOSTED_OUT=audio kernel/build-hosted.sh` (Mac, 2026-11-23, 962 s: `xnu.macho` sha256 `dbf9fc9f...`, no warning in
+the new code, its strings in the kernel); `KERNEL=out/kernel/current-hosted-audio/xnu.macho OUT=out/kernel/audio-24A446
+kernel/prelink/build.sh`: `kernel.kc` 96,845,824 bytes, sha256
+`a50202ea0aa3a71c3529222abf4fc74a9e5bced8e8c80a59f6252369072101c8`, audit 2712 paired, 0 failures; `prelink
+stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. The same `kernel.kc` has the Speaker's volume control
+(section 6, "Volume"). Not on the phone.
+
+**The phone check:** in `xnuhost.log` `oneios-audio-tunings: ... oneios,xnuhost/Haptics -> V54/Haptics,
+oneios,xnuhost/VAD/d42_actuator_general -> AID8022/VAD/actuator_general (N entries made), the Actuator's strip
+visible; stage 5, status 0`; in iOS's log (`oneios-tool phone pull-log`) no `Cannot find strips file
+oneios,xnuhost/VAD/d42_actuator_general`, and RTAID's `node=Actuator-Output` with a level above -120 dB when a haptic
+plays (a toggle in Settings, a long press on an icon); then `ONEIOS HAPTIC: counters: ... N with samples, N loud,
+... N requests to the motor` with N > 0, and xnuhost's `haptics: 60 s: ... +N played` with N > 0. Keyboard taps need
+Settings > Sounds & Haptics > Keyboard Feedback > Haptic on (iOS's default is off). If the strip is visible and the
+Actuator still gets silence, the next reading is VirtualAudio's DSP set-up lines for `[vzzz]` in the same log.
+
 ### The bridge (`runtime/bridges/haptics/haptic.c`)
 
 - Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the
@@ -2358,6 +2420,73 @@ a PC boot with the null back end), the round trip through air.
 - Beside One UI: `bridgectl audio /data/local/tmp/oneios-audio 12` (the probe, the path) and `bridgectl audio-loop
   /data/local/tmp/oneios-audio 10` (the round trip); then the keyboard-click recording above, before and after.
 
+### Volume: the Speaker's hardware volume control, the host at full scale (fix-audio-volume-haptics, 2026-11-22; host-tested and built, not on the phone)
+
+**The fault (owner, 2026-11-22):** the volume keys do nothing, iOS's level cannot be changed (keys or slider), sound
+plays at a low volume. The keys reach iOS (`input: volume up down: to the guest`, 10 up and 4 down presses;
+`oneios-hid: buttons: Consumer Control, Built-In published`, backboardd holds the event service), sound plays
+(`oneios-audio: speaker open: ... MMAP exclusive`, `speaker stopped by the guest`).
+
+**The cause, iOS's side [F iOS's log of the s6, s7 and s8 boots; V 24A446 VirtualAudio.plugin and CoreAudio]:** every
+volume set of audiomxd throws (10-17 times a boot, at each `vaemSetDeviceVolume: Setting cmsvolume = 0.500 for device
+UID: VirtualAudioDevice_Default`):
+```
+audiomxd OutputVolumeControl_HAL_Common.cpp:1091  Reconfiguring volume curve with dB range {0, 0} and transfer function 0
+audiomxd OutputVolumeControl_HAL_Common.cpp:2090  OutputVolumeControl_HAL_Common::ReconfigureInternal() - unable to lock software volume command.
+audiomxd OutputVolumeControl_HAL_Common.cpp:1423  EXCEPTION (std::invalid_argument) [mSoftwareVolumeMode == VolumeControl::SoftwareVolumeMode::kHardwareOnly
+         && !HasExternalVolumeHandler() && !mPhysicalDeviceSupportsHardwareVolume is true]: "Volume Mode is HardwareOnly but physical device does not support HW volume"
+```
+The speaker route's software volume mode is HardwareOnly (VirtualAudio's routing database), and UniXNU-droidvm's
+Speaker publishes an empty `controls` array: no volume control, a dB range of {0, 0}. So MediaExperience's volume never
+reaches anything, the volume HUD has nothing to move, and no volume key or slider changes the sound (the earlier
+reading, "VirtualAudio's software volume [I from iOSPlus10]", was iOS 16's and is wrong for iOS 27).
+
+**The cause, the host's side [F code]:** the helper's stream is usage MEDIA, so AudioFlinger plays it at One UI's
+media volume of the speaker, the audio policy's index when system_server stopped (nothing changes it in a session):
+the "low volume". iOS's own volume could not lower or raise it (above).
+
+**The fix:**
+- **The Speaker's volume control** (the staged `DroidVMAudio.cpp`, `tools/oneios-tool/crates/oneios-kernel/src/staged/
+  audio.rs`, the block "fix-audio-volume"; `drivers/audio/README.md`): `controls` holds one control in the HAL's
+  IOAudio2 form (read in 24A446's CoreAudio: `HALS_IOA2Control::SynchronizeWithDictionary` reads `control ID`,
+  `base class`, `class`, `scope`, `element`, `read only`, `value`, `minimum value`, `maximum value` and a `range map`
+  of `start int value` (SInt32), `start db value` (Fixed64), `integer steps` (UInt32), `db per step` (Fixed64)):
+  class `vlme`, base class `levl`, scope `outp`, element 0, steps 0..128 over -64..0 dB in 0.5 dB steps; step 0 is
+  silence. The HAL sets it with selector 2 (`HALS_IOA2UCDevice::SetControlValue`: two scalars in, control ID and
+  value, one out, the value taken), which was refused before. The speaker engine scales each 5 ms period by the
+  step's gain (a Q16 table, 480 multiplies, nothing at 0 dB) before the transport. It starts at 0 dB; iOS sets its
+  own level at its start. Log: `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain N of 65536), change N: iOS's
+  volume, applied here (the host plays at full scale)` (the first 16 changes, then every 64th).
+- **The host at full scale** (`runtime/bridges/audio/aaudio_helper.c`, `runtime/bridges/README.md`): at the speaker's
+  first open the helper sets the audio policy's index of USAGE_MEDIA on the speaker to its maximum through
+  libaudioclient's `AudioSystem` (the call AudioService makes; looked up by mangled name, the Android 16 form with
+  `muted` first), and sets the index it found back when it ends (xnuhost closes its socket). One UI's saved volume is
+  in system_server's settings and is not written. [I] If the return kills the namespace before the helper ends,
+  system_server's AudioService sets every saved index again as it starts (AOSP's `checkAllAliasStreamVolumes`; not
+  read in One UI's build). `ONEIOS_AUDIO_HOST_VOLUME=keep`, or system_server running (`bridgectl audio` beside One
+  UI): not touched. Only the speaker device (`AUDIO_DEVICE_OUT_SPEAKER`): a headset keeps One UI's index.
+
+**The volume keys:** they go backboardd -> SpringBoard -> MediaExperience's volume up/down -> the same VAD volume set
+that threw; `Volume button client session: None` is normal (no app claimed the buttons). [I] With the control the
+set succeeds and the HUD moves; the key path itself could not be read in these boots: `pull-log`'s iOS log holds only
+the first 2-3 s of userland and the last seconds, not the presses minutes later.
+
+**Tested:** `runtime/bridges/tests/host.sh` in the host-test container (2026-11-23): `test_audio_helper` 20310
+checks, 0 failed (the fake `AudioSystem` of the test gets the index set to its maximum once a run, set back when the
+helper ends, not touched with `ONEIOS_AUDIO_HOST_VOLUME=keep`, at the maximum already, or with system_server up),
+bridges 377, wifi 162, brightness 126, battery 83, thermal 99, hal binder 46, hw_backend 120, 0 failed; `make -C
+runtime/bridges all` (the NDK build of `oneios-audio`) builds; `cargo test -p oneios-kernel` (the edit list on its
+synthetic source against `golden/synthetic/audio.out`) 14 of 14; the kernel build and `kernel.kc` `a50202ea...` of
+section 5's 0086 (the staged `DroidVMAudio.cpp`, sha256 `9feea520...` in `tests/kernelgen/golden/staged.sha256`,
+compiled without a warning). Not on the phone.
+
+**The phone check:** in `xnuhost.log` `oneios-audio: host volume: One UI's media volume on the speaker was index N of
+M; set to the maximum for the session` (or `... is at its maximum`, or the reason it could not), at the end `... put
+back to index N`; `DroidVMAudio: speaker volume N of 128 (...)` at iOS's start and at each key press or slider move;
+in iOS's log no `Volume Mode is HardwareOnly but physical device does not support HW volume`, `Reconfiguring volume
+curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
+up to the phone's full loudness. Back in One UI: the media volume as it was.
+
 ### Missing, unknown
 
 - **Not run yet in a test cycle of mine:** `owner-hide-vmm=audiomxd,com.apple.WebKit.GPU` (VirtualAudio's Null device
@@ -2371,8 +2500,8 @@ a PC boot with the null back end), the round trip through air.
 - [U] Whether VirtualAudio of iPhone18,2 builds its speaker route on "Speaker" and "Mic" (UniXNU-droidvm's iPad
   UIDs). iOSPlus10's iOS 16 iPhone needed "Speaker" with a silent stereo input and "Hawking"; the UIDs are boot
   arguments now, a third device would be a change of the staged source.
-- Volume: iOS's volume keys scale the samples in iOS (VirtualAudio's software volume [I from iOSPlus10]); the
-  Android media stream stays at One UI's last volume (14 of 15 on 2026-11-12). Nothing turns it down for a session.
+- Volume (corrected 2026-11-22): iOS 27's speaker route wants hardware volume, not software volume; the Speaker's
+  volume control and the host stream at full scale: "Volume" above.
 - Latency: 131-142 ms on the phone before 2026-11-13, 105-123 ms (host side) in the 8644ae9 session; since
   2026-11-15 MMAP exclusive and the smaller speaker ring ("Latency end to end" above): [U] what the phone's HAL gives
   and the real figures, until the phone runs it. A FAST track needs a callback's realtime thread (not done).
@@ -2396,6 +2525,26 @@ next session must show: `userland/camera/README.md`. The host side's first phone
 the cameras are listed and one opens, no frame arrived; the cause is fixed in the code and the fix has not run on
 the phone yet ("The first phone run" below). Also `runtime/bridges/camera/README.md` (the host, the phone commands),
 `drivers/camera/README.md`.
+
+**The 2026-11-22 sessions (main 203a9e7, kernel with 0082; iOS's own log `out/session-logs/2026-11-22/s7-ioslog`):
+the plug-in route works up to the device; CMCapture then had no model name.** In order: the kernel published
+`AppleH9CamIn`, 0056 mounted the plug-in, `fcc_probeCameraDriverService ... Camera driver AppleH9CamIn is active`,
+`ONEIOS CAMERA: ios: cameracaptured[51]: loaded`, `the device made: stream 0 Back Camera (17 formats)`, `stream 1
+Front Camera (8 formats)`, `Created FigCaptureDeviceRef`, `ONEIOS CAMERA: user client opened by cameracaptured`. Then,
+at each of cameracaptured's lookups: `Fig assert: "modelSpecificAVCaptureSessionPlist" at loopBail
+(FigCaptureSourceBackingsProvider.m:2316)`, err -12780, `Created 0 in-memory built-in backings`: no source, so no
+stream was ever asked for and no frame went to cameracaptured. **Cause** [F, read in the 24A446 shared cache]:
+`csu_createSourceInfoDictionariesFromAVCaptureSessionPlistForCaptureDeviceIDs` reads its per-model plist with
+`fcsbp_plistCreateAndPreprocess(FigCaptureGetModelSpecificName())`; that name is MobileGestalt's
+`HWModelDescriptionForCamera` less a trailing "AP" (or "DEV"), and MobileGestalt answers it from `/product
+unique-model` (on the iPhone18,2 "V54AP", so `CMCapture.framework/V54/`). The guest's `/product` had no
+`unique-model`, so the name was NULL. **Fix (2026-11-22, built and host-tested, not run on the phone):** the loader
+writes `unique-model` "V54AP" and the camera nodes (below, "The camera nodes"), and hosted 0084 removes
+MobileGestalt's cache once when the tree changes (until 0084 the kernel removed it at every boot; `docs/userland.md`,
+"MobileGestalt's cache follows the tree"). The same answer is MobileGestalt's `HWModelDescriptionForAnalytics`,
+`...ForAudio`, `...ForPowerPerf` and `...ForAutomatedTesting` (one table entry each, all reading `unique-model`):
+those were NULL before and are "V54AP" now, with the cameras only. [U] who reads them (a search of the shared cache
+for their importers stopped at its 10 minute limit); audio's tunings are found by HWModelStr (`oneios,xnuhost`, 0078).
 
 ### The phone [F]
 
@@ -2459,8 +2608,8 @@ with no error.
 | Helper process `bin/oneios-camera`: opens a camera, NV12 frames with the sensor's time into a memfd ring | `runtime/bridges/camera` | built for Android; 131 host checks with a test picture; on the phone: the list and the open work, no frame yet (above) |
 | xnuhost: the helper's socket and ring, the `oneios,camera` virtio device (`/arm-io/camera`, `XL_DEV_CAMERA`) | `runtime/bridges/camera` (`libonecamera.a`), `runtime/xnuhost/src/main.c` | linked into xnuhost; the device tested on xnuhost's transport against a guest of plain memory |
 | Kernel: the transport and `/dev/oneios-camera` (the `NCFRAME1` layout of iOSPlus10's and HakiOS's node, NV12); `AppleH9CamIn` and its user client (the same session) | `drivers/camera` | compiles with the kernel's records, in the `HOSTED_OUT=cam` kernel; 37 host checks of the pure parts; on the phone (2026-11-12) the transport came up with 3 cameras; the service not run |
-| Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | built; not run |
-| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); not run in iOS; placed in the seed by the image hook (a new seed) |
+| Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | on the phone (2026-11-22): mounted, `stage 5, status 0` |
+| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); placed in the seed by the image hook (a new seed) |
 
 - **Route on the host** [F AOSP android15-release for the reason, I for Samsung's build]: the provider HAL directly
   when system_server is gone, Camera2 NDK through cameraserver while One UI runs (`auto`). cameraserver refuses every
@@ -2480,13 +2629,37 @@ with no error.
   FigCaptureDevice hands CVPixelBuffers to the capture graph. The app needs, in order: the capture servers running,
   a FigCaptureDevice with a steady preview stream, a still from the same stream, and only then the Camera icon's
   device tree nodes (`/arm-io/isp` `camera-rear`, `camera-front`; `/product/camera`): with the nodes and no frame
-  path the launch hangs.
+  path the launch hangs [F iOSPlus10, iOS 16]. On 27 the nodes are added now (below): the source list itself needs
+  `unique-model`, and without the nodes nothing can open the Camera app to test the stream.
+
+### The camera nodes (2026-11-22)
+
+The loader (`runtime/loader/src/machine.c`, `xl_machine.cameras`) adds them only with the `oneios,camera` device and
+only for the roles the helper lists; xnuhost waits for the list before the tree (at most 3 s; 170 ms on the phone).
+Values are the iPhone18,2's (`out/kernel-inputs/24A446/devicetree.bin`, `xnuloader-inspect adt`):
+
+| Node, property | Value | Given when | MobileGestalt answer (24A446, read in libMobileGestalt) |
+|---|---|---|---|
+| `/arm-io/isp` `camera-rear` | u32 1 | a back camera is listed (wide, ultra-wide or a telephoto) | `rear-facing-camera`; `still-camera` (Camera.app's `SBAppTags`) |
+| `/arm-io/isp` `camera-front` | u32 1 | the front camera is listed | `front-facing-camera`; `still-camera` |
+| `/product/camera` | empty node | either | `video-camera` (presence) |
+| `/product` `unique-model` | "V54AP" | either, without an identity tree | `HWModelDescriptionForCamera`: CMCapture's model folder `V54` |
+
+Left out on purpose: `/arm-io/isp`'s other properties (`compatible "isp,isp-generic-ex|isp,s5l8960x"`, `reg`, the
+exclave services: no driver may match the node); `/product/camera`'s feature flags (the iPhone's has about 80: `flash`,
+`live-photo-capture`, `rear-cam-superwide-capability`, `rear-cam-telephoto-capability`, slow motion, 4K, portrait,
+...), because the plug-in gives two streams of at most 1920x1080 and no torch: a flag the plug-in cannot honour would
+make the Camera app offer a mode with no device behind it. The ultra-wide and the telephotos get their flags with
+their streams. The S24 Ultra defaults are unchanged (the nodes follow the camera device, which follows the helper).
+Host test: `runtime/loader/tests/test_loader.c` (no nodes without the device; both, rear only, front only with an
+identity; the identity's own `unique-model` kept; the identity hash; 193 checks).
 
 ### Missing, unknown
 
-- **The first session with the plug-in** (`userland/camera/README.md`, "What the next session's logs must show"):
-  whether the 27 capture graph takes the device as it is, and which properties it asks for that are not answered.
-  The device tree nodes for MobileGestalt and the camera permission are after that.
+- **The first session with the nodes and 0084** (the phone check: `userland/camera/README.md`, "What the next
+  session's logs must show"): whether CMCapture builds its sources from V54's plist with this device, whether the
+  27 capture graph takes the device as it is, and which properties it asks for that are not answered. The camera
+  permission prompt is after that.
 - [U] on the phone: the capture again with the fix, the telephotos, the diagnostic run if no frame arrives
   (`runtime/bridges/camera/README.md`, "On the phone" and "When no frame arrives"), and "In a
   session" (the HAL back end with system_server stopped; whether Samsung's HAL takes a plain YCbCr_420_888 stream

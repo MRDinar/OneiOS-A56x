@@ -64,7 +64,7 @@ bool obt_vsc_empty;
 /*
  * Bluetooth powers on in a VM (docs/hardware.md 4, "Bluetooth powers on"; oneios_bt_env.h): 24A446's bluetoothd
  * powers on only with transport-encoding 10, and 10 alone would give it its own simulated controller. So the nub gets
- * 10 and bluetoothd's environment BT_HCI_TRANSPORT=H4:POSIX (kern_exec.c, hosted 0084), which keeps its HCI on
+ * 10 and bluetoothd's environment BT_HCI_TRANSPORT=H4:POSIX (kern_exec.c, hosted 0087), which keeps its HCI on
  * com.apple.uart.sk.bluetooth; vendor commands get BTVC's answer (obt_shim.vsc_empty). oneios-bt-hci=0: the tree's
  * transport-encoding as xnuhost published it (1, H4: power init fails, the state before 2026-11-23);
  * oneios-bt-hci=T:D another transport and driver of bluetoothd's.

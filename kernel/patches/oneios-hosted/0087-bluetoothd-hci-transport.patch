@@ -1,15 +1,14 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 75bf3f4..b239c3c 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -6695,7 +6695,53 @@
- bad:
- 	return error;
+@@ -6741,6 +6741,52 @@ bad:
  }
-+
-+
+ 
+ 
 +#if XNU_HOSTED
 +/*
-+ * OneiOS hosted (0084): bluetoothd's HCI transport, by its environment. In a virtual machine (/defaults/vmm-present)
++ * OneiOS hosted (0087): bluetoothd's HCI transport, by its environment. In a virtual machine (/defaults/vmm-present)
 + * 24A446's /usr/sbin/bluetoothd powers on only with transport-encoding 10, and the same number would give it BTVC, a
 + * simulated controller inside its own process (power init 0x100628730, chip initialisation 0x1006294b4, HCI transport
 + * choice 0x10036f8ac). With BT_HCI_TRANSPORT=TRANSPORT:DRIVER in its environment, the HCI transport is taken from that
@@ -22,7 +21,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 + *   oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX (docs/hardware.md 4)      or: ... kept: BT_HCI_TRANSPORT=...
 + */
 +char oneios_bluetoothd_env[64];
- 
++
 +static int
 +oneios_bluetoothd_env_add(struct image_params *imgp, int ptr_size)
 +{
@@ -52,19 +51,19 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +	return 0;
 +}
 +#endif /* XNU_HOSTED */
- 
++
  /*
   * exec_extract_strings
-@@ -6895,7 +6941,13 @@
- 		}
+  *
+@@ -6940,6 +6986,12 @@ exec_extract_strings(struct image_params *imgp)
  		imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
  		imgp->ip_envc++;
-+	}
+ 	}
 +#if XNU_HOSTED
 +	error = oneios_bluetoothd_env_add(imgp, new_ptr_size);
 +	if (error) {
 +		goto bad;
- 	}
++	}
 +#endif
  
  	/* Save space for envv[] NULL terminator */

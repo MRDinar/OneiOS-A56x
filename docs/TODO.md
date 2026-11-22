@@ -87,3 +87,16 @@ stops changing every day.
     `xnuhost.conf` settings (RAM, the display, the S Pen), and how to report a session's logs (`oneios-tool phone
     log`, `cycle --only collect`);
   - what is safe to change and what must not change (the way back to One UI, CLAUDE.md's rules).
+
+## iOS as the main system of a session (the owner, 2026-11-22)
+
+One UI's Android userspace should not run beside iOS, within the limits: no security protection is touched, the
+Linux kernel stays as it is, only what root on the stock system allows. The inventory, the direct kernel interfaces,
+the gains and the stages are in [plan-ios-first-session.md](plan-ios-first-session.md).
+
+- [x] Stage 1: `oneios-tool phone procs`, the process list with CPU and RAM (read only; host and stand-in tested).
+- [ ] The three captures on the phone (One UI idle, a session idle, a session in use): the plan's section 1.3.
+- [ ] Stage 2: the fork's stop loop without 15 `getprop` a second; the switch stops zygote's restart list where no
+  bridge uses it (the return restarts those services already).
+- [ ] Stage 3: the display on DRM/KMS with surfaceflinger and the composer stopped (a read-only probe first).
+- [ ] Stage 4: `ram-session-reserve` from the measured floor.

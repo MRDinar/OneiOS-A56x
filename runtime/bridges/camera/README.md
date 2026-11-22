@@ -145,6 +145,13 @@ Both are built; `auto` picks **the NDK while system_server runs, the provider HA
 `ONEIOS_CAMERA=0` leaves the device out; `ONEIOS_CAMERA_BACKEND=auto|ndk|hal|test`; `ONEIOS_CAMERA_VERBOSE=1`.
 `runtime/build.sh` stages `bin/oneios-camera` and `bin/camctl`. `test` gives the guest a moving picture with no camera.
 
+The device tree's camera nodes (2026-11-22, `docs/hardware.md` 7, "The camera nodes"): before it builds the tree,
+xnuhost waits for the helper's list with `br_camera_list(camera, list, OC_MAX_CAMERAS, 3000)` and tells the loader
+which roles there are (`xl_machine.cameras`: a back one, the front one). `br_camera_list` sleeps on a condition
+variable that the receive thread signals when the list (or the helper's end) comes; until then it was a 5 ms
+sleep-and-look loop. On the phone the list came 170 ms after the helper's start. Line: `camera: iOS is told of a rear
+camera and a front camera (3 cameras from the helper)`.
+
 The session: the helper starts with xnuhost and ends with it (its socket closes; `PR_SET_PDEATHSIG`; it is in the
 session's cgroup). It opens no input device, asks for no realtime class or nice value, writes nothing under `/sys`,
 and never blocks xnuhost: commands to it are non-blocking sends, a full socket drops a frame note, not a frame.
