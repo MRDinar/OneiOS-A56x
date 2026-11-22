@@ -3034,7 +3034,7 @@ All of these at once: `oneios-tool log pen xnuhost.log` (each stage's first line
 `N of a layout not known` above 0 with `0 stylus events given ...` means the event data is not the layout orient()
 knows: tilt and pressure then stay as the driver made them (pressure 0..1, no angles).
 
-## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; on the phone 2026-11-22: no frame encoded, iOS 27's tile session added, not yet booted)
+## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; on the phone 2026-11-22: no frame encoded, iOS 27's tile session added; booted 2026-11-22: widgets render, encode-fail 0, no tile encoded yet)
 
 The phone's hardware video encoder (Qualcomm's Codec2 `c2.qti.hevc.encoder` / `c2.qti.avc.encoder`) for iOS, so
 VideoToolbox encodes HEVC and H.264 and **CMPhoto writes HEIC**: chronod's widget snapshots, screenshots, the photo

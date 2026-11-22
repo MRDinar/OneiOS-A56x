@@ -256,9 +256,12 @@ main's 65b7bd4 already anchors the same `vm_shared_region.c` hunk.
 - **Fixed with it:** xnuhost dropped the image set's `encoder=` (read, then not copied back, as `pen=` was): the OneOS
   app passes no `--set`, so a phone session could not turn the encoder on. `runtime/bridges/encoder/README.md` "On
   the phone" has how to set it now.
-- **Not done:** a boot of this kernel. The phone run is next ("What a session on the phone must show", above);
-  `oneios-tool ioslog checks data.img` counts the `heic` row (chronod's `CMPhotoCompressionSessionAddImage`, `codec:
-  'hvc1'`, `Content load failed`), which must be 0 in that session.
+- **On the phone (2026-11-22 23:50, kernel `out/kernel/combo-24A446` `5baab993...` = main 23561aa with 0082, 0083 and
+  the tile messages; `encoder=auto`):** `encctl hevc 96 96` ok before the session; `ONEIOS CODEC: 1 virtio-media device(s), 1
+  up`; `counters: ... unknown 0, the last 'none'` (the earlier boot's ests/einv/-enc loop is gone: `sessions 1`, not 3 a
+  second); iOS's log (`oneios-tool phone pull-log`): `encode-fail 0` (116 `CMPhotoCompressionSessionAddImage ... err =`
+  the boot before), no `StartTileSession failed`; the owner: "widgets now render". Not yet seen: `frames in`/`out` above 0
+  in the counters (no tile was sent in that boot), so the HEVC encode itself is still unproven on the phone.
 
 ## The tile session, built on the Mac (2026-11-22)
 
