@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! OneiOS's host bridges (docs/hardware.md): the Linux/Android side of each device the guest's drivers use.
 
+pub mod log; // the bridges' log (br_log): every bridge's lines, a sink xnuhost sets
 pub mod proto; // the protocols shared with the guest's drivers (drivers/bridge, drivers/net, drivers/haptics)
 pub mod cpu; // cpu/: host topology, the vCPU plan, thread placement
 pub mod hw; // hw/: the hardware backends and the host device
