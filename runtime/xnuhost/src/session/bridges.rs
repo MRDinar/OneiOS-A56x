@@ -132,16 +132,6 @@ fn core_name(part: u32) -> &'static str {
     }
 }
 
-/// The first line of a file (after `key` when given), "" when absent.
-fn read_line(path: &str, key: Option<&str>) -> String {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let line = match key {
-        Some(k) => text.lines().find_map(|l| l.strip_prefix(k)),
-        None => text.lines().next(),
-    };
-    line.unwrap_or("").trim_start_matches([' ', '\t']).to_owned()
-}
-
 fn log_cpu_layout(host: &Topology, plan: &CpuPlan) {
     for (c, h) in host.cpu.iter().enumerate().filter(|(_, h)| h.present) {
         let capped = h.scaling_max_khz != 0 && h.scaling_max_khz < h.max_khz;
@@ -172,9 +162,9 @@ fn log_cpu_layout(host: &Topology, plan: &CpuPlan) {
             v.capacity
         );
     }
-    let boost = read_line("/sys/devices/system/cpu/cpufreq/boost", None);
-    let cpuset = read_line("/proc/self/cpuset", None);
-    let allowed = read_line("/proc/self/status", Some("Cpus_allowed_list:"));
+    let boost = xh_core::fs::read_line("/sys/devices/system/cpu/cpufreq/boost").unwrap_or_default();
+    let cpuset = xh_core::fs::read_line("/proc/self/cpuset").unwrap_or_default();
+    let allowed = xh_core::fs::key_line("/proc/self/status", "Cpus_allowed_list:").unwrap_or_default();
     logi!(
         "cpu: xnuhost's cpuset {}, CPUs allowed {}; cpufreq boost {}",
         if cpuset.is_empty() { "(none)" } else { &cpuset },

@@ -38,8 +38,9 @@ pub fn read_line(path: impl AsRef<Path>) -> Option<String> {
     Some(t[..end].to_owned())
 }
 
-/// The value of the first line that starts with `key` (as main.c's `read_line(path, key)`): what follows the key,
-/// spaces and tabs before it skipped, without the line break. "Cpus_allowed_list:" of /proc/self/status.
+/// The value of the first line that starts with `key` (main.c's `read_line(path, key)`): what follows the key,
+/// spaces and tabs before it skipped, without the line break. "Cpus_allowed_list:" of /proc/self/status (the
+/// `cpu:` line of xnuhost's session).
 pub fn key_line(path: impl AsRef<Path>, key: &str) -> Option<String> {
     let t = read_bytes(path, 1 << 16).ok()?;
     let t = String::from_utf8_lossy(&t);

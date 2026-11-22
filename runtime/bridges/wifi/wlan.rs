@@ -865,11 +865,12 @@ impl Radio for WlanRadio {
 }
 
 // ---- wlan0's host state -------------------------------------------------------------------------
+/// A /proc/sys integer (one number and a line break), `fallback` when it cannot be read.
 fn read_int(path: &str, fallback: i32) -> i32 {
-    std::fs::read_to_string(path).ok().and_then(|t| t.split_whitespace().next()?.parse().ok()).unwrap_or(fallback)
+    xh_core::fs::read_i64(path, 10).map_or(fallback, |v| v as i32)
 }
 fn write_int(path: &str, value: i32) {
-    let _ = std::fs::write(path, format!("{value}\n"));
+    let _ = xh_core::fs::write_text(path, &format!("{value}\n"));
 }
 
 /// An ifreq: the name, then `data` at the union (a pointer or the flags).
