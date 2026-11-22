@@ -336,6 +336,16 @@
 # makeWriteable does nothing. `oneios-dyld-flags:` lines (the commpage at boot, launchd's write).
 # oneios-dyld-rw-data-const=0 is the old way. README.md, "0082".
 0082-dyld-rw-data-const.patch
+# fix-spotlight-keyboard (2026-11-22): the keyboard loop of every app with no network on a fresh store. AssistantServices
+# caches the offline dictation languages it reads from mobile's com.apple.assistant.support "Offline Dictation Status";
+# with no value (assistantd, which writes it, is disabled) the cache stays nil, so each check posts _availabilityChanged
+# again, UIKit posts UIKeyboardDictationAvailabilityDidChangeNotification, the keyboard dock redraws and checks again
+# (Spotlight at 105% with the dock's mic.fill looked up ~5700 times a second; Settings busy 389 s while typing).
+# Before launchd the file is written with an empty dictionary when missing (prefs.toml group "dictation" does it for
+# new seeds); oneios-dictation-status=0 is the old way. Also com.apple.navd joins 0044's default oneios-enable-jobs:
+# GeneralMapsWidget reconnected to it with no back-off (~28000 times, 54-103% CPU, geod and launchd beside it).
+# README.md, "0083".
+0083-dictation-status-navd.patch
 # fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush

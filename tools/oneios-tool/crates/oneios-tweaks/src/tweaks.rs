@@ -25,7 +25,7 @@ const INIT_ROOT_PATH: &str = "usr/libexec/oneios-init";
 const HELPERS: [&str; 4] = ["oneios-init", "oneios-bootstat", "oneios-mg", "oneios-thermal"];
 const LOGD: Owner = (272, 272);
 const RECOVER_LABELS: [&str; 4] = ["com.apple.backboardd", "com.apple.SpringBoard", "com.apple.configd", "com.apple.runningboardd"];
-pub const PREF_GROUPS: [&str; 5] = ["setup", "migration", "watchdogs", "awake", "coreanimation"];
+pub const PREF_GROUPS: [&str; 6] = ["setup", "migration", "watchdogs", "awake", "coreanimation", "dictation"];
 
 /// `roottweak apply`'s options (cli.py's `options`).
 #[derive(Clone, Debug, Default)]

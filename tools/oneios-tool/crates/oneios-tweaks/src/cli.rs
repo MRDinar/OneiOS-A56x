@@ -97,6 +97,9 @@ pub struct ApplyArgs {
     /// leave the "coreanimation" preferences out
     #[arg(long = "no-coreanimation")]
     pub no_coreanimation: bool,
+    /// leave the "dictation" preference out (the keyboard then loops on dictation availability with no network)
+    #[arg(long = "no-dictation")]
+    pub no_dictation: bool,
     /// Reduce Motion and Reduce Transparency on
     #[arg(long = "lighter-visuals")]
     pub lighter_visuals: bool,
@@ -110,7 +113,7 @@ pub struct ApplyArgs {
 
 impl ApplyArgs {
     pub fn to_apply(&self) -> Apply {
-        let flags = [self.no_setup, self.no_migration, self.no_watchdogs, self.no_awake, self.no_coreanimation];
+        let flags = [self.no_setup, self.no_migration, self.no_watchdogs, self.no_awake, self.no_coreanimation, self.no_dictation];
         Apply {
             root: self.root.clone().unwrap_or_default(),
             root_image: self.root_image.clone(),

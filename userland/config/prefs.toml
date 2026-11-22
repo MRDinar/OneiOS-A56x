@@ -153,6 +153,15 @@ source = "UniXNU-droidvm build-droidvm-data-seed.py"
 [pref.values]
 CAEnableMedina = false
 
+# ---- dictation: the keyboard does not loop on dictation availability ----------------------------------------
+[[pref]]
+group = "dictation"
+user = "mobile"
+domain = "com.apple.assistant.support"
+source = "read in AssistantServices and UIKitCore of 24A446: -[AFDictationConnection forcedOfflineDictationIsAvailableForLanguage:synchronous:] caches the installed offline languages of this key (only an NSDictionary counts) and posts _availabilityChanged each time it fills the cache; with no value the cache stays nil, so the keyboard dock, which asks again on each UIKeyboardDictationAvailabilityDidChangeNotification, loops on the main thread of every app with a keyboard when there is no network (Spotlight 105%, Settings busy 389 s while typing, phone 2026-11-22). assistantd writes it on an iPhone; the daemon policy disables assistantd. Empty: no offline language installed. hosted 0083 writes the same for a Data store from an older seed"
+[pref.values]
+"Offline Dictation Status" = {}
+
 # ---- visuals: less to draw (off unless --lighter-visuals) --------------------------------------------------
 [[pref]]
 group = "visuals"

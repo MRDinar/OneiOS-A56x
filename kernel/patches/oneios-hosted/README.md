@@ -1229,6 +1229,73 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0083-dictation-status-navd.patch (fix-spotlight-keyboard, 2026-11-22)
+
+The owner's reports: in Spotlight the keyboard never comes up; in Notes one character comes, then a long lag; on the
+Wi-Fi password field of Settings the keyboard comes up but each key takes very long. All three on a fresh Data store
+with no network.
+
+What was found (iOS's log of the fresh boot `out/session-logs/2026-11-22/fresh/ioslog.txt` and of the Wi-Fi boot
+`s6-ioslog/ioslog.txt`; `xnuhost-s5.log` and `xnuhost-s6.log` with `oneios-sysfail` and `oneios-ubt`; AssistantServices
+and UIKitCore of the 24A446 cache disassembled with `ipsw dyld disass`, the full cache copied out of `systemos.img`):
+
+- **The loop.** Spotlight's main-thread samples (`log stacks`, unslid with the boot's slide and named with
+  `ipsw dyld a2s`): `-[UIDictationController dictationConnnectionDidChangeAvailability:]` -> `postNotificationName:`
+  `UIKeyboardDictationAvailabilityDidChangeNotification` -> `-[UISystemKeyboardDockController updateDockItemsVisibility]`
+  -> `configuredGlyphWithName:` -> `+[UIImage imageNamed:inBundle:...]` -> `_UIImageCollectImagePathsForPath`, the
+  12 failing `faccessat` of `CoreGlyphsPriority.bundle/mic...` per lookup (the catalog has `microphone`; `mic` is
+  an alias in CoreGlyphs' `name_aliases.strings`). Spotlight held 103-107% of a core with ~172000 such faccessat per
+  30 s; Settings looked up `mic` 277 times in the 1.3 s before `oneios-sysfail-max` and its main thread stayed busy for
+  more than 389 s (HangTracer's 5, 9, 17, 34, 71, 157, 389 s are one hang reported at doubling lengths).
+- **Why it never ends.** The dock observes that notification (`viewDidLoad`) and, when the device is unlocked,
+  `+[UIDictationController dictationIsFunctional]` calls `-[AFDictationConnection dictationIsAvailableForLanguage:]` with
+  no "dictation enabled" check. With no network (`AFNetworkAvailability isAvailable` NO) that calls
+  `forcedOfflineDictationIsAvailableForLanguage:synchronous:`, which caches at `self+0x20` the keys of CFPreferences
+  `Offline Dictation Status` (domain `com.apple.assistant.support`, read by `-[AFPreferences offlineDictationStatus]`,
+  only an `NSDictionary` counts) whose `Installed` is true, and each time it fills the cache it dispatches
+  `_availabilityChanged` -> `_tellSpeechDelegateAvailabilityChanged` -> UIKit's `dictationConnnectionDidChangeAvailability:`.
+  With no value the cache is `[nil keysOfEntriesPassingTest:]` = nil: it is filled again at every check, and every check
+  posts again. On an iPhone assistantd writes the status; the daemon policy disables assistantd (group base).
+- **What it did to the keyboard.** Spotlight's main thread was 13.78 s busy at launch, so InputUI's keyboard arbiter
+  dropped Spotlight's client (`timed out with 1 assertions remaining, disconnecting`, then `Failed to access ... remote
+  service ... Code=4099`): no keyboard. (The arbiter's wait looks like 0.1 s in `ioslog show` before 2026-11-22: its
+  times were 52 times too short, fixed in `oneios-tool ioslog`, see tools/oneios-tool/README.md "ioslog".)
+- **navd.** In the same Wi-Fi boot GeneralMapsWidget logged ~28000 `Opening connection to navigation server` /
+  `failed to do a bootstrap look-up: xpc_error=No such process` for `com.apple.navigationService` (navd, disabled by
+  group base), with no back-off: `oneios-cpu` GeneralMapsWidget 54-103%, geod 30-46%, launchd 13-24% next to Settings.
+
+What the patch changes (`bsd/kern/kern_exec.c`, `XNU_HOSTED`, run before launchd with 0044 and 0078):
+
+- `oneios_dictation_status()`: `/private/var/mobile/Library/Preferences/com.apple.assistant.support.plist` is written
+  when missing as XML with `Offline Dictation Status` = `{}` (mobile 501:501, 0600); an XML file without the key gets it
+  after its top `<dict>`; a file that names it is kept; a binary file without it (cfprefsd's) is left alone and said so.
+  An empty dictionary means "no offline language installed": the cache becomes an empty set, filled once, posted once.
+  New seeds get the same from the root tweaks (`userland/config/prefs.toml` group `dictation`, docs/userland.md 3.1).
+  `oneios-dictation-status=0` is the old way. One line: `oneios-dictation: Offline Dictation Status: {} (written,
+  mobile 0600) (/private/var/mobile/Library/Preferences/com.apple.assistant.support.plist)`, or `named there already:
+  kept`, or `... binary plist without it: left alone (the loop stays)`.
+- 0044's default `oneios-enable-jobs` list is now `com.apple.analyticsd,com.apple.navd` (the daemon policy keeps navd
+  from now on: `userland/config/daemons.toml`). Its line: `oneios-jobs: com.apple.navd: enabled in disabled.plist (it was
+  disabled)`.
+
+What it costs: dictation stays unavailable offline (it was: no language is installed); navd runs (idle unless
+something navigates).
+
+Tested (Mac, 2026-11-22): `HOSTED_OUT=kbd kernel/build-hosted.sh` applied the series with 0083 and built `xnu.macho`
+in 155 s (sha256 `f1f5cd7f...`; the strings `com.apple.analyticsd,com.apple.navd` and `oneios-dictation: ...` are in
+it; no warning in the new code). `XNU_FILESET_REFERENCE=1` does not link since 0074 (`_native_owner_cache_original_root`
+undefined in the RELEASE reference; 0082's tree has no `reference.macho` either), so the collection is without it:
+`KERNEL=out/kernel/current-hosted-kbd/xnu.macho OUT=out/kernel/kbd-24A446 kernel/prelink/build.sh` gave `kernel.kc`
+96,813,056 bytes, sha256 `7593e99e...`, audit 2,712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad;
+`kernel/tests/host.sh` 7 of 7. The root tweaks' tests check the new seed file (mobile 0600, the empty dictionary) and
+the policy (navd kept, base 127). Not booted yet. On the phone these lines prove it: `oneios-dictation: Offline
+Dictation Status: {} (written, mobile 0600)` (or `named there already: kept` on the next boot) and `oneios-jobs:
+com.apple.navd: enabled in disabled.plist (it was disabled)` in `xnuhost.log`; with the keyboard up in Settings or
+Spotlight, `oneios-cpu` without Preferences or Spotlight near 100% and without GeneralMapsWidget, geod and launchd at
+20-100%; with `oneios-sysfail=Preferences,Spotlight oneios-sysfail-enoent=1`, the `CoreGlyphsPriority.bundle/mic`
+probes once per keyboard (12 lines), not hundreds of times; in iOS's log no `timed out with 1 assertions remaining,
+disconnecting` for Spotlight, key taps in Spotlight, and Spotlight and Settings hangs under a second or two.
+
 ## 0082-dyld-rw-data-const.patch (fix-dyld-cache-unnesting, 2026-11-22)
 
 The owner's report: app labels show late on every boot, and apps open and close slowly. In every session log each

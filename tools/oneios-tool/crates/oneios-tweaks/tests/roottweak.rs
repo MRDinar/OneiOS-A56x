@@ -303,8 +303,8 @@ fn policy_the_policy_does_not_contradict_itself() {
     assert!(!chosen.iter().any(|l| d.keep.contains(l)));
     assert!(!chosen.iter().any(|l| d.idle.iter().any(|(i, _)| i == l)));
     // vphone's base list of 134, less generativeexperiencesd (kept) and the four OTA jobs (replace)
-    assert_eq!(d.group("base").unwrap().labels.len(), 128); // analyticsd went to keep (2026-11-12)
-    for label in ["com.apple.SpringBoard", "com.apple.backboardd", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.generativeexperiencesd", "com.apple.bluetoothd", "com.apple.locationd"] {
+    assert_eq!(d.group("base").unwrap().labels.len(), 127); // analyticsd (2026-11-12) and navd (2026-11-22) went to keep
+    for label in ["com.apple.SpringBoard", "com.apple.backboardd", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.generativeexperiencesd", "com.apple.bluetoothd", "com.apple.locationd", "com.apple.navd"] {
         assert!(d.keep.contains(label), "{label}");
     }
     for label in ["com.apple.watchdogd", "com.apple.nfcd", "com.apple.seld", "com.apple.momentsd", "com.apple.fairplayd.H2", "com.apple.identityservicesd", "com.apple.accessoryupdaterd", "com.apple.aned"] {
@@ -363,7 +363,7 @@ fn policy_every_preference_names_its_source() {
     let prefs = config::prefs(None).unwrap();
     assert!(prefs.iter().all(|p| !p.source.is_empty()));
     let groups: std::collections::BTreeSet<&str> = prefs.iter().map(|p| p.group.as_str()).collect();
-    assert_eq!(groups.into_iter().collect::<Vec<_>>(), ["awake", "coreanimation", "migration", "setup", "visuals", "watchdogs"]);
+    assert_eq!(groups.into_iter().collect::<Vec<_>>(), ["awake", "coreanimation", "dictation", "migration", "setup", "visuals", "watchdogs"]);
 }
 
 // ---------------------------------------------------------------- Sealed
@@ -453,6 +453,11 @@ fn sealed_preferences_are_seeded_with_owners_and_the_build() {
         assert!(matches!(read_plist(&c.data, &path).get("CAEnableDeepFramebuffer"), Some(P::Bool(false))), "{path}");
     }
     assert!(matches!(read_plist(&c.data, &format!("{prefs}com.apple.coreanimation.plist")).get("CAEnableMedina"), Some(P::Bool(false))));
+    // the offline dictation status: an empty dictionary, so AssistantServices caches it (hosted 0083 for older stores)
+    let assistant = read_plist(&c.data, &format!("{prefs}com.apple.assistant.support.plist"));
+    assert!(plist::py_eq(assistant.get("Offline Dictation Status").unwrap(), &d(vec![])), "{assistant:?}");
+    let e = c.entry("data", &format!("{prefs}com.apple.assistant.support.plist"));
+    assert_eq!((int_of(&e, "uid"), int_of(&e, "gid"), str_of(&e, "mode")), (501, 501, "0600".into()));
     let e = c.entry("data", &format!("{prefs}com.apple.springboard.plist"));
     assert_eq!((int_of(&e, "uid"), int_of(&e, "gid"), str_of(&e, "mode")), (501, 501, "0600".into()));
     assert_eq!(int_of(&c.entry("data", "mobile/Library/Preferences"), "uid"), 501);

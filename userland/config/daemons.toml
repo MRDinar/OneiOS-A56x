@@ -45,6 +45,8 @@ labels = [
   "com.apple.locationd", "com.apple.bluetoothd",
   "com.apple.audiomxd", "com.apple.mediaplaybackd", "com.apple.mediaremoted", "com.apple.cameracaptured",
   "com.apple.avconferenced",
+  # the Maps widget reconnects to it with no back-off when it is missing
+  "com.apple.navd",
 ]
 
 [keep.reasons]
@@ -57,6 +59,7 @@ labels = [
 "com.apple.generativeexperiencesd" = "in vphone-cli's list, but vphone-android keeps it: without it an idle iOS 27 guest spins launchd (android/vphone-native/src/services.rs KEEP)"
 "com.apple.bluetoothd" = "locationd calls it synchronously (vphone). iOSPlus10 dropped it on iOS 16 for a relaunch loop; on iOS 27 it stays and idles"
 "com.apple.analyticsd" = "without it backboardd spun at 217% CPU after a brightness change: CoreAnalytics::Client::retryXpcMessageHelper_sync makes a new connection for each retry of a synchronous send (__kernelrpc_mach_port_construct_trap in a loop) and the brightness never reached the panel (phone, 2026-11-12, oneios-ubt). vphone's base27 disables it; here the lookups found no service and the clients spun"
+"com.apple.navd" = "without it GeneralMapsWidget (MNNavigationServiceRemoteProxy) reconnects to com.apple.navigationService with no back-off: about 28000 `failed to do a bootstrap look-up: xpc_error=No such process` in the typing boot of 2026-11-22, the widget at 54-103% of a core with geod 30-46% and launchd 13-24% beside it, while Settings was typing (phone, xnuhost-s6.log). vphone's base27 disables it. A Data store made from an older seed gets it enabled by the kernel (hosted 0083, through 0044's list)"
 "com.apple.security.cryptexd" = "needs /chosen/manifest-properties in the device tree, or it restarts every 10 s (iOSPlus10 notes 5167-5175)"
 
 # ---- idle -------------------------------------------------------------------------------------------------
@@ -112,7 +115,7 @@ labels = [
   "com.apple.intelligencetasksd", "com.apple.itunescloudd", "com.apple.jetpackassetd",
   "com.apple.knowledgeconstructiond", "com.apple.libsqlite3.dbtelemetryd", "com.apple.maps.destinationd",
   "com.apple.mediaanalysisd", "com.apple.mediaanalysisd.service", "com.apple.milod", "com.apple.modelmanagerd",
-  "com.apple.nanobackupd", "com.apple.nanoprefsyncd.2", "com.apple.nanotimekitcompaniond", "com.apple.navd",
+  "com.apple.nanobackupd", "com.apple.nanoprefsyncd.2", "com.apple.nanotimekitcompaniond",
   "com.apple.ndoagent", "com.apple.nearbyd", "com.apple.nfcd", "com.apple.ospredictiond", "com.apple.parsec-fbf",
   "com.apple.peopled", "com.apple.perfpowermetricd", "com.apple.photoanalysisd", "com.apple.photosface",
   "com.apple.powerexperienced", "com.apple.remindd", "com.apple.replicatord", "com.apple.routined",
