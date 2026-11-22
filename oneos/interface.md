@@ -2,7 +2,7 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `43fc1b3`, 2026-11-22:
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `0cd45ad`, 2026-11-22 (fork branch `bootui-progress`, not pushed yet: the boot screen's bar, section 4), on `43fc1b3`:
 upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, Make iOS image
 with `make-image` on a fresh phone, the pairing files of kb format 2 (no Python; `hello`'s `kb`), the shared debug key, a quick status (by the files' ids; the switch still hashes) and the setup steps on iOS 27's page, no change to session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
@@ -180,6 +180,18 @@ posted` and leaves the boot screen visible under its empty layer, until `session
 matches is unchanged. A helper started again in a session that is already ready posts at once. The fork's rule
 (`display_up`), its 30 s rule for a renderer that never drew and the dead-man timer need no change.
 
+**The boot screen's files (`control/bootui/`, the fork's `oneios_switch.sh`; a bar since 2026-11-22).** Root's,
+written only by the switch, its feeder (`--bootui`) and the return; the guest cannot write there. `title`,
+`system_name`, `status` (one line: the step running now, a panic, or why xnuhost ended), `hint` (the way back),
+`verbose` (1), `native` (1 once the helper set the display's projection to the panel's mode), `icon.png`,
+`generation`, `ready`, `stop`, `supervisor`, `worker`, `feeder.pid`, `events.log`, `renderer.log`, and for the bar:
+`progress`, one line `<step> <steps> <fraction>` (e.g. `7 12 0.235`: step 7 of 12 runs, the bar is 23.5% full; the
+fraction never goes back within a boot, is 1.000 at step 12, and starts again with a restart in place), and
+`next`, the next step's name (empty at step 12 and after a panic; "Going back to One UI" once xnuhost ended).
+Both are written whole (a temporary file, then `mv`) and only when they change, at most once a second; the return
+removes them. The twelve steps, the log line that begins each and their measured lengths are in the fork's
+`docs/oneios.md`, "Boot screen"; the lines are listed in section 8 here.
+
 ## 5. What xnuhost must do for the switch
 
 - **Stay in its mount namespace**, with every process it starts (iOS task processes included). The return
@@ -331,6 +343,15 @@ same files, redacted. It reads these lines and nothing else, so change one only 
   `xnuhost I cpu0: entering the kernel at`; console `Darwin Kernel Version`; console `BSD root: `;
   console `load_init_program: attempting to load`; console `com.apple.xpc.launchd|`; the first console line with
   `backboardd[`; the first with `SpringBoard[` or `crashed: SpringBoard.`; `xnuhost I guest ready: first frame`.
+- **The boot screen's twelve steps** (the switch's feeder, `oneios_switch.sh` `log_scan`, 2026-11-22; change one of
+  these only together with it and its `OneiosScriptTest`): 1 the switch itself (One UI stops); 2 the first
+  `oneios inner: ` line or `xnuhost I xnuhost: session ABI`; 3 `xnuhost I memory: the guest's RAM is held for the
+  session`; 4 `xnuhost I memory: the guest's RAM is held: `, `xnuhost I cpu0: entering the kernel at`, console
+  `Darwin Kernel Version` or `BSD root: `; 5 console `OneiOS Data: first start`; 6 console `OneiOS Data: unpacking
+  the seed` (5 and 6 on a first start only); 7 console `load_init_program: attempting to load`; 8 console
+  `com.apple.xpc.launchd|`; 9 the first console line with `SpringBoard[` or `crashed: SpringBoard.`; 10 the first
+  with `backboardd[`; 11 `xnuhost I display: the guest's first frame of its own`; 12 `xnuhost I guest ready: first
+  frame`.
 - **Panic:** console `panic(cpu N caller 0x...): TEXT`.
 - **Processes that died:** console `sheng-exit: NAME[PID] status 0xS reason ns N code 0xC` (the signal is S's low
   7 bits), `Process[PID] crashed: NAME.`, `[NAME: killed] exiting with signal N`.
