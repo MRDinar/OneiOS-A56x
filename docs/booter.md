@@ -794,6 +794,28 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
 - **Spins (`spin-host`, `spin-task`, microseconds, default 0).** Each side may spin before it sleeps. With each thread
   on its own core this halves nothing that pinning does not already remove, and on a shared core it costs the spin
   every time (below), so both are off.
+- **The kick (direct since 2026-11-23, fix-fps-scheduler-migration).** A vCPU that waits in `thread_run` for the iOS
+  thread it released sleeps in the hand-off's futex on that thread's core (`cpu-pin`). When another thread raised its
+  interrupt line (an IPI, a device), `xh_cpu_line` signalled the vCPU's thread (`SIG_KICK`): that thread had to be woken
+  and scheduled on the busy core, ahead of the iOS thread it shares the core with, only to send the iOS thread the kick
+  (`tgkill`, `KICK_SIGNAL`); the iOS thread's handler then handed the trap back. On the phone (2026-11-23 03:28, every
+  vCPU busy after hosted 0089) that was 24,419 kicks in 30 s, mean 136 us, p99 3.7 ms (the `kick` line). Now the raiser
+  kicks the iOS thread itself (`task.c` `xh_tasks_kick`): `thread_run` publishes the released thread (pid, tid) and a
+  word `v->run_word` = release number << 1 before the release, and whoever sets the word's bit 0 first (a raiser, by
+  compare-and-swap, or the vCPU's own loop for its timer) sends the one kick of that release; the vCPU's thread is not
+  woken until the thread's trap comes back. The release numbers are never reused, so a raiser whose word changed under
+  it (the thread came back, another was released) sends nothing and signals the vCPU as before. A kick that lands
+  after its thread came back waits in the stub's handler (it blocks every signal) and is a spurious interrupt trap at
+  that thread's next release, which the kernel takes as an interrupt with nothing pending. A refused `tgkill` puts the
+  bit back and falls back to the vCPU's signal. The `perf:   queue:` line says how many raises kicked directly (`N
+  signalled or woken (M of them by a kick of the iOS thread they wait for, sent by the raiser)`), and the `kick` line
+  now runs from the raiser's kick.
+  Tested (build laptop, 2026-11-23): `runtime/host-tests.sh` (xnuhost tests 14296 checks, 0 failed; check-arm64's test
+  kernel `all passed`, its `test_xcall` 20 of 20 SGIs taken by a vCPU whose thread spins in user code). An A/B of
+  `test_xcall` under qemu-aarch64, old kick (main `44d9c49`) against the direct one, alternated, 3 runs each on a
+  laptop with a load of 14-22 from other jobs: mean 115/104, 591/539, 1617/275 us, slowest 444/337, 2262/3251,
+  4954/1489 us. qemu's times and that load make it a check that nothing got slower, not a measurement of the phone;
+  the phone's is the `kick` line (mean 136 us, p99 3.7 ms before).
 
 **Measured** with `make bench-arm64` (the test kernel's loops on vCPU 0, one iOS thread; native arm64 Linux 6.18 in the
 Mac's container, an M4 with 8 CPUs; the counter is 24 MHz, so a tick is 42 ns). Means, p50 in brackets, 40,000 null
@@ -954,7 +976,12 @@ vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0085` open
 weight 0 to default, 64 utility, 1000 background, us of scheduling latency): on the phone the same lines should show
 vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line. It needs hosted `0089` (2026-11-23): on this board
 nothing called `ml_cpu_init_completed`, so the scheduler's completion step (and 0085 at its end) never ran; 0089 calls it
-once the last vCPU is booted (`oneios-smp:` lines).
+once the last vCPU is booted (`oneios-smp:` lines). With the completion step XNU's own rules ran too: an E vCPU
+going idle sent a rebalance IPI to the P vCPU running a spilled thread, and a P vCPU preempted it when the E cluster's
+load was 0, so threads went back and forth on most dispatches (2026-11-23 03:28: `release:` 70,200 moves and `kick`
+24,419 in 30 s, against 14,824 and 931 before 0089). Hosted `0090` keeps a thread that prefers E on the P vCPU it
+spilled to until it blocks or its quantum ends (`oneios-edge-pullback=1` is XNU's way; the kernel's `oneios-perf:
+0090:` line counts what it kept and the scheduler's IPIs by reason, to idle and to busy vCPUs).
 
 **The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
 `sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's
@@ -1254,14 +1281,16 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   scanout in B,G,R,X/A is then `frame {"XHDS", slot, seq low, seq high, 0}`: that slot of the table (4 of them) has
   the frame's offset, stride, size, changed rectangle and its segments as RAM memfd offsets, and the helper copies
   the rows from the guest's pages straight into the layer's buffer. xnuhost copies nothing. The guest's flush is
-  answered when the helper sends `done {"XHDA", seq low, seq high, flags, 0}` after posting the buffer, so the guest
+  answered when the helper sends `done {"XHDA", seq low, seq high, flags, 0}`: once the frame is in the helper's own
+  snapshot, before it posts the buffer (since 2026-11-23; after the post before, `docs/gpu.md` 2.5), so the guest
   does not draw into a surface that is still being read (`virtio_gpu.c` holds the reply on the fence list, as the
   display's: ctx 0). A helper that does not answer within 100 ms is answered for. One that leaves, or a newer
   helper, has its frames answered at once. `done` flags bit 0 (a frame it could not copy) turns direct frames off
   for that helper. 2D resources, a scanout outside RAM or of another format, and a helper without the flag use the
   memfd copy as before. `display-direct=0` (command line or `xnuhost.conf`) turns direct frames off for xnuhost.
-  Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (posted to in
-  the layer: mean X ms, max Y ms), T not answered within 100 ms, C flushes of xnuhost's own copy`. The segments'
+  Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (its
+  answer: mean X ms, max Y ms; ...), T not answered within 100 ms, C flushes of xnuhost's own copy` (until 2026-11-23
+  "posted to in the layer: mean X ms", the same measure: the frame sent to the helper's `done`). The segments'
   offsets are offsets in the RAM memfd, counted from the file's offset 0: `main.c` gives `xh_display_set_ram` the
   address of offset 0 (`g_mem.fd_phys`) and the file's length up to the window's end (`g_mem.head + g_mem.size`).
   The window starts `g_mem.head` bytes into the file (16 KiB on the phone, fix-ram-hugepages), so it is not

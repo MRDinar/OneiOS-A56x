@@ -89,6 +89,7 @@ void xh_cpu_line(unsigned index, bool line)
   if (self_vcpu == v || !v->started) return;
   if (me) me->perf.kicks++;
   if (__atomic_load_n(&v->idle, __ATOMIC_ACQUIRE)) futex(&v->cpu.irq_pending, FUTEX_WAKE_PRIVATE, 1, NULL);
+  else if (xh_tasks_kick(v)) { if (me) me->perf.kicks_direct++; }   // it waits for an iOS thread: that thread is kicked
   else syscall(SYS_tgkill, getpid(), v->tid, SIG_KICK);
 }
 
