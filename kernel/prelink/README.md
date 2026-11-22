@@ -148,7 +148,11 @@ reviewed records are unchanged. Built on the Linux PC from `origin/main` `fb4ec8
 (`HOSTED_OUT=hevc XNU_FILESET_REFERENCE=1`, 716 s from an empty tree; `xnu.macho` `972b9132...`, 24,961,392 bytes):
 `kernel.kc` `e4ffcabd1d95f25e...` (96,141,312 bytes; main's without the archive is 96,059,392), `audit: 2711 paired,
 93 functions on the stub, 9 data unpaired; 0 failures` (the figures of main's collection), `prelink stubs-check`:
-666 good, 0 bad. Booted on the PC (`kernel/patches/oneios-hosted/codec/README.md`); not on the phone.
+666 good, 0 bad. Booted on the PC (`kernel/patches/oneios-hosted/codec/README.md`); not on the phone. On main with
+0081 and 0082, on the Mac (2026-11-22, `HOSTED_OUT=codec`, no reference kernel): `out/kernel/codec-24A446/kernel.kc`
+`5add18fab1cb64ce...` (96,845,824 bytes; `dyldrw-24A446`'s without the archive is 96,813,056), `audit: 2712 paired,
+92 functions on the stub, 9 data unpaired; 0 failures`, `prelink stubs-check` 666 good, 0 bad; again no pairing
+record was needed.
 
 ## AMFI and launch constraints
 

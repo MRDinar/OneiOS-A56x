@@ -7,7 +7,12 @@ encoder, so CMPhoto writes HEIC: chronod's widget snapshots, screenshots, the ph
 **State (2026-11-15, hevc-guest):** host and guest are built, and proven together on the PC as far as a PC boot goes
 (the kernel's codec archive brings the device up and publishes the service; `codec/README.md` has the boot's lines).
 The Android build (`encctl`, the helper, the device library) builds on the Linux PC with NDK r28c and is in the
-runtime package. **Not yet run on the phone** ("On the phone", below).
+runtime package. **2026-11-22, on main (0081, 0082) on the Mac:** `runtime/host-tests.sh` passes (`test_standin`
+173/173, `test_encoder` 214/214), ffmpeg 9.0.2 on the Mac decodes all 16 stand-in streams to exactly the picture
+given, `runtime/build.sh` stages `bin/oneios-encoder` (28,184 bytes) and `bin/encctl` (32,840 bytes) with NDK
+28.2 and its ELF check passes, `runtime/package.sh` packs both (its Apple-file and ELF checks pass), and the image
+set's `encoder=auto` now applies (it was dropped before). **Not yet
+run on the phone** ("On the phone", below): that is the next step.
 
 ```sh
 make test          # host tests (ASan, UBSan): the stand-in encoder alone, its streams through ffmpeg, and the device +
@@ -129,8 +134,21 @@ present; ok`. `error:` lines say which step failed (`S_FMT`, `no output buffer`,
 `c2.qti` encoders have a 96x96 minimum). It is harmless beside One UI (it opens its own MediaCodec instance; it
 touches nothing of One UI's). It has not been run on the phone yet, nor have the device library and the helper.
 
-Then a session with `encoder=auto` in the image's `xnuhost.conf` (or `--set encoder=auto`); the lines that prove it
-are in `kernel/patches/oneios-hosted/codec/README.md` ("What a session on the phone must show").
+From a staged runtime (`oneios-tool phone stage runtime DIR` of a runtime package that has them; the CLI has no
+`encctl` command, so this is adb):
+
+```sh
+adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl hevc'
+adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
+```
+
+Then a session with `encoder=auto`. The OneOS app passes no `--set encoder=`, so the setting goes into the staged
+image set: add the line `encoder=auto` to the phone's `image/overlay/userland/xnuhost.conf` (keep its other lines,
+`scale=` and `pen=` among them) and stage that file with the new `kernel.kc` and `kernel.kc.hashes`, at their paths in
+one folder, by `oneios-tool phone manifest DIR --stage` (the manifest lists the file, so it must be staged with its
+new entry). Until 2026-11-22 xnuhost read `encoder=` of the image set and then dropped it (`runtime/xnuhost/src/config.c`,
+`encoder_given`): only `--set encoder=auto` turned the encoder on. The lines that prove it are in
+`kernel/patches/oneios-hosted/codec/README.md` ("What a session on the phone must show").
 
 **Guess [I]:** NV12 as `COLOR_FormatYUV420SemiPlanar` ByteBuffer input to `c2.qti.hevc.encoder`; the still-image CQ
 settings; that MediaCodec's unit for a frame at quality 90 fits width x height / 2 + 64 KiB (a larger one is dropped

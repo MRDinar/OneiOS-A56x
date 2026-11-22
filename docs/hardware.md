@@ -2853,7 +2853,7 @@ With `pen=auto` in the session's `xnuhost.conf` (or `--set pen=auto`):
 `N of a layout not known` above 0 with `0 stylus events given ...` means the event data is not the layout orient()
 knows: tilt and pressure then stay as the driver made them (pressure 0..1, no angles).
 
-## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC, not on the phone)
+## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; not on the phone)
 
 The phone's hardware video encoder (Qualcomm's Codec2 `c2.qti.hevc.encoder` / `c2.qti.avc.encoder`) for iOS, so
 VideoToolbox encodes HEVC and H.264 and **CMPhoto writes HEIC**: chronod's widget snapshots, screenshots, the photo
@@ -2957,6 +2957,17 @@ frame above about 2.7 megapixels gets no encoder; two sessions at a time; no dec
   Three finished PC boots of other work have neither line at all, so the PC may not reach the widget snapshot
   without a GPU [I]. `codec/README.md` has the state and the next step.
 
+### On main, built on the Mac (2026-11-22)
+
+- PR #59 merged onto main with 0081 and 0082; `codec` is the last hosted force-load (`oneios-tool kernel
+  hosted-archives`). `HOSTED_OUT=codec kernel/build-hosted.sh`: `xnu.macho` `baad8462...`; `kernel/prelink/build.sh`:
+  `out/kernel/codec-24A446/kernel.kc` `5add18fab1cb64ce...` (96,845,824 bytes), audit 2712 paired, 92 on the stub,
+  0 failures; `prelink stubs-check` 666 good, 0 bad; `_oneios_codec_start` and 0082's `_hosted_dyld_flags_init` in
+  it. `runtime/host-tests.sh` passes; ffmpeg on the Mac decodes the 16 stand-in streams to the picture given.
+- **Fixed [F]:** xnuhost read the image set's `encoder=` and then dropped it, and the OneOS app passes no `--set`:
+  no phone session could have turned the encoder on. It applies now (`encoder_given`, `config.c`; host-tested).
+- **Not done:** a boot of this kernel. The phone is next (below).
+
 ### On the phone (not run yet)
 
 The runtime package carries `bin/oneios-encoder` and `bin/encctl` (built on the Linux PC or the Mac by
@@ -2965,7 +2976,8 @@ The runtime package carries `bin/oneios-encoder` and `bin/encctl` (built on the 
 ```sh
 adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl hevc'          # c2.qti.hevc.encoder, 256x256
 adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
-# then a session with encoder=auto (xnuhost.conf of the image set, or --set encoder=auto)
+# then a session with encoder=auto: the line encoder=auto in the staged image/overlay/userland/xnuhost.conf (its other
+# lines kept), staged with kernel.kc and kernel.kc.hashes by `oneios-tool phone manifest DIR --stage`
 ```
 
 (`runtime/bridges/encoder/README.md`, "On the phone", has the commands from a build tree and what `encctl` prints.)
@@ -2977,6 +2989,7 @@ adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
 - `oneios-tool ioslog`: **no** `CMPhotoCompressionSessionAddImage ... (codec: 'hvc1')` /
   `kCMBaseObjectError_UnsupportedOperation`; WidgetRenderer **without** `Content load failed`; `oneios-gpu-pixels:
   WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`) [I: that iOS 27 saves one as HEIC].
+  `oneios-tool ioslog checks data.img` counts these failure lines in its `heic` row: 0 is the proof.
 
 ## 7h. The host device (host-device, 2026-11-21)
 

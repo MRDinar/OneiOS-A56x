@@ -671,7 +671,9 @@ With xnuhost's `encoder=auto` (`/arm-io/virtio-media-0`, `droidvm-vt-paravirt=1`
 paravirtualized VideoToolbox codecs, so CMPhoto finds a hardware HEVC encoder and writes HEIC; without it (the
 default) the classes are registered and no service is published, and iOS is as before. Why this route, the boot
 arguments, the log lines (`ONEIOS CODEC: ...`), the limits and what was built and booted: `codec/README.md`;
-`docs/hardware.md` section 7g. Built and booted on the Linux PC (`HOSTED_OUT=hevc`); not run on the phone.
+`docs/hardware.md` section 7g. Built and booted on the Linux PC (`HOSTED_OUT=hevc`); on main with 0081 and 0082
+built and prelinked on the Mac on 2026-11-22 (`HOSTED_OUT=codec`, audit 0 failures, stubs 666 good); not run on the
+phone.
 
 ## 0052-rt-computation-held.patch (media, 2026-11-12)
 

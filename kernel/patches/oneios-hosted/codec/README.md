@@ -5,8 +5,9 @@ section 7g ("Video encoder").
 
 **State (2026-11-15, hevc-guest):** the archive is **built into `kernel.kc`** by `oneios-tool kernel gen codec`
 (`kernel/build-hosted.sh` runs it after `audio`), and a PC boot with `--set encoder=auto` publishes the service.
-Built and booted on the Linux PC; **not run on the phone** (the commands are in `runtime/bridges/encoder/README.md`,
-"On the phone"). The results of the build and of the PC boots are at the end of this file.
+Built and booted on the Linux PC; on main (0081, 0082) built and prelinked on the Mac on 2026-11-22 (`kernel.kc`
+`5add18fa...`); **not run on the phone** (the commands are in `runtime/bridges/encoder/README.md`, "On the phone").
+The results of the builds and of the PC boots are at the end of this file.
 
 ## Why this route
 
@@ -142,5 +143,31 @@ iOS's log (`oneios-tool ioslog`):
   WidgetRenderer's `Content load failed` in iOS's log, and the same boot without `encoder=auto` to count against.
   Three finished PC boots of other work (main's kernel, no home script) have **none** of either line: without a GPU
   the PC's widgets may never reach the snapshot, so the PC may not be able to show that count at all [I]; the phone
-  can. The next step is that boot to its end (`out/pcboot.sh` of this work is not in git: the command is the PC boot
-  of `docs/building.md` section 5 with the three `--set` above), then the phone.
+  can. On 2026-11-20 (b5cf905's message) a 10-minute PC boot of the hevc-guest merge (`HOSTED_OUT=hevc`) with
+  `encoder=auto` ran clean: the codec registered, cameracaptured's `encs` was answered, no panic; the `hvc1` count was
+  not recorded. The next step is the phone, with the Mac build below (no PC boot was run for it).
+
+## On main, built on the Mac (2026-11-22)
+
+PR #59 (`hevc-guest`) merged onto main with 0081 and 0082 (`fix-dyld-cache-unnesting`). The archive is built after
+`audio` and force-loaded last of the hosted archives (`oneios-tool kernel hosted-archives`, `FORCE_LOADED` in
+`tools/oneios-tool/crates/oneios-kernel/src/hosted_device.rs`: gpu aes keystore net hid audio codec); it has no
+numbered patch, so the series is unchanged and 0081 and 0082 apply as on main. b5cf905's 0080 change is not taken:
+main's 65b7bd4 already anchors the same `vm_shared_region.c` hunk.
+
+- **Built [F]:** `HOSTED_OUT=codec kernel/build-hosted.sh` (no reference kernel), 492 s on the Mac: `xnu.macho`
+  `baad846266253a2f...` (25,630,144 bytes); the step `archive-13-oneios-tool` printed `build-oneios-codec:
+  .../liboneioscodec.a (4 objects: ...)`; `_oneios_codec_start`, `_droidvm_media_start`,
+  `_droidvm_vt_paravirt_attach` and 0082's `_hosted_dyld_flags_init` are in it.
+- **Prelinked [F]:** `KERNEL=out/kernel/current-hosted-codec/xnu.macho OUT=out/kernel/codec-24A446
+  kernel/prelink/build.sh`: `kernel.kc` `5add18fab1cb64ce5b6cea3f8349dde12aed125b88eaa4fe041a7366ac1a3a8a`
+  (96,845,824 bytes), `audit: 2712 paired, 92 functions on the stub, 9 data unpaired; 0 failures`; `oneios-tool
+  prelink stubs-check`: 666 good, 0 bad. The same symbols are in the collection.
+- **Host tests [F]:** `runtime/host-tests.sh` all parts pass (xnuhost 14229 checks), `kernel/tests/host.sh` 7 of 7,
+  `cargo test -p oneios-kernel` (golden 14 of 14).
+- **Fixed with it:** xnuhost dropped the image set's `encoder=` (read, then not copied back, as `pen=` was): the OneOS
+  app passes no `--set`, so a phone session could not turn the encoder on. `runtime/bridges/encoder/README.md` "On
+  the phone" has how to set it now.
+- **Not done:** a boot of this kernel. The phone run is next ("What a session on the phone must show", above);
+  `oneios-tool ioslog checks data.img` counts the `heic` row (chronod's `CMPhotoCompressionSessionAddImage`, `codec:
+  'hvc1'`, `Content load failed`), which must be 0 in that session.
