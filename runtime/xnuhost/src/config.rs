@@ -15,7 +15,10 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+/// xh_parse_size, xh_meminfo_value, xh_proc_values: xh-core's (the same rules; a size that overflows is refused).
+pub use xh_core::fs::{meminfo_value, proc_values};
 use xh_core::log::Level;
+pub use xh_core::parse::size as parse_size;
 
 use onebridges::hw::{self as bhw, Backend, Bridge, HostDevice, HwSettings};
 
@@ -596,53 +599,6 @@ fn c_strtol(text: &str) -> (Option<i64>, &str) {
 /// atoi: the leading number, 0 when there is none.
 fn atoi(text: &str) -> i64 {
     c_strtol(text).0.unwrap_or(0).clamp(i32::MIN as i64, i32::MAX as i64)
-}
-
-/// strtoull(text, &end, 0): the number and what follows (None: no digits or out of range). 0x.. hex, 0.. octal.
-fn c_strtoull(text: &str) -> (Option<u64>, &str) {
-    let b = text.as_bytes();
-    let mut i = b.iter().take_while(|&&c| is_c_space(c)).count();
-    let negative = i < b.len() && b[i] == b'-';
-    if i < b.len() && (b[i] == b'-' || b[i] == b'+') {
-        i += 1;
-    }
-    let mut radix = 10;
-    if i + 1 < b.len()
-        && b[i] == b'0'
-        && (b[i + 1] | 0x20) == b'x'
-        && b.get(i + 2).is_some_and(|c| c.is_ascii_hexdigit())
-    {
-        radix = 16;
-        i += 2;
-    } else if i < b.len() && b[i] == b'0' {
-        radix = 8;
-    }
-    let start = i;
-    let mut v: Option<u64> = Some(0);
-    while let Some(d) = b.get(i).and_then(|&c| (c as char).to_digit(radix)) {
-        v = v.and_then(|v| v.checked_mul(radix as u64)).and_then(|v| v.checked_add(d as u64));
-        i += 1;
-    }
-    if i == start {
-        return (None, text);
-    }
-    (v.map(|v| if negative { v.wrapping_neg() } else { v }), &text[i..])
-}
-
-/// xh_parse_size: a number (decimal, 0x hex, 0 octal) and an optional k, m or g. None for anything else.
-pub fn parse_size(text: &str) -> Option<u64> {
-    let (v, rest) = c_strtoull(text);
-    let v = v?;
-    let (shift, rest) = match rest.as_bytes().first() {
-        Some(b'k' | b'K') => (10, &rest[1..]),
-        Some(b'm' | b'M') => (20, &rest[1..]),
-        Some(b'g' | b'G') => (30, &rest[1..]),
-        _ => (0, rest),
-    };
-    if !rest.is_empty() {
-        return None;
-    }
-    Some(v.wrapping_shl(shift))
 }
 
 /// `%Nu` of sscanf: optional blanks, an optional '+', 1..=width digits. The value and what follows.
@@ -1723,79 +1679,13 @@ pub fn swap_note(swapped: u64, next: &mut u64) -> bool {
     true
 }
 
-/// The lines of a /proc file (None: it cannot be read).
-fn proc_lines(path: impl AsRef<Path>) -> Option<impl Iterator<Item = String>> {
-    let file = fs::File::open(path).ok()?;
-    Some(BufReader::new(file).split(b'\n').map_while(Result::ok).map(|l| String::from_utf8_lossy(&l).into_owned()))
-}
-
-/// "N kB" (blanks before N) of a meminfo line's rest, in bytes.
-fn kb_value(rest: &str) -> Option<u64> {
-    let (v, _) = c_strtoull_dec(rest.trim_start());
-    v.map(|kb| kb << 10)
-}
-
-/// A decimal strtoull: the number (None: no digits) and what follows.
-fn c_strtoull_dec(text: &str) -> (Option<u64>, &str) {
-    let n = text.bytes().take_while(u8::is_ascii_digit).count();
-    if n == 0 {
-        return (None, text);
-    }
-    (Some(text[..n].parse().unwrap_or(u64::MAX)), &text[n..])
-}
-
 /// xh_meminfo: MemTotal and MemAvailable of a /proc/meminfo file, in bytes; None when the file has not both (or a
 /// MemTotal of 0).
 pub fn meminfo(path: impl AsRef<Path>) -> Option<(u64, u64)> {
-    let (mut total, mut available) = (None, None);
-    for line in proc_lines(path)? {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
-            total = kb_value(rest).or(total);
-        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            available = kb_value(rest).or(available);
-        }
-        if total.is_some() && available.is_some() {
-            break;
-        }
-    }
-    match (total, available) {
-        (Some(t), Some(a)) if t != 0 => Some((t, a)),
+    match proc_values(path, &["MemTotal", "MemAvailable"])[..] {
+        [Some(total), Some(available)] if total != 0 => Some((total, available)),
         _ => None,
     }
-}
-
-/// xh_meminfo_value: one line of a /proc/meminfo file ("Key:  N kB"), in bytes; None when the file has no such line.
-pub fn meminfo_value(path: impl AsRef<Path>, key: &str) -> Option<u64> {
-    proc_lines(path)?.find_map(|line| line.strip_prefix(key)?.strip_prefix(':').and_then(kb_value))
-}
-
-/// xh_proc_values: several lines of a /proc file in one read: "Key: N kB" (meminfo, status) in bytes, "key N" (vmstat)
-/// as the number. One entry per key, None for a key not found. At most 64 keys.
-pub fn proc_values(path: impl AsRef<Path>, keys: &[&str]) -> Vec<Option<u64>> {
-    let keys = &keys[..keys.len().min(64)];
-    let mut out = vec![None; keys.len()];
-    let Some(lines) = proc_lines(path) else { return out };
-    let mut found = 0;
-    for line in lines {
-        if found == keys.len() {
-            break;
-        }
-        for (k, key) in keys.iter().enumerate() {
-            if out[k].is_some() {
-                continue;
-            }
-            let Some(rest) = line.strip_prefix(key) else { continue };
-            if !rest.starts_with(':') && !rest.starts_with(' ') {
-                continue;
-            }
-            let (v, after) = c_strtoull_dec(rest[1..].trim_start());
-            let v = v.unwrap_or(0);
-            out[k] = Some(if after.trim_start_matches(' ').starts_with("kB") { v << 10 } else { v });
-            found += 1;
-            break;
-        }
-    }
-    out
 }
 
 #[cfg(test)]

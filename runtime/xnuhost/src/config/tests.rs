@@ -840,10 +840,13 @@ fn host_device() {
     assert!(c.host_line.contains("host: unknown phone (read: ro.product.model=Pixel 11 Pro ro.product.device=(none) "));
     assert!(c.host_line.contains("ro.soc.model=Tensor G5 ro.soc.manufacturer=QTI): today's defaults (host-device=NAME forces one of galaxy-s24-ultra, "));
     assert_eq!(host_clear(c), off);
-    // No property area at all (this PC: no bionic, no file) is an unknown phone too.
-    let c = rig.finish(None, None, None).unwrap();
-    assert!(c.host.is_none() && c.host_line.contains("unknown phone (read: no property area)"));
-    assert_eq!(host_clear(c), off);
+    // No property area at all (this PC: no bionic, no file) is an unknown phone too. Not on a bionic build: that reads
+    // the property area (qemu-user's has none of a phone's).
+    if cfg!(not(target_os = "android")) {
+        let c = rig.finish(None, None, None).unwrap();
+        assert!(c.host.is_none() && c.host_line.contains("unknown phone (read: no property area)"));
+        assert_eq!(host_clear(c), off);
+    }
     // The S25 Ultra: the SoC rule on its own trips and on 3 readings (environment defaults, set by the session, not
     // here); no xnuhost setting of its own (docs/s25.md: everything else is [U]).
     let props = host_props(&dir, "s25u", "SM-S938B", "SM8750");
