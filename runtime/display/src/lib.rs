@@ -7,7 +7,7 @@
 //! - `jni` (jni.c, feature `jni`, Android only): liboneios-display.so, the native half of OneiOSDisplay.java.
 //! - the programs: `oneios-display` (launcher.c, src/bin/launcher.rs) and `displayctl` (displayctl.c).
 pub mod frame_perf;
-pub mod pixels;
+pub use xh_core::pixels; // the pixel formats and conversions (include/xnuhost/pixels.h), shared with xnuhost
 pub mod sys;
 pub mod xhd;
 

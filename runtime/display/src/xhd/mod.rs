@@ -176,8 +176,8 @@ pub fn copy(
         let d = &mut dst[row * dst_stride + r.x as usize * output..][..w * output];
         match (format, buffer) {
             (FORMAT_RGBA16F, BUFFER_RGBA_FP16) | (FORMAT_BGRX, BUFFER_BGRA_8888) => d.copy_from_slice(s),
-            (FORMAT_RGBA16F, _) => pixels::rgba16f_to_8(d, s, w, buffer == BUFFER_RGBX_8888),
-            (_, BUFFER_RGBA_FP16) => pixels::bgrx8_to_rgba16f(d, s, w),
+            (FORMAT_RGBA16F, _) => pixels::rgba16f_to_8(d, s, buffer == BUFFER_RGBX_8888),
+            (_, BUFFER_RGBA_FP16) => pixels::bgrx8_to_rgba16f(d, s),
             _ => swap_bgrx(d, s),
         }
     }

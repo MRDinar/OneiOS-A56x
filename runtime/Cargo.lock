@@ -84,6 +84,6 @@ version = "0.1.0"
 name = "xnuloader"
 version = "0.1.0"
 dependencies = [
- "libc",
+ "xh-core",
  "xnuhost-abi",
 ]
