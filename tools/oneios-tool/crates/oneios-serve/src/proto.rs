@@ -10,6 +10,13 @@ use std::sync::Mutex;
 
 /// The protocol's version (`hello`'s `proto`).
 pub const PROTO: u32 = 1;
+/// `hello`'s `tool`: the release's version, which runtime/package.sh gives the build as ONEIOS_VERSION (the
+/// runtime's `runtime.json` `version`, e.g. `0.1.17`); a build without it (cargo by hand, the host tests) says the
+/// crate's `0.1.0`, which every release before 0.1.17 said too (issue 75: the app showed "0.1.0" for v0.1.16).
+pub const TOOL_VERSION: &str = match option_env!("ONEIOS_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 /// A `line` event's text is cut here.
 pub const LINE_MAX: usize = 4000;
 

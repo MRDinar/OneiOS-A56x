@@ -758,7 +758,7 @@ pub fn main(cli: Cli) -> i32 {
     out.send(
         &Ev::new("hello")
             .f("proto", PROTO)
-            .f("tool", env!("CARGO_PKG_VERSION"))
+            .f("tool", proto::TOOL_VERSION)
             .f("pid", std::process::id())
             .f("jobs", jobs)
             .f("nice", nice)

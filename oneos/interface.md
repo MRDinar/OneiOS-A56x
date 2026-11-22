@@ -377,7 +377,9 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `exec`s `nice -n 10 runtime/bin/oneios-tool serve --stage /data/local/tmp/oneios` with `TMPDIR=<stage>/tool`, on
   the app's pipe. From there the lines are the tool's protocol (`tools/oneios-tool/README.md`, "serve": protocol 1,
   one JSON object a line; the fork's `OneiosTool.kt` reads them). The fork reads `hello`'s `proto` and refuses
-  another one. `hello`'s `kb` (2 since 2026-11-22; absent in runtimes up to 0.1.13, which read 1) is the format of
+  another one. `hello`'s `tool` is the release's version (runtime/package.sh builds with `ONEIOS_VERSION`; up to
+  v0.1.16 every release said the crate's `0.1.0`, which the app shows as "0.1.0 · 8 threads": issue 75); the fork
+  only shows it. `hello`'s `kb` (2 since 2026-11-22; absent in runtimes up to 0.1.13, which read 1) is the format of
   the pairing files the tool's prelink reads, the fork's `kb.json` `kb`: format 2 is `match/` with the reviewed
   fixtures alone, format 1 also had XnuPrelink's three Python sources. With a tool below the app's format, Update
   the kernel stops before any request ("get the latest OneiOS runtime") and Make iOS image counts the tool as one
@@ -389,8 +391,8 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
 - What the fork sends (`OneiosToolJob.kt`): `sums` of `runtime/` and `image/` against `runtime.sha256` and
   `image.sha256` (`strict`), `cpu`, `log-list` and `log` (`file` `xnuhost`), `ioslog-boots` and `ioslog-show`
   (`source` `<stage>/data/data.img`, `boot` `last`), and for Make iOS image root's `begin image`, then
-  `make-image` with `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`, `ids_list`
-  `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
+  `make-image` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, `out` `<stage>/image.new`,
+  `sums_list` `<stage>/image.new.sha256`, `ids_list` `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
   with those four fields of `make-image`'s `ok`.
   **`make-image` is in the tool since 2026-11-21** (`tools/oneios-tool/README.md`, "serve" (the commands) and
   "image build"): the request the app sends is taken as it is, no key of it changed. It fetches the profile's
@@ -417,7 +419,12 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   need not send it, `make-image` runs it.
   `"tweaks": false` makes a set without the root tweaks (as `build.sh --no-hook`; whether such a set boots was not
   tried, the tweaks turn off launchd jobs the guest is known to need off): for tests only, the app should not send
-  it. Optional keys the app need not send: `profile` (default: the runtime's `lib/profiles/` when it holds one),
+  it. `profile`: the app sends `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` (fork `62a2383`, 2026-11-23:
+  issue 75). Without it, a tool up to v0.1.16 takes a default only from a `lib/profiles/` of one file, and every
+  released runtime packs four or more (v0.1.16: five), so it refused `usage` ("holds 5 profiles: give \"profile\"") and the app said
+  "OneOS and the runtime don't agree"; the tool after v0.1.16 takes, of the IPSW profiles there (host profiles are
+  not), the staged kernel's iOS build (`runtime.json` `kernel.profile`) for iPhone18,2. Optional keys the app need
+  not send:
   `xnu`, `kb`, `kernelcache`, `kc`, `no_kernel`, `fetch`, `source`, `keep_work`, and the tweaks' `helpers`,
   `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args`.
 - Make iOS image (fork `7e34fa4`, not run on a phone; no PC needed): root's `status`; when the staged runtime has no
@@ -425,8 +432,9 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   downloaded when the latest is the staged version); root's `kbinput` ×9; `begin image`; `tool work`. When `hello`'s
   `cmds` lack `make-image`, the tool is closed, the latest runtime staged once and the tool opened again. Then one
   `make-image` with `indir` `<stage>/make/inputs`, `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`,
-  `ids_list` `<stage>/image.new.ids`, `work` `<stage>/make`, `resume` true, and nothing else (the profile, `xnu`, `kb`
-  and `tweaks` are the tool's defaults), then root's `finish image <files> <format> <version> <build>` with those four
+  `ids_list` `<stage>/image.new.ids`, `work` `<stage>/make`, `resume` true, `profile`
+  `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` (since fork `62a2383`; before, none: issue 75), and nothing
+  else (`xnu`, `kb` and `tweaks` are the tool's defaults), then root's `finish image <files> <format> <version> <build>` with those four
   fields of its `ok`. No `fetch` before it (it would download about 11 GB before `make-image`'s room check) and no
   `tweaks` after it. The fork relies on: those keys; the `start` step list; one `space` event with `need` and `free`;
   the refusal codes `space`, `auth`, `mismatch`, `audit`, `not-ported`, `not-found`, `usage`, `exists`; `ok`'s

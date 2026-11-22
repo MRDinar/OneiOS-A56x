@@ -81,8 +81,9 @@ fi
 # 1b. oneios-tool for the phone (tools/oneios-tool, Rust, aarch64-linux-android): bin/oneios-tool, which the OneOS
 # app runs as root from the staged runtime (`oneios_root.sh tool`, oneos/interface.md section 9), and the same file
 # beside the package as oneios-tool-VERSION-android-arm64 with its .sha256 (docs/releases.md). Linked by the NDK's
-# clang for API 30 (the level elf-check.sh reads), stripped with the NDK's llvm-strip. ONEIOS_TOOL_ANDROID=PATH
-# takes a binary built elsewhere instead (it is stripped and checked the same way).
+# clang for API 30 (the level elf-check.sh reads), stripped with the NDK's llvm-strip. ONEIOS_VERSION=VERSION is
+# its `serve` hello's `tool` (before 0.1.17 the hello said the crate's 0.1.0: issue 75). ONEIOS_TOOL_ANDROID=PATH
+# takes a binary built elsewhere instead (it is stripped and checked the same way; its hello says its own version).
 NDK_STRIP=$NDK_BIN/llvm-strip
 if [ -n "${ONEIOS_TOOL_ANDROID:-}" ]; then
   [ -f "$ONEIOS_TOOL_ANDROID" ] || { echo "package: ONEIOS_TOOL_ANDROID=$ONEIOS_TOOL_ANDROID is not a file" >&2; exit 1; }
@@ -91,6 +92,7 @@ else
   echo "package: oneios-tool for aarch64-linux-android (cargo build --release --target aarch64-linux-android)"
   CARGO=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
   [ -x "$CARGO" ] || { echo "package: no cargo for oneios-tool (docs/building.md section 0)" >&2; exit 1; }
+  ONEIOS_VERSION=$VERSION \
   CC_aarch64_linux_android=$NDK_BIN/aarch64-linux-android30-clang \
   CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_BIN/aarch64-linux-android30-clang \
     "$CARGO" build --release --target aarch64-linux-android -p oneios-tool \
