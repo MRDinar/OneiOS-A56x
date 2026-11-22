@@ -41,7 +41,8 @@ xh_display *xh_display_get(void) { return display.pixels ? &display : NULL; }
 //                                                               flags bit 0: the helper copies frames directly
 // The direct path, only to a helper that set that flag:
 //   memory { "XHDM", u32 RAM bytes low, high, u32 slots, u32 slot bytes } + the RAM memfd and the table memfd
-//   frame  { "XHDS", u32 slot, u32 seq low, u32 seq high, u32 0 }    the frame described in that slot of the table
+//   frame  { "XHDS", u32 slot, u32 seq low, u32 seq high, u32 sent } the frame described in that slot of the table;
+//          sent: the low 32 bits of CLOCK_MONOTONIC in us at the send (the helper logs its delay to the first read)
 //   done   { "XHDA", u32 seq low, u32 seq high, u32 flags, 0 }  (helper -> xnuhost) every frame up to seq is in the
 //          layer; flags bit 0: the last one could not be copied from guest RAM (xnuhost copies the next ones itself)
 // A slot of the table: struct direct_slot, then nsegs { u64 RAM memfd offset, u64 length } in the scanout's order.
@@ -170,9 +171,11 @@ int xh_display_post(const xh_gpu_entry *entries, unsigned n, uint64_t offset, ui
                                 .x = x, .y = y, .w = w, .h = h, .format = 1 };
   __atomic_store_n(&slot->seq, seq, __ATOMIC_RELEASE);
   if (nout == sizeof out / sizeof *out) nover = take_done(out[0].seq, 0, over, true);  // the oldest, unanswered
-  struct shm_message m = { { 'X', 'H', 'D', 'S' }, (uint32_t)(seq % DIRECT_SLOTS), (uint32_t)seq, (uint32_t)(seq >> 32), 0 };
+  // The send time goes with the frame: the helper logs how long after it it began to read the guest's pages.
+  long long sent = now_us();
+  struct shm_message m = { { 'X', 'H', 'D', 'S' }, (uint32_t)(seq % DIRECT_SLOTS), (uint32_t)seq, (uint32_t)(seq >> 32), (uint32_t)sent };
   if (send(client_fd, &m, sizeof m, MSG_NOSIGNAL | MSG_DONTWAIT) < 0) goto out;
-  out[nout++] = (outstanding){ seq, now_us(), done, opaque };
+  out[nout++] = (outstanding){ seq, sent, done, opaque };
   result = 0;
 out:
   pthread_mutex_unlock(&client_lock);

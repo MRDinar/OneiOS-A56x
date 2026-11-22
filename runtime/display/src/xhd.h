@@ -39,7 +39,8 @@ int xhd_dataspace_parse(const char *name);
 //   panel  { "XHDP", width, height, hz, flags }      flags bit 0 (XHD_PANEL_DIRECT): frames may come as "frame" below
 // Direct frames (runtime/xnuhost/src/display.c): the helper copies the guest's scanout from guest RAM itself.
 //   memory { "XHDM", RAM bytes low, high, slots, slot bytes } + the RAM memfd and the table memfd (SCM_RIGHTS)
-//   frame  { "XHDS", slot, seq low, seq high, 0 }    described by that slot of the table (struct xhd_slot, then segments)
+//   frame  { "XHDS", slot, seq low, seq high, sent } described by that slot of the table (struct xhd_slot, then segments);
+//          sent: the low 32 bits of xnuhost's CLOCK_MONOTONIC in us when it sent this (0 from an xnuhost before 2026-11-22)
 //   done   { "XHDA", seq low, seq high, flags, 0 }   (helper -> xnuhost) the frames up to seq are in the layer; flags
 //          bit 0 (XHD_DONE_FAILED): the last could not be copied, and xnuhost goes back to copying frames itself
 struct xhd_message { char magic[4]; uint32_t a, b, c, d; };
@@ -77,6 +78,7 @@ struct xhd_direct {
   int pending;                                        // a frame came: the newest is slot / seq
   uint32_t slot;
   uint64_t seq;
+  uint32_t sent_us;                                   // the frame's `sent` (0: not known)
 };
 void xhd_direct_init(struct xhd_direct *d);
 void xhd_direct_close(struct xhd_direct *d);
@@ -86,34 +88,45 @@ void xhd_direct_close(struct xhd_direct *d);
 int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride, uint32_t dst_width, uint32_t dst_height, int swap,
                     const struct xhd_rect *only, struct xhd_rect *done);
 
-// The helper's own copy of the guest's frame (B,G,R,X as the guest wrote it), taken right after the frame is hashed and
-// before the layer's buffer is waited for. The guest's display driver completes a swap once its flush is posted
-// (DroidVMVirtioGpuDisplay.cpp droidvm_virtio_complete_on_post) and the compositor draws into that surface again
-// about three frames later, so the guest's pages may be read only for a few ms after the frame comes: the hash, then
-// this copy, never the wait for surfaceflinger's buffer (up to 30 ms on the phone). The layer's buffer is then filled
-// from the snapshot. `full`: every pixel is the newest frame's (the first take copies the whole frame, later ones only
-// what changed).
-struct xhd_snapshot { uint8_t *pixels; size_t stride; uint32_t width, height; int full; };
+// The helper's own copy of the guest's frame (B,G,R,X), and the hash of each of its tiles: the picture the layer is
+// to show, which every post fills its buffer from. xhd_snapshot_update reads the guest's pages once, right when a frame
+// comes: each tile of each row into `row` (one tile, in the cache), hashed there, and copied on into `pixels` only when
+// its hash differs from the tile's last one. So the hash always says what the snapshot holds (it is never of guest
+// bytes read at another moment than those copied), and the guest's pages are read in one pass of about 2-3 ms (the
+// hash used to be one pass and the copy of the changed tiles a second; 5.2-6.0 ms mean, up to 21 ms, on the phone).
+// Each row is cut into XHD_TILES tiles; a tile's hash is of its pixels' B,G,R bytes (not X), with the tile's width.
+// `full`: every pixel is the newest picture's (the first update or put of the whole frame makes it so).
+#define XHD_TILES 4
+struct xhd_snapshot { uint8_t *pixels, *row; uint64_t *hash; size_t stride; uint32_t width, height, tile; int full; };
 int  xhd_snapshot_init(struct xhd_snapshot *s, uint32_t width, uint32_t height);   // 0 or -ENOMEM
 void xhd_snapshot_free(struct xhd_snapshot *s);
-// Copies `changed` (the whole frame while the snapshot is not full, or with changed NULL) from the pending direct frame.
-// 0, or -errno as xhd_copy_direct (the snapshot is then not full).
-int  xhd_snapshot_take(struct xhd_snapshot *s, const struct xhd_direct *d, const struct xhd_rect *changed);
+// Reads the pending direct frame into the snapshot. 0 with *changed the bounding rectangle of the tiles that differ
+// from the snapshot's (w == 0: the frame is what the snapshot holds already), or -errno as xhd_copy_direct: the tiles
+// read before the fault are in the snapshot (*changed says which), the rest are as they were.
+int  xhd_snapshot_update(struct xhd_snapshot *s, const struct xhd_direct *d, struct xhd_rect *changed);
+// xnuhost's own pixels (the memfd, B,G,R,X) over rectangle r of the snapshot; those tiles' hashes are dropped, so the
+// next direct frame copies them again. -EINVAL for another format.
+int  xhd_snapshot_put(struct xhd_snapshot *s, const struct xhd_frame *f, struct xhd_rect r);
+uint64_t xhd_hash_tile(const uint8_t *p, uint32_t pixels);   // never 0 (0: no hash); for the tests too
 
-// What changed: the guest flushes its whole surface every frame (its swap carries no dirty region), so the helper finds
-// the damage itself. Each row is cut into XHD_TILES tiles; a tile's hash is of its pixels' B,G,R bytes (not X) as a
-// stream, so the same picture in another surface (the compositor rotates three, scattered differently over RAM) hashes
-// the same. `shown` holds the hashes of what the layer shows, valid once a whole frame was posted.
-#define XHD_TILES 4
-struct xhd_damage { uint32_t width, height, tile; uint64_t *shown, *next; int valid; };
-int  xhd_damage_init(struct xhd_damage *d, uint32_t width, uint32_t height);   // 0 or -ENOMEM
-void xhd_damage_free(struct xhd_damage *d);
-// Hashes the pending frame (all of it) and compares: 0 with *dirty the bounding rectangle of the tiles that differ from
-// what is shown (w == 0: the frame is what the layer already shows; nothing to post), or -errno (as xhd_copy_direct).
-int  xhd_direct_damage(const struct xhd_direct *dir, struct xhd_damage *d, struct xhd_rect *dirty);
-// The frame just hashed is in the layer now (posted whole or its damage over the rest).
-void xhd_damage_commit(struct xhd_damage *d);
-uint64_t xhd_hash_pixels(uint64_t state[4], const uint8_t *p, size_t bytes, size_t at);   // (for the tests)
+// What each of the layer's buffers lacks (2026-11-22). Surface::lock copies back into the buffer it hands out only
+// `mDirtyRegion - dirty` from the last posted one, and it keeps mDirtyRegion by subtracting the handed-out buffer's
+// own last dirty rectangle (AOSP libs/gui/Surface.cpp): right for two buffers, but with three or more a change
+// posted in another buffer is lost from it wherever this buffer's old rectangle covered it, and that buffer then
+// shows the area as it was frames ago. With direct frames only the changed tiles were asked for, so a widget or a
+// page that changed showed an older picture of itself for a frame and then the right one ("when the UI changes it
+// glitches and updates", 2026-11-22). Now the whole buffer is locked (so Surface copies nothing back) and the helper
+// fills what that buffer lacks itself, from the snapshot: the union of what every post changed since the buffer was
+// last filled, and what this post changes. Buffers are told apart by the address the lock maps them at; one not
+// seen yet (or forgotten: more than XHD_BUFFERS) is filled whole.
+#define XHD_BUFFERS 8
+struct xhd_buffers { uint32_t width, height; unsigned n; uint64_t clock; unsigned long forgotten;
+                     struct { const void *bits; struct xhd_rect stale; uint64_t used; } b[XHD_BUFFERS]; };
+void xhd_buffers_reset(struct xhd_buffers *q, uint32_t width, uint32_t height);   // all of them unknown (new buffers)
+// The rectangle to fill in the buffer at `bits`: what it lacks, and `changed` (what this post changes).
+struct xhd_rect xhd_buffers_fill(const struct xhd_buffers *q, const void *bits, const struct xhd_rect *changed);
+// The buffer at `bits` was filled and posted, changing `changed` against the last post: the others lack that now.
+void xhd_buffers_posted(struct xhd_buffers *q, const void *bits, const struct xhd_rect *changed);
 #define XHD_DONE_FAILED 1u
 #define XHD_DONE_UNCHANGED 2u                         // the frame was what the layer showed: nothing was posted
 int xhd_send_done(int fd, uint64_t seq, uint32_t flags);

@@ -82,19 +82,20 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   it falls back to `BGRA_8888` and encodes the half floats to sRGB, clamped (what is outside sRGB is lost). With
   direct frames (the default; `--no-direct` asks xnuhost for the old way) the helper says so in its `panel` report,
   xnuhost hands it guest RAM and a table of frame descriptions (`XHDM`), and a `frame` message (`XHDS`) makes the
-  helper copy that frame's rows straight from the guest's pages (the compositor's surface, scattered over RAM; the
-  table has its segments) into the buffer, then post it and answer `done` (`XHDA`), which is when xnuhost answers the
-  guest's flush. xnuhost copies nothing then, so a frame costs one copy on the host instead of two. The memfd stays
-  for what xnuhost still draws itself (the boot console, 2D resources) and for the first four buffers. A frame that
-  cannot be copied (a slot reused, a segment outside RAM, a half-float buffer) is answered with the failure flag and
-  xnuhost copies the frames itself from then on. Only the changed tiles are copied and posted (the guest flushes its
-  whole surface every frame, so the helper hashes tiles of the frame against what the layer shows; an unchanged frame
-  is answered at once and nothing is posted; the changed tiles go into the helper's snapshot at once, and the layer's
-  buffer is filled from it: "The snapshot" below). Protocol: `docs/booter.md` 2.8. Every 10 s the log has `10 s: N
-  frames from xnuhost, U unchanged (nothing posted), P posted (M from guest RAM, R% of the rows copied); hash mean ...
-  ms; guest pages read for mean ... ms, max ... ms (hash and snapshot); buffer wait mean ... ms; copy mean ... ms,
-  max ... ms; this process P% of a core`, and
-  once `frames come straight from guest RAM now`. Pacing is the buffer queue's: the next buffer is handed out when
+  helper read that frame's rows straight from the guest's pages (the compositor's surface, scattered over RAM; the
+  table has its segments) into its snapshot, then fill and post a buffer and answer `done` (`XHDA`), which is when
+  xnuhost answers the guest's flush. xnuhost copies nothing then. The memfd stays for what xnuhost still draws itself
+  (the boot console, 2D resources): it is put into the snapshot too. A frame that cannot be read (a slot reused, a
+  segment outside RAM, no snapshot: half-float frames or no memory for it) is answered with the failure flag and
+  xnuhost copies the frames itself from then on. The guest flushes its whole surface every frame, so the helper finds
+  the damage itself: each tile of the frame is read once into the cache, hashed there and copied on into the snapshot
+  only when its hash differs ("The snapshot" below). An unchanged frame is answered at once and nothing is posted. A
+  changed one: the layer's buffer is locked whole and the helper fills from the snapshot what that buffer lacks ("The
+  layer's buffers" below). Protocol: `docs/booter.md` 2.8. Every 10 s the log has `10 s: N frames from xnuhost, U
+  unchanged (nothing posted), P posted (M from guest RAM, C% of the rows changed, F% filled); guest pages read in one
+  pass for mean ... ms, max ... ms, from ... ms after xnuhost sent the frame (mean; max ... ms); buffer wait mean ...
+  ms; copy mean ... ms, max ... ms; B buffers seen (K forgotten); this process P% of a core`, and once `frames come
+  straight from guest RAM now, read once into the snapshot; each buffer gets what it lacks`. Pacing is the buffer queue's: the next buffer is handed out when
   surfaceflinger has taken the last, so the loop runs at the panel's vsync and every flush that came meanwhile is
   one post.
 - **The first post waits for `session/ready` (since 2026-11-15).** With `--session DIR` the helper posts nothing
@@ -241,23 +242,51 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   to in the layer mean 10.4-11.5 ms, 0 not answered within 100 ms. A sign of wrong offsets: 100% of the rows
   copied in every frame on a still screen. Whether answering the flush after the post slows the guest's swaps is
   not measured yet.
-- **The snapshot (2026-11-22).** The guest does not wait for the helper: its display driver completes a swap once
-  the flush is posted (`droidvm_virtio_complete_on_post`), and the compositor draws into that surface again about
-  three frames later. That first phone run copied from the guest's pages only after surfaceflinger handed out a
-  buffer (hash 5.4 ms, buffer wait mean 4.3 ms, so 10-11 ms after the frame on average and up to 34 ms), and page
-  swipes and widget redraws showed parts of later frames. Now the changed tiles go into the helper's own copy of the
-  frame (`struct xhd_snapshot`, 18 MB at 1440x3120, made at the first direct frame) right after the hash, and the
-  layer's buffer is filled from it after the wait. The 10 s line says how long the guest's pages were read:
-  `guest pages read for mean X ms, max Y ms (hash and snapshot)` (`; NO snapshot: ...` when its memory was refused:
-  then the old order). Tests: `test_display.c` (the first take copies the whole frame, later ones only what changed,
-  a change outside `changed` stays out, a failed take makes the next one whole again).
+- **The snapshot (2026-11-22).** The helper's own copy of the picture (`struct xhd_snapshot`, 18 MB at 1440x3120
+  and one hash per tile, made before the first post), which every post is filled from. A direct frame is read into
+  it in one pass right when it comes (`xhd_snapshot_update`): each tile of each row (4 a row) is copied from the
+  guest's pages into a one-tile buffer, hashed there, and copied on only when its hash differs. So the hash always
+  says what the snapshot holds, and the guest's pages are read once. Before, the hash read all 18 MB and then the
+  changed tiles were read a second time (from 2026-11-22 morning; before that, after the buffer wait): `guest pages
+  read for mean 5.2-6.0 ms, max 8.6-21.2 ms` on the phone. xnuhost's own pixels (the memfd) are put over it
+  (`xhd_snapshot_put`), and their tiles lose their hashes, so the next direct frame takes them from the guest again.
+  The 10 s line says how long the read took and how long after xnuhost's send it began (`from X ms after xnuhost
+  sent the frame`: `XHDS`'s fifth word is the send time since 2026-11-22). On the build host (Apple M4, in the
+  host tests' container, `-O2`, a 1440x3120 frame of stride 5888 in scattered 16 KiB pages) the one pass costs
+  3.2-3.3 ms a frame where the old hash and copy cost 9.2-9.3 ms (unchanged frame), and 3.6-4.7 ms against 9.3-10.2
+  ms with 30% of the rows changed: about a third. The phone was not measured yet. If the ratio holds there, the
+  phone's 5.2-6.0 ms become about 2 ms, about 25% of a core when a frame comes every 120 Hz refresh (a guess until
+  the phone's line). The guest does not draw into
+  a frame's surface while the helper reads it. Its display driver lands the frame in flight (waits for the flush's
+  answer, which xnuhost holds until `done`) before it posts the next one (`DroidVMVirtioGpuDisplay.cpp`, `land()`),
+  and the compositor needs that next swap to free the surface again. The first-read delay on the phone checks this.
+  Tests: `test_display.c` (the first update copies all of it, an unchanged frame nothing, a changed pixel its tile,
+  the X byte alone no change, the guest's write after the read stays out until the next read, a put tile is taken
+  from the guest again, a fault halfway keeps what was read, a reused slot reads nothing).
+- **The layer's buffers (2026-11-22): the fix of "when the UI changes it glitches and updates".** Until then the
+  helper locked only the changed tiles' rectangle and left the rest to Surface's copy-back. AOSP's `Surface::lock`
+  (`libs/gui/Surface.cpp`) copies back `mDirtyRegion - dirty` from the last posted buffer and keeps `mDirtyRegion`
+  by subtracting the handed-out buffer's own last dirty region. That is right for two buffers, but with three or more
+  a change posted in another buffer is lost wherever this buffer's old region covered it. The buffer then shows that
+  area as it was two or more frames ago, for one frame: a widget or a page that changes flashes back to an older
+  picture of itself and then updates. xnuhost's own copy never did this, because the guest flushes its whole surface,
+  so every post was whole. Now the buffer is locked whole (Surface copies nothing back) and the helper fills what
+  that buffer lacks from the snapshot: the union of what every post changed since it was last filled, and this post's
+  change (`struct xhd_buffers`). Buffers are told apart by the address the lock maps them at. A buffer not seen yet,
+  or forgotten (more than 8), is filled whole, and so is every buffer when one is not of the frame's size. The 10 s
+  line has `B buffers seen (K forgotten)` and `F% filled`. Test: `test_display.c` `test_buffers`, a model of
+  `Surface::lock` on an 8x8 picture through 300 frames of changing rectangles. The old way shows a wrong picture
+  with 3 and 4 buffers and none with 2, and the new way none with 1 to 5 buffers, in turn or in any order. How many
+  buffers this phone's queue has is not known yet: the phone's line says it.
 - The native-mode request (`setDesiredDisplayModeSpecs` by reflection) is unproven like the rest; a refusal is
   logged and the frame is scaled. At 1440x3120 a full-frame copy is 18 MB, 2.2 GB/s at 120 Hz when every frame
   is all damage.
 - A guest that truncates the memfd kills the helper (SIGBUS) and the screen goes dark; the session and the way
   back are not affected.
-- The guest can write the frame while a row is copied: tearing is possible, as there is no frame handshake in
-  the protocol.
+- Direct frames have a handshake (`done`, above), the memfd's flushes have none: xnuhost can write the memfd while
+  a row is copied. A guest frame whose GPU work had not ended when it was posted (a fence that retires early: not
+  seen, not ruled out) would be read part-drawn. Its tiles then hash as what was read, so the next frame puts the
+  finished pixels in.
 - Rotation: the picture is the guest's portrait frame; the panel is not rotated.
 
 ## When the panel goes dark while iOS draws (2026-11-12)

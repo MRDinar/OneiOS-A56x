@@ -201,7 +201,9 @@ int xhd_drain_direct(int fd, const struct xhd_frame *frame, struct xhd_rect *dam
     if (!memcmp(m.magic, "XHDS", 4)) {
       // The newest frame wins; the answer for it covers the ones before it.
       uint64_t seq = (uint64_t)m.b | (uint64_t)m.c << 32;
-      if (direct && direct->ram && m.a < direct->slots && (!direct->pending || seq > direct->seq)) { direct->pending = 1; direct->slot = m.a; direct->seq = seq; }
+      if (direct && direct->ram && m.a < direct->slots && (!direct->pending || seq > direct->seq)) {
+        direct->pending = 1; direct->slot = m.a; direct->seq = seq; direct->sent_us = m.d;
+      }
       continue;
     }
     if (memcmp(m.magic, "XHDF", 4)) continue;                         // not a flush: ignored
@@ -276,100 +278,129 @@ int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride,
 int xhd_snapshot_init(struct xhd_snapshot *s, uint32_t width, uint32_t height)
 {
   memset(s, 0, sizeof *s);
+  if (!width || !height) return -ENOMEM;
   s->stride = (size_t)width * 4;
-  s->pixels = width && height ? malloc(s->stride * height) : NULL;
-  if (!s->pixels) return -ENOMEM;
+  s->tile = (width + XHD_TILES - 1) / XHD_TILES;
+  s->pixels = calloc(height, s->stride);
+  s->row = malloc((size_t)s->tile * 4);
+  s->hash = calloc((size_t)height * XHD_TILES, sizeof *s->hash);
+  if (!s->pixels || !s->row || !s->hash) { xhd_snapshot_free(s); return -ENOMEM; }
   s->width = width; s->height = height;
   return 0;
 }
 
 void xhd_snapshot_free(struct xhd_snapshot *s)
 {
-  free(s->pixels);
+  free(s->pixels); free(s->row); free(s->hash);
   memset(s, 0, sizeof *s);
 }
 
-int xhd_snapshot_take(struct xhd_snapshot *s, const struct xhd_direct *d, const struct xhd_rect *changed)
+// Four lanes of two pixels each (one 64-bit word, the X bytes masked off), a rotate and a multiply a step: the four
+// chains run side by side, and the rotate brings every bit of a change into the low bits the next multiply spreads up
+// (a multiply alone only carries a change upwards: two pixels' high bytes could then cancel in 16 bits).
+static inline uint64_t hash_step(uint64_t lane, uint64_t w)
 {
-  struct xhd_rect whole = { 0, 0, s->width, s->height }, r = s->full && changed ? *changed : whole, done;
-  if (!s->pixels) return -ENOMEM;
-  if (!r.w || !r.h) return 0;                          // nothing changed: the snapshot is the frame already
-  int e = xhd_copy_direct(d, s->pixels, s->stride, s->width, s->height, 0, &r, &done);
-  if (e) { s->full = 0; return e; }
-  // Whole only when the guest's frame covers the snapshot: a smaller frame leaves the rest unknown.
-  if (!s->full) s->full = done.x == 0 && done.y == 0 && done.w == s->width && done.h == s->height;
-  return 0;
+  lane += (w & 0x00ffffff00ffffffull) + 1;
+  return ((lane << 23) | (lane >> 41)) * 0x9e3779b97f4a7c15ull;
 }
 
-// ---- damage -----------------------------------------------------------------------------------
-// Four lanes by pixel index (`at`, the pixel's place in the stream), each a multiply-add over the pixel's B,G,R: a
-// function of the bytes and their order alone, however the stream is cut into pieces.
-uint64_t xhd_hash_pixels(uint64_t state[4], const uint8_t *p, size_t bytes, size_t at)
+uint64_t xhd_hash_tile(const uint8_t *p, uint32_t pixels)
 {
-  const uint64_t K = 0x9e3779b97f4a7c15ull;
-  for (size_t i = 0; i + 4 <= bytes; i += 4, at++) {
-    uint32_t v;
-    memcpy(&v, p + i, 4);
-    state[at & 3] = (state[at & 3] + (v & 0x00ffffffu) + 1) * K;
+  uint64_t a = 1, b = 2, c = 3, e = 4, w0, w1, w2, w3;
+  uint32_t i = 0;
+  for (; i + 8 <= pixels; i += 8, p += 32) {
+    memcpy(&w0, p, 8); memcpy(&w1, p + 8, 8); memcpy(&w2, p + 16, 8); memcpy(&w3, p + 24, 8);
+    a = hash_step(a, w0); b = hash_step(b, w1); c = hash_step(c, w2); e = hash_step(e, w3);
   }
-  return at;
+  for (; i + 2 <= pixels; i += 2, p += 8) { memcpy(&w0, p, 8); a = hash_step(a, w0); }
+  if (i < pixels) { uint32_t v; memcpy(&v, p, 4); b = hash_step(b, v); }
+  uint64_t h = a ^ (b * 3) ^ (c * 5) ^ (e * 7) ^ ((uint64_t)pixels << 48);
+  h ^= h >> 31;
+  h *= 0xbf58476d1ce4e5b9ull;
+  h ^= h >> 29;
+  return h | 1;                                        // 0 is "no hash": a tile xnuhost drew, or not read yet
 }
 
-int xhd_damage_init(struct xhd_damage *d, uint32_t width, uint32_t height)
+int xhd_snapshot_update(struct xhd_snapshot *s, const struct xhd_direct *d, struct xhd_rect *changed)
 {
-  memset(d, 0, sizeof *d);
-  size_t n = (size_t)height * XHD_TILES;
-  d->shown = calloc(n, sizeof *d->shown);
-  d->next = calloc(n, sizeof *d->next);
-  if (!d->shown || !d->next) { xhd_damage_free(d); return -ENOMEM; }
-  d->width = width; d->height = height; d->tile = (width + XHD_TILES - 1) / XHD_TILES;
-  return 0;
-}
-
-void xhd_damage_free(struct xhd_damage *d)
-{
-  free(d->shown); free(d->next);
-  memset(d, 0, sizeof *d);
-}
-
-struct hash_ctx { uint64_t lane[4]; size_t at; };
-static void hash_piece(void *ctx, const uint8_t *from, uint64_t n)
-{
-  struct hash_ctx *h = ctx;
-  h->at = xhd_hash_pixels(h->lane, from, (size_t)n, h->at);
-}
-
-int xhd_direct_damage(const struct xhd_direct *dir, struct xhd_damage *d, struct xhd_rect *dirty)
-{
-  memset(dirty, 0, sizeof *dirty);
+  memset(changed, 0, sizeof *changed);
+  if (!s->pixels) return -ENOMEM;
   struct walk k;
-  int e = walk_open(&k, dir);
+  int e = walk_open(&k, d);
   if (e) return e;
-  uint32_t width = k.s.width < d->width ? k.s.width : d->width, height = k.s.height < d->height ? k.s.height : d->height;
+  uint32_t width = k.s.width < s->width ? k.s.width : s->width, height = k.s.height < s->height ? k.s.height : s->height;
   uint32_t x0 = UINT32_MAX, x1 = 0, y0 = UINT32_MAX, y1 = 0;
-  for (uint32_t row = 0; row < height; row++)
+  for (uint32_t row = 0; row < height && !e; row++)
     for (uint32_t t = 0; t < XHD_TILES; t++) {
-      uint32_t x = t * d->tile, w = x >= width ? 0 : (width - x < d->tile ? width - x : d->tile);
+      uint32_t x = t * s->tile, w = x >= width ? 0 : (width - x < s->tile ? width - x : s->tile);
       if (!w) continue;
-      struct hash_ctx h = { { 1, 2, 3, 4 }, 0 };
-      if ((e = walk_row(&k, row, x, w, hash_piece, &h))) return e;
-      uint64_t v = h.lane[0] ^ (h.lane[1] * 3) ^ (h.lane[2] * 5) ^ (h.lane[3] * 7) ^ ((uint64_t)w << 48), *slot = &d->next[(size_t)row * XHD_TILES + t];
-      *slot = v;
-      if (d->valid && d->shown[(size_t)row * XHD_TILES + t] == v) continue;
+      // The guest's bytes are read once, into `row`; the hash and the copy are both of what was read.
+      struct copy_ctx c = { s->row, 0 };
+      if ((e = walk_row(&k, row, x, w, copy_piece, &c))) break;
+      uint64_t h = xhd_hash_tile(s->row, w), *slot = &s->hash[(size_t)row * XHD_TILES + t];
+      if (*slot == h) continue;
+      *slot = h;
+      memcpy(s->pixels + (size_t)row * s->stride + (size_t)x * 4, s->row, (size_t)w * 4);
       if (x < x0) x0 = x;
       if (x + w > x1) x1 = x + w;
       if (row < y0) y0 = row;
       y1 = row + 1;
     }
-  if (y0 != UINT32_MAX) *dirty = (struct xhd_rect){ x0, y0, x1 - x0, y1 - y0 };
+  if (y0 != UINT32_MAX) *changed = (struct xhd_rect){ x0, y0, x1 - x0, y1 - y0 };
+  // Whole only when the guest's frame covers the snapshot: a smaller frame leaves the rest unknown.
+  if (!e && !s->full) s->full = width == s->width && height == s->height;
+  return e;
+}
+
+int xhd_snapshot_put(struct xhd_snapshot *s, const struct xhd_frame *f, struct xhd_rect r)
+{
+  if (!s->pixels || !f->pixels || f->format != XHD_FORMAT_BGRX) return -EINVAL;
+  if (!xhd_rect_clip(&r, s->width < f->width ? s->width : f->width, s->height < f->height ? s->height : f->height)) return 0;
+  for (uint32_t row = r.y; row < r.y + r.h; row++) {
+    memcpy(s->pixels + (size_t)row * s->stride + (size_t)r.x * 4, f->pixels + (size_t)row * f->stride + (size_t)r.x * 4, (size_t)r.w * 4);
+    for (uint32_t t = r.x / s->tile; t <= (r.x + r.w - 1) / s->tile && t < XHD_TILES; t++) s->hash[(size_t)row * XHD_TILES + t] = 0;
+  }
+  if (r.x == 0 && r.y == 0 && r.w == s->width && r.h == s->height) s->full = 1;
   return 0;
 }
 
-void xhd_damage_commit(struct xhd_damage *d)
+// ---- the layer's buffers ----------------------------------------------------------------------
+void xhd_buffers_reset(struct xhd_buffers *q, uint32_t width, uint32_t height)
 {
-  uint64_t *t = d->shown;
-  d->shown = d->next; d->next = t;
-  d->valid = 1;
+  memset(q, 0, sizeof *q);
+  q->width = width; q->height = height;
+}
+
+static int buffers_find(const struct xhd_buffers *q, const void *bits)
+{
+  for (unsigned i = 0; bits && i < q->n; i++) if (q->b[i].bits == bits) return (int)i;
+  return -1;
+}
+
+struct xhd_rect xhd_buffers_fill(const struct xhd_buffers *q, const void *bits, const struct xhd_rect *changed)
+{
+  int i = buffers_find(q, bits);
+  if (i < 0) return (struct xhd_rect){ 0, 0, q->width, q->height };      // not seen (or forgotten): what it holds is not known
+  struct xhd_rect r = q->b[i].stale;
+  xhd_rect_union(&r, changed);
+  return r;
+}
+
+void xhd_buffers_posted(struct xhd_buffers *q, const void *bits, const struct xhd_rect *changed)
+{
+  int i = buffers_find(q, bits);
+  for (unsigned j = 0; j < q->n; j++) if ((int)j != i) xhd_rect_union(&q->b[j].stale, changed);
+  if (i < 0) {
+    if (q->n < XHD_BUFFERS) i = (int)q->n++;
+    else {                                             // the one posted longest ago is forgotten: filled whole next time
+      i = 0;
+      for (unsigned j = 1; j < q->n; j++) if (q->b[j].used < q->b[i].used) i = (int)j;
+      q->forgotten++;
+    }
+    q->b[i].bits = bits;
+  }
+  q->b[i].stale = (struct xhd_rect){ 0, 0, 0, 0 };
+  q->b[i].used = ++q->clock;
 }
 
 int xhd_send_done(int fd, uint64_t seq, uint32_t flags)
