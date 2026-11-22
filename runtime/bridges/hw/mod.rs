@@ -18,4 +18,5 @@ mod test_hw_backend;
 #[cfg(test)]
 pub(crate) mod testdir; // hw/test_hw_backend.c
 #[cfg(test)]
+#[allow(unused_imports)] // the type for tests that keep a guard in a struct
 pub(crate) use hw_backend::{settings_lock, SettingsGuard};
