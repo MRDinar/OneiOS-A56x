@@ -16,6 +16,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use xh_core::time::monotonic_ms;
 use xh_core::{loge, logi};
 use xnuhost_abi::{XH_HALT_OFF, XH_HALT_PANIC, XH_HALT_RESTART, XH_HALT_RETURN};
 
@@ -83,14 +84,9 @@ pub fn stop_request() -> Option<StopRequest> {
     STOP.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// xh_mono_ms: CLOCK_MONOTONIC in milliseconds.
-pub fn mono_ms() -> u64 {
-    xh_core::time::monotonic_ms()
-}
-
 /// CLOCK_MONOTONIC in whole seconds (the C's tv_sec comparisons of the periodic lines).
 fn mono_s() -> u64 {
-    mono_ms() / 1000
+    monotonic_ms() / 1000
 }
 
 // ---- the session files (oneos/interface.md 3) ----------------------------------------------------------------------
@@ -181,14 +177,14 @@ fn ready_now(rule: &ReadyState, why: ReadyWhy, now: u64) {
 pub fn guest_ready() {
     let mut rule = READY.lock().unwrap_or_else(|e| e.into_inner());
     let why = rule.on_call();
-    ready_now(&rule, why, mono_ms());
+    ready_now(&rule, why, monotonic_ms());
 }
 
 /// xh_guest_frame: a frame of the guest's own was shown (virtio_gpu calls it before the frame goes to the display
 /// helper, so that session/ready is there first); `lit`: pixels_lit of the display's frame. True once the guest is
 /// ready, after which it need not be called again.
 pub fn guest_frame(lit: bool) -> bool {
-    let now = mono_ms();
+    let now = monotonic_ms();
     let wait = ready_content_wait();
     let mut rule = READY.lock().unwrap_or_else(|e| e.into_inner());
     let first = rule.frames == 0 && !rule.ready;
@@ -212,7 +208,7 @@ fn ready_tick() {
     if is_guest_ready() {
         return;
     }
-    let now = mono_ms();
+    let now = monotonic_ms();
     let mut rule = READY.lock().unwrap_or_else(|e| e.into_inner());
     let why = rule.on_tick(ready_content_wait(), now);
     ready_now(&rule, why, now);
@@ -494,7 +490,7 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
             continue;
         }
         if signo > 0 {
-            match ret.on_signal(config.return_graceful_ms, is_guest_ready(), mono_ms()) {
+            match ret.on_signal(config.return_graceful_ms, is_guest_ready(), monotonic_ms()) {
                 ReturnDecision::Graceful => {
                     let asked = bridges::request_shutdown();
                     logi!(
@@ -510,8 +506,8 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
                 ReturnDecision::StopNow => stop(XH_HALT_OFF, 0, &format!("signal {signo}")),
             }
         }
-        if ret.expired(mono_ms()) {
-            logi!("return: graceful shutdown timed out after {} ms; stopping", ret.elapsed_ms(mono_ms()));
+        if ret.expired(monotonic_ms()) {
+            logi!("return: graceful shutdown timed out after {} ms; stopping", ret.elapsed_ms(monotonic_ms()));
             stop(XH_HALT_OFF, 0, "graceful shutdown timed out");
         }
         perf::tick(); // "perf:" lines every perf-log seconds
@@ -541,7 +537,7 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
         && request.why != "graceful shutdown timed out"
         && request.why != "second return request"
     {
-        logi!("return: iOS shut down in {} ms", ret.elapsed_ms(mono_ms()));
+        logi!("return: iOS shut down in {} ms", ret.elapsed_ms(monotonic_ms()));
     }
     logi!("stopping: {} (reason {}, code {})", request.why, request.reason, request.code);
     s.memory.host_memory_tick(config, true);

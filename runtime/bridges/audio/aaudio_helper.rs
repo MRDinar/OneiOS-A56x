@@ -87,6 +87,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use xh_core::sys::{errno, strerror};
+use xh_core::time;
 
 // ---- AAudio, as the helper sees it ----------------------------------------------------------------
 pub const AAUDIO_OK: i32 = 0;
@@ -210,17 +211,9 @@ fn perf_name(mode: i32) -> &'static str {
     }
 }
 
-fn clock_s(clock: libc::clockid_t) -> f64 {
-    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: a valid timespec to fill.
-    unsafe { libc::clock_gettime(clock, &mut t) };
-    t.tv_sec as f64 + t.tv_nsec as f64 / 1e9
-}
-fn now_s() -> f64 {
-    clock_s(libc::CLOCK_MONOTONIC)
-}
+/// CLOCK_MONOTONIC in nanoseconds, from its seconds (as the C's double).
 fn now_ns() -> i64 {
-    (now_s() * 1e9) as i64
+    (time::monotonic_s() * 1e9) as i64
 }
 
 /// The helper's settings, from the environment at its start.
@@ -445,7 +438,7 @@ impl Ring {
     /// to two seconds less its sample time) plus what the ring and AAudio hold ahead of it (`ahead`, frames; None: no
     /// timestamp yet) is its end to end, from iOS's sample time to the speaker.
     fn guest_period(&mut self, frames: u32, ahead: Option<i64>) {
-        let now = clock_s(libc::CLOCK_MONOTONIC_RAW);
+        let now = time::seconds(libc::CLOCK_MONOTONIC_RAW);
         let c = &mut self.clock;
         let at = c.frames as f64 / f64::from(RATE);
         let offset = now - at;
@@ -1023,13 +1016,13 @@ impl Helper {
         } else {
             format!("end-to-end not measured (no guest period with a timestamp; iOS is told {told})")
         };
-        let started = dir.as_ref().map_or(now_s(), |d| d.started());
+        let started = dir.as_ref().map_or(time::monotonic_s(), |d| d.started());
         let ms_of = |q: Option<i64>| q.map_or(-1, |q| frames_ms(q as u32) as i64);
         eprintln!(
             "oneios-audio: speaker {when}: {:.1} s, {} frames in, {} played, {} underruns, {} overflows ({} frames \
              dropped), slips +{}/-{}, {} frames of silence cut, ring {} ms ({}..{}, target {}, peak {}), margin {} ms, \
              {pulled}, AAudio {} ms queued, {xruns} xruns; latency about {} ms; {e2e}",
-            now_s() - started,
+            time::monotonic_s() - started,
             s.r#in,
             s.played,
             s.underruns,
@@ -1075,7 +1068,7 @@ impl Helper {
         let (mut level, mut reference) = (-1.0f64, -1.0f64);
         let (mut settled, mut seen) = (0u32, 0u32);
         // quiet_since: the last underrun or target change
-        let (mut ring_average, mut quiet_since) = (0.0f64, now_s());
+        let (mut ring_average, mut quiet_since) = (0.0f64, time::monotonic_s());
         let mut phase = false;
         let mut xruns_seen = d.stream.xrun_count();
         let mut reported = d.started();
@@ -1090,7 +1083,7 @@ impl Helper {
             let read = d.stream.frames_read();
             let queued = (d.stream.frames_written() - read).max(0);
             let xruns = d.stream.xrun_count();
-            let now = now_s();
+            let now = time::monotonic_s();
             let (mut take, mut length) = (0u32, CHUNK);
             let (mut play, mut cut) = (false, false);
             let mut r = self.ring();
@@ -1335,8 +1328,8 @@ impl Helper {
                     d.frames.fetch_add(n as u64, Ordering::Relaxed);
                 }
             }
-            if now_s() - reported >= 10.0 {
-                reported = now_s();
+            if time::monotonic_s() - reported >= 10.0 {
+                reported = time::monotonic_s();
                 self.out_report("running");
                 demote_realtime();
             }
@@ -1369,12 +1362,12 @@ impl Helper {
             } else {
                 self.in_sent.fetch_add(1, Ordering::Relaxed);
             }
-            if now_s() - reported >= 10.0 {
-                reported = now_s();
+            if time::monotonic_s() - reported >= 10.0 {
+                reported = time::monotonic_s();
                 eprintln!(
                     "oneios-audio: microphone running: {:.1} s, {} frames, {} periods sent, {} lost (xnuhost behind), {} \
                      short, {} xruns",
-                    now_s() - d.started(),
+                    time::monotonic_s() - d.started(),
                     d.frames.load(Ordering::Relaxed),
                     self.in_sent.load(Ordering::Relaxed),
                     self.in_lost.load(Ordering::Relaxed),
@@ -1401,7 +1394,7 @@ impl Helper {
         } else {
             eprintln!(
                 "oneios-audio: microphone stopped: {:.1} s, {} frames, {} periods sent, {} lost, {} short",
-                now_s() - d.started(),
+                time::monotonic_s() - d.started(),
                 d.frames.load(Ordering::Relaxed),
                 self.in_sent.load(Ordering::Relaxed),
                 self.in_lost.load(Ordering::Relaxed),
@@ -1420,7 +1413,7 @@ impl Helper {
         }
         self.out_report("stopped by the guest");
         self.ring().guest_on = false; // the writer plays what the ring holds, then silence
-        *locked(&self.idle_since) = now_s();
+        *locked(&self.idle_since) = time::monotonic_s();
     }
 
     /// A stream on (the guest's START); 0 or an errno.
@@ -1430,7 +1423,7 @@ impl Helper {
                 if rate == d.stream.sample_rate() as u32 && channels == d.channels {
                     // the lingering stream: on at once (a tail still in the ring plays first)
                     self.ring().restart();
-                    *locked(&d.started) = now_s();
+                    *locked(&d.started) = time::monotonic_s();
                     return 0;
                 }
             }
@@ -1466,7 +1459,7 @@ impl Helper {
             stream,
             run: AtomicBool::new(true),
             frames: AtomicU64::new(0),
-            started: Mutex::new(now_s()),
+            started: Mutex::new(time::monotonic_s()),
         });
         *locked(if output { &self.out } else { &self.inp }) = Some(Arc::clone(&d));
         let (me, dir) = (Arc::clone(self), Arc::clone(&d));
@@ -1538,7 +1531,7 @@ impl Helper {
                 return 0;
             }
             self.ring().guest_on = false; // silence until the guest's START, then the linger
-            *locked(&self.idle_since) = now_s();
+            *locked(&self.idle_since) = time::monotonic_s();
         }
         let Some(d) = self.dir(true) else { return 0 };
         let mut samples = Vec::with_capacity(10);
@@ -1616,7 +1609,7 @@ impl Helper {
             // SAFETY: one valid pollfd.
             if unsafe { libc::poll(&mut wait, 1, 1000) } == 0 {
                 // a quiet second: close a stream that lingered long enough
-                let lingered = now_s() - *locked(&self.idle_since) >= f64::from(s.linger_s);
+                let lingered = time::monotonic_s() - *locked(&self.idle_since) >= f64::from(s.linger_s);
                 if self.dir(true).is_some() && !self.ring().guest_on && lingered {
                     self.stop_dir(true);
                     eprintln!("oneios-audio: speaker closed after {} s of silence", s.linger_s);

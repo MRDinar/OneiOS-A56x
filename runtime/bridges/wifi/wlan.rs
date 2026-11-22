@@ -98,9 +98,9 @@ const PACKET_MR_ALLMULTI: u16 = 2;
 const VNET_HDR: usize = 10; // struct virtio_net_hdr
 const VIRTIO_NET_HDR_F_NEEDS_CSUM: u8 = 1;
 const VIRTIO_NET_HDR_GSO_NONE: u8 = 0;
-const SIOCETHTOOL: u64 = 0x8946;
-const SIOCGIFFLAGS: u64 = 0x8913;
-const SIOCSIFFLAGS: u64 = 0x8914;
+const SIOCETHTOOL: u32 = 0x8946;
+const SIOCGIFFLAGS: u32 = 0x8913;
+const SIOCSIFFLAGS: u32 = 0x8914;
 const ETHTOOL_GGRO: u32 = 0x2b;
 const ETHTOOL_SGRO: u32 = 0x2c;
 
@@ -880,13 +880,10 @@ fn ifreq(ifname: &str) -> [u8; 40] {
     r
 }
 
-fn ioctl_ifreq(request: u64, r: &mut [u8; 40]) -> Result<(), i32> {
+fn ioctl_ifreq(request: u32, r: &mut [u8; 40]) -> Result<(), i32> {
     let fd = socket(libc::AF_INET, libc::SOCK_DGRAM, 0)?;
     // SAFETY: an ifreq of its full size (40 bytes on LP64) for an interface request.
-    if unsafe { libc::ioctl(fd.as_raw_fd(), request as _, r.as_mut_ptr()) } != 0 {
-        return Err(last_errno());
-    }
-    Ok(())
+    unsafe { xh_core::ioctl::ioctl(fd.as_raw_fd(), request, r.as_mut_ptr()) }.map(drop).map_err(|_| last_errno())
 }
 
 /// GRO of the interface: read (None) or set; its value.

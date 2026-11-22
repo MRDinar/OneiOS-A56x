@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use xh_core::parse;
+use xh_core::bytes::ne;
+use xh_core::{ioctl, parse};
 
 const STEP: Duration = Duration::from_millis(16);
 const TOUCH_MAX: usize = 4;
@@ -827,23 +828,14 @@ const EVENT_SIZE: usize = std::mem::size_of::<libc::input_event>();
 
 fn event_fields(ev: &[u8]) -> (u16, u16, i32) {
     let at = EVENT_SIZE - 8;
-    let u16_at = |i: usize| u16::from_ne_bytes([ev[i], ev[i + 1]]);
-    (u16_at(at), u16_at(at + 2), i32::from_ne_bytes([ev[at + 4], ev[at + 5], ev[at + 6], ev[at + 7]]))
-}
-
-/// EVIOCGNAME(len): _IOC(_IOC_READ, 'E', 0x06, len).
-fn eviocgname(len: usize) -> libc::c_ulong {
-    (2 << 30) | ((len as libc::c_ulong) << 16) | ((b'E' as libc::c_ulong) << 8) | 0x06
+    (ne::u16(ev, at), ne::u16(ev, at + 2), ne::i32(ev, at + 4))
 }
 
 /// The device's name (EVIOCGNAME), at most 79 bytes.
 fn evdev_name(file: &File) -> Option<String> {
     let mut name = [0u8; 80];
-    // SAFETY: the ioctl writes at most name.len() bytes into the buffer, which lives across the call.
-    let rc = unsafe { libc::ioctl(file.as_raw_fd(), eviocgname(name.len()) as _, name.as_mut_ptr()) };
-    if rc < 0 {
-        return None;
-    }
+    // SAFETY: EVIOCGNAME(len) writes at most name.len() bytes into the buffer, which lives across the call.
+    unsafe { ioctl::ioctl(file.as_raw_fd(), ioctl::ior(b'E', 0x06, name.len()), name.as_mut_ptr()) }.ok()?;
     let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
     Some(String::from_utf8_lossy(&name[..end]).into_owned())
 }

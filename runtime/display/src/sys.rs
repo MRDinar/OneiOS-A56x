@@ -1,48 +1,16 @@
 // SPDX-License-Identifier: MIT
 //! The system calls the display helper makes (sockets with descriptors, maps, memfds, the clock), each wrapped in a
 //! safe function. `Errno` is what the C returned as -errno; its text is strerror's, as the C logged it.
-use std::ffi::{CStr, CString};
-use std::fmt;
+use std::ffi::CString;
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 use std::ptr;
+use xh_core::fd::retry;
 
-/// An errno value: the C functions' negative returns.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Errno(pub i32);
-
-impl Errno {
-    /// errno as it is now.
-    pub fn last() -> Errno {
-        Errno(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO))
-    }
-}
-
-impl fmt::Display for Errno {
-    /// strerror's text, the platform's own (the C logged `strerror(-e)`).
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // SAFETY: strerror returns a pointer to a NUL-terminated string that stays valid until the next call; it is
-        // copied out at once.
-        let text = unsafe { CStr::from_ptr(libc::strerror(self.0)) };
-        f.write_str(&text.to_string_lossy())
-    }
-}
-
-impl fmt::Debug for Errno {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Errno({}: {})", self.0, self)
-    }
-}
-
-impl From<io::Error> for Errno {
-    fn from(e: io::Error) -> Errno {
-        Errno(e.raw_os_error().unwrap_or(libc::EIO))
-    }
-}
-
-impl std::error::Error for Errno {}
+/// An errno value: the C functions' negative returns (xh-core's).
+pub use xh_core::sys::Errno;
 
 pub type Result<T> = std::result::Result<T, Errno>;
 
@@ -55,32 +23,17 @@ fn check(r: libc::c_int) -> Result<libc::c_int> {
     }
 }
 
-fn retry_eintr<T: PartialOrd + Default>(mut call: impl FnMut() -> T) -> T {
-    loop {
-        let r = call();
-        if r >= T::default() || Errno::last().0 != libc::EINTR {
-            return r;
-        }
-    }
-}
-
 /// CLOCK_MONOTONIC in nanoseconds.
-pub fn monotonic_ns() -> u64 {
-    // SAFETY: clock_gettime writes the timespec it is given.
-    let mut t: libc::timespec = unsafe { zeroed() };
-    // SAFETY: as above; CLOCK_MONOTONIC always exists.
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) } != 0 {
-        return 0;
-    }
-    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
-}
+pub use xh_core::time::monotonic_ns;
 
+/// CLOCK_MONOTONIC in microseconds.
 pub fn now_us() -> i64 {
-    (monotonic_ns() / 1000) as i64
+    xh_core::time::monotonic_us() as i64
 }
 
+/// CLOCK_MONOTONIC in milliseconds.
 pub fn now_ms() -> i64 {
-    (monotonic_ns() / 1_000_000) as i64
+    xh_core::time::monotonic_ms() as i64
 }
 
 /// This process's user and system CPU time in microseconds.
@@ -156,9 +109,8 @@ pub fn seqpacket_listen(path: &Path) -> Result<OwnedFd> {
 /// accept4 with SOCK_CLOEXEC.
 pub fn accept(listener: BorrowedFd<'_>) -> Result<OwnedFd> {
     // SAFETY: accept4 may take null address pointers.
-    let fd = check(retry_eintr(|| unsafe {
-        libc::accept4(listener.as_raw_fd(), ptr::null_mut(), ptr::null_mut(), libc::SOCK_CLOEXEC)
-    }))?;
+    let fd =
+        retry(|| unsafe { libc::accept4(listener.as_raw_fd(), ptr::null_mut(), ptr::null_mut(), libc::SOCK_CLOEXEC) })?;
     // SAFETY: a new descriptor nobody else owns.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
@@ -207,12 +159,8 @@ pub fn send_packet(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>], fla
         }
     }
     // SAFETY: msg points at the iovec and control buffer above, which live across the call.
-    let n = retry_eintr(|| unsafe { libc::sendmsg(fd.as_raw_fd(), &msg, flags | libc::MSG_NOSIGNAL) });
-    if n < 0 {
-        Err(Errno::last())
-    } else {
-        Ok(())
-    }
+    retry(|| unsafe { libc::sendmsg(fd.as_raw_fd(), &msg, flags | libc::MSG_NOSIGNAL) })?;
+    Ok(())
 }
 
 /// What one recvmsg brought.

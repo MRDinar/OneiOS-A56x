@@ -66,17 +66,13 @@ struct Bwr {
 
 fn ioctl_bwr(b: &mut Bwr) -> bool {
     // SAFETY: the buffers in b live through the call.
-    unsafe { libc::ioctl(sfd(), BINDER_WRITE_READ as _, b as *mut Bwr) >= 0 }
-}
-
-fn last_errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+    unsafe { xh_core::ioctl::ioctl(sfd(), BINDER_WRITE_READ, b) }.is_ok()
 }
 
 fn swrite(data: &[u8]) {
     let mut b = Bwr { write_size: data.len() as u64, write_buffer: data.as_ptr() as u64, ..Default::default() };
     while b.write_consumed < b.write_size {
-        if !ioctl_bwr(&mut b) && last_errno() != libc::EINTR {
+        if !ioctl_bwr(&mut b) && xh_core::sys::errno() != libc::EINTR {
             println!("fake hal: write: {}", std::io::Error::last_os_error());
             common::exit(90);
         }
@@ -90,7 +86,7 @@ fn sread(buf: &mut [u8]) -> usize {
         if ioctl_bwr(&mut b) {
             return b.read_consumed as usize;
         }
-        if last_errno() != libc::EINTR {
+        if xh_core::sys::errno() != libc::EINTR {
             println!("fake hal: read: {}", std::io::Error::last_os_error());
             common::exit(92);
         }
@@ -481,7 +477,7 @@ fn fake_hal(device: &str, mode: Mode, ready: i32) {
         for _ in 0..200 {
             // SAFETY: BINDER_SET_CONTEXT_MGR on our fd.
             rc = unsafe { libc::ioctl(fd, BINDER_SET_CONTEXT_MGR as _, 0) };
-            if rc == 0 || last_errno() != libc::EBUSY {
+            if rc == 0 || xh_core::sys::errno() != libc::EBUSY {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));

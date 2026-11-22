@@ -109,11 +109,6 @@ fn ms_now() -> u64 {
     crate::discard::mono_ns() / 1_000_000
 }
 
-fn page_size() -> u64 {
-    // SAFETY: no arguments.
-    (unsafe { libc::sysconf(libc::_SC_PAGESIZE) }) as u64
-}
-
 impl Ramfix {
     pub fn new(opts: Options) -> Ramfix {
         Ramfix { opts, ..Ramfix::default() }
@@ -148,7 +143,7 @@ impl Ramfix {
                 }
             }
         }
-        let page = page_size();
+        let page = xh_core::sys::page_size();
         for i in (0..length).step_by(page as usize) {
             // SAFETY: [base + at, +length) is inside the mapping the caller of prefault gave; a volatile read so
             // that it is made.

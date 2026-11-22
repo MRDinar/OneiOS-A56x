@@ -14,11 +14,6 @@ use crate::discard::{self, DISCARD, FIXED_REFUSED};
 use crate::mem;
 use crate::ramfix::{self, Counters, Ramfix};
 
-fn page_size() -> u64 {
-    // SAFETY: sysconf has no preconditions.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
-}
-
 /// The memfd's held bytes (st_blocks: swapped pages count too).
 fn held(fd: i32) -> Option<u64> {
     let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -33,7 +28,7 @@ fn resident_from(m: &mem::Mem, from: u64) -> u64 {
     if from >= m.size {
         return m.size;
     }
-    from + discard::ram_resident(m.host.wrapping_add(from as usize), m.size - from, page_size())
+    from + discard::ram_resident(m.host.wrapping_add(from as usize), m.size - from, xh_core::sys::page_size())
 }
 
 /// What the main loop's memory lines remember between two looks.
@@ -162,7 +157,7 @@ impl MemoryWatch {
             return;
         }
         let available = config::meminfo(&config.ram_meminfo).map_or(0, |(_, a)| a);
-        let page = page_size();
+        let page = xh_core::sys::page_size();
         loge!(
             "memory: the host swaps iOS's RAM: {} MiB (host MemAvailable {} MiB); host swap-ins {} pages/s ({:.1} MB/s), swap-outs {} pages/s ({:.1} MB/s)",
             swapped >> 20,

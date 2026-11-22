@@ -2,7 +2,6 @@
 //! The thermal bridge's session (thermal.c's second half): the worker that reads the sensors from the start (the cap
 //! is the host's own protection and does not wait for the guest), its two listeners, the load line.
 
-use super::load::monotonic_ms;
 use super::{deci_text, decide, from_hal, level_name, parse_limits, HostLoad, Limits, Raw, Sensors, State};
 use super::{BY_BATTERY, BY_SKIN, BY_SOC, LOAD_MS, POLL_MS, SOC_SAMPLES_MAX, UNKNOWN};
 use crate::hal::{self, Temperature};
@@ -11,6 +10,7 @@ use crate::{br_error, br_info};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use xh_core::time::monotonic_ms;
 
 /// A listener; runs on the worker thread without the bridge's locks.
 pub type Listener = Arc<dyn Fn(&State) + Send + Sync>;
@@ -179,9 +179,7 @@ impl Shared {
         if now.ms.saturating_sub(run.load.ms) < u64::from(self.load_ms) {
             return;
         }
-        // SAFETY: sysconf has no memory effects.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        let page = if page > 0 { page as u64 } else { 4096 };
+        let page = xh_core::sys::page_size();
         br_info!("thermal: {}", HostLoad::line(&run.load, &now, Some(&run.now.raw), page));
         run.load = now;
     }

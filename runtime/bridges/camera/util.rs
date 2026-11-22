@@ -41,13 +41,7 @@ macro_rules! cam_log {
 }
 
 /// CLOCK_MONOTONIC in nanoseconds.
-pub fn monotonic_ns() -> u64 {
-    // SAFETY: a valid timespec to fill.
-    let mut t: libc::timespec = unsafe { std::mem::zeroed() };
-    // SAFETY: as above; CLOCK_MONOTONIC always exists.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
-    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
-}
+pub use xh_core::time::monotonic_ns;
 
 /// CLOCK_MONOTONIC in seconds (camctl's `now()`).
 pub fn now() -> f64 {

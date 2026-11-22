@@ -55,10 +55,6 @@ fn ring_size(slots: u32, slot_bytes: u32) -> usize {
     CAM_RING_PAGE + slots as usize * slot_span(slot_bytes)
 }
 
-fn errno() -> io::Error {
-    io::Error::last_os_error()
-}
-
 /// A shared mapping of the ring's memfd, unmapped on drop.
 struct Mapping {
     at: NonNull<u8>,
@@ -81,7 +77,7 @@ impl Mapping {
         // SAFETY: a fresh shared mapping of a descriptor we own; the result is checked.
         let at = unsafe { libc::mmap(std::ptr::null_mut(), size, prot, libc::MAP_SHARED, fd.as_raw_fd(), 0) };
         if at == libc::MAP_FAILED {
-            return Err(errno());
+            return Err(io::Error::last_os_error());
         }
         Ok(NonNull::new(at.cast()).expect("mmap gave NULL"))
     }
@@ -140,13 +136,13 @@ impl RingWriter {
         // SAFETY: a NUL-terminated name; the result is checked.
         let raw = unsafe { libc::memfd_create(c"oneios-camera".as_ptr(), libc::MFD_CLOEXEC) };
         if raw < 0 {
-            return Err(errno());
+            return Err(io::Error::last_os_error());
         }
         // SAFETY: a fresh descriptor that nothing else owns.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
         // SAFETY: our descriptor; the size is a plain number.
         if unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } != 0 {
-            return Err(errno());
+            return Err(io::Error::last_os_error());
         }
         let at = Mapping::map(fd.as_fd(), size, true)?;
         let map = Mapping { at, size, fd, slots, slot_bytes };
@@ -209,7 +205,7 @@ impl RingReader {
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: as above.
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
-            return Err(errno());
+            return Err(io::Error::last_os_error());
         }
         let einval = || io::Error::from_raw_os_error(libc::EINVAL);
         if st.st_size < (2 * CAM_RING_PAGE) as libc::off_t {

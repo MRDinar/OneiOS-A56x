@@ -30,17 +30,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use xh_core::time;
 
 const MARKS: usize = 256;
 /// An idle host runs the test's threads within about 1 ms.
 const HOST_LATE: f64 = 0.004;
-
-fn now_s() -> f64 {
-    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: a valid timespec to fill.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
-    t.tv_sec as f64 + t.tv_nsec as f64 / 1e9
-}
 
 /// Sleeps until CLOCK_MONOTONIC reads `at` (s).
 fn sleep_until(at: f64) {
@@ -199,14 +193,14 @@ impl FakeStream {
 
             nap_s(stall);
         }
-        let start = now_s();
+        let start = time::monotonic_s();
         let mut n = 1u64;
         while !self.quit.load(Ordering::Relaxed) {
             let due = start + n as f64 * period;
             n += 1;
             sleep_until(due);
             let mut s = self.st();
-            let now = now_s();
+            let now = time::monotonic_s();
             self.fake.late(now - due);
             let pull = i64::from(self.pull);
             let took = if self.mmap {
@@ -242,7 +236,7 @@ impl FakeStream {
 
 impl AStream for FakeStream {
     fn request_start(&self) -> i32 {
-        self.st().t0 = now_s();
+        self.st().t0 = time::monotonic_s();
         0
     }
     fn request_stop(&self) -> i32 {
@@ -258,7 +252,7 @@ impl AStream for FakeStream {
     }
     fn write(&self, pcm: &[i16], frames: i32, timeout_ns: i64) -> i32 {
         // As AudioTrack's blocking write: what fits goes at once, the rest as room comes, until the timeout.
-        let t0 = now_s();
+        let t0 = time::monotonic_s();
         let mut done = 0i32;
         let channels = self.channels as usize;
         while done < frames {
@@ -266,14 +260,14 @@ impl AStream for FakeStream {
             let room = i64::from(s.buffer) - (s.written - s.read);
             if room <= 0 {
                 drop(s);
-                if (now_s() - t0) * 1e9 > timeout_ns as f64 {
+                if (time::monotonic_s() - t0) * 1e9 > timeout_ns as f64 {
                     return done;
                 }
                 nap_s(0.0002);
                 continue;
             }
             let n = (frames - done).min(room as i32);
-            let now = now_s();
+            let now = time::monotonic_s();
             let (from, to) = (done as usize * channels, (done + n) as usize * channels);
             for (i, &v) in pcm.iter().enumerate().take(to).skip(from) {
                 if v != 0 {
@@ -297,7 +291,7 @@ impl AStream for FakeStream {
                 let s = self.st();
                 (s.t0, s.read)
             };
-            if ((now_s() - t0) * f64::from(self.rate)) as i64 >= read + i64::from(frames) {
+            if ((time::monotonic_s() - t0) * f64::from(self.rate)) as i64 >= read + i64::from(frames) {
                 break;
             }
             nap_s(0.0005);
@@ -369,7 +363,7 @@ impl AStream for FakeStream {
         let s = self.st();
         let mut v = s.read;
         if self.mmap && s.pulls_done != 0 {
-            let on = ((now_s() - s.last_pull) * f64::from(self.rate)) as i64;
+            let on = ((time::monotonic_s() - s.last_pull) * f64::from(self.rate)) as i64;
             v += on.clamp(0, i64::from(self.pull));
             if v > s.written {
                 v = s.written.max(s.read);
@@ -546,7 +540,7 @@ struct Player {
 impl Player {
     fn play_as(&mut self, run: &Run, g: GuestPlay) {
         let period = 5e-3 / (1.0 + g.ppm / 1e6);
-        let start = now_s();
+        let start = time::monotonic_s();
         let mut phase = 0f64;
         let mut lost = 0u32; // periods of lateness so far (the schedule catches up)
         let mut pcm = vec![0i16; 480];
@@ -565,7 +559,7 @@ impl Player {
                 phase += 2.0 * std::f64::consts::PI * 440.0 / 48000.0;
             }
             if mark {
-                self.fake.last_out().st().sent[self.marks_sent] = now_s();
+                self.fake.last_out().st().sent[self.marks_sent] = time::monotonic_s();
                 self.marks_sent += 1;
             }
             let h = AuHeader { kind: AU_PCM, output: 1, channels: 2, value: 240, ..Default::default() };
@@ -581,7 +575,7 @@ impl Player {
                 start + f64::from(n + 1) * period
             };
             sleep_until(next);
-            self.fake.late(now_s() - next);
+            self.fake.late(time::monotonic_s() - next);
         }
     }
 
@@ -808,9 +802,9 @@ fn audio_helper() {
     // The microphone: about a second of 240-frame periods comes back, in order.
     run.header(AU_START, false, 1, 48000);
     let (mut periods, mut frames, mut first) = (0u32, 0u32, 0i16);
-    let t0 = now_s();
+    let t0 = time::monotonic_s();
     let mut buf = vec![0u8; AU_HEADER + AU_MAX_FRAMES as usize * 2];
-    while now_s() - t0 < 1.0 {
+    while time::monotonic_s() - t0 < 1.0 {
         // SAFETY: a valid buffer of its length.
         let got = unsafe { libc::recv(run.guest.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
         if got < AU_HEADER as isize {
@@ -1072,8 +1066,8 @@ fn audio_helper() {
     fake.reset_late();
     run.header(AU_PROBE, true, 0, 0);
     let mut answer = AuHeader::default();
-    let t0 = now_s();
-    while now_s() - t0 < 3.0 && answer.kind != AU_LATENCY {
+    let t0 = time::monotonic_s();
+    while time::monotonic_s() - t0 < 3.0 && answer.kind != AU_LATENCY {
         let mut wait = libc::pollfd { fd: run.guest.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one valid pollfd.
         if unsafe { libc::poll(&mut wait, 1, 100) } > 0 {

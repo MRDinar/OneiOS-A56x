@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicI8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use xh_core::ioctl::{ior, iow};
 use xh_core::sys::strerror;
 
 pub const PERIOD_MIN_MS: u32 = 4; // CS40L26_BUZZGEN_PER_MIN
@@ -533,28 +534,18 @@ struct FfEffect {
     custom_data: usize,
 }
 
-const fn ioc(dir: u64, nr: u64, size: usize) -> u64 {
-    dir << 30 | (size as u64) << 16 | (b'E' as u64) << 8 | nr
+const fn eviocgbit(ev: u16, len: usize) -> u32 {
+    ior(b'E', 0x20 + ev as u8, len)
 }
-const IOC_WRITE: u64 = 1;
-const IOC_READ: u64 = 2;
-const fn eviocgbit(ev: u16, len: usize) -> u64 {
-    ioc(IOC_READ, 0x20 + ev as u64, len)
+const fn eviocgname(len: usize) -> u32 {
+    ior(b'E', 0x06, len)
 }
-const fn eviocgname(len: usize) -> u64 {
-    ioc(IOC_READ, 0x06, len)
-}
-const EVIOCSFF: u64 = ioc(IOC_WRITE, 0x80, std::mem::size_of::<FfEffect>());
+const EVIOCSFF: u32 = iow(b'E', 0x80, std::mem::size_of::<FfEffect>());
 
-/// ioctl(fd, request, arg) -> -1 and errno, or its result.
-fn ioctl<T>(fd: &OwnedFd, request: u64, arg: *mut T) -> Result<i32, Errno> {
+/// ioctl(fd, request, arg) -> its result, or the errno of its -1.
+fn ioctl<T>(fd: &OwnedFd, request: u32, arg: *mut T) -> Result<i32, Errno> {
     // SAFETY: the callers pass a request whose size matches the buffer `arg` points to.
-    let rc = unsafe { libc::ioctl(fd.as_raw_fd(), request as _, arg) };
-    if rc < 0 {
-        Err(xh_core::sys::errno())
-    } else {
-        Ok(rc)
-    }
+    unsafe { xh_core::ioctl::ioctl(fd.as_raw_fd(), request, arg) }.map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))
 }
 
 fn open_rw(path: &str) -> Result<OwnedFd, Errno> {

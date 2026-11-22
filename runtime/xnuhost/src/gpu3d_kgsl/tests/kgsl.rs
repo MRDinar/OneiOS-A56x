@@ -302,8 +302,7 @@ pub fn stand() -> MutexGuard<'static, Stand> {
 }
 
 fn fail(errno: c_int) -> c_int {
-    // SAFETY: sets this thread's errno.
-    unsafe { *libc::__errno_location() = errno };
+    xh_core::sys::set_errno(errno);
     -1
 }
 

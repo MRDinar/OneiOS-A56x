@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use xh_core::bytes::le;
+use xh_core::sys::{errno, set_errno, strerror};
 
 use xnuhost::gpu3d::{
     self, Entry, Gpu3d, BLOB_FLAG_GUEST_HANDLE, BLOB_FLAG_MAPPABLE, BLOB_HOST3D, BLOB_HOST3D_GUEST, CAPSET_DRM,
@@ -57,14 +58,6 @@ fn log_line(level: u8, line: &str) {
     }
 }
 
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-fn strerror(e: i32) -> String {
-    gpu3d::Errno(e).to_string()
-}
-
 fn open(path: &str, flags: i32) -> i32 {
     let c = CString::new(path).unwrap();
     // SAFETY: a NUL-terminated path.
@@ -76,9 +69,10 @@ fn close(fd: i32) {
     unsafe { libc::close(fd) };
 }
 
-fn ioctl<T>(fd: i32, request: u64, arg: &mut T) -> bool {
+/// A KGSL ioctl, true when it worked.
+fn ioctl<T>(fd: i32, request: u32, arg: &mut T) -> bool {
     // SAFETY: each caller passes the structure its request encodes.
-    unsafe { libc::ioctl(fd, request as _, arg as *mut T) == 0 }
+    unsafe { xh_core::ioctl::ioctl(fd, request, arg) }.is_ok()
 }
 
 fn nodes() -> bool {
@@ -166,17 +160,18 @@ struct KRanges {
     fence_id: i32,
     padding: u32,
 }
-const fn iow(nr: u64, size: usize) -> u64 {
-    1 << 30 | (size as u64) << 16 | 0x09 << 8 | nr
+/// KGSL's ioctls: type 0x09.
+const fn iow(nr: u8, size: usize) -> u32 {
+    xh_core::ioctl::iow(0x09, nr, size)
 }
-const fn iowr(nr: u64, size: usize) -> u64 {
-    3 << 30 | (size as u64) << 16 | 0x09 << 8 | nr
+const fn iowr(nr: u8, size: usize) -> u32 {
+    xh_core::ioctl::iowr(0x09, nr, size)
 }
-const K_ALLOC: u64 = iowr(0x45, std::mem::size_of::<KAlloc>());
-const K_FREE: u64 = iow(0x46, std::mem::size_of::<KFree>());
-const K_INFO: u64 = iowr(0x47, std::mem::size_of::<KInfo>());
-const K_IMPORT: u64 = iowr(0x48, std::mem::size_of::<KImport>());
-const K_BIND: u64 = iowr(0x56, std::mem::size_of::<KRanges>());
+const K_ALLOC: u32 = iowr(0x45, std::mem::size_of::<KAlloc>());
+const K_FREE: u32 = iow(0x46, std::mem::size_of::<KFree>());
+const K_INFO: u32 = iowr(0x47, std::mem::size_of::<KInfo>());
+const K_IMPORT: u32 = iowr(0x48, std::mem::size_of::<KImport>());
+const K_BIND: u32 = iowr(0x56, std::mem::size_of::<KRanges>());
 const K_VBO: u64 = 1 << 34;
 const K_VBO_NO_MAP_ZERO: u64 = 1 << 35; // the reservation alone, without the zero page mapped over it: quick
 const K_IOCOHERENT: u64 = 1 << 31;
@@ -230,7 +225,7 @@ fn a_udmabuf(bytes: u64) -> i32 {
             }
             let mut c = Create { memfd: memfd as u32, flags: 1, offset: 0, size: bytes };
             // SAFETY: UDMABUF_CREATE with its structure.
-            fd = unsafe { libc::ioctl(dev, 0x4018_7542u64 as _, &mut c as *mut Create) };
+            fd = unsafe { libc::ioctl(dev, xh_core::ioctl::iow(b'u', 0x42, 24) as _, &mut c as *mut Create) };
             let e = errno();
             close(dev);
             set_errno(e);
@@ -240,19 +235,6 @@ fn a_udmabuf(bytes: u64) -> i32 {
     close(memfd);
     set_errno(e);
     fd
-}
-
-fn set_errno(e: i32) {
-    // SAFETY: sets this thread's errno.
-    #[cfg(target_os = "android")]
-    unsafe {
-        *libc::__errno() = e
-    };
-    // SAFETY: as above.
-    #[cfg(not(target_os = "android"))]
-    unsafe {
-        *libc::__errno_location() = e
-    };
 }
 
 fn a_heap(path: &str, bytes: u64) -> i32 {
@@ -270,7 +252,7 @@ fn a_heap(path: &str, bytes: u64) -> i32 {
     }
     let mut a = Alloc { len: bytes, fd: 0, fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32, heap_flags: 0 };
     // SAFETY: DMA_HEAP_IOCTL_ALLOC (_IOWR('H', 0, struct dma_heap_allocation_data)) with its structure.
-    let r = unsafe { libc::ioctl(heap, (3u64 << 30 | 24 << 16 | (b'H' as u64) << 8) as _, &mut a as *mut Alloc) };
+    let r = unsafe { libc::ioctl(heap, xh_core::ioctl::iowr(b'H', 0, 24) as _, &mut a as *mut Alloc) };
     let e = errno();
     close(heap);
     set_errno(e);

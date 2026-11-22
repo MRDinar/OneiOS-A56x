@@ -270,8 +270,7 @@ pub fn kva() -> Result<(), SetupFailed> {
 }
 
 fn page_mask() -> u64 {
-    // SAFETY: no arguments.
-    (unsafe { libc::sysconf(libc::_SC_PAGESIZE) }) as u64 - 1
+    xh_core::sys::page_size() - 1
 }
 
 fn in_kva(m: &Mem, va: u64, size: u64) -> bool {

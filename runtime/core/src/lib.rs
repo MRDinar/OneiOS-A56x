@@ -10,13 +10,15 @@
 //!   driver ([`virtio::testing`]).
 //! - [`pixels`]: the display protocol's pixel formats and conversions (pixels.h).
 //! - Helpers several crates need: [`bytes`] (numbers in byte buffers, per byte order), [`fs`] (small sysfs and /proc
-//!   files, meminfo-style values), [`parse`] (numbers and sizes as strtoull, strtol, atoi and xh_parse_size), [`thread`]
-//!   (named threads), [`fd`] (O_NONBLOCK, FD_CLOEXEC, EINTR), [`sys`] (errno texts), [`time`] (the monotonic clock).
+//!   files, meminfo-style values), [`parse`] (numbers and sizes as strtoull, strtol, atoi and xh_parse_size),
+//!   [`thread`] (named threads), [`fd`] (O_NONBLOCK, FD_CLOEXEC, EINTR), [`sys`] (errno, its texts, [`sys::Errno`],
+//!   the page size), [`ioctl`] (the numbers and the call), [`time`] (the monotonic clock).
 pub mod bytes;
 pub mod fd;
 pub mod fs;
 pub mod hooks;
 pub mod insn;
+pub mod ioctl;
 pub mod log;
 pub mod mmio;
 pub mod parse;

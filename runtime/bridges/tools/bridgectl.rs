@@ -36,6 +36,7 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xh_core::ioctl::ioctl;
 use xh_core::parse::atoi;
 use xh_core::sys::{error_text, strerror};
 
@@ -128,14 +129,15 @@ fn cpu(args: &[String]) -> i32 {
 }
 
 // ---- haptics: the evdev node's bits, read only ---------------------------------------------------
-const EV_FF: u64 = 0x15;
+const EV_FF: u8 = 0x15;
 const FF_PERIODIC: usize = 0x51;
 const FF_SINE: usize = 0x5a;
 const FF_CUSTOM: usize = 0x5d;
 const FF_GAIN: usize = 0x60;
 const FF_MAX: usize = 0x7f;
-const fn ior(nr: u64, size: usize) -> u64 {
-    2 << 30 | (size as u64) << 16 | (b'E' as u64) << 8 | nr
+/// _IOR('E', nr, size): an evdev query.
+const fn ior(nr: u8, size: usize) -> u32 {
+    xh_core::ioctl::ior(b'E', nr, size)
 }
 
 /// Strictly passive probe. Unlike Haptic::open_as, this does NOT send FF_GAIN, upload a waveform, create a worker or
@@ -162,23 +164,23 @@ fn haptic_inspect() -> i32 {
         let fd = file.as_raw_fd();
         let mut bits = [0u8; FF_MAX / 8 + 1];
         // SAFETY: EVIOCGBIT(EV_FF) fills at most bits.len() bytes.
-        let rc = unsafe { libc::ioctl(fd, ior(0x20 + EV_FF, bits.len()) as _, bits.as_mut_ptr()) };
-        let bit = |n: usize| rc >= 0 && bits[n / 8] >> (n % 8) & 1 != 0;
+        let ok = unsafe { ioctl(fd, ior(0x20 + EV_FF, bits.len()), bits.as_mut_ptr()) }.is_ok();
+        let bit = |n: usize| ok && bits[n / 8] >> (n % 8) & 1 != 0;
         if bit(FF_PERIODIC) && bit(FF_SINE) {
             found += 1;
             let mut dev = [0u8; 128];
             // SAFETY: EVIOCGNAME fills at most dev.len() bytes.
-            unsafe { libc::ioctl(fd, ior(0x06, dev.len()) as _, dev.as_mut_ptr()) };
+            let _ = unsafe { ioctl(fd, ior(0x06, dev.len()), dev.as_mut_ptr()) };
             let end = dev.iter().position(|&b| b == 0).unwrap_or(dev.len());
             let mut effects: i32 = -1;
             // SAFETY: EVIOCGEFFECTS writes one int.
-            let effect_rc = unsafe { libc::ioctl(fd, ior(0x84, 4) as _, &mut effects) };
+            let effects_ok = unsafe { ioctl(fd, ior(0x84, 4), &mut effects) }.is_ok();
             println!(
                 "haptic-inspect: {path} \"{}\" FF_PERIODIC=1 FF_SINE=1 FF_CUSTOM={} FF_GAIN={} max_effects={effects}{}",
                 String::from_utf8_lossy(&dev[..end]),
                 u8::from(bit(FF_CUSTOM)),
                 u8::from(bit(FF_GAIN)),
-                if effect_rc < 0 { " (query unavailable)" } else { "" }
+                if !effects_ok { " (query unavailable)" } else { "" }
             );
         }
     }
@@ -521,18 +523,11 @@ fn net() -> i32 {
 }
 
 // ---- audio ------------------------------------------------------------------------------------------
-fn mono_s() -> f64 {
-    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: a valid timespec to fill.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
-    t.tv_sec as f64 + t.tv_nsec as f64 / 1e9
-}
-
 /// 5 ms periods on the clock, as the guest's engine paces them.
 struct Pacer(f64);
 impl Pacer {
     fn new() -> Pacer {
-        Pacer(mono_s())
+        Pacer(xh_core::time::monotonic_s())
     }
     fn next(&mut self) {
         self.0 += 0.005;
@@ -681,7 +676,7 @@ fn audio_loop(args: &[String]) -> i32 {
                 if n == 0 {
                     continue;
                 }
-                let now = mono_s();
+                let now = xh_core::time::monotonic_s();
                 let mut m = mic.lock().unwrap();
                 m.0.extend_from_slice(&pcm[..n as usize]);
                 (0..n).for_each(|i| m.1.push(now - f64::from(n - 1 - i) / 48000.0));
@@ -707,7 +702,7 @@ fn audio_loop(args: &[String]) -> i32 {
             period[2 * i + 1] = v;
         }
         if on && (p - 200) % 100 == 0 {
-            sent[k] = mono_s();
+            sent[k] = xh_core::time::monotonic_s();
             k += 1;
         }
         let _ = b.write(&period);

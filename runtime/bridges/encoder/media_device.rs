@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::Duration;
 use xh_core::bytes::le;
+use xh_core::time::monotonic_ms;
 use xh_core::virtio::{Device, Info, Viov, Virtio};
 use xh_core::{loge, logi};
 
@@ -175,10 +176,6 @@ pub struct MediaDevice {
 }
 
 pub type MediaVirtio = Virtio<MediaDevice>;
-
-fn now_ms() -> u64 {
-    xh_core::time::monotonic_ms()
-}
 
 impl State {
     fn session(&mut self, id: u32) -> Option<&mut MediaSession> {
@@ -451,7 +448,7 @@ impl MediaDevice {
                     flags,
                     polled.pts_us / 1_000_000,
                 );
-                st.busy_until_ms = now_ms() + MEDIA_BUSY_MS; // the backend is giving: the next may follow at once
+                st.busy_until_ms = monotonic_ms() + MEDIA_BUSY_MS; // the backend is giving: the next may follow at once
                 if polled.bytes > 0 {
                     st.stats.frames_out += 1;
                 }
@@ -475,7 +472,7 @@ impl MediaDevice {
         // Something may still come without a command: a session's backend may hold a frame, an event may wait for a
         // buffer.
         let open = !st.fifo.is_empty() || st.sessions.iter().any(|s| s.used);
-        (open, open && now_ms() < st.busy_until_ms)
+        (open, open && monotonic_ms() < st.busy_until_ms)
     }
 
     fn command(&self, reads: &[&Viov], writes: &[&Viov]) -> Option<u32> {
@@ -484,7 +481,7 @@ impl MediaDevice {
         reads[0].read_at(0, &mut cmd);
         let op = le::u32(&cmd, 0);
         let mut st = self.state.borrow_mut();
-        st.busy_until_ms = now_ms() + MEDIA_BUSY_MS; // a command: the worker looks at once, and often for a while
+        st.busy_until_ms = monotonic_ms() + MEDIA_BUSY_MS; // a command: the worker looks at once, and often for a while
         self.wake.wake();
         // CLOSE comes with no buffer for an answer (DroidVMVirtioMedia.c droidvm_media_close sends the command
         // alone), so it is done before the answer's buffer is asked for. Until 2026-11-15 a command without one was

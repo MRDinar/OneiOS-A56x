@@ -254,7 +254,7 @@ impl Net {
                 return None;
             }
         };
-        const TUNSETIFF: u64 = 0x400454ca; // _IOW('T', 202, int)
+        const TUNSETIFF: u32 = xh_core::ioctl::iow(b'T', 202, 4); // _IOW('T', 202, int)
         const IFF_TAP: i16 = 0x0002;
         const IFF_NO_PI: i16 = 0x1000;
         #[repr(C)]
@@ -267,7 +267,7 @@ impl Net {
         let name = crate::log::truncate(&c.ifname, 15).as_bytes();
         request.name[..name.len()].copy_from_slice(name);
         // SAFETY: TUNSETIFF reads and writes a struct ifreq (40 bytes), which IfReq is.
-        if unsafe { libc::ioctl(fd.as_raw_fd(), TUNSETIFF as _, &mut request) } < 0 {
+        if unsafe { xh_core::ioctl::ioctl(fd.as_raw_fd(), TUNSETIFF, &mut request) }.is_err() {
             crate::br_error!("net: off: TUNSETIFF {}: {}", c.ifname, strerror(errno()));
             return None;
         }

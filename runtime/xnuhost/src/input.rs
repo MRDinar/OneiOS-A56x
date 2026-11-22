@@ -505,17 +505,12 @@ impl<S: EventSink> Source<S> {
 /// The few evdev ioctls of the input path, on byte arrays of bits (little-endian longs are bytes in order).
 pub(crate) mod evdev {
     use std::os::fd::RawFd;
+    use xh_core::ioctl::{ioctl, ior, iow};
 
     pub const ABS_MAX: usize = 0x3f;
     pub const KEY_MAX: usize = 0x2ff;
     pub const SW_MAX: usize = 0x10;
     pub const INPUT_PROP_DIRECT: usize = 0x01;
-    const READ: libc::c_ulong = 2;
-    const WRITE: libc::c_ulong = 1;
-
-    const fn ioc(dir: libc::c_ulong, nr: libc::c_ulong, size: usize) -> libc::c_ulong {
-        dir << 30 | (size as libc::c_ulong) << 16 | (b'E' as libc::c_ulong) << 8 | nr
-    }
 
     /// struct input_absinfo
     #[repr(C)]
@@ -540,9 +535,9 @@ pub(crate) mod evdev {
         pub value: i32,
     }
 
-    fn call(fd: RawFd, request: libc::c_ulong, arg: *mut libc::c_void) -> bool {
+    fn call(fd: RawFd, request: u32, arg: *mut libc::c_void) -> bool {
         // SAFETY: each caller passes an argument of the size its request encodes.
-        unsafe { libc::ioctl(fd, request as _, arg) >= 0 }
+        unsafe { ioctl(fd, request, arg) }.is_ok()
     }
 
     pub fn bit(bits: &[u8], n: usize) -> bool {
@@ -552,35 +547,35 @@ pub(crate) mod evdev {
     /// EVIOCGNAME: the device's name ("" when it has none).
     pub fn name(fd: RawFd) -> String {
         let mut b = [0u8; 64];
-        call(fd, ioc(READ, 0x06, 63), b.as_mut_ptr().cast());
+        call(fd, ior(b'E', 0x06, 63), b.as_mut_ptr().cast());
         let end = b.iter().position(|&c| c == 0).unwrap_or(63);
         String::from_utf8_lossy(&b[..end]).into_owned()
     }
 
     /// EVIOCGBIT(ev): the event type's code bits.
     pub fn bits(fd: RawFd, ev: u16, out: &mut [u8]) -> bool {
-        call(fd, ioc(READ, 0x20 + ev as libc::c_ulong, out.len()), out.as_mut_ptr().cast())
+        call(fd, ior(b'E', 0x20 + ev as u8, out.len()), out.as_mut_ptr().cast())
     }
 
     /// EVIOCGPROP: the device's property bits.
     pub fn props(fd: RawFd, out: &mut [u8]) -> bool {
-        call(fd, ioc(READ, 0x09, out.len()), out.as_mut_ptr().cast())
+        call(fd, ior(b'E', 0x09, out.len()), out.as_mut_ptr().cast())
     }
 
     /// EVIOCGKEY: the keys held.
     pub fn keys(fd: RawFd, out: &mut [u8]) -> bool {
-        call(fd, ioc(READ, 0x18, out.len()), out.as_mut_ptr().cast())
+        call(fd, ior(b'E', 0x18, out.len()), out.as_mut_ptr().cast())
     }
 
     /// EVIOCGSW: the switches' state.
     pub fn switches(fd: RawFd, out: &mut [u8]) -> bool {
-        call(fd, ioc(READ, 0x1b, out.len()), out.as_mut_ptr().cast())
+        call(fd, ior(b'E', 0x1b, out.len()), out.as_mut_ptr().cast())
     }
 
     /// EVIOCGABS(axis)
     pub fn abs(fd: RawFd, axis: u16) -> Option<AbsInfo> {
         let mut info = AbsInfo::default();
-        let req = ioc(READ, 0x40 + axis as libc::c_ulong, std::mem::size_of::<AbsInfo>());
+        let req = ior(b'E', 0x40 + axis as u8, std::mem::size_of::<AbsInfo>());
         call(fd, req, (&mut info as *mut AbsInfo).cast()).then_some(info)
     }
 
@@ -588,7 +583,7 @@ pub(crate) mod evdev {
     pub fn mt_slots(fd: RawFd, code: u16) -> Option<[i32; 16]> {
         let mut slots = [0i32; 17];
         slots[0] = code as i32;
-        call(fd, ioc(READ, 0x0a, std::mem::size_of_val(&slots)), slots.as_mut_ptr().cast()).then(|| {
+        call(fd, ior(b'E', 0x0a, std::mem::size_of_val(&slots)), slots.as_mut_ptr().cast()).then(|| {
             let mut v = [0i32; 16];
             v.copy_from_slice(&slots[1..]);
             v
@@ -598,13 +593,13 @@ pub(crate) mod evdev {
     /// EVIOCGRAB
     pub fn grab(fd: RawFd, on: bool) -> bool {
         // SAFETY: EVIOCGRAB takes its argument by value.
-        unsafe { libc::ioctl(fd, ioc(WRITE, 0x90, 4) as _, on as libc::c_int) == 0 }
+        unsafe { ioctl(fd, iow(b'E', 0x90, 4), usize::from(on) as *mut libc::c_void) }.is_ok()
     }
 
     /// EVIOCSCLOCKID: this reader's event times on CLOCK_MONOTONIC.
     pub fn clock_monotonic(fd: RawFd) -> bool {
         let mut clock: libc::c_int = libc::CLOCK_MONOTONIC;
-        call(fd, ioc(WRITE, 0xa0, 4), (&mut clock as *mut libc::c_int).cast())
+        call(fd, iow(b'E', 0xa0, 4), (&mut clock as *mut libc::c_int).cast())
     }
 
     /// /dev/input/eventN, opened read only and non-blocking.

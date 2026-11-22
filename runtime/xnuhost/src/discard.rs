@@ -4,6 +4,7 @@
 
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use xh_core::sys::errno;
 
 /// Counted for the log's `memory:` line: calls that punched, bytes given back, failures of fallocate, calls refused
 /// (unaligned or outside the RAM), nanoseconds spent in fallocate.
@@ -29,17 +30,8 @@ pub static DISCARD: DiscardStats = DiscardStats {
 /// stops its reporting for the boot (0058: "free pages are no longer given back").
 pub static FIXED_REFUSED: AtomicU64 = AtomicU64::new(0);
 
-/// CLOCK_MONOTONIC in nanoseconds.
-pub(crate) fn mono_ns() -> u64 {
-    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: clock_gettime writes the timespec it is given.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
-    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
-}
-
-pub(crate) fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EINVAL)
-}
+/// CLOCK_MONOTONIC in nanoseconds (cpu.rs and task.rs call it by this name).
+pub(crate) use xh_core::time::monotonic_ns as mono_ns;
 
 /// [phys, phys + size) of the RAM memfd `fd`, whose first byte is physical address `fd_base`. Allowed only inside the
 /// kernel's window [lo, lo + len) (never the boot framebuffer or the GPU's pool above it) and page-aligned (`page`,

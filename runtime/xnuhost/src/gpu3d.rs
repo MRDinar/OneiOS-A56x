@@ -155,7 +155,8 @@ pub fn udmabuf_set_limits(bytes: u64, runs: u32) {
     LIMIT_RUNS.store(runs, Ordering::Relaxed);
 }
 
-const UDMABUF_CREATE_LIST: libc::c_ulong = 0x4008_7543; // _IOW('u', 0x43, struct udmabuf_create_list)
+// _IOW('u', 0x43, struct udmabuf_create_list): its flags and count, the items after them
+const UDMABUF_CREATE_LIST: libc::c_ulong = xh_core::ioctl::iow(b'u', 0x43, 8) as libc::c_ulong;
 const UDMABUF_FLAGS_CLOEXEC: u32 = 1;
 
 /// struct udmabuf_create_list and its items, as the kernel reads them: { u32 flags, count } then { u32 memfd, pad;

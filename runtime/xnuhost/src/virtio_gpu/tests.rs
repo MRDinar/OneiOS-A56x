@@ -535,8 +535,7 @@ fn refuse_over_16(dev: i32, list: &mut gpu3d::UdmabufList) -> libc::c_int {
     let total: u64 = list.items().map(|(_, _, size)| size).sum();
     if total > 16 << 20 {
         REFUSED.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: sets this thread's errno.
-        unsafe { *libc::__errno_location() = REFUSE_ERRNO.load(Ordering::Relaxed) };
+        xh_core::sys::set_errno(REFUSE_ERRNO.load(Ordering::Relaxed));
         return -1;
     }
     list.ioctl(dev)

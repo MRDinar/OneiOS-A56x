@@ -9,11 +9,6 @@ use xnuhost_abi::{XH_ABI_VERSION, XH_FEATURE_PAC};
 use crate::config::Config;
 use crate::{cpu, hostcalls, mem, task};
 
-fn page_size() -> u32 {
-    // SAFETY: sysconf has no preconditions.
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u32 }
-}
-
 #[cfg(target_arch = "aarch64")]
 mod pac {
     use std::arch::asm;
@@ -116,7 +111,7 @@ pub fn host_facts() {
         let keys_off = unsafe { libc::prctl(PR_PAC_SET_ENABLED_KEYS, 0, 0, 0, 0) } == 0;
         hostcalls::update_info(|i| {
             i.abi = XH_ABI_VERSION;
-            i.host_page_size = page_size();
+            i.host_page_size = xh_core::sys::page_size() as u32;
             i.user_va_bits = va_bits;
             i.timebase_hz = cpu::counter_hz();
             if by_fork && by_thread {
@@ -149,7 +144,7 @@ pub fn host_facts() {
     {
         hostcalls::update_info(|i| {
             i.abi = XH_ABI_VERSION;
-            i.host_page_size = page_size();
+            i.host_page_size = xh_core::sys::page_size() as u32;
             i.timebase_hz = cpu::counter_hz();
         });
         logi!("host: not AArch64 Linux: the kernel cannot be entered here");

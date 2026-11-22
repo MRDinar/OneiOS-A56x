@@ -18,8 +18,10 @@
 
 use super::binder::uapi::BINDER_CTL_ADD;
 use std::ffi::CString;
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
+use xh_core::ioctl::ioctl;
 
 pub enum Entered {
     /// The device to use (this process is the one in the namespace, or the variable was set by the caller).
@@ -39,23 +41,16 @@ pub fn add_device(path: &str) -> Result<(), String> {
     }
     let (Some(dir), Some(name)) = (p.parent(), p.file_name()) else { return Ok(()) };
     let control = dir.join("binder-control");
-    let c = CString::new(control.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
-    // SAFETY: a NUL-terminated path.
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-    if fd < 0 {
+    let Ok(control_file) = std::fs::OpenOptions::new().read(true).write(true).open(&control) else {
         return Ok(()); // no binder-control: the device is simply missing
-    }
+    };
     // struct binderfs_device { char name[256]; __u32 major, minor; }
     let mut device = [0u8; 264];
     let name = name.as_encoded_bytes();
     let n = name.len().min(255);
     device[..n].copy_from_slice(&name[..n]);
     // SAFETY: BINDER_CTL_ADD reads and writes the 264-byte struct.
-    let rc = unsafe { libc::ioctl(fd, BINDER_CTL_ADD as _, device.as_mut_ptr()) };
-    let error = std::io::Error::last_os_error();
-    // SAFETY: our fd.
-    unsafe { libc::close(fd) };
-    if rc != 0 {
+    if let Err(error) = unsafe { ioctl(control_file.as_raw_fd(), BINDER_CTL_ADD, device.as_mut_ptr()) } {
         return Err(format!(
             "{}: BINDER_CTL_ADD {}: {}",
             control.display(),

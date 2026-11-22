@@ -569,20 +569,21 @@ fn helper_report(listen: Option<&OwnedFd>, first: &mut Option<OwnedFd>) -> Optio
 mod kms {
     //! The few KMS ioctls of the DRM back end (drm/drm_mode.h's structures, by hand).
     use std::os::fd::RawFd;
+    use xh_core::ioctl::{io, ioctl};
 
-    const fn iowr(nr: u64, size: usize) -> u64 {
-        3 << 30 | (size as u64) << 16 | (b'd' as u64) << 8 | nr
+    const fn iowr(nr: u8, size: usize) -> u32 {
+        xh_core::ioctl::iowr(b'd', nr, size)
     }
-    pub const SET_MASTER: u64 = (b'd' as u64) << 8 | 0x1e;
-    pub const DROP_MASTER: u64 = (b'd' as u64) << 8 | 0x1f;
-    pub const GETRESOURCES: u64 = iowr(0xa0, std::mem::size_of::<CardRes>());
-    pub const SETCRTC: u64 = iowr(0xa2, std::mem::size_of::<Crtc>());
-    pub const GETENCODER: u64 = iowr(0xa6, std::mem::size_of::<Encoder>());
-    pub const GETCONNECTOR: u64 = iowr(0xa7, std::mem::size_of::<Connector>());
-    pub const ADDFB: u64 = iowr(0xae, std::mem::size_of::<FbCmd>());
-    pub const DIRTYFB: u64 = iowr(0xb1, std::mem::size_of::<FbDirty>());
-    pub const CREATE_DUMB: u64 = iowr(0xb2, std::mem::size_of::<CreateDumb>());
-    pub const MAP_DUMB: u64 = iowr(0xb3, std::mem::size_of::<MapDumb>());
+    pub const SET_MASTER: u32 = io(b'd', 0x1e);
+    pub const DROP_MASTER: u32 = io(b'd', 0x1f);
+    pub const GETRESOURCES: u32 = iowr(0xa0, std::mem::size_of::<CardRes>());
+    pub const SETCRTC: u32 = iowr(0xa2, std::mem::size_of::<Crtc>());
+    pub const GETENCODER: u32 = iowr(0xa6, std::mem::size_of::<Encoder>());
+    pub const GETCONNECTOR: u32 = iowr(0xa7, std::mem::size_of::<Connector>());
+    pub const ADDFB: u32 = iowr(0xae, std::mem::size_of::<FbCmd>());
+    pub const DIRTYFB: u32 = iowr(0xb1, std::mem::size_of::<FbDirty>());
+    pub const CREATE_DUMB: u32 = iowr(0xb2, std::mem::size_of::<CreateDumb>());
+    pub const MAP_DUMB: u32 = iowr(0xb3, std::mem::size_of::<MapDumb>());
     pub const MODE_TYPE_PREFERRED: u32 = 1 << 3;
 
     #[repr(C)]
@@ -716,9 +717,9 @@ mod kms {
     const _: () = assert!(std::mem::size_of::<FbDirty>() == 24);
 
     /// The ioctl, true when it worked.
-    pub fn call<T>(fd: RawFd, request: u64, arg: *mut T) -> bool {
+    pub fn call<T>(fd: RawFd, request: u32, arg: *mut T) -> bool {
         // SAFETY: each caller passes the structure its request encodes, and the arrays its pointers name.
-        unsafe { libc::ioctl(fd, request as _, arg) == 0 }
+        unsafe { ioctl(fd, request, arg) }.is_ok()
     }
 
     pub fn open() -> Option<std::os::fd::OwnedFd> {

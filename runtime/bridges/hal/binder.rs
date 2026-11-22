@@ -17,19 +17,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use xh_core::bytes::ne;
+use xh_core::ioctl::ioctl;
 
 /// The numbers of the binder UAPI (64-bit, protocol version 8). Checked against the C header by a test.
 pub mod uapi {
-    const fn ioc(dir: u32, ty: u8, nr: u8, size: usize) -> u32 {
-        dir << 30 | (size as u32) << 16 | (ty as u32) << 8 | nr as u32
-    }
-    const W: u32 = 1;
-    const R: u32 = 2;
+    use xh_core::ioctl::{ioc, READ as R, WRITE as W};
 
     /// The size field of an ioctl number: what follows a BR_/BC_ command word.
-    pub const fn ioc_size(cmd: u32) -> usize {
-        ((cmd >> 16) & 0x3fff) as usize
-    }
+    pub use xh_core::ioctl::size as ioc_size;
 
     pub const TRANSACTION_DATA: usize = 64; // struct binder_transaction_data
     pub const TRANSACTION_DATA_SG: usize = 72; // struct binder_transaction_data_sg
@@ -96,7 +91,7 @@ pub const CALL_TIMEOUT_MS: i32 = 5000;
 
 /// The calling thread's errno as the C code returned it: negative.
 pub(crate) fn last_errno() -> i32 {
-    -io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)
+    -xh_core::sys::Errno::last().0
 }
 
 /// strerror(errno) of a positive or negative errno (C's `strerror(rc < 0 ? -rc : rc)`).
@@ -301,8 +296,8 @@ impl Binder {
             error: error.unwrap_or_else(|| io::Error::from_raw_os_error(libc::EPROTO)),
         };
         // SAFETY: BINDER_VERSION writes one i32 (struct binder_version).
-        if unsafe { libc::ioctl(raw, BINDER_VERSION as _, &mut protocol as *mut i32) } < 0 {
-            return Err(setup(protocol, Some(io::Error::last_os_error())));
+        if let Err(e) = unsafe { ioctl(raw, BINDER_VERSION, &mut protocol) } {
+            return Err(setup(protocol, Some(e)));
         }
         if protocol != CURRENT_PROTOCOL_VERSION {
             return Err(setup(protocol, None));
@@ -315,10 +310,10 @@ impl Binder {
             return Err(setup(protocol, Some(io::Error::last_os_error())));
         }
         let binder = Binder { fd, map };
-        let threads: u32 = 0;
+        let mut threads: u32 = 0;
         // SAFETY: BINDER_SET_MAX_THREADS reads one u32.
-        if unsafe { libc::ioctl(raw, BINDER_SET_MAX_THREADS as _, &threads as *const u32) } < 0 {
-            return Err(setup(protocol, Some(io::Error::last_os_error())));
+        if let Err(e) = unsafe { ioctl(raw, BINDER_SET_MAX_THREADS, &mut threads) } {
+            return Err(setup(protocol, Some(e)));
         }
         Ok(binder)
     }
@@ -338,10 +333,7 @@ impl Binder {
     fn write_read(&self, bwr: &mut WriteRead) -> io::Result<()> {
         // SAFETY: bwr's buffers point at memory of the caller that lives through the call; the driver reads
         // write_size bytes and writes at most read_size.
-        if unsafe { libc::ioctl(self.fd(), BINDER_WRITE_READ as _, bwr as *mut WriteRead) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        unsafe { ioctl(self.fd(), BINDER_WRITE_READ, bwr) }.map(drop)
     }
 
     /// Writes commands. 0, or -errno.
@@ -518,7 +510,7 @@ impl Binder {
     pub fn context_manager(&self) -> Result<(), i32> {
         for _ in 0..40 {
             // SAFETY: BINDER_SET_CONTEXT_MGR with no argument the driver reads.
-            if unsafe { libc::ioctl(self.fd(), BINDER_SET_CONTEXT_MGR as _, 0) } == 0 {
+            if unsafe { ioctl(self.fd(), BINDER_SET_CONTEXT_MGR, std::ptr::null_mut::<u8>()) }.is_ok() {
                 return Ok(());
             }
             let rc = last_errno();

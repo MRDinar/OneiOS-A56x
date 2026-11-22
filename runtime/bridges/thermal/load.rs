@@ -3,6 +3,7 @@
 //! and the "thermal: N s: host CPU ..." line between two samples.
 
 use super::{deci_text, strtoll, Raw};
+use xh_core::time::monotonic_ms;
 
 /// The "thermal: load" line's period.
 pub const LOAD_MS: u32 = 30000;
@@ -38,15 +39,6 @@ pub struct HostLoad {
     pub status: String,
     /// When (CLOCK_MONOTONIC; the caller may set it in tests).
     pub ms: u64,
-}
-
-/// CLOCK_MONOTONIC in milliseconds.
-pub(crate) fn monotonic_ms() -> u64 {
-    // SAFETY: a zeroed timespec is a valid value for clock_gettime to fill.
-    let mut t: libc::timespec = unsafe { std::mem::zeroed() };
-    // SAFETY: t lives across the call.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
-    t.tv_sec as u64 * 1000 + t.tv_nsec as u64 / 1_000_000
 }
 
 /// Up to `max` bytes of root/rel; None when it cannot be read or is empty.

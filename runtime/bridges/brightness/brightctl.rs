@@ -149,10 +149,7 @@ fn print_info(i: &Info) {
 }
 
 fn on_als(s: &AlsSample) {
-    // SAFETY: a zeroed timespec is valid, and clock_gettime fills it.
-    let mut t: libc::timespec = unsafe { std::mem::zeroed() };
-    // SAFETY: t lives across the call.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
+    let t = xh_core::time::now(libc::CLOCK_MONOTONIC);
     println!(
         "{:6}.{:03}  clear {:<8} ir {:<8} uv {:<8} -> {}.{:03} lux",
         t.tv_sec % 100000,
