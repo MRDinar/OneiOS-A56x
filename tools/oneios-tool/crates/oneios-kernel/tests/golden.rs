@@ -100,6 +100,24 @@ fn the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source() {
     assert!(!staged.contains("memcpy(out + at, s->sps + 3, 12)"));
     assert!(staged.contains("if (zeros >= 2 && byte == 3) { zeros = 0; continue; }"));
     assert!(staged.contains("if (taken < 12) return 0;"));
+    // iOS 27's tile session (2026-11-22): every type of it has a case, ecti is answered as ecfr, the tile messages
+    // replace the frame's, and jcap has an answer of its own; a small HEVC session is coded larger and cropped back.
+    for case in ["case cc(\"ests\"):", "case cc(\"epti\"):", "case cc(\"etil\"):", "case cc(\"ecfr\"): case cc(\"ecti\"):",
+                 "case cc(\"jcap\"):"] {
+        assert_eq!(staged.matches(case).count(), 1, "{case}");
+    }
+    for text in ["#include \"OneiOSCodecPicture.h\"", "cc(\"TEsa\")", "s->tiles ? cc(\"TEcd\") : cc(\"Efds\")", "s->tiles ? cc(\"TEem\") : cc(\"Eemt\")",
+                 "s->tiles ? cc(\",til\") : cc(\",frm\")", "h.type = s->finishType ? s->finishType : cc(\"ecfr\");",
+                 "bool cropSps(Session *s)", "oneios_hevc_sps_crop(s->spsIn, s->spsInSize, s->width, s->height, s->sps, sizeof s->sps)",
+                 "oneios_nv12_copy_area(to, w, h, surface, planes,", "if (crop && !cropSps(s)) failed(102, int32_t(n));",
+                 "f.width = s->codedWidth;", "constexpr uint32_t MinCodedSize = 96;"] {
+        assert!(staged.contains(text), "{text}");
+    }
+    // copyArea before feedFrame, cropSps before handleCoded: each defined before its caller
+    let at = |text: &str| staged.find(text).unwrap_or_else(|| panic!("{text}"));
+    assert!(at("bool copyArea(") < at("bool feedFrame(Session *s)"));
+    assert!(at("bool cropSps(Session *s)") < at("void handleCoded("));
+    assert!(at("bool encodeSurface(") < at("int queueEncodeFrame("));
 }
 
 #[test]

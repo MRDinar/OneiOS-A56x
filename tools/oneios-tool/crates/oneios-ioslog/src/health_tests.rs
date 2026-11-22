@@ -222,3 +222,13 @@ fn command_line() {
     assert!(all.source.as_deref() == Some("data.img") && all.boot == "all" && all.top == 10 && all.detail && all.examples == 0 && all.output.is_some());
     assert!(parse(&["a", "b"]).is_err() && parse(&["--top", "x"]).is_err());
 }
+
+#[test]
+fn an_encode_error_of_more_words_is_named_whole() {
+    // VideoToolbox's own text for an error it has no name for (iOS 27, 2026-11-22, the host's -12900 to a tile
+    // session): `unknown error [-12900]`, three words that were counted as `unknown`
+    let r = report(concat!(
+        "2026-11-22 17:01:46.087480Z chronod[85] Error [com.apple.imageio:chronod] writeImageAtIndex:1313: *** CMPhotoCompressionSessionAddImage: err = unknown error [-12900]    (codec: 'hvc1')\n",
+        "2026-11-22 17:01:46.193904Z chronod[85] Error [com.apple.imageio:chronod] writeImageAtIndex:1313: *** CMPhotoCompressionSessionAddImage: err = -16993 in the session (codec: 'hvc1') [-1]\n"));
+    assert_eq!(counts(&kind(&r, "encode-fail").names), [("-16993", 1), ("unknown error [-12900]", 1)]);
+}

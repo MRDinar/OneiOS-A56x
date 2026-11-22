@@ -67,8 +67,11 @@ pub fn main() -> Result<()> {
     let (transport, host, paravirt, start) = (package.join("DroidVMVirtioMedia.c"), package.join("DroidVMVTHost.cpp"),
                                               package.join("DroidVMVTParavirt.cpp"), here.join("OneiOSCodec.c"));
     let headers = [package.join("DroidVMVTWire.h"), package.join("DroidVMDmaRegion.h")];
+    // OneiOS's picture helpers, which the staged DroidVMVTHost.cpp includes (-I this folder; host-tested by
+    // tests/test_picture.c)
+    let picture = here.join("OneiOSCodecPicture.h");
     gen::need_files(&[ctx.repo.join("drivers/sources.txt"), transport.clone(), host.clone(), paravirt.clone(), start.clone(),
-                      headers[0].clone(), headers[1].clone(),
+                      headers[0].clone(), headers[1].clone(), picture.clone(),
                       ctx.records.join("iokit/DEVELOPMENT/IOPlatformExpert.cpo.json"), ctx.records.join("osfmk/DEVELOPMENT/startup.o.json")],
                     |path| format!("build-oneios-codec: {} missing (scripts/setup/get-references.sh UniXNU-droidvm; kernel/fetch.sh)", path.display()))?;
     let out = gen::env("ONEIOS_CODEC_OUT").map(|o| gen::pypath(&o)).unwrap_or_else(|| ctx.tree.join("build/oneios-codec"));
@@ -82,7 +85,8 @@ pub fn main() -> Result<()> {
     let transport_object = compile.object(&mach, &transport, &out.join("DroidVMVirtioMedia.o"), &include(&["-DDROIDVM_DEVICE_DYNAMIC=1"]))?;
     let start_object = compile.object(&mach, &start, &out.join("OneiOSCodec.o"), &include(&[]))?;
     let staged = stage_host(&host, &out)?;
-    let host_object = compile.object(&iokit, &staged, &out.join("DroidVMVTHost.o"), &include(&[]))?;
+    let here_include = gen::s(&here);
+    let host_object = compile.object(&iokit, &staged, &out.join("DroidVMVTHost.o"), &include(&["-I", here_include.as_str()]))?;
     let paravirt_object = compile.object(&iokit, &paravirt, &out.join("DroidVMVTParavirt.o"), &include(&[]))?;
     let late = paravirt_object.with_extension("late.o");
     gen::late_object(&gen::which("llvm-objcopy", "objcopy"), &paravirt_object, &late, &["__DATA,__mod_init_func"],
@@ -102,7 +106,7 @@ pub fn main() -> Result<()> {
     }
     // The staged source last, as the audio archive lists its own (the upstream source with the edit list applied).
     let mut list = Value::list();
-    for path in [transport, host, paravirt, headers[0].clone(), headers[1].clone(), start, staged] {
+    for path in [transport, host, paravirt, headers[0].clone(), headers[1].clone(), picture, start, staged] {
         list.push(gen::source_entry(ctx.relative(&path).unwrap_or_else(|_| gen::s(&path)), None, &path)?);
     }
     let mut listing = Value::dict();

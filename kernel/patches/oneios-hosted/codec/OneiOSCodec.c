@@ -29,7 +29,7 @@ extern volatile uint64_t droidvm_media_commands, droidvm_media_timeouts, droidvm
 extern char droidvm_media_status[][192];
 extern volatile uint32_t droidvm_vtpv_stage, droidvm_vtpv_opens, droidvm_vtpv_closes, droidvm_vtpv_messages, droidvm_vtpv_refused;
 extern volatile uint32_t droidvm_vthost_sessions, droidvm_vthost_frames_in, droidvm_vthost_frames_out, droidvm_vthost_errors;
-extern volatile uint32_t droidvm_vthost_error_stage, droidvm_vthost_replies, droidvm_vthost_unknown;
+extern volatile uint32_t droidvm_vthost_error_stage, droidvm_vthost_replies, droidvm_vthost_unknown, droidvm_vthost_last_unknown;
 extern volatile int32_t droidvm_vthost_error_value;
 extern volatile uint32_t droidvm_vtpv_sent, droidvm_vtpv_dropped;
 extern char droidvm_vthost_trace[16][112];
@@ -61,10 +61,20 @@ static void oneios_codec_report(void *arg, wait_result_t result) {
                                droidvm_vthost_frames_out + droidvm_media_timeouts;
         if (moved == last) continue;
         last = moved;
-        printf("ONEIOS CODEC: counters: service opened %u closed %u, messages %u (refused %u, unknown %u), to the guest %u "
-               "(dropped %u), replies %u; sessions %u, frames in %u out %u, errors %u (last: step %u value %d); "
+        // The last type the host has no case for, as its four characters ("none" before the first): a new type of a new
+        // iOS (iOS 27's 'ests', 2026-11-22) shows at once on this line.
+        const uint32_t unknown = droidvm_vthost_last_unknown;
+        char unknown_type[5] = "none";
+        if (unknown) {
+            for (int i = 0; i < 4; ++i) {
+                const char c = (char)(unknown >> (24 - 8 * i));
+                unknown_type[i] = c >= 0x20 && c < 0x7f ? c : '?';
+            }
+        }
+        printf("ONEIOS CODEC: counters: service opened %u closed %u, messages %u (refused %u, unknown %u, the last '%s'), "
+               "to the guest %u (dropped %u), replies %u; sessions %u, frames in %u out %u, errors %u (last: step %u value %d); "
                "virtio-media commands %llu (timeouts %llu), events %llu errors %llu buffers %llu other\n",
-               droidvm_vtpv_opens, droidvm_vtpv_closes, droidvm_vtpv_messages, droidvm_vtpv_refused, droidvm_vthost_unknown,
+               droidvm_vtpv_opens, droidvm_vtpv_closes, droidvm_vtpv_messages, droidvm_vtpv_refused, droidvm_vthost_unknown, unknown_type,
                droidvm_vtpv_sent, droidvm_vtpv_dropped, droidvm_vthost_replies,
                droidvm_vthost_sessions, droidvm_vthost_frames_in, droidvm_vthost_frames_out,
                droidvm_vthost_errors, droidvm_vthost_error_stage, droidvm_vthost_error_value,
