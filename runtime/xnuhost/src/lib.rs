@@ -45,7 +45,7 @@ pub mod ret;
 pub mod session;
 /// Trapped system registers.
 pub mod sysreg;
-/// IOS tasks as processes.
+/// iOS tasks as processes.
 pub mod task;
 /// The PL011 console.
 pub mod uart;
