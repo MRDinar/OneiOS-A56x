@@ -22,7 +22,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
-| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0085, not yet on the phone (section 5) |
+| Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
@@ -1619,7 +1619,7 @@ the haptics folder.
 
 PC_RESULTS_HERE
 
-### The Actuator played silence: no DSP chain for it (fix-audio-volume-haptics, hosted 0085, 2026-11-22; built, not on the phone)
+### The Actuator played silence: no DSP chain for it (fix-audio-volume-haptics, hosted 0086, 2026-11-22; built, not on the phone)
 
 **The fault (phone, 2026-11-22, kernel with 0082 + 0083, 0078 in place):** no haptic is felt. 0078 works: audiomxd's
 haptic server starts (`=== Initializing Haptic 2.0 Engine ===` and no failure), clients connect, and SpringBoard's and
@@ -1650,7 +1650,7 @@ audio returned MACH_PORT_NULL`), so VirtualAudio uses the hardware model and its
 chain the stream's two channels do not reach the one-channel device; that this is the only cause is not proven until
 the phone boot below.
 
-**The fix (hosted 0085, `kernel/patches/oneios-hosted/README.md` "0085"):** 0078's link `oneios,xnuhost -> V54` in the
+**The fix (hosted 0086, `kernel/patches/oneios-hosted/README.md` "0086"):** 0078's link `oneios,xnuhost -> V54` in the
 Data folder `/private/var/oneios/addons/AudioTunings` becomes a folder of links, still shown read-only over
 `/Library/Audio/Tunings`: `Haptics -> ../V54/Haptics` (the preset, as before), `VAD/d42_actuator_general.austrip ->
 ../../AID8022/VAD/actuator_general.austrip` and `.dspg` the same. Nothing of Apple's is copied; an existing store's
@@ -2186,7 +2186,7 @@ helper ends, not touched with `ONEIOS_AUDIO_HOST_VOLUME=keep`, at the maximum al
 bridges 377, wifi 162, brightness 126, battery 83, thermal 99, hal binder 46, hw_backend 120, 0 failed; `make -C
 runtime/bridges all` (the NDK build of `oneios-audio`) builds; `cargo test -p oneios-kernel` (the edit list on its
 synthetic source against `golden/synthetic/audio.out`) 14 of 14; the kernel build and `kernel.kc` `a50202ea...` of
-section 5's 0085 (the staged `DroidVMAudio.cpp`, sha256 `9feea520...` in `tests/kernelgen/golden/staged.sha256`,
+section 5's 0086 (the staged `DroidVMAudio.cpp`, sha256 `9feea520...` in `tests/kernelgen/golden/staged.sha256`,
 compiled without a warning). Not on the phone.
 
 **The phone check:** in `xnuhost.log` `oneios-audio: host volume: One UI's media volume on the speaker was index N of

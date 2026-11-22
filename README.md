@@ -32,7 +32,7 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Touch + buttons | Yes | Scripts (`--input-script`) | HID via kernel event driver |
 | Battery | Published to iOS | Stand-in tested | Real readings on phone |
 | Wi-Fi | Joins; scan rate cut 20→5/min (reuse works); late-enable merged, phone proof pending | Sim radio (`wifi=sim`) | [docs/hardware.md](docs/hardware.md) |
-| Haptics / keyboard | 0078 merged (the haptic server starts); the Actuator then played silence (no DSP chain): hosted 0085, phone proof pending | Host-tested | Typing drives Preferences 100%+ (the overheat path); XPC-timeout cause proven from iOS log |
+| Haptics / keyboard | 0078 merged (the haptic server starts); the Actuator then played silence (no DSP chain): hosted 0086, phone proof pending | Host-tested | Typing drives Preferences 100%+ (the overheat path); XPC-timeout cause proven from iOS log |
 | Interrupts / Mach RPC | — | Verified: 41k host-call IPIs vs 110 trapped | `oneios-perf` `rpc:`/`0081:` lines |
 | Return to One UI | Yes — chord, SIGKILL backstop | n/a | Never touches side keys, realtime, or `/sys/power` |
 | Host test suites | n/a | All green (loader, xnuhost, bridges, display, prelink audit 0 failures) | `runtime/host-tests.sh` |

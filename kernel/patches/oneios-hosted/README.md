@@ -1229,7 +1229,7 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
-## 0085-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
+## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
 
 The fault: no haptic is felt. With 0078 audiomxd's haptic server starts and plays, and the Actuator device runs I/O,
 but every period is silence (`ONEIOS HAPTIC: counters: ... 61920 periods (309600 ms), 0 with samples, 0 loud`;
@@ -1255,10 +1255,10 @@ strip visible; stage 5, status 0 (...)`; an error: `oneios-audio-tunings: oneios
 link, if there, kept)`. The first boot of a store with 0078's link says 5 entries made (the folder, Haptics, VAD and
 the two strip links), later boots 0.
 
-Numbered 0085: 0084 is the camera helper's MobileGestalt cache patch, which adds a function after 0078's; the two
+Numbered 0086 (0085 is the Edge spill patch): 0084 is the camera helper's MobileGestalt cache patch, which adds a function after 0078's; the two
 apply in either order (checked with `patch --dry-run` on the 0083 tree, both orders).
 
-Tested (Mac, 2026-11-23): `HOSTED_OUT=audio kernel/build-hosted.sh` applied the series with 0085 (962 s, `xnu.macho`
+Tested (Mac, 2026-11-23): `HOSTED_OUT=audio kernel/build-hosted.sh` applied the series with 0086 (962 s, `xnu.macho`
 sha256 `dbf9fc9f...`, no warning in the new code); `KERNEL=out/kernel/current-hosted-audio/xnu.macho
 OUT=out/kernel/audio-24A446 kernel/prelink/build.sh`: `kernel.kc` 96,845,824 bytes, sha256 `a50202ea0aa3a71c...`,
 audit 2712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not on the phone. The
@@ -1628,6 +1628,6 @@ existing Data store gets it at its next boot. `oneios-audio-tunings=0`: nothing 
 `oneios-audio-tunings=NAME`: the link points at `NAME`. One line:
 `oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost -> V54 (link
 made 0), stage 5, status 0 (stage 5 status 0: ...)`; stage 1 status N: the folder could not be looked up, stage 2: the
-mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found. Since 0085
+mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found. Since 0086
 (2026-11-22) `oneios,xnuhost` is a folder of links (`Haptics` and the Actuator's VAD strip) and the line says so:
-"0085" above.
+"0086" above.

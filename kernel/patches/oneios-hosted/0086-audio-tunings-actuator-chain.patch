@@ -6,7 +6,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
  static volatile int oneios_audio_tunings_stage = 0;
  static volatile int oneios_audio_tunings_status = -1;
 +/*
-+ * OneiOS hosted (0085): the Actuator's DSP chain. With 0078 the haptic server starts, plays its synth and runs I/O on
++ * OneiOS hosted (0086): the Actuator's DSP chain. With 0078 the haptic server starts, plays its synth and runs I/O on
 + * the Actuator device, and every period it gets is silence ("0 with samples" in each ONEIOS HAPTIC counters line,
 + * audiomxd's RTAID "node=Actuator-Output ... rms:[-120.000000], peaks:[-240.000000]", phone 2026-11-22). VirtualAudio
 + * makes the Actuator's virtual stream with the DSP chain "d42_actuator_general" (this identity's chain name) and
@@ -92,7 +92,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 -		vnode_put(vp);                        /* an earlier boot's link (or the owner's own entry): left as it is */
 -	} else {
 -		made = oneios_kern_symlink(board, link, ctx);
-+	made = oneios_audio_tunings_folder(board, link, ctx);   /* 0085: a folder of links (was 0078's one link) */
++	made = oneios_audio_tunings_folder(board, link, ctx);   /* 0086: a folder of links (was 0078's one link) */
 +	if (made < 0) {
 +		printf("oneios-audio-tunings: oneios,xnuhost's folder: error %d (0078's link, if there, kept)\n", -made);
  	}
