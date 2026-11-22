@@ -2,13 +2,13 @@
 
 > iOS 27 next to One UI on a rooted Samsung Galaxy S24 Ultra — switched to and back the way OneOS switches Androids. Nothing flashed, the image lives in a folder, One UI's kernel keeps running.
 
-**Status: experimental, under active development.** On the phone it boots to the Home Screen (unlock works, GPU-composited at 40–60 fps, touch works) and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest.
+**Status: experimental, under active development.** On the phone it boots to the Home Screen (unlock works, GPU-composited, touch, keyboard and S Pen work) and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest.
 
 OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel** (`runtime/xnuhost`): iOS's processes are Linux processes whose system calls and faults go to it. How it fits together: [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
 
-Prerequisites: Linux x86_64 PC, the pinned Apple IPSW pieces (fetched, never committed), NDK 28.2, Rust 1.95+, `qemu-aarch64`. Full flow: [docs/building.md](docs/building.md).
+Prerequisites: the build host is a Mac (Xcode, NDK 28.2, Rust 1.95+; Linux-only host tests run in Apple's `container`), or a Linux x86_64 PC with `qemu-aarch64`; the pinned Apple IPSW pieces (fetched, never committed). Full flow: [docs/building.md](docs/building.md).
 
 ```sh
 P=iphone18,2-ios27.0.1-24A446
@@ -28,11 +28,12 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Area | Phone (S24 Ultra) | PC (qemu-aarch64) | Notes |
 |---|---|---|---|
 | Boot to Home Screen | Yes — lock screen, swipe unlock, apps shown (hosted 0035–0037) | Yes — launchd, SpringBoard, backboardd | [docs/booting](docs/building.md) §6 |
-| GPU compositing | Yes, 40–60 fps via virtio-gpu | Yes, frames captured | [docs/gpu.md](docs/gpu.md) |
+| GPU compositing | Yes, via virtio-gpu: 40–58 fps on the idle lock screen (2026-11-11); 20–32 fps in launches and Control Center (2026-11-22, cause found: see "Known issues") | Yes, frames captured | [docs/gpu.md](docs/gpu.md) |
 | Touch + buttons | Yes | Scripts (`--input-script`) | HID via kernel event driver |
 | Battery | Published to iOS | Stand-in tested | Real readings on phone |
-| Wi-Fi | Joins; scan rate cut 20→5/min (reuse works); late-enable merged, phone proof pending | Sim radio (`wifi=sim`) | [docs/hardware.md](docs/hardware.md) |
-| Haptics / keyboard | 0078 merged (the haptic server starts); the Actuator then played silence (no DSP chain): hosted 0086, phone proof pending | Host-tested | Typing drives Preferences 100%+ (the overheat path); XPC-timeout cause proven from iOS log |
+| Wi-Fi | Joins; scan rate cut 20→5/min (reuse works); the late enable proven (2026-11-22: `en0` up 0.05 s after configd names it) | Sim radio (`wifi=sim`) | [docs/hardware.md](docs/hardware.md) |
+| Keyboard | Yes (hosted 0083, 2026-11-22): Spotlight took 30 key taps, its hangs 3.8 s in all (86.4 s before) | Host-tested | The busy keyboard was the dictation availability loop, kernel README "0083" |
+| Haptics | The haptic server starts (0078); the Actuator then played silence (no DSP chain): hosted 0086 merged, phone proof pending | Host-tested | [docs/hardware.md](docs/hardware.md) §5 |
 | Interrupts / Mach RPC | — | Verified: 41k host-call IPIs vs 110 trapped | `oneios-perf` `rpc:`/`0081:` lines |
 | Return to One UI | Yes — chord, SIGKILL backstop | n/a | Never touches side keys, realtime, or `/sys/power` |
 | Host test suites | n/a | All green (loader, xnuhost, bridges, display, prelink audit 0 failures) | `runtime/host-tests.sh` |
@@ -42,11 +43,14 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Issue | State | Tracking |
 |---|---|---|
 | SpringBoard died once on unlock (missing process identity assertion) | Historical, not reproduced since | git history, agents board |
-| Typing overheats the phone (Preferences 100%+, the main bug) | Prime suspect hapticd XPC timeouts; preset fix merged (hosted 0078), phone proof pending; `thermal:` + `oneios-cpu-sys:` lines added for diagnosis | [docs/hardware.md](docs/hardware.md) §5 |
-| Wi-Fi scan slow; enable waits on configd (~3 min) | Scan reuse 20→5/min works; result/join latency still slow on phone (cause open); enable fix merged (`oneios-wifi-up`), phone proof pending | [docs/hardware.md](docs/hardware.md) |
+| Launch, Control Center and widget lag; SpringBoard hangs (90 in one boot), chronod's widget kills (126) | Cause from the phone's `perf:` lines (2026-11-22): iOS's work stayed on the two A520 vCPUs (0% idle) while the six P vCPUs were 85–99% idle; hosted 0085 lets it move to the P cores, merged, phone proof pending | kernel README "0085" |
+| The display glitches on UI changes (page changes, widget updates) | Fix merged (each layer buffer filled with what it lacks, `69e2013`), phone proof pending | [runtime/display/README.md](runtime/display/README.md) |
+| Fitness shows black for 80–90 s at its first start | Not a render fault: its first screen waits on Fitness+ calls that fail slowly with no network (2026-11-22); 0085 removes the CPU part, the rest needs Wi-Fi joined | [docs/userland.md](docs/userland.md) §11 |
+| Typing heat (Preferences 100%+ of a CPU, 2026-11-15) | The keyboard's busy main thread was the dictation availability loop (hosted 0083, the keyboard works on the phone); Preferences' CPU while typing not measured again since | [docs/hardware.md](docs/hardware.md) §5 |
+| Wi-Fi scan and join slow | Scan reuse 20→5/min works; result/join latency still slow on the phone (cause open). The enable no longer waits on configd (`oneios-wifi-up`, proven 2026-11-22) | [docs/hardware.md](docs/hardware.md) |
 | Audio: MMAP start gap, lateness metric | Landed on PC, phone proof pending | [docs/hardware.md](docs/hardware.md) |
 | Volume keys and slider do nothing, sound low | Cause from iOS's log: no hardware volume control on the Speaker (audiomxd threw at every volume set), the host at One UI's media volume; the control and the host at full scale built, phone proof pending | [docs/hardware.md](docs/hardware.md) §6 "Volume" |
-| HEVC encode: no real frame encoded yet | Guest side staged, stand-in tested | PR #59 |
+| HEVC encode: no tile encoded on the phone yet | Phone 2026-11-22, iOS 27's tile messages answered: widgets render (no more white fallbacks), encode-fail 0, the session loop gone; no HEIC tile coded yet | [codec README](kernel/patches/oneios-hosted/codec/README.md) |
 | Camera: no Camera icon, no source in CMCapture | Phone 2026-11-22: the plug-in loads and makes its device, then CMCapture had no model name (`/product unique-model`) and no device-tree camera nodes; fixed in the loader (the nodes and `unique-model`; hosted 0084 keeps MobileGestalt's cache across boots and drops it once when the tree changes), phone proof pending | [docs/hardware.md](docs/hardware.md) §7 |
 | Auto-brightness via light sensor | Attaches, no readings through it yet | [docs/hardware.md](docs/hardware.md) |
 | Shared-region protect no-op count still 0 | Optimization unproven | kernel README "0080" |
