@@ -107,7 +107,7 @@ pub fn install_script(path: &str, sha: &str) -> String {
 /// same way (a regular file, executable, root's, not writable by others), the same arguments, stdin, log and pid
 /// file, the same OOM score and cgroup, and init's mount namespace, which the switch itself runs in (it re-enters
 /// it with `nsenter -t 1 -m` when its shell is in another, and so does this). The user is root and the
-/// environment is su's, as the switch's; CLASSPATH is set by the launcher itself (`runtime/display/src/launcher.c`);
+/// environment is su's, as the switch's; CLASSPATH is set by the launcher itself (`runtime/display/src/bin/launcher.rs`);
 /// the switch does not change its own nice level before it starts the helper, and neither does this.
 pub fn restart_script(kill_after: u64) -> String {
     let ticks = kill_after.max(1) * 5;

@@ -1,5 +1,5 @@
 //! oneios-tool log: read an xnuhost session log (`/data/local/tmp/oneios/session/xnuhost.log`, the formats of
-//! `runtime/xnuhost/src/log.c` and of the hosted kernel's report lines).
+//! `runtime/core/src/log.rs` (xh-core) and of the hosted kernel's report lines).
 
 pub mod diff;
 pub mod parse;

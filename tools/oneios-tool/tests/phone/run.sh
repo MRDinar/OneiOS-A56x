@@ -67,7 +67,7 @@ if [ -n "$FORK" ]; then
     printf '%s\n' "$out" | grep -Eq "^$want" && ok "status: $want" || bad "status: $want" "$(printf '%s' "$out" | tr '\n' '|')"
   done
 else echo "skipped status (no fork root script)"; fi
-# the host phone (crates/oneios-phone/src/host.rs, runtime/bridges/hw/host_device.c's table): the line xnuhost's start
+# the host phone (crates/oneios-phone/src/host.rs, runtime/bridges/hw/host_device.rs's table): the line xnuhost's start
 # would log, from getprop and soc0 (with or without the fork's root script: the line comes before it)
 hs() { sh -c "'$TOOL' phone status 2>&1; true"; }
 check "status: host S24 Ultra (the default stand-in)" 0 "^host: galaxy-s24-ultra \(Galaxy S24 Ultra \(SM-S928, SM8650\)\), matched by ro.product.model=SM-S928B; defaults: none \(today's\)$" hs

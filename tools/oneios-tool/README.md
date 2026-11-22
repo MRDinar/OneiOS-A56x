@@ -1639,7 +1639,7 @@ all where this kernel's symbols land.
 |---|---|---|
 | in the collection | `panic(cpu N caller 0x...)`, the `frame 0x...` lines (`hosted_panic` prints them `- vm_kernel_slide`) | the fileset's `LC_FILESET_ENTRY` members and each member's `LC_SEGMENT_64`s are read; the smallest segment that holds the address gives member and segment (every kext lists the shared `__LINKEDIT`: the first member has it) |
 | in `com.apple.kernel` | the same | **xnu.macho address = address - (the segment's vmaddr in the collection - the same segment's vmaddr in xnu.macho), per segment.** The prelink places each segment on its own: here `__TEXT` moves by `0x180000`, `__DATA_CONST` by `0xc24000`, `__TEXT_EXEC` and `__KLD` by `0x386c000`, `__DATA` by `0x3a28000` (`sym kernel index` prints all ten). A symbol moves with the segment of its section (`n_sect`), not of its address: an end label sits on the next segment's first address, and `__LAST` has no size |
-| of the running kernel (the "physical aperture") | the fault's `pc` and `lr`, in the panic's text and in its register dump | **collection address = running address - slide** (modulo 2^64), **slide = RAM - link base**. xnuhost maps the guest's RAM once, at `0x2000000000 + (link base mod 2 MiB)` (`runtime/xnuhost/src/mem.c`, retried 16 GiB higher), copies every segment of the collection to `RAM + (vmaddr - link base)` (`runtime/loader/src/boot.c`; link base = the lowest vmaddr of the collection's own segments, `macho.c`) and runs it there with physical = virtual (`docs/booter.md` 2.2). The log has all three numbers: `kernel: ... link base 0xfffffff007004000` and `memory: N MiB at 0x2000004000, physical = virtual (slide 0x2ff9000000)`. So `pc 0x200454c094` is `0xfffffff00b54c094`, the panic's first `frame` line, and `lr 0x2003ff1038` is `0xfffffff00aff1038`, `0x7138` bytes after the `tcp_input` frame. `--slide HEX` gives the slide for addresses by hand or a log cut before its `memory:` line; the tool warns when the log's slide is not RAM - link base or its link base is not this collection's |
+| of the running kernel (the "physical aperture") | the fault's `pc` and `lr`, in the panic's text and in its register dump | **collection address = running address - slide** (modulo 2^64), **slide = RAM - link base**. xnuhost maps the guest's RAM once, at `0x2000000000 + (link base mod 2 MiB)` (`runtime/xnuhost/src/mem.rs`, retried 16 GiB higher), copies every segment of the collection to `RAM + (vmaddr - link base)` (`runtime/loader/src/boot.rs`; link base = the lowest vmaddr of the collection's own segments, `macho.rs`) and runs it there with physical = virtual (`docs/booter.md` 2.2). The log has all three numbers: `kernel: ... link base 0xfffffff007004000` and `memory: N MiB at 0x2000004000, physical = virtual (slide 0x2ff9000000)`. So `pc 0x200454c094` is `0xfffffff00b54c094`, the panic's first `frame` line, and `lr 0x2003ff1038` is `0xfffffff00aff1038`, `0x7138` bytes after the `tcp_input` frame. `--slide HEX` gives the slide for addresses by hand or a log cut before its `memory:` line; the tool warns when the log's slide is not RAM - link base or its link base is not this collection's |
 | anything else | | said in the line (`not in the collection (A to B); as an address of the running kernel (slide S) it is X: not in it either`), never dropped |
 
 **Names.** Function + offset is the nearest symbol at or below the address in the same member and segment: for
@@ -1937,8 +1937,8 @@ defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 .
 phone (ro.product.model=... ...): xnuhost keeps today's defaults (host-device=NAME forces one)`. One `adb shell` call as
 the shell user: `getprop` of `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`,
 `ro.soc.manufacturer`, and `/sys/devices/soc0/{machine,soc_id}`, `/proc/device-tree/compatible`; matched in xnuhost's
-order against `crates/oneios-phone/src/host.rs`, a copy of `runtime/bridges/hw/host_device.c`'s table (the unit test
-`table_matches_the_c_source` reads the C file and fails when they differ). It says what xnuhost's own start line will
+order against `crates/oneios-phone/src/host.rs`, a copy of `runtime/bridges/hw/host_device.rs`'s table (the unit test
+`table_matches_the_bridges` reads that file and fails when they differ). It says what xnuhost's own start line will
 say about the phone (`docs/hardware.md` 7h), not what a session's command line or image set overrides. Tested: the
 unit tests (each phone, a codename, the SoC, the platform, soc0, the compatible list, unknown) and the stand-in phone
 (`tests/phone/run.sh`: the S24 Ultra, S26 Ultra, A56, S25 Ultra, an unknown phone and soc0's machine with no
@@ -2270,7 +2270,7 @@ What all of them keep:
    The same file with the same checks and arguments, stdin, log file and pid file, the same OOM score and cgroup
    (so the return's cgroup kill gets it too). The socket is the session's (`--session <stage>/session`, where
    xnuhost serves `display.sock`). The user is root and the environment is su's, as the switch's is; `CLASSPATH`
-   is set by the launcher itself (`runtime/display/src/launcher.c`), which also finds the library and the dex next
+   is set by the launcher itself (`runtime/display/src/bin/launcher.rs`), which also finds the library and the dex next
    to itself. The switch does not change its own nice level before it starts the helper (only its watcher and key
    readers are reniced), so neither does this. The switch runs in init's mount namespace and enters it with
    `nsenter -t 1 -m` when its shell is in another; `$NS` is that `busybox nsenter -t 1 -m --` when
@@ -2317,13 +2317,12 @@ refused: it would turn the panel off), writes it, reads it back, and says that t
 value back. Two things about what happens to the value afterwards (read in the code, not seen on the phone):
 - *iOS's next brightness change writes over it*: xnuhost's brightness bridge writes the node whenever iOS's level
   changes, and knows nothing of a manual write.
-- *The return restores One UI's value through the fork's script, not reliably through the bridge.* The fork's
-  `oneios_return.sh` writes `control/base/backlight` back once xnuhost is gone, whatever the node holds. The
-  bridge's own close (`br_bright_close` in `runtime/bridges/brightness/brightness.c`) calls `panel_write` with One
-  UI's value, and `panel_write` skips a value equal to the last one *the bridge* wrote: when iOS's level is where
-  it started (or iOS's last level happens to be One UI's value), the bridge writes nothing at its close and a
-  manual level would stay, were it not for the fork's write. That is the bridge's code (fix-brightness-touch's),
-  not changed here.
+- *The return restores One UI's value twice.* The fork's `oneios_return.sh` writes `control/base/backlight`
+  back once xnuhost is gone, whatever the node holds; and the bridge's own close (`Bright::shutdown` in
+  `runtime/bridges/brightness/session.rs`, which xnuhost's stop calls) always writes One UI's value, even when it
+  equals the bridge's own last write, because the node may have been set outside the bridge (this command, or by
+  hand). When this note was first written the C close skipped a value equal to its last write; `d4b26a6`
+  (2026-11-14) made it always write, and the Rust port keeps that.
 
 The stand-in for them (`tests/phone/session-cmds.sh`, sourced by `tests/phone/run.sh`; a phone of its own): a
 display helper in the staged runtime (`fake-display.sh`, which needs its library and dex beside it and writes the

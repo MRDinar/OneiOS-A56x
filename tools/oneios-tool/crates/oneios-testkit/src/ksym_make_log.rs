@@ -10,7 +10,7 @@
 //! KERNEL (the instruction after its call of the function above it in the backtrace, where it calls that one with a
 //! `bl`; else after the middle one of its calls), moved to KC's address by the test's own reader (kcmap.rs). The
 //! fault's pc and lr are addresses of the running kernel: the collection's address plus the slide of the log's
-//! `memory:` line. The lines have the formats of runtime/xnuhost/src/log.c and of hosted_panic
+//! `memory:` line. The lines have the formats of runtime/core/src/log.rs (xh-core) and of hosted_panic
 //! (kernel/patches/oneios-hosted/0001-hosted-machine-layer.patch).
 //!
 //! --expect FILE: one line per address written, `KIND ADDRESS-IN-LOG KERNEL-ADDRESS FUNCTION`, for ksym-compare.

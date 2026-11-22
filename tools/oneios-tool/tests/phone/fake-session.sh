@@ -1,7 +1,7 @@
 #!/bin/bash
 # The stand-in phone's session (started by fake-root.sh's switch as a process whose name holds "xnuhost"):
 # writes session/xnuhost.pid, lets session/xnuhost.log grow with the lines of a boot (the framing of
-# runtime/xnuhost/src/log.c, the stages of oneos/interface.md section 8), makes session/ready, and returns when
+# runtime/core/src/log.rs (xh-core), the stages of oneos/interface.md section 8), makes session/ready, and returns when
 # session/return.request appears: the restore line in return.log, return.outcome.
 #   $P/.fake/step     seconds between log lines (default 0.2)
 #   $P/.fake/panic    the boot ends in a panic instead of the first frame

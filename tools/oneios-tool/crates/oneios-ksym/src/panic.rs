@@ -11,7 +11,7 @@
 //! `caller` and the `frame` lines are link-time addresses of the collection (`- vm_kernel_slide`); the `pc` and
 //! `lr` of a fault's text and of its register dump are the running kernel's addresses. The boot's own lines say
 //! where the kernel runs: `kernel: ... link base 0x...` and `memory: N MiB at 0x..., physical = virtual (slide
-//! 0x...)` (`runtime/xnuhost/src/main.c`).
+//! 0x...)` (`runtime/xnuhost/src/session/board.rs`).
 
 /// What an address of a panic block is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
