@@ -43,3 +43,7 @@ path = "thermal/thermalctl.rs"
 name = "test_hidl_binder"
 path = "tests/test_hidl_binder.rs"
 harness = false
+[[test]]
+name = "hal_binder"
+path = "tests/hal_binder.rs"
+harness = false
