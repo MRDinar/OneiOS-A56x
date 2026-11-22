@@ -465,7 +465,9 @@ Notes on the build:
 ### The debug key
 
 Every OneOS APK in a release is signed with one debug key, `secrets/oneios-debug.keystore`. It was made on the Linux
-build machine on 2026-11-22.
+build machine on 2026-11-22 and copied to the Mac's checkout (the build host now) on 2026-11-23, certificate checked
+with `keytool -list -v`. CI: until fork `2ef79b6` (2026-11-23) the fork's runs did not sign with it (0.5.51 and 0.5.52
+had keys of their own), the fork's `docs/oneios.md` "CI".
 - **The key:** PKCS12, RSA 2048, valid for 10,000 days; alias `androiddebugkey`, store and key password `android`,
   as Android's own debug keys. Certificate SHA-256
   `8b3be966893342e8ca63cbb9b2097e038cfb30c7bccb1296c2baa25654217599`.
