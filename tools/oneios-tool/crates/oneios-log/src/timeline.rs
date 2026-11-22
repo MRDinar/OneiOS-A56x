@@ -1,6 +1,8 @@
 //! `log timeline`: the milestones of every boot of a log with their time and line: the stages of
-//! `oneos/interface.md` (xnuhost starts, the kernel, BSD root, launchd, backboardd, SpringBoard, guest ready), the
-//! frames the display logged, the gestures with whether the guest drew after them, crashes, and the end.
+//! `oneos/interface.md` (xnuhost starts, the RAM held, the kernel, BSD root, launchd, the first virtio driver up,
+//! backboardd, SpringBoard, the guest's first frame, guest ready), the frames the display logged, the gestures with
+//! whether the guest drew after them, crashes, tasks that died on their own, virtio queues that held chains, input
+//! that was dropped, the return, and the end. `log summary` has the same stages as a table (summary.rs).
 
 use crate::parse::{boots, Log, Rec, Scan, Src};
 use std::collections::BTreeMap;
@@ -135,6 +137,22 @@ pub fn report(log: &Log) -> String {
                         row(r, "cpu0 enters the kernel".to_string());
                     } else if t.starts_with("guest ready") {
                         row(r, format!("GUEST READY ({t})"));
+                    } else if t.starts_with("display: the guest's first frame") {
+                        row(r, format!("the guest's first frame: {}", short(t.trim_start_matches("display: the guest's first frame of its own: "), 100)));
+                    } else if t.starts_with("memory: the guest's RAM is held:") {
+                        row(r, short(t, 120));
+                    } else if t.starts_with("return: ") {
+                        row(r, format!("RETURN: {}", short(t.trim_start_matches("return: "), 110)));
+                    } else if t.starts_with("tasks: pid ") && t.contains(" died on its own") {
+                        row(r, format!("host: {}", short(t.trim_start_matches("tasks: "), 110)));
+                    } else if t.starts_with("virtio ") && (t.contains(" none returned in ") || t.contains(" not taken in ") || t.contains(" set FAILED") || t.contains(" reset by the guest's driver")) {
+                        row(r, short(t, 140));
+                    } else if t.starts_with("virtio ") && t.contains(": the guest's driver is up") {
+                        if first("virtio up") {
+                            row(r, format!("the guest's first virtio driver is up: {}", short(t.trim_start_matches("virtio "), 90)));
+                        }
+                    } else if t.starts_with("input: ") && (t.contains(" the oldest are dropped") || t.contains("events dropped by the kernel")) {
+                        row(r, short(t, 140));
                     } else if let Some(touch) = t.strip_prefix("input: touch: ") {
                         let mut s = Scan::new(touch);
                         let frames = s.num("");

@@ -190,12 +190,13 @@ Known faults and limits (all are `dsc.py`'s behaviour, ported as it is):
 
 ## 2. `log`: the xnuhost session log analyzer (new)
 
-Done for the subcommands below. Crate `crates/oneios-log` (`parse.rs`, `stacks.rs`, `timeline.rs`, `diff.rs`,
+Done for the subcommands below. Crate `crates/oneios-log` (`parse.rs`, `stacks.rs`, `timeline.rs`, `summary.rs`, `diff.rs`,
 `reports.rs`, `table.rs`, `tests/synthetic.rs`).
 
 ```sh
 oneios-tool log stacks LOG [--proc NAME] [--thread 0xT] [--slide HEX] [--no-sym] [--summary] [--dsc DIR] [--index DIR]
 oneios-tool log timeline LOG
+oneios-tool log summary LOG [--since T | --since +T] [--last S] [--all]
 oneios-tool log diff LOG_A LOG_B [--words N] [--all]
 oneios-tool log gpu|cpu|display|perf LOG [--json | --csv]
 ```
@@ -204,8 +205,11 @@ oneios-tool log gpu|cpu|display|perf LOG [--json | --csv]
   a line. Lost first letters (`neios-ubt:`) are put back. A cut record's last address is dropped.
 - `stacks`: every `oneios-ubt` sample per thread, named through the `sym` index, the slide found per boot, runs
   of equal stacks collapsed, and at the end the threads that never changed.
-- `timeline`: xnuhost start, kernel start, BSD root, launchd, guest ready, display frames and swaps, gestures
-  with the guest's next frame, crashes (`sheng-exc`), `stopping:` and `exit N`.
+- `timeline`: xnuhost start, the RAM held, kernel start, BSD root, launchd, the first virtio driver up, the guest's
+  first frame, guest ready, display frames and swaps, gestures with the guest's next frame, crashes (`sheng-exc`),
+  tasks that died on their own, virtio queues that held chains, input dropped, `return:`, `stopping:` and `exit N`.
+- `summary` (2026-11-22): a boot's stages and their times, each part's line count, last line and first problem,
+  the crashes and kills, the gestures, the `xnuhost E` lines; `--since` and `--last` narrow the rows (README "log").
 - `diff`: kinds of lines (source + first 6 words, numbers normalized) in one log and not the other, with counts
   and first line numbers; the boot arguments that differ.
 - `gpu|cpu|display|perf`: one row per report line; cut fields show `-`.
@@ -225,6 +229,8 @@ Left, in order:
 1. Tables for `oneios-gpu-sizes`, `-open`, `-text`, `-plugin`, `oneios-hid`, `ONEIOS WIFI` / `BT` / `AUDIO` /
    `BACKLIGHT`, `oneios-keystore`. Today they show only as kinds in `diff`. `oneios-iobusy` is only in `timeline`.
 2. `timeline` does not name the lock screen: no log line says it. It lists the display's frame and swap lines.
+   `summary` finds backboardd and SpringBoard by the first guest line that names them: the kernel has no line for a
+   process's spawn or exit, nor launchd for a job that crash-loops (docs/booter.md 2.9b, "Still missing").
 3. `--json` / `--csv` for `stacks`, `timeline` and `diff`.
 
 Linux round (2026-11-12): `tests/log/run.sh` on the two stand-in logs: 33 commands, all status 0, two runs equal.

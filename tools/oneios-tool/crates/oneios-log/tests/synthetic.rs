@@ -544,3 +544,82 @@ fn kernel_panics_of_a_log() {
     assert!(f.run(&["panic", &quiet]).ends_with("no kernel panic (no `panic(cpu N caller 0x...)` line)\n"));
     assert!(!f.run(&["stacks", &quiet]).contains("kernel panics"));
 }
+
+/// A boot with the health lines of docs/booter.md "Health lines": stages, parts, problems, crashes, the window.
+fn summary_log() -> String {
+    let mut t = timeline_log();
+    // a second boot after the first (its start line): `summary` shows the last one, `--all` both
+    t += "[   300.000] xnuhost I xnuhost: session ABI 1, mode takeover, pid 200\n";
+    t += "[   303.000] xnuhost I memory: the guest's RAM is held: 3072 MiB prefaulted in 2000 ms, locked (mlock: the host cannot swap it)\n";
+    t += "[   304.000] xnuhost I cpu0: entering the kernel at 0x2003dbb488\n";
+    t += "[   304.100] guest     Darwin Kernel Version 25.5.0: a test; root:xnu/DEVELOPMENT\n";
+    t += "[   305.000] xnuhost I virtio gpu#0: the guest's driver is up (features 0x100000000, 2 queue(s) ready)\n";
+    t += "[   306.000] guest     BSD root: disk7s1, major 1, minor 10\n";
+    t += "[   330.000] xnuhost I display: the guest's first frame of its own: all black; session/ready waits for one with content (up to 120 s)\n";
+    t += "[   450.000] xnuhost I guest ready: first frame, all black: no frame with content in 120 s after the guest's first (40 frames); ready all the same (ready-content-wait)\n";
+    t += "[   460.000] xnuhost I memory: host MemAvailable 1569 MiB of 11084 MiB; given back 0 MiB of free pages in 0 calls (0 failed, 0 ms)\n";
+    t += "[   470.000] xnuhost I virtio: 60 s: gpu#0 q0 +1200 q1 +30, input#0 q0 +5400\n";
+    t += "[   480.000] xnuhost I virtio gpu#0: queue 0: 2 chain(s) in flight and none returned in 60 s (taken 1232, returned 1230 since the boot)\n";
+    t += "[   490.000] xnuhost I tasks: pid 4242 died on its own (wait status 0x9: signal 9), not asked by the kernel\n";
+    t += "[   500.000] xnuhost I tasks: 60 s: +3 made, +2 ended by the kernel, +1 died on their own, +0 fatal traps, +0 refused; live 7 (most 8)\n";
+    t += "[   505.000] xnuhost E disk data: a flush failed: I/O error\n";
+    t += "[   510.000] guest     memorystatus: sending suspended process WeatherPoster (pid 248) SIGKILL\n";
+    t += "[   520.000] xnuhost I input: touch: 7 frames in 50 ms, 1 contact, a frame every 7.9..8.5 ms; read 32/54/85 us after the scan (min/avg/max); the guest's next frame 9.1 ms after the touch-down\n";
+    t += "[   530.000] xnuhost I memory: host MemAvailable 1500 MiB of 11084 MiB; given back 0 MiB of free pages in 0 calls (0 failed, 0 ms)\n";
+    t
+}
+
+#[test]
+fn summary_of_a_boot() {
+    let f = Fixture::new("summary");
+    let path = f.log("s.log", &summary_log());
+    let out = f.run(&["summary", &path]);
+    let lines: Vec<&str> = out.lines().collect();
+    let row = |what: &str| lines.iter().find(|l| l.contains(what)).unwrap_or_else(|| panic!("no {what:?} in\n{out}")).to_string();
+    assert!(out.contains(": 45 lines, 2 boot(s)"), "{out}");
+    assert!(out.contains("\nboot 2 of 2 (lines 29-45), 230.0 s of log\n"), "{out}");
+    assert!(!out.contains("boot 1 of 2"), "{out}");
+    // the stages, with the time after the boot's start
+    assert!(row("xnuhost starts").contains("+0.0 s  line     29"), "{out}");
+    assert!(row("RAM held and locked").contains("+3.0 s"), "{out}");
+    assert!(row("the kernel starts").contains("+4.0 s"), "{out}");
+    assert!(row("the guest's drivers: first up").contains("+5.0 s"), "{out}");
+    assert!(row("launchd loaded").contains("(no line)"), "{out}");
+    assert!(row("the guest's first frame").contains("+30.0 s"), "{out}");
+    assert!(row("guest ready ").contains("+150.0 s"), "{out}");
+    assert!(row("the end").contains("no stop line"), "{out}");
+    assert!(out.contains("NOTE: ready came 120.0 s after the guest's first frame"), "{out}");
+    // the parts: counts, the last line, the first problem
+    assert!(row("  memory ").contains("    3        -  +230.0 s memory: host MemAvailable 1500 MiB"), "{out}");
+    assert!(row("  disks ").contains("    1  1 (1 E)  +205.0 s disk data: a flush failed: I/O error"), "{out}");
+    assert!(row("  virtio ").contains("    3        1"), "{out}");
+    assert!(out.contains("first: virtio gpu#0: queue 0: 2 chain(s) in flight and none returned in 60 s"), "{out}");
+    assert!(row("  tasks ").contains("    2        1"), "{out}");
+    assert!(row("  encoder ").ends_with("0  -"), "{out}");
+    assert!(row("crashes and kills").contains("1 task(s) died on their own, 1 jetsam kill(s); 1 virtio queue(s) held chains"), "{out}");
+    assert!(row("gestures:").contains("gestures: 1, 0 with no guest frame"), "{out}");
+    assert!(row("`xnuhost E` lines").contains("1; the first at +205.0 s (line 42): disk data: a flush failed"), "{out}");
+
+    // every boot
+    let all = f.run(&["summary", &path, "--all"]);
+    assert!(all.contains("boot 1 of 2") && all.contains("boot 2 of 2"), "{all}");
+    assert!(all.contains("END") || all.contains("exit 0"), "{all}");
+    // a window: the rows only, the stages stay the whole boot's
+    let since = f.run(&["summary", &path, "--since", "+200"]);
+    assert!(since.contains("rows from +200.0 s"), "{since}");
+    assert!(since.lines().any(|l| l.starts_with("  memory ") && l.contains("    1        -")), "{since}");
+    assert!(since.lines().any(|l| l.contains("RAM held and locked") && l.contains("+3.0 s")), "{since}");
+    let last = f.run(&["summary", &path, "--last", "20"]);
+    assert!(last.lines().any(|l| l.starts_with("  memory ") && l.contains("    1        -")), "{last}");
+    assert!(last.contains("`xnuhost E` lines: 0"), "{last}");
+    let absolute = f.run(&["summary", &path, "--since", "500"]);
+    assert!(absolute.contains("`xnuhost E` lines: 1"), "{absolute}");
+    // the timeline has the same new milestones
+    let timeline = f.run(&["timeline", &path]);
+    for what in ["the guest's first frame: all black", "the guest's first virtio driver is up: gpu#0", "host: pid 4242 died on its own",
+                 "virtio gpu#0: queue 0: 2 chain(s) in flight and none returned", "memory: the guest's RAM is held: 3072 MiB"] {
+        assert!(timeline.contains(what), "no {what:?} in\n{timeline}");
+    }
+    let args: Vec<String> = ["summary", &path, "--since", "soon"].iter().map(|a| a.to_string()).collect();
+    assert!(run_inner(&args, f.loc(), &mut Vec::new()).is_err());
+}

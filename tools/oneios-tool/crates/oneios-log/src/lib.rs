@@ -5,6 +5,7 @@ pub mod diff;
 pub mod parse;
 pub mod reports;
 pub mod stacks;
+pub mod summary;
 pub mod table;
 pub mod timeline;
 
@@ -19,6 +20,7 @@ usage: oneios-tool log stacks LOG [--proc NAME] [--thread 0xT] [--slide HEX] [--
                                   [--dsc DIR] [--index DIR] [--kc PATH] [--kernel PATH]
        oneios-tool log panic LOG [--kc PATH] [--kernel PATH]
        oneios-tool log timeline LOG
+       oneios-tool log summary LOG [--since T | --since +T] [--last S] [--all]
        oneios-tool log diff LOG_A LOG_B [--words N] [--all]
        oneios-tool log gpu LOG [--json | --csv]
        oneios-tool log cpu LOG [--json | --csv]
@@ -37,6 +39,11 @@ record gives the fields it still has.
             out/kernel (`oneios-tool sym kernel --help`). Without a collection the addresses are listed unnamed.
   timeline  the milestones of every boot with time and line: start, kernel, launchd, frames, gestures and whether
             the guest drew after them, crashes, the end
+  summary   the health of a boot on one screen: its stages and their times, then each part (memory, disks, virtio,
+            tasks, display, gpu, input, the bridges, the return, iOS's own report lines): its count of lines, its last
+            line, the first line that names a problem; the crashes and kills, the gestures, the `xnuhost E` lines. The last
+            boot (--all: every boot). --since T: rows from log second T (+T: T s after the boot's start); --last S: the
+            boot's last S seconds. The stages are always the whole boot's
   diff      the kinds of lines one log has and the other does not, with counts and first lines
   gpu, cpu, display, perf   tables over time from the periodic report lines (--json, --csv for machines)";
 
@@ -50,6 +57,8 @@ pub enum Command {
     Panic(Opts),
     /// The milestones of every boot with time and line
     Timeline(Opts),
+    /// The health of a boot on one screen: stages, parts, crashes, errors
+    Summary(Opts),
     /// The kinds of lines one log has and the other does not (two logs)
     Diff(Opts),
     /// The GPU report lines as tables over time
@@ -97,9 +106,15 @@ pub struct Opts {
     /// stacks: only the summary
     #[arg(long)]
     summary: bool,
-    /// diff: every kind, not only the first ones
+    /// diff: every kind, not only the first ones; summary: every boot, not only the last
     #[arg(long)]
     all: bool,
+    /// summary: the rows from log second T, or (+T) T seconds after the boot's start
+    #[arg(long, value_name = "T", allow_hyphen_values = true)]
+    since: Option<String>,
+    /// summary: the rows of the boot's last S seconds
+    #[arg(long, value_name = "S")]
+    last: Option<f64>,
     /// The tables as JSON
     #[arg(long, overrides_with = "csv")]
     json: bool,
@@ -164,7 +179,23 @@ struct Args {
     summary: bool,
     words: usize,
     all: bool,
+    window: summary::Window,
     format: Format,
+}
+
+/// `--since` and `--last` as a window.
+fn window(since: Option<&str>, last: Option<f64>) -> Result<summary::Window> {
+    let mut w = match since {
+        Some(text) => summary::Window::parse_since(text).ok_or_else(|| anyhow!("--since takes seconds (4900) or seconds after the boot's start (+120): {text:?}"))?,
+        None => summary::Window::default(),
+    };
+    if let Some(s) = last {
+        if !s.is_finite() || s < 0.0 {
+            bail!("--last takes a count of seconds: {s}");
+        }
+        w.last = Some(s);
+    }
+    Ok(w)
 }
 
 fn options(o: Opts, loc: &mut Locate) -> Result<Args> {
@@ -194,6 +225,7 @@ fn options(o: Opts, loc: &mut Locate) -> Result<Args> {
         summary: o.summary,
         words: o.words,
         all: o.all,
+        window: window(o.since.as_deref(), o.last)?,
         format: if o.csv { Format::Csv } else if o.json { Format::Json } else { Format::Text },
     })
 }
@@ -218,6 +250,7 @@ fn run_command(command: Command, mut loc: Locate, err: &mut dyn Write) -> Result
         Command::Stacks(o) => ("stacks", o),
         Command::Panic(o) => ("panic", o),
         Command::Timeline(o) => ("timeline", o),
+        Command::Summary(o) => ("summary", o),
         Command::Diff(o) => ("diff", o),
         Command::Gpu(o) => ("gpu", o),
         Command::Cpu(o) => ("cpu", o),
@@ -259,6 +292,7 @@ fn run_command(command: Command, mut loc: Locate, err: &mut dyn Write) -> Result
             None => Ok(format!("{}: no kernel panic (no `panic(cpu N caller 0x...)` line)\n", a.paths[0].display())),
         },
         "timeline" => Ok(timeline::report(&load(&a.paths[0])?)),
+        "summary" => Ok(summary::report(&load(&a.paths[0])?, a.window, a.all)),
         "diff" => {
             let (first, second) = rayon::join(|| load(&a.paths[0]), || load(&a.paths[1]));
             Ok(diff::report(&first?, &second?, a.words, a.all))

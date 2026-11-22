@@ -57,7 +57,11 @@ static void say(int level, const char *fmt, ...)
 static void virgl_line(enum virgl_log_level_flags level, const char *message, void *data)
 {
   (void)data;
-  say(level >= VIRGL_LOG_LEVEL_WARNING ? 0 : level == VIRGL_LOG_LEVEL_INFO ? 1 : 2, "drm2kgsl: %s", message);
+  // Only drm_err (ERROR) is an `xnuhost E` line. Our drm2kgsl patches print their once-per-event facts (a queue's KGSL
+  // priority, the power constraint, the clock hold, the import's coherence, the vCPU uclamp) at WARNING so that the
+  // library's threshold passes them: they are information, and as `E` lines they hid the real errors (28 of the 28 `E`
+  // lines of out/session-logs/2026-11-22/kbd-debug/xnuhost.log were such facts).
+  say(level >= VIRGL_LOG_LEVEL_ERROR ? 0 : level >= VIRGL_LOG_LEVEL_INFO ? 1 : 2, "drm2kgsl: %s", message);
 }
 
 int __android_log_vprint(int priority, const char *tag, const char *fmt, va_list ap);

@@ -248,6 +248,10 @@ gpu: 10 s fences over 100 ms (each one of the guest's fence timeouts): xnu:photo
 drm2kgsl: context 9: power constraint at the lowest level
 ```
 
+The `drm2kgsl:` facts above are `xnuhost I` lines. drm2kgsl prints them at virglrenderer's WARNING level (so that
+the library's threshold passes them); until 2026-11-22 xnuhost mapped WARNING to `xnuhost E`, and all 28 `E` lines of
+a session were such facts. Only `drm_err` (ERROR) is an `xnuhost E` line now (`gpu3d_kgsl.c`, docs/booter.md 2.9b).
+
 (examples, not from a run.) `gpu: context` comes once per context (two per process) and when its class changes: a
 process whose contexts keep coming back is making Metal devices again and again. The 10 s line says how much of the
 render server's work needed the top; `over budget` is frames that took longer than their budget at any level (jank).

@@ -1229,6 +1229,31 @@ static void usb_tick(bool now, const char *when)
   if (xh_usb_poll(&usb_watch, xh_usb_bionic()) || now) LOGI("%s%s", usb_watch.line, when);
 }
 
+// A lasting line's sink (xh_line_fn): the log.
+static void log_line(void *ctx, const char *line) { (void)ctx; LOGI("%s", line); }
+
+// Every 60 s: the haptics' counters when they moved (docs/booter.md "Health lines"). Before, they were one line at the
+// stop only, so a session that ended by a kill or a panic said nothing of what iOS asked of the motor.
+static void haptic_tick(void)
+{
+  static struct timespec last;
+  static br_haptic_stats shown;
+  struct timespec t;
+  if (!haptic) return;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  if (!last.tv_sec) { last = t; return; }
+  if (t.tv_sec - last.tv_sec < 60) return;
+  br_haptic_stats s;
+  br_haptic_stats_get(haptic, &s);
+  if (memcmp(&s, &shown, sizeof s))
+    LOGI("haptics: %lld s: +%llu requests (+%llu vibrate, +%llu stop, +%llu impacts), +%llu played, +%llu failed", (long long)(t.tv_sec - last.tv_sec),
+         (unsigned long long)(s.vib + s.stop + s.impacts - shown.vib - shown.stop - shown.impacts), (unsigned long long)(s.vib - shown.vib),
+         (unsigned long long)(s.stop - shown.stop), (unsigned long long)(s.impacts - shown.impacts), (unsigned long long)(s.played - shown.played),
+         (unsigned long long)(s.failed - shown.failed));
+  shown = s;
+  last = t;
+}
+
 int main(int argc, char **argv)
 {
   start_argv = argv;
@@ -1241,6 +1266,7 @@ int main(int argc, char **argv)
   if (xh_config_args(&config, argc, argv) || xh_config_finish(&config)) return EXIT_SETUP;
   xh_log_open(NULL, config.log_level);
   LOGI("xnuhost: session ABI %d, mode %s, pid %d", config.session_abi, config.mode, getpid());
+  xh_virtio_log = log_line;               // virtio.c's health lines (docs/booter.md 2.9b)
   // The host phone (bridges/host_device.h, config.c): what was found, from which property, and each default it changed.
   // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
   // variable the session already set wins.
@@ -1348,7 +1374,10 @@ int main(int argc, char **argv)
     ram_valve_tick();                       // the lock's valve, once a second while locked
     huge_tick();                            // "memory: 2 MiB pages (the prefault done): ..." once
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
-    ready_tick();                           // session/ready for an iOS that only draws black (ready-content-wait)
+    xh_virtio_tick();                       // "virtio: 60 s: ..." and a queue that holds chains (virtio.c)
+    xh_tasks_tick();                        // "tasks: 60 s: ..." made, ended, died on their own (task.c)
+    haptic_tick();                          // "haptics: 60 s: ..." when iOS used the motor
+    ready_tick();                          // session/ready for an iOS that only draws black (ready-content-wait)
     // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
     // ready: between its first frame and ready the frames are the guest's, and the console must not be copied over them).
     bool console = !guest_ready && !__atomic_load_n(&guest_drawing, __ATOMIC_ACQUIRE);
