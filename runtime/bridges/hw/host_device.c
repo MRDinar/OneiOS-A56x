@@ -29,20 +29,28 @@ static const br_host_device table[] = {
   // stock device tree, qcom/pineapple-v2.dts, docs/hardware.md). No defaults: everything is today's.
   { .name = "galaxy-s24-ultra", .label = "Galaxy S24 Ultra (SM-S928, SM8650)",
     .models = { "SM-S928" }, .devices = { "e3q" }, .socs = { "SM8650" }, .platforms = { "pineapple" } },
-  // docs/s25.md "Galaxy S25 Ultra", profiles/host-galaxy-s25-ultra-sm8750.toml. [F] SM-S938, pa3q, SM8750; platform sun [I]
-  // (the profile: "verify on device via ro.board.platform"). No defaults: the Adreno 830 fence path is the default
-  // everywhere (drm2kgsl 0007), the CPU plan's Oryon rule is automatic (topology.c), the panel's mode comes from the
-  // display helper's report (1080x2340 is not forced: width=/height= would override that report); every bridge's
-  // node names on One UI 8.5 are [U] (tools/probe/s25-probe.sh answers them), so the backends stay samsung.
+  // docs/s25.md "Galaxy S25 Ultra", profiles/host-galaxy-s25-ultra-sm8750.toml. [F] SM-S938, pa3q, SM8750, platform sun
+  // (YumikoHayamato/OneiOS s25-ultra-sm8750: the fork's SM-S938B, One UI 9.0, sessions 1-7 on 2026-11-19).
+  // ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3 [F] (the same sessions): the kernel's first passive trip on
+  // the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put
+  // iOS in TRAPPING (its "too hot" screen) at every throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single
+  // junction spikes (68 -> 104 -> 68 C between polls). With the trips (115/120 C) and the lowest of 3 readings (15 s)
+  // the SoC rule stayed under them in sessions 3-7; the levels came from the case, as on the S24. The SoC rule takes no
+  // step (only the case and the cell do): this changes what iOS is told, not what xnuhost runs.
+  // Not set: the backlight (panel0-backlight max 12750 [F], One UI's manual top not measured on this phone: the S26's
+  // 2300 is not assumed), the panel (1440x3120 command mode [F]: the display helper's report gives it).
   { .name = "galaxy-s25-ultra", .label = "Galaxy S25 Ultra (SM-S938, SM8750)",
-    .models = { "SM-S938" }, .devices = { "pa3q" }, .socs = { "SM8750" }, .platforms = { "sun" } },
+    .models = { "SM-S938" }, .devices = { "pa3q" }, .socs = { "SM8750" }, .platforms = { "sun" },
+    .env = { "ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3" } },
   // docs/s25.md: [F] SM-S931B, pa1q, SM8750. panel-fallback=1080x2340@120 [F] (xaxaapple/s25ver's device profile and
   // xnuhost.h: a 1080x2340 panel): only the mode assumed where the panel cannot be read (the display helper's report
   // still wins); without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush. Its
-  // Bluetooth HAL (HIDL or AIDL) and bridge node names are [U], as for the S25 Ultra.
+  // Bluetooth HAL (HIDL or AIDL) and bridge node names are [U], as for the S25 Ultra. The SoC rule as the S25 Ultra's
+  // [I] (same SM8750): the thresholds come from this phone's own trips, read at the bridge's start and logged
+  // ("thermal: the SoC rule: ... the kernel's trips: ..."), never under 95/105 C.
   { .name = "galaxy-s25", .label = "Galaxy S25 (SM-S931, SM8750)",
     .models = { "SM-S931" }, .devices = { "pa1q" }, .socs = { "SM8750" }, .platforms = { "sun" },
-    .config = { "panel-fallback=1080x2340@120" } },
+    .config = { "panel-fallback=1080x2340@120" }, .env = { "ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3" } },
   // docs/forks.md (the S26 row), the port-sm8850 commits. [F] SM-S948B, SM8850; codename and platform [U] (not matched).
   // ONEIOS_BRIGHT_MAX=2300 [F]: the fork's phone with One UI in control, screen_brightness 255 (One UI's manual top)
   // wrote 2300 to panel0-backlight, whose max_brightness is 12750 (brightness/test_brightness.c,

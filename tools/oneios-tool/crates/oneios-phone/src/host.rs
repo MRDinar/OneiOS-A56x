@@ -41,7 +41,7 @@ pub const TABLE: &[HostDevice] = &[
         socs: &["SM8750"],
         platforms: &["sun"],
         config: &[],
-        env: &[],
+        env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
     },
     HostDevice {
         name: "galaxy-s25",
@@ -51,7 +51,7 @@ pub const TABLE: &[HostDevice] = &[
         socs: &["SM8750"],
         platforms: &["sun"],
         config: &["panel-fallback=1080x2340@120"],
-        env: &[],
+        env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
     },
     HostDevice {
         name: "galaxy-s26-ultra",

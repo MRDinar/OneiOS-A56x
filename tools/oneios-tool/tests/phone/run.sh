@@ -74,7 +74,7 @@ check "status: host S26 Ultra" 0 "^host: galaxy-s26-ultra .*matched by ro.produc
 printf '[ro.product.model]: [SM-A566E]\n[ro.product.device]: [a56x]\n[ro.soc.model]: [s5e8855]\n' > "$P/.fake/props"
 check "status: host A56" 0 "^host: galaxy-a56 .*matched by ro.product.model=SM-A566E; defaults: gpu=2d, panel-fallback=1080x2340@120$" hs
 printf '[ro.product.model]: [SM-S938B]\n' > "$P/.fake/props"
-check "status: host S25 Ultra" 0 "^host: galaxy-s25-ultra .*defaults: none \(today's\)$" hs
+check "status: host S25 Ultra" 0 "^host: galaxy-s25-ultra .*defaults: ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3$" hs
 printf '[ro.product.model]: [Pixel 11 Pro]\n[ro.soc.model]: [Tensor G5]\n' > "$P/.fake/props"
 check "status: host unknown" 0 "^host: unknown phone \(ro.product.model=Pixel 11 Pro ro.product.device=\(none\) .*ro.soc.model=Tensor G5 .*\): xnuhost keeps today's defaults" hs
 : > "$P/.fake/props"; mkdir -p "$P/sys/devices/soc0"; echo SM8750 > "$P/sys/devices/soc0/machine"

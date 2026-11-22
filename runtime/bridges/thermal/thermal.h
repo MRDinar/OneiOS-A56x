@@ -22,6 +22,12 @@
 #define BR_THERMAL_POLL_MS 5000u          // how often the sensors are read while someone listens
 #define BR_THERMAL_REPORT_MS 30000u       // a sample is sent at least this often, and at once on a new level
 #define BR_THERMAL_MAX_ZONES 96u
+// The SoC rule may read the lowest of the last N SoC readings (br_thermal_limits.soc_samples, at most this many): heat
+// that lasts N polls, not one core's spike. 1 (the default) is one reading, as before. The hottest of about 30 junction
+// sensors swings by 20-35 C between two polls under load (the S25 Ultra, YumikoHayamato/OneiOS, 2026-11-19: 68.3 ->
+// 103.8 -> 68.3 C in 10 s), and on a phone whose first passive trip is at the S24's TRAPPING threshold each swing was
+// a new level for iOS (20 level changes in 8 minutes, 5 into TRAPPING: iOS's "too hot" screen).
+#define BR_THERMAL_SOC_SAMPLES_MAX 4u
 
 // iOS's thermal pressure levels (OSThermalNotification.h of the iPhoneOS SDK: kOSThermalPressureLevel*).
 enum { BR_THERMAL_NOMINAL = 0, BR_THERMAL_LIGHT = 10, BR_THERMAL_MODERATE = 20, BR_THERMAL_HEAVY = 30, BR_THERMAL_TRAPPING = 40,
@@ -46,6 +52,7 @@ typedef struct {
   int32_t skin[5], skin_hyst;
   int32_t soc[2], soc_hyst;
   int32_t battery[2], battery_hyst;
+  unsigned soc_samples;                   // the SoC rule reads the lowest of the last soc_samples readings (0 or 1: one)
 } br_thermal_limits;
 
 typedef struct {
@@ -54,13 +61,24 @@ typedef struct {
   unsigned skin_level, soc_level, battery_level;      // each rule's own level (its hysteresis follows it)
   unsigned cap;                           // xnuhost's step: br_thermal_cap_for (0, or BR_THERMAL_CAP_CRITICAL)
   br_thermal_raw raw;
+  int32_t soc_seen[BR_THERMAL_SOC_SAMPLES_MAX];       // the last SoC readings that were not missing, newest first
+  unsigned soc_n;                                     // how many of soc_seen are filled (at most the limits' soc_samples)
+  int32_t soc_held;                       // what the SoC rule read: the lowest of soc_seen (BR_THERMAL_UNKNOWN: none yet)
 } br_thermal_state;
 
 // ---- pure ---------------------------------------------------------------------------------------
 void br_thermal_limits_default(br_thermal_limits *l);
 // "390,420,440,460,500" into l->skin (and the same for soc, battery with two values). 0, or -1 (l unchanged).
 int br_thermal_limits_parse(const char *text, int32_t *out, unsigned count);
-// The next state from a reading and the previous state (NULL: nothing before).
+// The SoC rule on the phone's own trips (tenths of a degree C, BR_THERMAL_UNKNOWN when the kernel has none): HEAVY 10 C
+// over the kernel's first passive trip (the kernel throttles from there: a SoC at its first trip is the kernel doing its
+// job, not heat for iOS), TRAPPING 5 C under the hot trip (or 15 C over the first passive one without a hot trip); never
+// lower than what l has. The S25 Ultra (SM8750, YumikoHayamato/OneiOS sessions 3-7): first passive 105 C, hot 125 C, so
+// 115 and 120 C, where the S24's 95 and 105 C had iOS in TRAPPING at every throttle. Returns whether l->soc changed.
+// Applied by br_thermal_open only with ONEIOS_THERMAL_SOC_TRIPS=1 (a host-device default: docs/hardware.md 7h).
+bool br_thermal_limits_from_trips(br_thermal_limits *l, int32_t first_passive, int32_t hot);
+// The next state from a reading and the previous state (NULL: nothing before). The SoC rule reads soc_held, the lowest of
+// the last l->soc_samples SoC readings (prev's and this one; one reading when soc_samples is 0 or 1).
 void br_thermal_decide(const br_thermal_limits *l, const br_thermal_raw *raw, const br_thermal_state *prev, br_thermal_state *out);
 // xnuhost's step (since fix-ram-locked, 2026-11-15): 0, all CPU cores, unless the temperature is critical: the case rule
 // at SLEEPING (50 C) or the battery rule at TRAPPING (50 C); then BR_THERMAL_CAP_CRITICAL, only the slowest P domain and
@@ -83,6 +101,11 @@ typedef struct {
   char root[128];                         // "" on the phone; a fixture's directory in tests (prefixed to every path)
   br_thermal_zone zone[BR_THERMAL_MAX_ZONES];
   unsigned nzone;
+  // The kernel's own trips on the SoC's zones (cpu, gpu, ddr), tenths of a degree C, BR_THERMAL_UNKNOWN when none: the
+  // median over those zones of each zone's lowest passive trip (60-129.9 C) and of its lowest hot or critical one
+  // (60-149.9 C). Read once by br_thermal_find; logged at the bridge's start on every phone.
+  int32_t trip_first, trip_hot;
+  unsigned trip_zones;                    // zones with a passive trip in that range
 } br_thermal_sensors;
 
 // Finds the zones of interest under root/sys/class/thermal (cpu-*, cpuss-*, gpuss-*, ddr, xo-therm). 0, or -1 when no
@@ -125,7 +148,8 @@ size_t br_host_load_line(const br_host_load *was, const br_host_load *now, const
 typedef struct {
   const char *root;                       // NULL: the phone's paths
   uint32_t poll_ms;                       // 0: BR_THERMAL_POLL_MS
-  const br_thermal_limits *limits;        // NULL: the defaults and ONEIOS_THERMAL_SKIN, _SOC, _BATTERY
+  const br_thermal_limits *limits;        // NULL: the defaults and ONEIOS_THERMAL_SKIN, _SOC, _BATTERY, _SOC_SAMPLES
+  bool     soc_trips;                     // with options (tests, thermalctl): what ONEIOS_THERMAL_SOC_TRIPS=1 is without them
   uint32_t load_ms;                       // 0: BR_THERMAL_LOAD_MS, the "thermal: N s: host CPU" line's period
   int      backend;                       // BR_HW_SAMSUNG, BR_HW_TREBLE (bridges/hw_backend.h); 0: the process's hw-backend
   const char *binder;                     // treble: the binder device; NULL: ONEIOS_BINDER, else /dev/binder

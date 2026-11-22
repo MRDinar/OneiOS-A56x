@@ -21,6 +21,8 @@
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <linux/udmabuf.h>
 
 static int failures, checks;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -734,6 +736,17 @@ static unsigned gpu3d_send(driver *d, xh_virtio *dev, unsigned words, unsigned e
 
 // The chunks of a blob over a memfd whose page N begins with the byte N: `want` chunks of pages[i] pages, the first
 // page of each being first[i] and the following ones `step` pages apart. Closes and frees them.
+// A stand-in for UDMABUF_CREATE_LIST that refuses lists of more than 16 MiB (refuse_errno, ENOMEM by default), as a
+// kernel whose udmabuf page array is one kmalloc does under fragmentation. Counts the refusals.
+static int refuse_errno = ENOMEM, refused;
+static int refuse_over_16(int dev, struct udmabuf_create_list *list)
+{
+  uint64_t total = 0;
+  for (unsigned i = 0; i < list->count; i++) total += list->list[i].size;
+  if (total > (16u << 20)) { refused++; errno = refuse_errno; return -1; }
+  return ioctl(dev, UDMABUF_CREATE_LIST, list);
+}
+
 static bool chunks_are(int count, xh_gpu_chunk *chunks, int want, const uint8_t *pages, const uint8_t *first, unsigned step)
 {
   bool ok = count == want;
@@ -1148,6 +1161,24 @@ static void test_virtio_gpu3d(void)
       count = xh_gpu3d_udmabufs(big_fd, GUEST_PA, 96 << 20, many, 1100, &chunks);
       CHECK(count == 2 && chunks[0].size == 1024 * 0x1000 && chunks[1].size == 76 * 0x1000);
       if (count > 0) xh_gpu3d_chunks_free(chunks, (unsigned)count);
+      // A kernel that refuses a udmabuf over 16 MiB with ENOMEM (a 6.6 kernel's order-5 page array under
+      // fragmentation, the S25 Ultra's `gpuctl large`): the limit halves, 64 -> 32 -> 16 MiB, and the same 72 MiB blob is
+      // 16 + 16 + 16 + 16 + 8; the limit stays at 16 MiB for the next blob. Another error is returned as it is.
+      xh_gpu3d_udmabuf_create = refuse_over_16;
+      xh_gpu_entry big2 = { GUEST_PA + (8 << 20), 72 << 20, 0 };
+      count = xh_gpu3d_udmabufs(big_fd, GUEST_PA, 96 << 20, &big2, 1, &chunks);
+      CHECK(count == 5 && chunks[0].size == (16u << 20) && chunks[4].size == (8u << 20) && lseek(chunks[3].fd, 0, SEEK_END) == (16 << 20));
+      if (count > 0) xh_gpu3d_chunks_free(chunks, (unsigned)count);
+      xh_gpu3d_udmabuf_limits(&bytes, &runs);
+      CHECK(bytes == (16u << 20) && runs == 1024 && refused == 2);
+      refuse_errno = EINVAL;
+      xh_gpu3d_udmabuf_set_limits(64u << 20, 1024);
+      errno = 0;
+      CHECK(xh_gpu3d_udmabufs(big_fd, GUEST_PA, 96 << 20, &big2, 1, &chunks) == -1 && errno == EINVAL);
+      xh_gpu3d_udmabuf_limits(&bytes, &runs);
+      CHECK(bytes == (64u << 20));                                                                       // not ENOMEM: kept
+      xh_gpu3d_udmabuf_create = NULL;
+      xh_gpu3d_udmabuf_set_limits(0, 0);
       printf("virtio-gpu 3D: blobs past udmabuf's limits (64 MiB, 1024 runs) split and checked on this host\n");
     } else printf("virtio-gpu 3D: this host's udmabuf limits are %llu MiB and %u runs: the 64 MiB split is not checked\n", (unsigned long long)(bytes >> 20), runs);
     close(big_fd);
@@ -2020,15 +2051,17 @@ static void test_host_device(const char *dir)
   CHECK(host_finish(&c, image, meminfo, root, NULL, NULL, NULL) == 0 && !c.host && strstr(c.host_line, "unknown phone (read: no property area)"));
   host_clear(&c);
   CHECK(!memcmp(&c, &off, sizeof c));
-  // The S25 Ultra and the S25: no defaults of their own (docs/s25.md: everything else is [U]).
+  // The S25 Ultra: the SoC rule on its own trips and on 3 readings (environment defaults, set by main.c, not here);
+  // no xnuhost setting of its own (docs/s25.md: everything else is [U]).
   host_props(dir, "s25u", "SM-S938B", "SM8750", props, sizeof props);
-  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s25-ultra") && strstr(c.host_line, "defaults: none (today's)"));
+  CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s25-ultra") &&
+        strstr(c.host_line, "; defaults: ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3") && !getenv("ONEIOS_THERMAL_SOC_TRIPS"));
   host_clear(&c);
   CHECK(!memcmp(&c, &off, sizeof c));
   // The S25: its 1080x2340 panel as the fallback mode only (a panel that is read still wins); nothing else changes.
   host_props(dir, "s25", "SM-S931B", "SM8750", props, sizeof props);
   CHECK(host_finish(&c, image, meminfo, root, props, NULL, NULL) == 0 && c.host == br_host_find("galaxy-s25") &&
-        c.fallback_width == 1080 && c.fallback_height == 2340 && c.fallback_hz == 120 && strstr(c.host_line, "; defaults: panel-fallback=1080x2340@120"));
+        c.fallback_width == 1080 && c.fallback_height == 2340 && c.fallback_hz == 120 && strstr(c.host_line, "; defaults: panel-fallback=1080x2340@120, ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3"));
   xh_panel_mode read_panel = { 1440, 3120, 120 };
   CHECK(xh_display_mode(&c, &read_panel).width == 1440 && xh_display_mode(&c, NULL).width == 1080);
   CHECK(host_finish(&c, image, meminfo, root, props, NULL, "panel-fallback=1260x2800") == 0 && c.fallback_width == 1260 &&
@@ -2498,6 +2531,37 @@ static void test_config(const char *dir)
   char *argv6[] = { "xnuhost", "--image", image, "--set", "wifi=sim" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, argv6) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.wifi, "sim"));
+  // boot-args-add (YumikoHayamato/OneiOS 440abb2): added to the boot arguments, whichever gave them, each unless they name
+  // it; the command line's wins over the image set's.
+  {
+    char *plain_cli[] = { "xnuhost", "--image", image };
+    f = fopen(path, "w");
+    fputs("# settings of this image\nboot-args=-v debug=0x8\nboot-args-add=oneios-disable-jobs=a,b -x\n", f);
+    fclose(f);
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 3, plain_cli) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.boot_args, "-v debug=0x8 oneios-disable-jobs=a,b -x"));
+    char *add_cli[] = { "xnuhost", "--image", image, "--set", "boot-args-add=oneios-disable-jobs=c" };
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 5, add_cli) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.boot_args, "-v debug=0x8 oneios-disable-jobs=c"));
+    char *named_cli[] = { "xnuhost", "--image", image, "--set", "boot-args=-x oneios-disable-jobs=z" };
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 5, named_cli) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.boot_args, "-x oneios-disable-jobs=z"));   // both named already
+    f = fopen(path, "w");
+    fputs("boot-args-add=oneios-disable-jobs=a,b\n", f);
+    fclose(f);
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 3, plain_cli) == 0 && xh_config_finish(&c) == 0 && strstr(c.boot_args, "vgpu-3d=1 ") &&
+          strlen(c.boot_args) > 24 && !strcmp(c.boot_args + strlen(c.boot_args) - 24, " oneios-disable-jobs=a,b"));      // after the default
+    static char long_args[1100], set_long[1120];
+    memset(long_args, 'a', 1000); long_args[0] = '-'; long_args[1000] = 0;
+    snprintf(set_long, sizeof set_long, "boot-args=%s", long_args);
+    char *too_long[] = { "xnuhost", "--image", image, "--set", set_long };
+    xh_config_defaults(&c);
+    CHECK(xh_config_args(&c, 5, too_long) == 0 && xh_config_finish(&c) == -1);                                     // 1000 + 24 do not fit
+    f = fopen(path, "w");
+    fputs("# settings of this image\nboot-args=-v debug=0x8\n", f);
+    fclose(f);
+  }
   char *bad_wifi[] = { "xnuhost", "--image", image, "--set", "wifi=nat" };
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 5, bad_wifi) == -1);

@@ -66,7 +66,8 @@ static void test_host_device(void)
     for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].config[k]; k++)
       CHECK(!strncmp(t[i].config[k], "gpu=", 4) || !strncmp(t[i].config[k], "panel-fallback=", 15) ||
             !strncmp(t[i].config[k], "hw-backend", 10));
-    for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].env[k]; k++) CHECK(!strncmp(t[i].env[k], "ONEIOS_BRIGHT_MAX=", 18));
+    for (unsigned k = 0; k < BR_HOST_SETTINGS && t[i].env[k]; k++) CHECK(!strncmp(t[i].env[k], "ONEIOS_BRIGHT_MAX=", 18) || !strncmp(t[i].env[k], "ONEIOS_THERMAL_SOC_TRIPS=", 25) ||
+                                                                           !strncmp(t[i].env[k], "ONEIOS_THERMAL_SOC_SAMPLES=", 27));
   }
   CHECK(!t[0].config[0] && !t[0].env[0]);
   CHECK(br_host_find("GALAXY-A56") == &t[4] && !br_host_find("pixel") && !br_host_find(NULL));

@@ -65,6 +65,15 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
   (`/sys/module/udmabuf/parameters`), but never more than 64 MiB and 1024, so the PC splits as the phone does; not
   readable means the defaults. xnuhost logs them at start (`guest pages in udmabufs of up to 64 MiB and 1024 runs`).
   Nothing in the kernel is changed for this (section 4.2 has why not).
+  **When the kernel refuses one with ENOMEM** (2026-11-22, ported from `YumikoHayamato/OneiOS` 51124a6): a kernel before
+  6.10 keeps a udmabuf's page array in one kmalloc, 8 bytes a page, so a 64 MiB udmabuf needs 128 KiB of contiguous
+  memory (order 5); under fragmentation that fails although RAM is free (dmesg `page allocation failure: order:5`).
+  The S25 Ultra's 6.6 kernel did it to `gpuctl large`. Then the size limit halves (down to 4 MiB, for the rest of the
+  process) and the blob is split again: more chunks, which the chunked path above already takes. One line each time:
+  `xnuhost: gpu: udmabuf: the kernel refused a 64 MiB udmabuf (ENOMEM: its page array needs contiguous memory);
+  udmabufs of at most 32 MiB from now on`. Every phone (the S24 Ultra's 6.1 too); nothing changes until a refusal.
+  `test_xnuhost`: a stand-in kernel that refuses lists over 16 MiB gets 72 MiB as 16 + 16 + 16 + 16 + 8, the limit
+  stays 16 MiB, and another error (EINVAL) is returned as it is with the limit kept.
 - A resource made of several udmabufs: virglrenderer's resource holds one fd (the first chunk's); the whole list is
   kept by `gpu3d_kgsl.c` under the resource id until the resource is gone, and a second context that attaches the
   resource (`CTX_ATTACH_RESOURCE`: an IOSurface shared between processes, the display's surface) imports every chunk
@@ -475,7 +484,11 @@ are descriptors of xnuhost and go with it at SIGKILL; drm2kgsl's fence threads a
   row by one call (64 + 8 MiB at the right offsets), 1100 pages two (1024 + 76), a blob shorter than its segments
   is bound only to its size, one longer is refused with nothing left imported, a second context imports both chunks
   and binds them at its own address on `GEM_SET_IOVA`, and at the end every chunk is unbound and freed (only the
-  VBO is left). 26 checks. It models KGSL from its source; it is not KGSL.
+  VBO is left). A third profile is the base S25's Adreno 830 (chip 0x44050000, gpu_id 6850, 12 MiB gmem, 192 GiB of
+  VA): the 256 GiB rung then leaves no import room and the renderer takes the 128 GiB one, and a GEM_SUBMIT on a queue
+  shows the default is the WAITTIMESTAMP_CTXTID path (no TIMESTAMP_EVENT) while `NCTX_NO_WAITTS` asks for
+  TIMESTAMP_EVENT(FENCE) (patch 0007's A/B switch). 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL
+  from its source; it is not KGSL.
 - `tests/test_gpu_leaks.c` (`build/host/test_gpu_leaks`, LeakSanitizer on): the same renderer and stand-in through 30 cycles
   each of 72 MiB, 16 KiB and 1100-page context blobs (create, upload, attach to a second context, its own GPU address there,
   detach, unref), display blobs in two contexts, contexts destroyed with their own, others' and display resources attached,

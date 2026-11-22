@@ -25,10 +25,16 @@ static void put(const char *rel, const char *text)
   snprintf(dir, sizeof dir, "%s", path);
   for (char *p = dir + strlen(base) + 1; *p; p++)
     if (*p == '/') { *p = 0; mkdir(dir, 0755); *p = '/'; }
-  FILE *f = fopen(path, "w");
-  if (!f) { perror(path); exit(1); }
+  // Written whole, then renamed over the old file: the worker reads these files while a test changes them, and a
+  // truncated file (fopen "w" before the write) read as a missing lrp made the case fall back to the ap thermistor for
+  // one poll: one more report than the test counts (test_worker, about 1 run in 6 before 2026-11-22).
+  char tmp[520];
+  snprintf(tmp, sizeof tmp, "%s.new", path);
+  FILE *f = fopen(tmp, "w");
+  if (!f) { perror(tmp); exit(1); }
   fputs(text, f);
   fclose(f);
+  if (rename(tmp, path)) { perror(path); exit(1); }
 }
 
 static void zone(unsigned n, const char *type, long milli)
@@ -210,6 +216,146 @@ static void test_masks(void)
   CHECK(br_cpu_thermal_mask(&same, 'P', 1) == 0x0f && br_cpu_thermal_mask(&same, 'P', 3) == 0x0f);
 }
 
+// trip_point_<i>_temp and _type of zone n
+static void trip(unsigned n, unsigned i, long milli, const char *type)
+{
+  char rel[128], text[32];
+  snprintf(rel, sizeof rel, "/sys/class/thermal/thermal_zone%u/trip_point_%u_temp", n, i);
+  snprintf(text, sizeof text, "%ld\n", milli);
+  put(rel, text);
+  snprintf(rel, sizeof rel, "/sys/class/thermal/thermal_zone%u/trip_point_%u_type", n, i);
+  snprintf(text, sizeof text, "%s\n", type);
+  put(rel, text);
+}
+
+// The SoC rule on the kernel's trips and on the lowest of the last readings (YumikoHayamato/OneiOS, s25-ultra-sm8750):
+// opt-in here, so the default (one reading, 95/105 C) is checked to be today's as well.
+static void test_trips(void)
+{
+  br_thermal_limits l;
+  br_thermal_limits_default(&l);
+  CHECK(l.soc_samples == 1 && l.soc[0] == 950 && l.soc[1] == 1050);
+  // the S25 Ultra (SM8750, the fork's session 3): first passive trip 105 C, hot 125 C: HEAVY 115, TRAPPING 120 C
+  CHECK(br_thermal_limits_from_trips(&l, 1050, 1250) && l.soc[0] == 1150 && l.soc[1] == 1200 && l.soc_hyst == 50);
+  // no trips: the defaults stay
+  br_thermal_limits_default(&l);
+  CHECK(!br_thermal_limits_from_trips(&l, BR_THERMAL_UNKNOWN, 1250) && l.soc[0] == 950 && l.soc[1] == 1050);
+  // never lower than what was there: a first trip at 80 C keeps 95 and 105 C
+  CHECK(!br_thermal_limits_from_trips(&l, 800, BR_THERMAL_UNKNOWN) && l.soc[0] == 950 && l.soc[1] == 1050);
+  // no hot trip: TRAPPING 15 C over the first passive one
+  br_thermal_limits_default(&l);
+  CHECK(br_thermal_limits_from_trips(&l, 1000, BR_THERMAL_UNKNOWN) && l.soc[0] == 1100 && l.soc[1] == 1150);
+  // a hot trip too close to the first passive one: 15 C over the first passive one, still above HEAVY
+  br_thermal_limits_default(&l);
+  CHECK(br_thermal_limits_from_trips(&l, 1050, 1100) && l.soc[0] == 1150 && l.soc[1] == 1200);
+
+  // One reading (the default): a single 105.5 C reading is TRAPPING at once, as before this port.
+  br_thermal_limits_default(&l);
+  br_thermal_state s, prev;
+  br_thermal_raw r = raw_with(350, 1055, 300);
+  br_thermal_decide(&l, &r, NULL, &s);
+  CHECK(s.level == BR_THERMAL_TRAPPING && s.soc_n == 1 && s.soc_held == 1055);
+  // Three readings: one core's spike to 105.5 C after two at 50 C is nothing for iOS; the third in a row is.
+  l.soc_samples = 3;
+  r = raw_with(350, 500, 300);
+  br_thermal_decide(&l, &r, NULL, &prev);
+  br_thermal_decide(&l, &r, &prev, &s);
+  r = raw_with(350, 1055, 300);
+  br_thermal_decide(&l, &r, &s, &prev);
+  CHECK(prev.level == BR_THERMAL_NOMINAL && prev.soc_held == 500 && prev.soc_n == 3);
+  br_thermal_decide(&l, &r, &prev, &s);
+  CHECK(s.level == BR_THERMAL_NOMINAL && s.soc_held == 500);
+  br_thermal_decide(&l, &r, &s, &prev);
+  CHECK(prev.level == BR_THERMAL_TRAPPING && prev.reason == BR_THERMAL_BY_SOC && prev.soc_held == 1055 && prev.cap == 0);
+  // falling needs one reading: 70 C ends it at once
+  r = raw_with(350, 700, 300);
+  br_thermal_decide(&l, &r, &prev, &s);
+  CHECK(s.level == BR_THERMAL_NOMINAL && s.soc_held == 700);
+  // a missing SoC reading keeps the window and the level
+  r = raw_with(350, BR_THERMAL_UNKNOWN, 300);
+  br_thermal_decide(&l, &r, &s, &prev);
+  CHECK(prev.soc_level == BR_THERMAL_NOMINAL && prev.soc_n == 3 && prev.soc_seen[0] == 700);
+  // more than the most: the window stops at BR_THERMAL_SOC_SAMPLES_MAX
+  l.soc_samples = 99;
+  r = raw_with(350, 900, 300);
+  br_thermal_decide(&l, &r, NULL, &prev);
+  for (unsigned i = 0; i < 6; i++) { br_thermal_decide(&l, &r, &prev, &s); prev = s; }
+  CHECK(s.soc_n == BR_THERMAL_SOC_SAMPLES_MAX);
+
+  // The fork's session 2 on the S25 Ultra (the SoC readings of its thermal lines, in order; the CPU floors pinned at their
+  // tops by a hand-made switch script, the case at 37-46 C): with the S24's 95/105 C and one reading the level changed 20
+  // times in 8 minutes, 5 of them into TRAPPING (iOS's "too hot" screen); on the phone's trips and 3 readings the SoC rule
+  // stays NOMINAL.
+  static const int32_t s2[] = { 915, 1019, 1035, 1042, 1050, 1054, 1046, 872, 795, 977, 892, 861, 923, 776, 1035, 791, 1038,
+                                683, 1038, 1042, 1054, 961, 795, 1038, 1035, 1050, 977, 1035, 1038, 1054, 961, 1054, 1042 };
+  unsigned changes_today = 0, changes = 0;
+  br_thermal_limits_default(&l);
+  for (unsigned i = 0; i < sizeof s2 / sizeof s2[0]; i++) {
+    r = raw_with(400, s2[i], 320);
+    br_thermal_decide(&l, &r, i ? &prev : NULL, &s);
+    changes_today += i && s.soc_level != prev.soc_level;
+    prev = s;
+  }
+  br_thermal_limits_from_trips(&l, 1050, 1250);
+  l.soc_samples = 3;
+  for (unsigned i = 0; i < sizeof s2 / sizeof s2[0]; i++) {
+    r = raw_with(400, s2[i], 320);
+    br_thermal_decide(&l, &r, i ? &prev : NULL, &s);
+    changes += i && s.soc_level != prev.soc_level;
+    CHECK(s.soc_level == BR_THERMAL_NOMINAL && s.cap == 0);
+    prev = s;
+  }
+  CHECK(changes_today >= 10 && changes == 0);
+}
+
+static char said[4096];
+static void keep(int level, const char *line) { (void)level; size_t n = strlen(said); snprintf(said + n, sizeof said - n, "%s\n", line); }
+
+// The S25 Ultra's trips in sysfs (the fork's phone): a CPU zone (a 135 C placeholder, 105, 118, 125 hot), a zone with
+// the hot trip only, the GPU (105, 125 hot), the DDR (100, 125 hot); the crystal's trips are not the SoC's. Then the
+// bridge's start: the trips line on every phone, the limits raised only with soc_trips (ONEIOS_THERMAL_SOC_TRIPS=1).
+static void test_trip_sysfs(void)
+{
+  char saved[sizeof base], root[sizeof base + 8];
+  snprintf(saved, sizeof saved, "%s", base);
+  snprintf(root, sizeof root, "%s/pa3q", saved);
+  snprintf(base, sizeof base, "%.*s", (int)sizeof base - 1, root);
+  mkdir(base, 0755);
+  zone(1, "cpu-1-1-1", 61500);
+  zone(2, "cpuss-0", 40000);
+  zone(3, "gpuss-0", 55000);
+  zone(4, "ddr", 45000);
+  zone(5, "xo-therm", 33204);
+  trip(1, 0, 135000, "passive"); trip(1, 1, 105000, "passive"); trip(1, 2, 118000, "passive"); trip(1, 3, 125000, "hot");
+  trip(2, 0, 135000, "passive"); trip(2, 1, 125000, "hot");
+  trip(3, 0, 135000, "passive"); trip(3, 1, 105000, "passive"); trip(3, 2, 125000, "hot");
+  trip(4, 0, 100000, "passive"); trip(4, 1, 125000, "hot");
+  trip(5, 0, 70000, "passive");
+  put("/sys/class/power_supply/battery/temp", "331\n");
+  br_thermal_sensors s;
+  CHECK(br_thermal_find(base, &s) == 0);
+  CHECK(s.trip_first == 1050 && s.trip_hot == 1250 && s.trip_zones == 3);   // the median of 105, 105, 100 C
+
+  void (*was)(int, const char *) = br_log_sink;
+  br_log_sink = keep;
+  said[0] = 0;
+  br_thermal_options o = { .root = base, .poll_ms = 1000 };
+  br_thermal *t = br_thermal_open(&o);
+  CHECK(t != NULL && strstr(said, "thermal: the SoC rule: heavy from 95.0 C, trapping from 105.0 C, on 1 reading; the kernel's "
+                                   "trips: first passive 105.0 C, hot 125.0 C (the median of 3 SoC zones)"));
+  if (t) br_thermal_close(t);
+  said[0] = 0;
+  o.soc_trips = true;
+  t = br_thermal_open(&o);
+  CHECK(t != NULL && strstr(said, "heavy from 115.0 C, trapping from 120.0 C, on 1 reading, raised to the kernel's trips"));
+  if (t) br_thermal_close(t);
+  br_log_sink = was;
+
+  // A tree without trips (the S24 Ultra's stand-in has none): unknown, and nothing is raised.
+  snprintf(base, sizeof base, "%s", saved);
+  CHECK(br_thermal_find(base, &s) == 0 && s.trip_first == BR_THERMAL_UNKNOWN && s.trip_hot == BR_THERMAL_UNKNOWN && s.trip_zones == 0);
+}
+
 static void test_sysfs(void)
 {
   zone(0, "aoss-0", 30000);
@@ -276,6 +422,55 @@ static void test_sysfs(void)
   snprintf(empty, sizeof empty, "%s/none", base);
   mkdir(empty, 0755);
   CHECK(br_thermal_find(empty, &s) == -1);
+}
+
+// The base S25's PA1Q tree: five sec-thermistors (ap, cf, lp, pa, wf), the max77775's battery temp and, when the
+// charger reports it, battery/lrp. The bridge reads ap for the board, battery for the cell, and lrp for the case; the
+// other four thermistors are present but are not readings it uses. Failure paths: an off or out-of-range sensor is
+// missing, and with no ap, battery or lrp the bridge stays off.
+static void test_s25_sensors(void)
+{
+  char saved[sizeof base], root[sizeof base + 8];
+  snprintf(saved, sizeof saved, "%s", base);
+  snprintf(root, sizeof root, "%s/s25", saved);
+  snprintf(base, sizeof base, "%.*s", (int)sizeof base - 1, root);
+  mkdir(base, 0755);
+  put("/sys/class/sec/sec-ap-thermistor/temperature", "338\n");
+  put("/sys/class/sec/sec-cf-thermistor/temperature", "320\n");
+  put("/sys/class/sec/sec-lp-thermistor/temperature", "345\n");
+  put("/sys/class/sec/sec-pa-thermistor/temperature", "360\n");
+  put("/sys/class/sec/sec-wf-thermistor/temperature", "315\n");
+  put("/sys/class/power_supply/battery/temp", "305\n");
+
+  br_thermal_sensors s;
+  br_thermal_raw r;
+  CHECK(br_thermal_find(base, &s) == 0);
+  br_thermal_read(&s, &r);
+  CHECK(r.ap == 338 && r.battery == 305 && r.lrp == BR_THERMAL_UNKNOWN && r.skin == 338);
+
+  // The gauge's case sensor wins over the board thermistor, as on the S24 Ultra.
+  put("/sys/class/power_supply/battery/lrp", "347\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.lrp == 347 && r.skin == 347);
+
+  // An off sensor (-273.0 C) or an out-of-range one is missing, so the skin falls back to ap.
+  put("/sys/class/power_supply/battery/lrp", "-2730\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.lrp == BR_THERMAL_UNKNOWN && r.skin == 338);
+  put("/sys/class/power_supply/battery/lrp", "4000\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.lrp == BR_THERMAL_UNKNOWN && r.skin == 338);
+
+  // The other thermistors do not become the case, and do not keep the bridge on without ap/battery/lrp.
+  put("/sys/class/sec/sec-lp-thermistor/temperature", "600\n");
+  put("/sys/class/sec/sec-pa-thermistor/temperature", "610\n");
+  br_thermal_read(&s, &r);
+  CHECK(r.ap == 338 && r.skin == 338);
+  put("/sys/class/sec/sec-ap-thermistor/temperature", "cold\n");
+  put("/sys/class/power_supply/battery/temp", "-2730\n");
+  CHECK(br_thermal_find(base, &s) == -1);
+
+  snprintf(base, sizeof base, "%s", saved);
 }
 
 static struct { int caps, reports; unsigned last_cap, last_level; } seen;
@@ -442,6 +637,9 @@ int main(void)
   test_rules();
   test_masks();
   test_sysfs();
+  test_s25_sensors();
+  test_trips();
+  test_trip_sysfs();
   test_worker();
   test_load();
   test_hal();

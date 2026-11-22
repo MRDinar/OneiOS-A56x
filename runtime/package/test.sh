@@ -15,6 +15,10 @@ ok() { pass=$((pass + 1)); echo "ok $pass: $*"; }
 if [ "$(uname -s)" = Darwin ]; then SDK_DEFAULT=$HOME/Library/Android/sdk; else SDK_DEFAULT=$HOME/Android/Sdk; fi
 NDK_CC=$(echo "${ANDROID_NDK_ROOT:-${ANDROID_SDK_ROOT:-$SDK_DEFAULT}/ndk/28.2.13676358}"/toolchains/llvm/prebuilt/*/bin)/aarch64-linux-android30-clang
 
+# runtime/build.sh refuses a stage without external/virglrenderer; a tree without that checkout (a fresh worktree) tests
+# the package with the 2D-only xnuhost, on purpose. CI's release job fetches the checkout and checks it is there.
+[ -f "$ROOT/external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c" ] || export XNUHOST_2D_ONLY=1
+
 # 1. A plain package: verifies, runtime.json first, manifest equals the content.
 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package.sh"; }
 P=$OUT_DIR/oneios-runtime-$V-arm64.tar.zst

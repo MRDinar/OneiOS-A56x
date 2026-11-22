@@ -88,4 +88,8 @@ int xh_gpu3d_udmabuf(int ram_fd, uint64_t ram_phys, uint64_t ram_size, const xh_
 // The limits in use: bytes and runs per udmabuf. Setting them is for the tests (0, 0 reads the kernel's again).
 void xh_gpu3d_udmabuf_limits(uint64_t *bytes, unsigned *runs);
 void xh_gpu3d_udmabuf_set_limits(uint64_t bytes, unsigned runs);
+// The UDMABUF_CREATE_LIST call; NULL (the default) is ioctl(2). Tests set it to make the kernel refuse a list: on ENOMEM
+// xh_gpu3d_udmabufs halves the size limit (down to 4 MiB, for the rest of the process) and splits again.
+struct udmabuf_create_list;
+extern int (*xh_gpu3d_udmabuf_create)(int dev, struct udmabuf_create_list *list);
 #endif
