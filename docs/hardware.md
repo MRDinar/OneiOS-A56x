@@ -22,7 +22,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted |
-| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths; it does not yet dump Google's Wonder wiphy | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. Not run on the phone (section 4a) |
+| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): every radio's peer-to-peer paths and Google's Wonder radio (its subcommands, who holds it); `wifictl wonder`: a session on Wonder's raw path beside wlan0, AWDL's frames counted, everything closed after it and wlan0's link checked (`oneios-tool phone wifi p2p\|wonder`) | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. The Wonder tools are built and host-tested, not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (`H9ISPCaptureDeviceCreate`) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; in iOS (2026-11-22) the plug-in makes its device, CMCapture made no source (no `/product unique-model`: fixed with the camera nodes, not run yet, section 7); one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
@@ -1354,7 +1354,9 @@ The owner's request (2026-11-22): AirDrop does not work in iOS, and its Control 
 how Android works with AirDrop and port it over". **Result: AirDrop cannot work in a session yet. Bluetooth was off in
 sessions, so the toggle could not switch (fixed 2026-11-23, not yet booted: section 4), and the guest has no `awdl0`. The radio path exists on this phone: One UI's own
 Wi-Fi driver has Google's "Wonder" raw 802.11 path, and its source is open.** What was built: `wifictl p2p`, a lasting
-read-only report of the radio's peer-to-peer paths (below).
+read-only report of every radio's peer-to-peer paths and of Google's Wonder radio, and `wifictl wonder`, a session on
+Wonder's raw path beside `wlan0` that counts AWDL's frames and closes everything after it (2026-11-23; both below,
+with `oneios-tool phone wifi p2p|wonder`; not run on the phone yet).
 
 **Correction (2026-11-23).** The first version of this section said that Google's code is closed and that nothing
 open runs AWDL on a Qualcomm chip. The owner disagreed. The owner is right for the kernel and radio half; only the
@@ -1495,50 +1497,216 @@ reuse it in the guest's path. OWL's engine is open.
 | 1 | **Bluetooth powered in iOS** (section 4): bluetoothd on the phone's controller. AirDrop's discovery (BLE) and sharingd's "ready" need it. | Fixed 2026-11-23 in the kernel (section 4, "Bluetooth powers on"); not yet booted: the phone check there |
 | 2 | **The radio, from the host** (`runtime/bridges/wifi`, root, beside One UI): find the Wonder wiphy (the one with vendor commands under `00:1a:11`); add a monitor interface on it (`NL80211_CMD_NEW_INTERFACE`) and bring it up (Wonder's `start` -> qcacld's `init` -> `wondertap0`); send `SET_REGULATORY` (4), `SET_FREQUENCY` (1: 2437 or 5745 MHz, 20 MHz), `GET_IF_MAC_ADDR` (5), `SET_FIXED_TX_RATE` (3); then send and receive radiotap frames with `AF_PACKET` on the monitor interface. On the way back: interface down, then delete it (Wonder's `stop` -> the provider's `deinit`). | Yes by the source [I: not run on our phone]. Limits: one channel (no hopping in 1.4.1/1.5); a 5 GHz station on the other channel means MCC; `init` refuses while a connection is in progress; One UI's Quick Share must not hold Wonder at the same time |
 | 3 | **The AWDL engine**: OWL (C, GPL-3.0) in the host bridge on that interface: sync, election, availability windows, action frames, data frames. Map wifip2pd's `AWDL_*` requests (service parameters, peers, keys) onto it, and convert Bonjour on `awdl0` to AWDL's service TLVs and back [I: houji's `libxos.so` does this conversion]. | Plausible; the largest work. OWL's GPL-3.0 must fit the runtime's licence [U] |
-| 4 | **Guest `awdl0`**: `VIRTUAL_IF_CREATE` (94) and the `AWDL_*` requests in `OneiOSWifi.cpp`, a second `IO80211Interface` whose Ethernet frames go to the host's engine over virtio-net (a new message type in `oneios_wifi_proto.h`). | After steps 2 and 3 |
+| 4 | **Guest `awdl0`**: `VIRTUAL_IF_CREATE` (94) and the `AWDL_*` requests in `OneiOSWifi.cpp`, a second `IO80211Interface` whose Ethernet frames go to the host's engine (a second virtio-net device; the requests as OW messages on `en0`'s link: "How iOS's `awdl0` maps onto Wonder" below). | After steps 2 and 3 |
 | 5 | **The data**: AirDrop itself (Bonjour on `awdl0`, TLS on IPv6 link-local) is iOS's own. | Yes, given steps 1 to 4 |
 
 What cannot be done: Google's `mosey_server` cannot be the engine for iOS, because it is closed and it speaks to
 Google's app and not to wifip2pd. A guest `awdl0` with no engine behind it would make wifip2pd and sharingd wait for
 peers that never come (no fix, only a probe), so it is not written.
 
-**The next step (a lasting tool, then the radio check):**
+**The next step.** Steps 1 and 3 of the list of 2026-11-22 are built (2026-11-23, below): `wifictl p2p` dumps every
+radio and names Wonder, and `wifictl wonder` opens and closes a Wonder session beside `wlan0`. What is left is the
+phone check ("The phone checks" below), then the engine's choice (the owner's) and "How iOS's `awdl0` maps onto
+Wonder".
 
-1. Extend `wifictl p2p` (`runtime/bridges/wifi/p2p.c`) to dump every wiphy, not only `wlan0`'s. Add a `p2p: Wonder`
-   line: the Wonder wiphy, its vendor subcommands under `00:1a:11`, its interface types, the module (`/sys/module/wonder`,
-   `/sys/bus/platform/drivers/wonder`) and `mosey_server` (`/system_ext/bin/mosey_server`). Host tests in
-   `runtime/bridges/tests/test_wifi.c` with a dump of two wiphys.
-2. Run it on the phone, One UI running, no session: once idle, and once during a Quick Share "Share with Apple
-   devices" send to an iPhone in "Everyone for 10 minutes". The second run must show `wondertap0`, Wonder's monitor
-   interface and Mosey's `mosey0`. That decides the version (1.5 or later), the subcommands and the channel.
-3. Add `wifictl wonder`: open a Wonder session beside `wlan0` as in step 2 of the table, count the AWDL action frames
-   received (category 127, OUI 00:17:f2) with an iPhone near, then close the session and check that `wlan0` is
-   connected again. That proves the radio path before any OWL work.
+### `wifictl p2p` (runtime/bridges/wifi/p2p.c, built 2026-11-22, every radio since 2026-11-23)
 
-### `wifictl p2p` (runtime/bridges/wifi/p2p.c, built 2026-11-22)
+Read only, safe beside One UI and in a session: a split `NL80211_CMD_GET_WIPHY` dump with no interface named (every
+wiphy: cfg80211 writes `NL80211_ATTR_WIPHY` first in each message, so each message goes to its own radio, also
+when the dump interleaves them) and a `GET_INTERFACE` dump of every interface (those with no network device too),
+then the network devices, modules and processes whose names hint at AWDL or NAN (`awdl`, `aware`, `nan`, `wonder`,
+`mosey`, `p2p`, `quickshare`, `nearby`, `llw`: [I] hints only). For each radio it prints the interface types, each
+interface combination (`combination N: up to M interfaces on C channel(s): 1 of {station}; ...`), which interface
+types may send and receive action frames, off-channel sends and remain-on-channel, every vendor command and event
+by OUI, and `(wlan0's radio)` or `(Google's Wonder radio)`; then every interface (`(on Wonder's radio)`, `(the Wi-Fi
+driver's PASSTHRU vdev for Wonder)` for a `wondertap*`).
 
-Read only, safe beside One UI and in a session: a split `NL80211_CMD_GET_WIPHY` dump of wlan0's radio and a
-`GET_INTERFACE` dump of every interface (those with no network device too), then the network devices, modules and
-processes whose names hint at AWDL or NAN (`awdl`, `aware`, `nan`, `wonder`, `mosey`, `p2p`, `quickshare`,
-`nearby`, `llw`: [I] hints only). It prints the interface types, each interface combination (`combination N: up to
-M interfaces on C channel(s): 1 of {station}; ...`), which interface types may send and receive action frames,
-off-channel sends and remain-on-channel, every vendor command and event by OUI, every interface, and one `p2p:` line
-per path: monitor mode (and whether beside the station), AWDL's action frames on the station, NAN through nl80211,
-Wi-Fi Direct, vendor commands under Apple's OUI, and the verdict for AirDrop. Host-tested (2026-11-22, in the container: `test_wifi` 190 checks, 0 failed; 28 of them `test_p2p` in `runtime/bridges/tests/test_wifi.c`: a split dump, combinations, cut input, the verdicts); **not run on the phone**.
+**Which radio is Wonder:** the wiphy named `wonder...` (Wonder registers its mac80211 hardware with the name
+`wonder`, `ieee80211_alloc_hw_nm(..., DRV_NAME)`), else one with vendor commands under `00:1a:11` that offers
+monitor mode and no access point (a Broadcom driver's own wiphy has commands under Google's OUI too, and it offers an
+access point). Then the `p2p: Wonder:` lines:
 
-The phone check (no `oneios-tool` command runs `wifictl` yet: adb, as `runtime/bridges/README.md`), One UI running,
-no session:
-
-```sh
-adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p' > p2p-off.txt   # Quick Share "Share with Apple devices" off
-adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p' > p2p-on.txt    # on, Quick Share's sheet open, an iPhone near in "Everyone for 10 minutes"
-diff p2p-off.txt p2p-on.txt
+```
+p2p: Wonder: wiphy 1 (wonder), interface types ad-hoc, station, monitor, nan
+p2p: Wonder: vendor subcommands under 00:1a:11: 1 SET_FREQUENCY 2 SET_FILTER 3 SET_FIXED_TX_RATE 4 SET_REGULATORY 5 GET_IF_MAC_ADDR
+p2p: Wonder: version 1.4 or 1.5 (subcommands 1 to 5 only: one channel, no hopping; Samsung's S928BXXU5DZDP source)
+p2p: Wonder: idle (no interface on it, no wondertap vdev)
 ```
 
-A new `interface:`, `netdev:` or `process:` line in the second run is One UI's AWDL path (`wondertap0`, Wonder's
-monitor interface, `mosey0`, `mosey_server`). The `vendor commands` lines are `wlan0`'s radio only: `wifictl p2p`
-does not yet dump the Wonder wiphy, so its `00:1a:11` commands do not show, and its verdict line can say "no AWDL
-path" on a phone that has Wonder. The next step in "The port plan" fixes this.
+(`version 1.6 or later` with subcommand 6 or more; `in use: NAME (TYPE)` for each interface on Wonder's wiphy;
+`the PASSTHRU vdev wondertap0 (index N, wiphy M) is up on F MHz`; `no Wonder radio (...)` when there is none.) The
+`p2p:` verdicts are for `wlan0`'s radio (`wifictl p2p IFACE` for another): monitor mode (and whether beside the
+station), AWDL's action frames on the station, NAN through nl80211, Wi-Fi Direct, vendor commands under Apple's OUI,
+and for AirDrop `Wonder's raw 802.11 path is offered (wiphy N)` or, without Wonder, the older verdicts. Last, one
+`wonder: PATH: present|none` line for each of `/sys/module/wonder`, its `parameters/physical_name` (with its value),
+`/sys/bus/platform/drivers/wonder`, `/vendor_dlkm/lib/modules/wonder.ko`, `/vendor/lib/modules/wonder.ko`,
+`/system_ext/bin/mosey_server`, `/vendor/bin/mosey_server` (named paths only).
+
+Host-tested (2026-11-23, in the container: `test_wifi` 301 checks, 0 failed, with ASan and UBSan; `test_radios`:
+two wiphys with Wonder's dump between phy0's two messages, Wonder 1.5 and 1.6, Wonder by its commands and not by
+its name, a Broadcom-like wiphy that is not Wonder, Wonder in use, a `wondertap0` without a Wonder radio, more
+wiphys than kept, none, a cut report); **not run on the phone**.
+
+### `wifictl wonder` (runtime/bridges/wifi/wonder.c, built 2026-11-23)
+
+A session on Wonder's raw 802.11 path beside `wlan0`, as root with One UI running:
+`wifictl wonder [--seconds N] [--freq 2437|5220|5745] [--country CC]` (default 30 s on 2437 MHz). The order is
+Samsung's Wonder 1.5 (`vendor/qcom/opensource/wlan/wonder` in `S928BXXU5DZDP`) [F: read in that source]: Wonder
+caches the frequency, the TX rate, the BSSID and the country, and its `wondertap_init` fails with `Missing cached
+settings` unless all four came before the interface's up; the up (mac80211's `start`) calls the provider's `init`,
+which refuses with `-EBUSY` while a connection is in progress, **sets the driver's country to the one given**
+(`hdd_reg_set_country`), and opens `wondertap0`; `GET_IF_MAC_ADDR` answers only when Wonder is up (the vdev's
+address is random, `eth_random_addr`); the down calls `deinit`, which closes the vdev. All five commands need the
+interface (`WIPHY_VENDOR_CMD_NEED_NETDEV`), not its being up. The steps, each one a `wonder:` line with its result:
+
+1. `wlan0`'s link before (nl80211 `GET_STATION`: its access point, signal, rate; `GET_INTERFACE`: its channel).
+2. Every radio; **refused** (nothing made) when there is no Wonder radio, when it lacks `SET_FREQUENCY`,
+   `SET_REGULATORY` or `GET_IF_MAC_ADDR`, when Wonder is in use (another interface on its wiphy, or a `wondertap*`
+   up: One UI's Quick Share holds it), when there is no `wlan0`, when the driver's country (`GET_REG` for `wlan0`'s
+   wiphy) is not known (`00`) and no `--country` was given, or when `--country` is another than the driver's (it
+   would change the phone's country). A `wondermon0` left on Wonder's wiphy by a killed session is removed first.
+3. `wondermon0`, a monitor interface on Wonder's wiphy (`NL80211_CMD_NEW_INTERFACE`).
+4. `SET_REGULATORY` (the driver's own country, `"GB\0"`), `SET_FREQUENCY` (the frequency, 20 MHz),
+   `SET_FIXED_TX_RATE` (HT, MCS 0, one stream, 20 MHz, 0.8 us), `SET_FILTER` (BSSID, AWDL's `00:25:00:ff:94:73`);
+   the last two only when the radio lists them. A line says when `wlan0` is on another channel (the radio then
+   shares its time: MCC).
+5. `wondermon0` up (`SIOCSIFFLAGS`): Wonder's start, the provider's init, `wondertap0`. Then `GET_IF_MAC_ADDR` and
+   the interfaces on Wonder's wiphy and `wondertap*` with their channel.
+6. `AF_PACKET` on `wondermon0`: N s of frames counted (a 500 ms `poll`, no busy loop). Each frame's radiotap
+   (TSFT, flags with FCS and bad FCS, signal) and 802.11 header are read: AWDL's action frames (category 127,
+   Apple's OUI, type 8) by subtype (0 PSF, 3 MIF, others), AWDL's data frames (addr3 AWDL's BSSID, no DS bits), the
+   peers (up to 16) with their counts and best signal, and the frames without the radiotap TSFT (Mosey drops
+   those, and an engine needs it for the sync).
+7. In reverse, also after any failed step and after Ctrl-C, `SIGTERM` or `SIGHUP` (they end the count; `SIGPIPE` is
+   ignored, so a dropped adb never stops the teardown): the socket closed, `wondermon0` down (deinit: `wondertap0`
+   closes), `wondermon0` removed (`NL80211_CMD_DEL_INTERFACE`).
+8. `wlan0`'s link after, against the link before: asked again each second for up to 10 s while it is down; the end
+   is `-ENOLINK` and `wlan0 lost its link` when it was associated before and is not again; `a roam` when its access
+   point changed.
+
+The last lines: `wonder: done: N frames, M AWDL action frames from P peer(s); wlan0 associated as before`, then
+`ok`; or the step's error, then `failed`. Host-tested (2026-11-23, `test_wifi` 301 checks, 0 failed: `test_awdl_frames`
+(radiotap with and without TSFT, a second present word, FCS at the end, a bad FCS, AWDL's PSF, MIF and other
+subtypes, Apple's vendor action that is not AWDL, a public action, AWDL's data frame and others, an ACK, cut and
+broken headers, more peers than kept); `test_wonder_vendor` (each command's attributes byte for byte, the MAC reply);
+`test_wonder_session` (a stand-in nl80211: the order of every call, the refusals, a leftover removed, a failed
+create, a refused frequency, a refused up (`-EBUSY`), a failed socket, a receive error, a refused removal, a Wonder
+without `SET_FILTER` and `SET_FIXED_TX_RATE`, a signal, `wlan0` back after 3 s, lost, and not associated before)).
+**Not run on the phone.**
+
+### The phone checks (for `wifictl p2p` and `wifictl wonder`; not run yet)
+
+`oneios-tool phone wifi p2p|wonder` runs the staged `wifictl` as root (`wonder`'s lines as they come, through `adb
+exec-out`; its arguments checked before they reach root's shell); tested against a stand-in `wifictl`
+(`tools/oneios-tool/tests/phone/wifi.sh`, 24 checks, ALL OK on the Mac 2026-11-23).
+
+Stage a runtime that has the new `wifictl` (`runtime/build.sh`, then `oneios-tool phone stage runtime-asis DIR`). One
+UI running, no session, Wi-Fi on and associated, Bluetooth on:
+
+```sh
+T=tools/oneios-tool/target/release/oneios-tool
+$T phone wifi p2p --save p2p-idle.txt              # (a) One UI idle
+$T phone wifi p2p --save p2p-share.txt             # (b) during a Quick Share "Share with Apple devices" send to an iPhone
+diff p2p-idle.txt p2p-share.txt
+$T phone wifi wonder --seconds 30 --freq 5745 --save wonder-5745.txt   # (c) an iPhone near in AirDrop "Everyone for 10 minutes"
+$T phone wifi wonder --seconds 30 --freq 2437 --save wonder-2437.txt   #     and on channel 6
+```
+
+What proves each:
+
+- **(a)** `p2p: Wonder: wiphy N (wonder), ...` (Wonder's radio is registered at boot), its `vendor subcommands`
+  line and `version 1.4 or 1.5` or `1.6 or later` (which Wonder One UI 9 ships), `p2p: Wonder: idle`, and
+  `wonder: /sys/module/wonder: present`, `.../physical_name: present: wondertap0`, `/system_ext/bin/mosey_server:
+  present`. `p2p: Wonder: no Wonder radio` with `/sys/module/wonder: none` means that Wonder loads only for Quick
+  Share: then (b) shows it.
+- **(b)** started while the share sheet looks for the iPhone: `p2p: Wonder: in use: ...` (Mosey's interface on
+  Wonder's wiphy and its type), `the PASSTHRU vdev wondertap0 (index N, wiphy M) is up on F MHz` (the channel
+  Google's engine chose: 2437 or 5745), `process: ... mosey_server`. The diff with (a) is One UI's AWDL path.
+- **(c)** `wonder: wondermon0 up (...): ok`, `the PASSTHRU vdev's address ...`, `up: wondertap0 (...) 5745 MHz`,
+  then `AWDL: N action frames (P PSF, M MIF, ...) ... from K peer(s)` with N > 0 and an `AWDL peer:` line (the iPhone's
+  AWDL address, random) prove that Wonder receives AWDL on this phone; no `radiotap: ... frames without the TSFT`
+  line proves the TSFT an engine needs; `wondermon0 removed (...): ok` and `wlan0: the same link as before` (or
+  `a roam`) prove that the way back works. `refused: Wonder is in use` means that Quick Share still holds it (close
+  its sheet); `up (...): Device or resource busy` means a connection in progress (try again);
+  `AWDL: no frame at all` means Wonder's receive path gave nothing (the firmware or the filter); `no AWDL frame`
+  with other frames means no AWDL on that channel (try the other one, the iPhone's share sheet open).
+
+### How iOS's `awdl0` maps onto Wonder (design, 2026-11-23; not built)
+
+The parts and who does what. The AWDL engine is not chosen yet (the owner's decision): OWL (C, GPL-3.0; the runtime
+is MIT, so a separate helper process with its own licence is the plain way [I: no legal reading]) or our own.
+
+**1. The guest's driver (`kernel/patches/oneios-hosted/net/OneiOSWifi.cpp`).** wifip2pd asks `en0` for
+`VIRTUAL_IF_PARENT` (97) and `USERSPACE_P2P_OPTIONS` (389) and makes `awdl0` with `VIRTUAL_IF_CREATE` (94) on it.
+The driver answers 97 with `en0`, makes a second interface (an `IO80211` virtual interface with its own address,
+the role AWDL) for 94 with the AWDL role, and goes on refusing `llw0` and `nan0` (no engine for them). Then each
+`AWDL_*` request (115 to 262 in 24A446's table) is passed to the host's engine as a control message and the answer
+is the engine's. 24A446's shared cache names 82 `APPLE80211_IOC_AWDL_*` requests (read with `grep -ao` on
+`out/dsc-24A446-full`: strings only, not yet mapped to their numbers [U]). Grouped by what the engine must do with
+them:
+
+| Group | The requests (24A446 names, `APPLE80211_IOC_AWDL_` left out) | The engine |
+|---|---|---|
+| On, off, the role | `CONFIG`, `CTL`, `OPER_MODE`, `STRATEGY`, `PRESENCE_MODE`, `QUIET`, `BLOCK_SET_COMMANDS`, `MAC_ADDRESS_IN_USE`, `BSSID`, `OUI`, `DEVICE_CAPABILITIES`, `RSDB_CAPS` | starts and stops the Wonder session (`wonder.c`'s steps, kept open), the address of `awdl0` as the vdev's own, AWDL's BSSID, what we can do (one channel, HT20, one stream) |
+| Synchronization | `SYNC_ENABLED`, `SYNC_PARAMS`, `SYNC_STATE`, `SYNC_FRAME_TEMPLATE`, `SYNC_FRAME_AP_BEACON_ALIGNMENT`, `PERIODIC_SYNC_FRAME_PACKET_LIFETIME`, `MASTER_MODE_SYNC_FRAME_PERIOD`, `NON_ELECTION_MASTER_MODE_SYNC_FRAME_PERIOD`, `GUARD_TIME`, `AVAILABILITY_WINDOW_AP_ALIGNMENT`, `EXTENSION_STATE_MACHINE_PARAMETERS`, `EXPLICIT_AVAILABILITY_WINDOW_EXTENSION_OPT_OUT`, `MAX_NO_MASTER_PERIODS`, `MAX_TREE_DEPTH`, `TOP_MASTER` | the availability windows: 16 TU (16.384 ms) each, counted against the master's TSF from its PSF and MIF (the radiotap TSFT of each received frame), our own PSF (about every 110 ms) and MIF (each window we are in), the window extensions, the sync tree |
+| Election | `ELECTION_ALGORITHM_ENABLED`, `ELECTION_ID`, `PRIVATE_ELECTION_ID`, `ELECTION_METRIC`, `ELECTION_PARAMS`, `ELECTION_MASTER_COUNTS`, `ELECTION_RSSI_THRESHOLDS`, `GET_AWDL_MASTER_DATABASE` | the master election (metrics, counters, the top master), a slave beside an iPhone, the master alone |
+| Channels | `SYNCHRONIZATION_CHANNEL_SEQUENCE`, `MASTER_CHANNEL`, `SECONDARY_MASTER_CHANNEL`, `COMMON_CHANNEL`, `PREFERRED_CHANNELS`, `SOCIAL_TIME_SLOTS`, `SCAN_RESERVED_TIME`, `PIGGYBACK_SCAN_REQ`, `DFSP_CONFIG`, `DFSP_UCSA_CONFIG`, `ENABLE_ROAMING`, `FORCED_ROAM_CONFIG` | the channel sequence it advertises: with Wonder 1.5 one channel only (every slot on 149, or on 6: `SET_FREQUENCY` once; [I] iPhones accept a sequence of one channel, as OWL runs on one); with 1.6 or later the schedule through `SET_CHANNEL_SCHEDULE_REQ` |
+| Services and peers | `SERVICE_PARAMS`, `UPDATE_SERVICE_COUNT`, `PEER_SERVICE_REQUEST`, `PEER_DATABASE`, `PEERS_INFO`, `PEER_TRAFFIC_REGISTRATION`, `AWDL_ADVERTISERS`, `OOB_REQUEST`, `OOB_AUTO_REQUEST`, `OOB_SEC_PAYLOAD_REQUEST`, `AF_SECONDARY_PAYLOAD_CAPABILITIES`, `AF_TX_MODE`, `MI_BITMAP`, `UMI_TX_PEER`, `RSSI_MEASUREMENT_REQUEST` | the service parameters TLV of our frames (the Bonjour hashes wifip2pd gives), the peer table (each peer's address, its TLVs, last seen, signal) for wifip2pd's reads, and the driver's events when a peer comes and goes |
+| Keys | `AES_KEY`, `ENCRYPTION_KEYS`, `ENCRYPTION_TYPE` | [U] what AWDL encrypts at layer 2 (AirDrop itself is TLS); answered "none" until known |
+| Bluetooth and coexistence | `BTLE_ENABLE_SYNC_WITH_PARAMS`, `BTLE_PEER_INDICATION`, `BTLE_STATE_PARAMS`, `BT_COEX_AGREEMENT`, `BT_COEX_AGREEMENT_ENABLED`, `BT_COEX_AW_PROTECTED_PERIOD_LENGTH`, `CCA`, `TXCAL_PERIOD`, `MIN_RATE`, `BATTERY_LEVEL` | accepted with no effect (the host's radio does its own coexistence) |
+| Statistics and logs | `STATISTICS`, `DEV_STATS`, `AIRPLAY_STATISTICS`, `LOW_LATENCY_STATISTICS`, `RTG_PEER_STATS_CONFIG`, `SIDECAR_DIAGNOSTICS`, `NEARBY_LOG_TRIGGER` | the engine's counters, else zeros |
+
+**2. The engine on the host.** It owns the Wonder session for the length of a session (opened when wifip2pd turns
+AWDL on, closed when it turns it off and always at the return: the way back). It reads radiotap frames from
+`wondermon0`'s `AF_PACKET` socket and writes radiotap-headed 802.11 frames to it (mac80211's monitor TX, then
+Wonder's `tx`, then `dev_queue_xmit` on `wondertap0`). What it must do:
+
+1. **Synchronization**: keep its availability-window counter in step with the master's (the sync parameters TLV:
+   the window's sequence number, the TSF of the PSF or MIF, the TX delay), with the received frames' TSFT.
+2. **The window schedule**: which channel each window is on, when it may send (in its own and the peer's windows),
+   the extended windows while data flows.
+3. **Election**: the master election and the sync tree; a slave beside an iPhone, the master when it is alone.
+4. **Its frames**: PSF and MIF with the TLVs (sync parameters, election parameters, the channel sequence, the
+   service parameters, the data path state, the host name, the version, HT capabilities), each in its window.
+5. **The peer table**: from the peers' frames; it answers wifip2pd's peer requests and sends the driver's events.
+6. **The data path**: Ethernet frames of `awdl0` to 802.11 data frames to AWDL's BSSID (Apple's LLC/SNAP header,
+   OUI `00:17:f2`, then AWDL's data header and the frame's ethertype) and back, queued to the next window both sides
+   are in. IPv6 link-local only; the neighbour addresses come from the peers' MACs.
+7. **Bonjour** stays iOS's own: mDNSResponder sends mDNS on `awdl0` as multicast data frames; the service
+   parameters TLV carries the hashes wifip2pd gives [I: from OWL and Stute et al., not read in wifip2pd].
+
+The load is small for the host: a PSF every 110 ms and a MIF a window per peer, about 100 frames a second and their
+syscalls (70 us each on this phone: under 1% of a core), plus the data. The windows' 16 TU timing is the engine's
+own clock from the TSFT; the firmware holds the channel (Wonder 1.5) [I: OWL does the same on one channel].
+
+**3. The frame path between the guest's `awdl0` and Wonder:**
+
+```
+send:    sharingd, mDNSResponder (iOS) -> awdl0 (OneiOSWifi's virtual interface)
+         -> virtio-net: a second net device of xnuhost for awdl0, or an OW message on en0's link
+         -> the AWDL engine (host): Ethernet -> 802.11 data + LLC/SNAP + AWDL header, held to the next window
+         -> AF_PACKET on wondermon0 (a radiotap TX header) -> mac80211 -> Wonder tx -> wondertap0 -> firmware
+receive: firmware -> wondertap0 -> Wonder rx_handler -> mac80211 monitor -> AF_PACKET (radiotap with TSFT)
+         -> the engine: action frames to the sync, election and peers; data frames to Ethernet
+         -> virtio-net -> awdl0
+```
+
+The control path (the `AWDL_*` requests and their answers, the peer events) goes as new OW message types on
+`en0`'s control link (`drivers/net/oneios_wifi_proto.h`), as the station's messages do. For the data, a **second
+virtio-net device** for `awdl0` (xnuhost's `runtime/bridges/devices/virtio_net.c`, a second entry in the device tree,
+its own queues and address) is the better choice [I]: no encapsulation, no shared queue with `en0`, and iOS's own
+interface statistics; an OW message type on `en0` is the smaller change if a second device costs more than it
+seems.
+
+**4. The limits on this phone** [F: Samsung's source; I: not run]: one channel (no hopping in 1.5); MCC with `wlan0`
+when it is on another channel of the same radio (Google's Mosey disconnects a 5 or 6 GHz station for that, per
+`midori01/XiaomiGlobalAirDrop`); the provider's init refuses during a connection or a roam; One UI's Quick Share and
+ours cannot hold Wonder at the same time (`wifictl wonder` refuses then); the init sets the driver's country, so the
+engine must give the driver's own.
+
+**The order of the work:** (1) the phone checks above; (2) the owner chooses the engine; (3) one PSF sent and an
+iPhone's PSF or MIF that names us as a peer received (the first TX test: `wifictl wonder` with a send step); (4) the
+guest's `awdl0` and the control messages; (5) the data path; (6) AirDrop with Bluetooth on (section 4).
 
 ## 5. Vibration and haptics
 

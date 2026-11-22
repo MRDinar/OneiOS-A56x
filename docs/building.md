@@ -636,6 +636,10 @@ $T phone backlight status          # the panel's level, max_brightness, and One 
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
 $T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
+$T phone wifi p2p                  # the staged wifictl p2p as root (read only): every radio, Google's Wonder radio, the
+                                   #   AirDrop verdicts, Wonder's files; then a summary of those lines (--save FILE keeps the report)
+$T phone wifi wonder --seconds 30 --freq 5745   # wifictl wonder: a monitor interface on Wonder's radio beside wlan0,
+                                   #   AWDL's frames counted, everything closed after, wlan0's link checked (docs/hardware.md 4a)
 $T phone procs                     # every process with its CPU share and RAM (read only, with or without a session):
                                    #   what of One UI still runs beside iOS and what it costs (docs/plan-ios-first-session.md)
 $T phone procs --seconds 30 --raw > procs.raw; $T phone procs --from procs.raw --sort mem   # keep a capture; its report by RAM
@@ -781,7 +785,7 @@ One UI's. How the screen runs them and what it tests: the fork's `docs/oneios.md
 
 Or by hand, from `STAGE/bin` pushed to `/data/local/tmp`, as root: `gpuctl` (or one step of it:
 `gpuctl nodes|routes|probe|submit|large`, [gpu.md](gpu.md) section 4), `displayctl test`,
-`bridgectl host|cpu|haptic|haptic-pattern|bt|audio`, `wifictl status|scan|p2p` (read only; `p2p`: the radio's peer-to-peer paths for AirDrop, [hardware.md](hardware.md) 4a; `join NAME PASSPHRASE` takes the Wi-Fi from One UI while it runs), `brightctl info|levels|als`, `batteryctl [watch S]`, `thermalctl [watch -i S -n N | top -i S]`
+`bridgectl host|cpu|haptic|haptic-pattern|bt|audio`, `wifictl status|scan|p2p` (read only; `p2p`: every radio's peer-to-peer paths and Google's Wonder radio for AirDrop, [hardware.md](hardware.md) 4a; `join NAME PASSPHRASE` takes the Wi-Fi from One UI while it runs; `wonder --seconds N --freq MHZ` opens a Wonder session beside wlan0 and closes it: `oneios-tool phone wifi wonder`), `brightctl info|levels|als`, `batteryctl [watch S]`, `thermalctl [watch -i S -n N | top -i S]`
 (read only; `watch` logs temperatures, clocks, battery current and the session's CPU, `top` xnuhost's busiest threads), `camctl --backend ndk list|capture`.
 Each tool's README has its exact commands and what a pass looks like. **None of this has run on the phone yet.**
 

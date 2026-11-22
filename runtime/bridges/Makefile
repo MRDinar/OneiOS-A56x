@@ -12,7 +12,7 @@ XNUHOST := ../xnuhost
 WARN := -Wall -Wextra -Werror
 INC := -Iinclude -I../../drivers/bridge -I../../drivers/net -I../../drivers/haptics -I$(XNUHOST)/src -I$(XNUHOST)/include
 CFLAGS ?= -O2 -g
-WIFI := wifi/frames wifi/p2p wifi/station wifi/wlan wifi/sim wifi/aidl_parcel wifi/aidl_binder wifi/supplicant
+WIFI := wifi/frames wifi/p2p wifi/wonder wifi/station wifi/wlan wifi/sim wifi/aidl_parcel wifi/aidl_binder wifi/supplicant
 CORE := cpu/topology hw/hw_backend hw/host_device hw/hw_log hal/hal haptics/haptic net/net bt/hci bt/le_scan bt/hci_sim bt/hidl_parcel bt/hci_hidl audio/backend brightness/brightness battery/battery thermal/thermal $(WIFI)
 DEVICES := devices/bridge_dev devices/virtio_net devices/virtio_snd
 HDR := $(wildcard include/bridges/*.h hal/*.h bt/*.h audio/*.h brightness/*.h battery/*.h thermal/*.h wifi/*.h ../../drivers/bridge/*.h ../../drivers/net/*.h ../../drivers/haptics/*.h $(XNUHOST)/src/xnuhost.h)
@@ -58,7 +58,7 @@ $(H)/test_hw_backend: hw/test_hw_backend.c hw/hw_backend.c hw/host_device.c hw/h
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined hw/test_hw_backend.c hw/hw_backend.c hw/host_device.c hw/hw_log.c cpu/topology.c -lpthread -o $@
 
 # The Wi-Fi bridge's pure parts: frames, the station against a fake radio, the AIDL parcels, the join's plan.
-WIFI_TEST := tests/test_wifi.c wifi/frames.c wifi/p2p.c wifi/station.c wifi/sim.c wifi/aidl_parcel.c wifi/aidl_binder.c wifi/supplicant.c cpu/topology.c
+WIFI_TEST := tests/test_wifi.c wifi/frames.c wifi/p2p.c wifi/wonder.c wifi/station.c wifi/sim.c wifi/aidl_parcel.c wifi/aidl_binder.c wifi/supplicant.c cpu/topology.c
 $(H)/test_wifi: $(WIFI_TEST) $(HDR)
 	@mkdir -p $(H)
 	$(CC) -std=gnu11 -O1 -g $(WARN) $(INC) -fsanitize=address,undefined $(WIFI_TEST) -lpthread -o $@

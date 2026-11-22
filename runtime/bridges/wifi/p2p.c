@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-// What the phone's Wi-Fi chip offers for a peer-to-peer link, as nl80211 reports it (docs/hardware.md "AirDrop"):
+// What the phone's Wi-Fi radios offer for a peer-to-peer link, as nl80211 reports them (docs/hardware.md "AirDrop"):
 // the interface types and the combinations of them, the action frames a station may send and receive, off-channel
-// sends, Wi-Fi Aware (NAN), Wi-Fi Direct, the vendor's commands, and every interface of the radio. AirDrop runs on
-// AWDL, Apple's own peer-to-peer link; on this phone it could come only from a monitor interface with injection
-// (OWL), from the vendor's own AWDL (One UI 8.5's Quick Share for Apple devices), or not at all. `wifictl p2p`
-// prints this report on the phone; the parser and the report are pure functions (tests/test_wifi.c).
+// sends, Wi-Fi Aware (NAN), Wi-Fi Direct, the vendor's commands, every radio (wiphy) and every interface. AirDrop runs
+// on AWDL, Apple's own peer-to-peer link; on this phone it can come from Google's Wonder radio (a soft-MAC over the
+// Wi-Fi driver's PASSTHRU vdev, vendor commands under 00:1a:11: docs/hardware.md 4a), from a monitor interface with
+// injection beside the station (OWL's way), or from the vendor's own AWDL. `wifictl p2p` prints this report on the
+// phone; the parser and the report are pure functions (tests/test_wifi.c).
 #include "wifi.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -219,61 +220,206 @@ bool br_wifi_caps_combines(const br_wifi_caps *c, uint32_t a, uint32_t b)
   return false;
 }
 
+// The facts of one radio, from its name to its vendor events.
+static void facts(struct out *o, const br_wifi_caps *c)
+{
+  put(o, "radio: %s (wiphy %u)\n", c->name[0] ? c->name : "?", c->wiphy);
+  put(o, "interface types: "); types(o, c->iftypes); put(o, "\n");
+  if (c->software_iftypes) { put(o, "software interface types: "); types(o, c->software_iftypes); put(o, "\n"); }
+  for (unsigned i = 0; i < c->combination_count; i++) {
+    const br_wifi_combination *k = &c->combinations[i];
+    put(o, "combination %u: up to %u interfaces on %u channel(s):", i + 1, k->max_interfaces, k->channels);
+    for (unsigned l = 0; l < k->limit_count; l++) { put(o, "%s %u of {", l ? ";" : "", k->limit_max[l]); types(o, k->limit_types[l]); put(o, "}"); }
+    put(o, "\n");
+  }
+  put(o, "action frames: sent by "); types(o, c->action_tx); put(o, "; received by "); types(o, c->action_rx); put(o, "\n");
+  put(o, "off-channel sends: %s; remain on channel: %s", c->offchannel_tx ? "yes" : "no", c->cmd_remain_on_channel ? "yes" : "no");
+  if (c->max_roc_ms) put(o, " (up to %u ms)", c->max_roc_ms);
+  put(o, "\n");
+  put(o, "vendor commands: %u, vendor events: %u\n", c->command_count, c->event_count);
+  for (unsigned i = 0; i < c->command_count; i++) {
+    if (!i || c->commands[i].oui != c->commands[i - 1].oui) put(o, "%s  %06x %s:", i ? "\n" : "", c->commands[i].oui, oui_name(c->commands[i].oui));
+    put(o, " %u", c->commands[i].subcmd);
+  }
+  if (c->command_count) put(o, "\n");
+  for (unsigned i = 0; i < c->event_count; i++) {
+    if (!i || c->events[i].oui != c->events[i - 1].oui) put(o, "%s  events %06x %s:", i ? "\n" : "", c->events[i].oui, oui_name(c->events[i].oui));
+    put(o, " %u", c->events[i].subcmd);
+  }
+  if (c->event_count) put(o, "\n");
+}
+
+static void iface_line(struct out *o, const br_wifi_iface *f, const br_wifi_caps *wonder)
+{
+  put(o, "interface: %s (index %u) %s, wiphy %u, %02x:%02x:%02x:%02x:%02x:%02x", f->name[0] ? f->name : "(no netdev)", f->ifindex,
+      br_wifi_iftype_name(f->iftype), f->wiphy, f->mac[0], f->mac[1], f->mac[2], f->mac[3], f->mac[4], f->mac[5]);
+  if (f->freq_mhz) put(o, ", %u MHz", f->freq_mhz);
+  if (wonder && f->wiphy == wonder->wiphy) put(o, " (on Wonder's radio)");
+  else if (!strncmp(f->name, "wondertap", 9)) put(o, " (the Wi-Fi driver's PASSTHRU vdev for Wonder)");
+  put(o, "\n");
+}
+
+bool br_wifi_caps_has_vendor(const br_wifi_caps *c, uint32_t oui, uint32_t subcmd)
+{
+  for (unsigned i = 0; i < c->command_count; i++) if (c->commands[i].oui == oui && c->commands[i].subcmd == subcmd) return true;
+  return false;
+}
+
+// The verdicts: each way an AWDL link could be made on the station's radio, and Wonder's path when there is one.
+static void verdicts(struct out *o, const br_wifi_caps *c, const br_wifi_caps *wonder)
+{
+  const bool monitor = c->iftypes >> IF_MONITOR & 1;
+  const bool monitor_beside = monitor && br_wifi_caps_combines(c, IF_STATION, IF_MONITOR);
+  put(o, "p2p: monitor mode: %s", monitor ? "yes" : "no");
+  if (monitor) put(o, " (beside the station: %s; active monitor, with ACKs: %s; frame injection is not reported by nl80211)",
+                   monitor_beside ? "yes" : "no", c->features & FEATURE_ACTIVE_MONITOR ? "yes" : "no");
+  put(o, "\n");
+  const bool sta_tx = c->action_tx >> IF_STATION & 1, sta_rx = c->action_rx >> IF_STATION & 1;
+  put(o, "p2p: AWDL's action frames (vendor action, Apple's 00:17:f2) on the station: send %s, receive %s%s\n", sta_tx && c->cmd_frame ? "yes" : "no",
+      sta_rx ? "yes" : "no", sta_tx && c->offchannel_tx ? ", off channel too" : "");
+  const bool ext_secure_nan = c->ext_length > EXT_SECURE_NAN / 8 && (c->ext_features[EXT_SECURE_NAN / 8] >> (EXT_SECURE_NAN % 8) & 1);
+  put(o, "p2p: Wi-Fi Aware (NAN) through nl80211: %s%s (the vendor's NAN goes through its own HAL and vendor commands, not this)\n",
+      (c->iftypes >> IF_NAN & 1) && c->cmd_start_nan ? "yes" : "no", ext_secure_nan ? ", secure NAN" : "");
+  put(o, "p2p: Wi-Fi Direct: %s (AirDrop does not use it)\n", (c->iftypes >> IF_P2P_GO & 1) && (c->iftypes >> IF_P2P_CLIENT & 1) ? "yes" : "no");
+  bool apple = false;
+  for (unsigned i = 0; i < c->command_count; i++) apple |= c->commands[i].oui == 0x0017f2;
+  if (apple) put(o, "p2p: the driver has vendor commands under Apple's OUI 00:17:f2 [I: an AWDL interface of the vendor's]\n");
+  if (wonder)
+    put(o, "p2p: for AirDrop iOS needs AWDL: Wonder's raw 802.11 path is offered (wiphy %u): an AWDL engine on the host can run on a "
+           "monitor interface of it beside wlan0 (`wifictl wonder` opens one and counts the AWDL frames)\n", wonder->wiphy);
+  else
+    put(o, "p2p: for AirDrop iOS needs AWDL: %s\n",
+        monitor_beside ? "a monitor interface beside the station is offered (OWL's way, if the driver injects frames); no Wonder radio"
+                       : "no Wonder radio and no monitor beside the station: only the vendor's own AWDL can carry it (compare this report with "
+                         "Quick Share's \"Share with Apple devices\" on and off: Wonder may come only with it)");
+}
+
 size_t br_wifi_caps_report(const br_wifi_caps *c, char *text, size_t size)
 {
   struct out o = { text, size, 0 };
   if (size) text[0] = 0;
-  put(&o, "radio: %s (wiphy %u)\n", c->name[0] ? c->name : "?", c->wiphy);
-  put(&o, "interface types: "); types(&o, c->iftypes); put(&o, "\n");
-  if (c->software_iftypes) { put(&o, "software interface types: "); types(&o, c->software_iftypes); put(&o, "\n"); }
-  for (unsigned i = 0; i < c->combination_count; i++) {
-    const br_wifi_combination *k = &c->combinations[i];
-    put(&o, "combination %u: up to %u interfaces on %u channel(s):", i + 1, k->max_interfaces, k->channels);
-    for (unsigned l = 0; l < k->limit_count; l++) { put(&o, "%s %u of {", l ? ";" : "", k->limit_max[l]); types(&o, k->limit_types[l]); put(&o, "}"); }
-    put(&o, "\n");
-  }
-  put(&o, "action frames: sent by "); types(&o, c->action_tx); put(&o, "; received by "); types(&o, c->action_rx); put(&o, "\n");
-  put(&o, "off-channel sends: %s; remain on channel: %s", c->offchannel_tx ? "yes" : "no", c->cmd_remain_on_channel ? "yes" : "no");
-  if (c->max_roc_ms) put(&o, " (up to %u ms)", c->max_roc_ms);
-  put(&o, "\n");
-  put(&o, "vendor commands: %u, vendor events: %u\n", c->command_count, c->event_count);
-  for (unsigned i = 0; i < c->command_count; i++) {
-    if (!i || c->commands[i].oui != c->commands[i - 1].oui) put(&o, "%s  %06x %s:", i ? "\n" : "", c->commands[i].oui, oui_name(c->commands[i].oui));
-    put(&o, " %u", c->commands[i].subcmd);
-  }
-  if (c->command_count) put(&o, "\n");
-  for (unsigned i = 0; i < c->event_count; i++) {
-    if (!i || c->events[i].oui != c->events[i - 1].oui) put(&o, "%s  events %06x %s:", i ? "\n" : "", c->events[i].oui, oui_name(c->events[i].oui));
-    put(&o, " %u", c->events[i].subcmd);
-  }
-  if (c->event_count) put(&o, "\n");
-  for (unsigned i = 0; i < c->iface_count; i++) {
-    const br_wifi_iface *f = &c->ifaces[i];
-    put(&o, "interface: %s (index %u) %s, wiphy %u, %02x:%02x:%02x:%02x:%02x:%02x", f->name[0] ? f->name : "(no netdev)", f->ifindex,
-        br_wifi_iftype_name(f->iftype), f->wiphy, f->mac[0], f->mac[1], f->mac[2], f->mac[3], f->mac[4], f->mac[5]);
-    if (f->freq_mhz) put(&o, ", %u MHz", f->freq_mhz);
-    put(&o, "\n");
-  }
+  facts(&o, c);
+  for (unsigned i = 0; i < c->iface_count; i++) iface_line(&o, &c->ifaces[i], NULL);
+  verdicts(&o, c, NULL);
+  return o.used;
+}
 
-  // The verdicts: each way an AWDL link could be made on this radio (docs/hardware.md "AirDrop").
-  const bool monitor = c->iftypes >> IF_MONITOR & 1;
-  const bool monitor_beside = monitor && br_wifi_caps_combines(c, IF_STATION, IF_MONITOR);
-  put(&o, "p2p: monitor mode: %s", monitor ? "yes" : "no");
-  if (monitor) put(&o, " (beside the station: %s; active monitor, with ACKs: %s; frame injection is not reported by nl80211)",
-                   monitor_beside ? "yes" : "no", c->features & FEATURE_ACTIVE_MONITOR ? "yes" : "no");
-  put(&o, "\n");
-  const bool sta_tx = c->action_tx >> IF_STATION & 1, sta_rx = c->action_rx >> IF_STATION & 1;
-  put(&o, "p2p: AWDL's action frames (vendor action, Apple's 00:17:f2) on the station: send %s, receive %s%s\n", sta_tx && c->cmd_frame ? "yes" : "no",
-      sta_rx ? "yes" : "no", sta_tx && c->offchannel_tx ? ", off channel too" : "");
-  const bool ext_secure_nan = c->ext_length > EXT_SECURE_NAN / 8 && (c->ext_features[EXT_SECURE_NAN / 8] >> (EXT_SECURE_NAN % 8) & 1);
-  put(&o, "p2p: Wi-Fi Aware (NAN) through nl80211: %s%s (the vendor's NAN goes through its own HAL and vendor commands, not this)\n",
-      (c->iftypes >> IF_NAN & 1) && c->cmd_start_nan ? "yes" : "no", ext_secure_nan ? ", secure NAN" : "");
-  put(&o, "p2p: Wi-Fi Direct: %s (AirDrop does not use it)\n", (c->iftypes >> IF_P2P_GO & 1) && (c->iftypes >> IF_P2P_CLIENT & 1) ? "yes" : "no");
-  bool apple = false;
-  for (unsigned i = 0; i < c->command_count; i++) apple |= c->commands[i].oui == 0x0017f2;
-  if (apple) put(&o, "p2p: the driver has vendor commands under Apple's OUI 00:17:f2 [I: an AWDL interface of the vendor's]\n");
-  put(&o, "p2p: for AirDrop iOS needs AWDL: %s\n",
-      monitor_beside ? "a monitor interface beside the station is offered (OWL's way, if the driver injects frames)"
-                     : "no monitor beside the station: only the vendor's own AWDL can carry it (compare this report with Quick Share's \"Share with Apple devices\" on and off)");
+// ---- every radio --------------------------------------------------------------------------------
+static void find_wiphy(void *ctx, uint16_t type, const uint8_t *data, uint16_t size)
+{
+  int64_t *id = ctx;
+  if (type == A_WIPHY && size == 4 && *id < 0) *id = u32_of(data);
+}
+
+void br_wifi_radios_wiphy(br_wifi_radios *r, const uint8_t *attrs, size_t length)
+{
+  int64_t id = -1;
+  each(attrs, length, find_wiphy, &id);
+  unsigned i = 0;
+  if (id < 0) {                              // a message that names no wiphy: the last one's (never seen from cfg80211)
+    if (!r->count) return;
+    i = r->count - 1;
+  } else {
+    while (i < r->count && r->wiphys[i].wiphy != (uint32_t)id) i++;
+    if (i == r->count) {
+      if (r->count == BR_WIFI_WIPHYS) { r->wiphys_dropped++; return; }
+      memset(&r->wiphys[i], 0, sizeof r->wiphys[i]);
+      r->count++;
+    }
+  }
+  br_wifi_caps_wiphy(&r->wiphys[i], attrs, length);
+}
+
+void br_wifi_radios_iface(br_wifi_radios *r, const uint8_t *attrs, size_t length)
+{
+  br_wifi_iface f;
+  memset(&f, 0, sizeof f);
+  each(attrs, length, iface_attr, &f);
+  if (!f.iftype && !f.ifindex && !f.name[0]) return;
+  if (r->iface_count < BR_WIFI_IFACES) r->ifaces[r->iface_count++] = f;
+}
+
+const br_wifi_caps *br_wifi_wonder(const br_wifi_radios *r)
+{
+  for (unsigned i = 0; i < r->count; i++) if (!strncmp(r->wiphys[i].name, "wonder", 6)) return &r->wiphys[i];
+  for (unsigned i = 0; i < r->count; i++) {
+    const br_wifi_caps *c = &r->wiphys[i];
+    bool google = false;
+    for (unsigned k = 0; k < c->command_count; k++) google |= c->commands[k].oui == BR_WIFI_OUI_GOOGLE;
+    if (google && (c->iftypes >> IF_MONITOR & 1) && !(c->iftypes >> IF_AP & 1)) return c;
+  }
+  return NULL;
+}
+
+const char *br_wifi_wonder_subcmd_name(uint32_t subcmd)
+{
+  static const char *const names[] = { "UNSPEC", "SET_FREQUENCY", "SET_FILTER", "SET_FIXED_TX_RATE", "SET_REGULATORY", "GET_IF_MAC_ADDR",
+                                       "SET_CHANNEL_SCHEDULE_REQ", "GET_MAC_TSF", "GET_CAP", "GET_CHANNEL_STATUS_REPORT", "SET_STATION_INFO",
+                                       "SET_FEATURES", "?", "?", "?", "SET_TX_RATE_TEST" };
+  return subcmd < sizeof names / sizeof names[0] ? names[subcmd] : "?";
+}
+
+// What Wonder offers and who uses it now.
+static void wonder_block(struct out *o, const br_wifi_radios *r, const br_wifi_caps *w)
+{
+  const br_wifi_iface *tap = NULL;
+  for (unsigned i = 0; i < r->iface_count; i++) if (!strncmp(r->ifaces[i].name, "wondertap", 9)) tap = &r->ifaces[i];
+  if (!w) {
+    put(o, "p2p: Wonder: no Wonder radio (no wiphy named wonder, none with vendor commands under Google's 00:1a:11 and monitor mode "
+           "without an access point)%s\n", tap ? "; but a wondertap interface is up: its Wonder radio is not in the dump [U]" : "");
+    return;
+  }
+  put(o, "p2p: Wonder: wiphy %u (%s), interface types ", w->wiphy, w->name[0] ? w->name : "?");
+  types(o, w->iftypes);
+  put(o, "\n");
+  unsigned top = 0, n = 0;
+  put(o, "p2p: Wonder: vendor subcommands under 00:1a:11:");
+  for (unsigned i = 0; i < w->command_count; i++)
+    if (w->commands[i].oui == BR_WIFI_OUI_GOOGLE) {
+      put(o, " %u %s", w->commands[i].subcmd, br_wifi_wonder_subcmd_name(w->commands[i].subcmd));
+      if (w->commands[i].subcmd > top) top = w->commands[i].subcmd;
+      n++;
+    }
+  put(o, "%s\n", n ? "" : " none");
+  const bool basic = br_wifi_caps_has_vendor(w, BR_WIFI_OUI_GOOGLE, 1) && br_wifi_caps_has_vendor(w, BR_WIFI_OUI_GOOGLE, 4) &&
+                     br_wifi_caps_has_vendor(w, BR_WIFI_OUI_GOOGLE, 5);
+  put(o, "p2p: Wonder: version %s\n",
+      !basic ? "unknown: SET_FREQUENCY, SET_REGULATORY or GET_IF_MAC_ADDR is missing (`wifictl wonder` refuses it)"
+      : top >= 6 ? "1.6 or later (a channel schedule: the firmware can hop channels with the TSF)"
+                 : "1.4 or 1.5 (subcommands 1 to 5 only: one channel, no hopping; Samsung's S928BXXU5DZDP source)");
+  unsigned users = 0;
+  for (unsigned i = 0; i < r->iface_count; i++) {
+    const br_wifi_iface *f = &r->ifaces[i];
+    if (f->wiphy != w->wiphy) continue;
+    put(o, "p2p: Wonder: in use: %s (%s)%s\n", f->name[0] ? f->name : "(no netdev)", br_wifi_iftype_name(f->iftype),
+        !strcmp(f->name, BR_WONDER_IFNAME) ? ": wifictl wonder's own (a session that did not end: the next `wifictl wonder` removes it)" : "");
+    users++;
+  }
+  if (tap) {
+    put(o, "p2p: Wonder: the PASSTHRU vdev %s (index %u, wiphy %u) is up", tap->name, tap->ifindex, tap->wiphy);
+    if (tap->freq_mhz) put(o, " on %u MHz", tap->freq_mhz);
+    put(o, "\n");
+  }
+  if (!users && !tap) put(o, "p2p: Wonder: idle (no interface on it, no wondertap vdev)\n");
+}
+
+size_t br_wifi_radios_report(const br_wifi_radios *r, const char *station, char *text, size_t size)
+{
+  struct out o = { text, size, 0 };
+  if (size) text[0] = 0;
+  if (!r->count) { put(&o, "radio: none (nl80211 gave no wiphy)\n"); return o.used; }
+  const br_wifi_caps *wonder = br_wifi_wonder(r), *home = &r->wiphys[0];
+  for (unsigned i = 0; i < r->iface_count; i++)
+    if (station && !strcmp(r->ifaces[i].name, station))
+      for (unsigned k = 0; k < r->count; k++) if (r->wiphys[k].wiphy == r->ifaces[i].wiphy) home = &r->wiphys[k];
+  put(&o, "radios: %u%s\n", r->count, r->wiphys_dropped ? " (more were not kept)" : "");
+  for (unsigned i = 0; i < r->count; i++) {
+    facts(&o, &r->wiphys[i]);
+    if (&r->wiphys[i] == wonder) put(&o, "  (Google's Wonder radio)\n");
+    if (&r->wiphys[i] == home && station) put(&o, "  (%s's radio)\n", station);
+  }
+  for (unsigned i = 0; i < r->iface_count; i++) iface_line(&o, &r->ifaces[i], wonder);
+  wonder_block(&o, r, wonder);
+  verdicts(&o, home, wonder);
   return o.used;
 }

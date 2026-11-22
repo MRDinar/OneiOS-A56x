@@ -2,6 +2,8 @@
 // Unit tests of the Wi-Fi bridge's pure parts (no phone, no binder, no radio): the frame rules and the cut of
 // coalesced frames, the station against a fake radio, the AIDL parcels byte for byte, what a network's information
 // elements ask for, the supplicant's callbacks decoded. The binder path: tests/test_aidl_binder.c.
+// Every radio and Wonder (wifi/p2p.c), AWDL's frames and `wifictl wonder` on a stand-in nl80211 (wifi/wonder.c).
+// ONEIOS_TEST_SHOW=1: also print the stand-in phone's `wifictl p2p` report and its Wonder session's lines.
 #define _GNU_SOURCE
 #include "../wifi/supplicant.h"
 #include "../wifi/wifi.h"
@@ -840,12 +842,561 @@ static void test_callbacks(void)
   CHECK(e.kind == 0);
 }
 
+// ---- every radio, Wonder, AWDL's frames, `wifictl wonder` on a stand-in (wifi/p2p.c, wifi/wonder.c) ----
+// One message of a split GET_WIPHY dump: its wiphy and name first (as cfg80211 writes every message), then the rest.
+static size_t wiphy_msg(uint8_t *b, uint32_t wiphy, const char *name)
+{
+  size_t len = 0;
+  nla(b, &len, 1, &wiphy, 4);
+  nla(b, &len, 2, name, (uint16_t)(strlen(name) + 1));
+  return len;
+}
+static void vendor_cmds(uint8_t *b, size_t *len, uint32_t oui, const uint32_t *subcmds, unsigned n)
+{
+  const size_t at = nla(b, len, 197, NULL, 0);
+  for (unsigned i = 0; i < n; i++) { const uint32_t e[2] = { oui, subcmds[i] }; nla(b, len, (uint16_t)(i + 1), e, 8); }
+  nla_end(b, *len, at);
+}
+static void iface_msg(br_wifi_radios *r, uint32_t ifindex, const char *name, uint32_t wiphy, uint32_t type, uint32_t freq)
+{
+  uint8_t b[128];
+  size_t len = 0;
+  nla(b, &len, 3, &ifindex, 4); nla(b, &len, 4, name, (uint16_t)(strlen(name) + 1)); nla(b, &len, 1, &wiphy, 4); nla(b, &len, 5, &type, 4);
+  if (freq) nla(b, &len, 38, &freq, 4);
+  br_wifi_radios_iface(r, b, len);
+}
+enum { T_ADHOC = 1, T_STA = 2, T_AP = 3, T_MON = 6, T_P2PC = 8, T_P2PGO = 9, T_NAN = 12 };
+static const uint32_t wonder15[5] = { 1, 2, 3, 4, 5 };
+// The phone as Samsung's source says it is: phy0 (qcacld: station, AP, monitor, P2P; Qualcomm's commands) over two
+// messages, and Wonder 1.5 (wiphy 1, "wonder": ad-hoc, station, monitor, NAN; Google's 1 to 5) between them.
+static void phone_radios(br_wifi_radios *r)
+{
+  memset(r, 0, sizeof *r);
+  uint8_t b[1024];
+  size_t len = wiphy_msg(b, 0, "phy0");
+  iftype_flags(b, &len, 32, 1u << T_STA | 1u << T_AP | 1u << T_MON | 1u << T_P2PC | 1u << T_P2PGO);
+  br_wifi_radios_wiphy(r, b, len);
+  len = wiphy_msg(b, 1, "wonder");
+  iftype_flags(b, &len, 32, 1u << T_ADHOC | 1u << T_STA | 1u << T_MON | 1u << T_NAN);
+  vendor_cmds(b, &len, BR_WIFI_OUI_GOOGLE, wonder15, 5);
+  br_wifi_radios_wiphy(r, b, len);
+  len = wiphy_msg(b, 0, "phy0");                         // phy0's second message, after Wonder's
+  const uint32_t qca[2] = { 12, 81 };
+  vendor_cmds(b, &len, 0x001374, qca, 2);
+  br_wifi_radios_wiphy(r, b, len);
+  iface_msg(r, 44, "wlan0", 0, T_STA, 5180);
+}
+
+static char logs[16384];
+static size_t logs_used;
+static void log_line(int level, const char *line)
+{
+  const int n = snprintf(logs + logs_used, sizeof logs - logs_used, "%s%s\n", level == 0 ? "E " : "", line);
+  if (n > 0 && logs_used + (size_t)n < sizeof logs) logs_used += (size_t)n;
+}
+static bool logged(const char *text) { return strstr(logs, text) != NULL; }
+
+static void test_radios(void)
+{
+  static br_wifi_radios r;
+  static char text[16384];
+  phone_radios(&r);
+  if (getenv("ONEIOS_TEST_SHOW")) { br_wifi_radios_report(&r, "wlan0", text, sizeof text); printf("---- wifictl p2p on the stand-in phone (Wonder 1.5 idle)\n%s", text); }
+  CHECK(r.count == 2 && r.wiphys[0].wiphy == 0 && r.wiphys[1].wiphy == 1 && !strcmp(r.wiphys[1].name, "wonder"));
+  CHECK(r.wiphys[0].command_count == 2 && r.wiphys[0].commands[1].subcmd == 81 && r.wiphys[1].command_count == 5);   // each message to its wiphy
+  CHECK(r.wiphys[0].iftypes >> T_AP & 1 && !(r.wiphys[1].iftypes >> T_AP & 1));
+  const br_wifi_caps *w = br_wifi_wonder(&r);
+  CHECK(w == &r.wiphys[1] && br_wifi_caps_has_vendor(w, BR_WIFI_OUI_GOOGLE, 5) && !br_wifi_caps_has_vendor(w, BR_WIFI_OUI_GOOGLE, 6));
+  CHECK(!strcmp(br_wifi_wonder_subcmd_name(4), "SET_REGULATORY") && !strcmp(br_wifi_wonder_subcmd_name(15), "SET_TX_RATE_TEST") &&
+        !strcmp(br_wifi_wonder_subcmd_name(12), "?") && !strcmp(br_wifi_wonder_subcmd_name(99), "?"));
+  size_t n = br_wifi_radios_report(&r, "wlan0", text, sizeof text);
+  CHECK(n == strlen(text));
+  CHECK(strstr(text, "radios: 2\nradio: phy0 (wiphy 0)\n") != NULL && strstr(text, "radio: wonder (wiphy 1)\n") != NULL);
+  CHECK(strstr(text, "  001374 Qualcomm: 12 81\n  (wlan0's radio)\n") != NULL && strstr(text, "  001a11 Google: 1 2 3 4 5\n  (Google's Wonder radio)\n") != NULL);
+  CHECK(strstr(text, "interface: wlan0 (index 44) station, wiphy 0, 00:00:00:00:00:00, 5180 MHz\n") != NULL);
+  CHECK(strstr(text, "p2p: Wonder: wiphy 1 (wonder), interface types ad-hoc, station, monitor, nan\n") != NULL);
+  CHECK(strstr(text, "p2p: Wonder: vendor subcommands under 00:1a:11: 1 SET_FREQUENCY 2 SET_FILTER 3 SET_FIXED_TX_RATE 4 SET_REGULATORY 5 GET_IF_MAC_ADDR\n") != NULL);
+  CHECK(strstr(text, "p2p: Wonder: version 1.4 or 1.5 (subcommands 1 to 5 only") != NULL && strstr(text, "p2p: Wonder: idle (no interface on it, no wondertap vdev)\n") != NULL);
+  CHECK(strstr(text, "p2p: for AirDrop iOS needs AWDL: Wonder's raw 802.11 path is offered (wiphy 1)") != NULL);
+  CHECK(strstr(text, "p2p: monitor mode: yes (beside the station: no;") != NULL);   // the verdicts are phy0's (wlan0's), not Wonder's
+  // Wonder in use: a monitor of ours left over, and the PASSTHRU vdev on the driver's own wiphy.
+  iface_msg(&r, 52, "wondermon0", 1, T_MON, 0);
+  iface_msg(&r, 51, "wondertap0", 0, T_MON, 2437);
+  br_wifi_radios_report(&r, "wlan0", text, sizeof text);
+  CHECK(strstr(text, "interface: wondermon0 (index 52) monitor, wiphy 1, 00:00:00:00:00:00 (on Wonder's radio)\n") != NULL);
+  CHECK(strstr(text, "interface: wondertap0 (index 51) monitor, wiphy 0, 00:00:00:00:00:00, 2437 MHz (the Wi-Fi driver's PASSTHRU vdev for Wonder)\n") != NULL);
+  CHECK(strstr(text, "p2p: Wonder: in use: wondermon0 (monitor): wifictl wonder's own") != NULL);
+  CHECK(strstr(text, "p2p: Wonder: the PASSTHRU vdev wondertap0 (index 51, wiphy 0) is up on 2437 MHz\n") != NULL && !strstr(text, "idle"));
+  // Wonder 1.6 or later: a channel schedule.
+  r.wiphys[1].commands[r.wiphys[1].command_count++] = (br_wifi_vendor_cmd){ BR_WIFI_OUI_GOOGLE, 6 };
+  br_wifi_radios_report(&r, "wlan0", text, sizeof text);
+  CHECK(strstr(text, "6 SET_CHANNEL_SCHEDULE_REQ\n") != NULL && strstr(text, "p2p: Wonder: version 1.6 or later") != NULL);
+  // No GET_IF_MAC_ADDR: a Wonder the session does not know.
+  r.wiphys[1].command_count = 3;
+  br_wifi_radios_report(&r, "wlan0", text, sizeof text);
+  CHECK(strstr(text, "p2p: Wonder: version unknown") != NULL);
+
+  // By its commands, not its name: a wiphy "phy1" with Google's commands and monitor mode and no AP is Wonder; one
+  // with an AP (a Broadcom driver's own wiphy has Google's commands too) is not.
+  memset(&r, 0, sizeof r);
+  uint8_t b[512];
+  size_t len = wiphy_msg(b, 0, "phy0");
+  iftype_flags(b, &len, 32, 1u << T_STA | 1u << T_AP | 1u << T_MON);
+  vendor_cmds(b, &len, BR_WIFI_OUI_GOOGLE, wonder15, 2);
+  br_wifi_radios_wiphy(&r, b, len);
+  CHECK(br_wifi_wonder(&r) == NULL);
+  len = wiphy_msg(b, 3, "phy1");
+  iftype_flags(b, &len, 32, 1u << T_MON | 1u << T_STA);
+  vendor_cmds(b, &len, BR_WIFI_OUI_GOOGLE, wonder15, 5);
+  br_wifi_radios_wiphy(&r, b, len);
+  CHECK(br_wifi_wonder(&r) == &r.wiphys[1] && r.wiphys[1].wiphy == 3);
+  // No Wonder at all, and the station's radio without a monitor beside it: the old verdict, Wonder named.
+  memset(&r, 0, sizeof r);
+  len = wiphy_msg(b, 0, "phy0");
+  iftype_flags(b, &len, 32, 1u << T_STA | 1u << T_AP);
+  br_wifi_radios_wiphy(&r, b, len);
+  br_wifi_radios_report(&r, "wlan0", text, sizeof text);
+  CHECK(strstr(text, "p2p: Wonder: no Wonder radio (") != NULL && strstr(text, "no Wonder radio and no monitor beside the station: only the vendor's own AWDL can carry it") != NULL);
+  iface_msg(&r, 51, "wondertap0", 0, T_MON, 0);
+  br_wifi_radios_report(&r, "wlan0", text, sizeof text);
+  CHECK(strstr(text, "but a wondertap interface is up: its Wonder radio is not in the dump") != NULL);
+  // A message that names no wiphy before any did is dropped; more wiphys than kept are counted; no radio at all.
+  memset(&r, 0, sizeof r);
+  len = 0;
+  iftype_flags(b, &len, 32, 1u << T_STA);
+  br_wifi_radios_wiphy(&r, b, len);
+  CHECK(r.count == 0);
+  for (uint32_t i = 0; i < BR_WIFI_WIPHYS + 2; i++) { len = wiphy_msg(b, i, "phy"); br_wifi_radios_wiphy(&r, b, len); }
+  CHECK(r.count == BR_WIFI_WIPHYS && r.wiphys_dropped == 2);
+  br_wifi_radios_report(&r, NULL, text, sizeof text);
+  CHECK(strstr(text, "radios: 4 (more were not kept)\n") != NULL);
+  memset(&r, 0, sizeof r);
+  CHECK(br_wifi_radios_report(&r, "wlan0", text, sizeof text) == strlen("radio: none (nl80211 gave no wiphy)\n"));
+  char small[16];
+  phone_radios(&r);
+  CHECK(br_wifi_radios_report(&r, "wlan0", small, sizeof small) > sizeof small && strlen(small) == sizeof small - 1);
+}
+
+// A frame as Wonder's monitor interface gives it: radiotap (TSFT, FLAGS, RATE, CHANNEL, DBM_ANTSIGNAL, padded to 24),
+// then the 802.11 header and body.
+static const uint8_t awdl_bss[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
+static size_t radiotap(uint8_t *f, bool tsft, uint8_t flags, int8_t dbm)
+{
+  memset(f, 0, 24);
+  const uint32_t present = (tsft ? 1u : 0u) | 1u << 1 | 1u << 2 | 1u << 3 | 1u << 5;
+  memcpy(f + 4, &present, 4);
+  size_t at = 8;
+  if (tsft) at += 8;                                     // aligned at 8 already
+  f[at++] = flags;
+  f[at++] = 12;                                          // 6 Mb/s
+  const uint16_t freq = 2437, chflags = 0x00a0;
+  memcpy(f + at, &freq, 2); memcpy(f + at + 2, &chflags, 2); at += 4;
+  f[at++] = (uint8_t)dbm;
+  const size_t len = (at + 3) & ~(size_t)3;
+  f[2] = (uint8_t)len;
+  return len;
+}
+static size_t awdl_action(uint8_t *f, const uint8_t src[6], uint8_t subtype, int8_t dbm)
+{
+  size_t at = radiotap(f, true, 0, dbm);
+  uint8_t *h = f + at;
+  memset(h, 0, 24 + 16);
+  h[0] = 0xd0; memset(h + 4, 0xff, 6); memcpy(h + 10, src, 6); memcpy(h + 16, awdl_bss, 6);
+  const uint8_t body[8] = { 127, 0x00, 0x17, 0xf2, 8, 0x10, subtype, 0 };
+  memcpy(h + 24, body, 8);
+  return at + 24 + 16;
+}
+
+static void test_awdl_frames(void)
+{
+  const uint8_t a[6] = { 0x02, 0xaa, 0, 0, 0, 1 }, b2[6] = { 0x02, 0xbb, 0, 0, 0, 2 };
+  uint8_t f[256];
+  br_awdl_frame k;
+  size_t n = awdl_action(f, a, 0, -40);
+  CHECK(br_wifi_radiotap_frame(f, n, &k) && k.kind == BR_AWDL_ACTION && k.subtype == 0 && k.type == 0 && k.tsft && k.has_signal && k.signal_dbm == -40 &&
+        !memcmp(k.source, a, 6) && !k.bad_fcs);
+  static br_awdl_count c;
+  memset(&c, 0, sizeof c);
+  br_awdl_count_add(&c, f, n);                                       // PSF from a, -40 dBm
+  n = awdl_action(f, a, 0, -35); br_awdl_count_add(&c, f, n);        // PSF from a, -35 dBm (its best)
+  n = awdl_action(f, b2, 3, -70); br_awdl_count_add(&c, f, n);       // MIF from b
+  n = awdl_action(f, b2, 6, -71); br_awdl_count_add(&c, f, n);       // another subtype
+  n = awdl_action(f, b2, 0, -60);
+  f[24 + 24 + 4] = 9;                                                // vendor action of Apple's with a type that is not AWDL
+  CHECK(br_wifi_radiotap_frame(f, n, &k) && k.kind == BR_AWDL_OTHER_ACTION);
+  br_awdl_count_add(&c, f, n);
+  n = awdl_action(f, b2, 0, -60);
+  f[24 + 24] = 4;                                                    // a public action frame
+  br_awdl_count_add(&c, f, n);
+  // An AWDL data frame (addr3 AWDL's BSSID), an ordinary data frame, an ACK, a beacon.
+  size_t at = radiotap(f, true, 0, -50);
+  memset(f + at, 0, 40);
+  f[at] = 0x08; memcpy(f + at + 4, b2, 6); memcpy(f + at + 10, a, 6); memcpy(f + at + 16, awdl_bss, 6);
+  CHECK(br_wifi_radiotap_frame(f, at + 40, &k) && k.kind == BR_AWDL_DATA && k.type == 2);
+  br_awdl_count_add(&c, f, at + 40);
+  f[at + 16] = 0x12;
+  CHECK(br_wifi_radiotap_frame(f, at + 40, &k) && k.kind == BR_AWDL_NOT);
+  br_awdl_count_add(&c, f, at + 40);
+  f[at + 16] = 0x00; f[at + 1] = 0x02;                               // from DS: not AWDL's
+  CHECK(br_wifi_radiotap_frame(f, at + 40, &k) && k.kind == BR_AWDL_NOT);
+  f[at] = 0xd4; f[at + 1] = 0;                                       // an ACK: 10 bytes, control
+  CHECK(br_wifi_radiotap_frame(f, at + 10, &k) && k.type == 1 && k.kind == BR_AWDL_NOT);
+  br_awdl_count_add(&c, f, at + 10);
+  f[at] = 0x80;                                                      // a beacon (management) cut at 20 bytes: not parsed
+  CHECK(!br_wifi_radiotap_frame(f, at + 20, &k));
+  br_awdl_count_add(&c, f, at + 20);
+  // A bad FCS (flags 0x40) is counted alone; an FCS at the end (0x10) is cut off before the body is read.
+  n = awdl_action(f, a, 0, -40);
+  f[16] = 0x40;
+  CHECK(br_wifi_radiotap_frame(f, n, &k) && k.bad_fcs);
+  br_awdl_count_add(&c, f, n);
+  n = awdl_action(f, a, 3, -40);
+  f[16] = 0x10;
+  memset(f + n, 0xee, 4);
+  CHECK(br_wifi_radiotap_frame(f, n + 4, &k) && k.kind == BR_AWDL_ACTION && k.subtype == 3);
+  br_awdl_count_add(&c, f, n + 4);                                   // MIF from a
+  // Without TSFT; with a second present word (bit 31): the fields start after it.
+  n = radiotap(f, false, 0, -45);
+  CHECK(n == 16);
+  memset(f + n, 0, 40);
+  f[n] = 0xd0; memcpy(f + n + 10, b2, 6); memcpy(f + n + 24, "\x7f\x00\x17\xf2\x08\x10\x00", 7);
+  CHECK(br_wifi_radiotap_frame(f, n + 40, &k) && !k.tsft && k.kind == BR_AWDL_ACTION && k.signal_dbm == -45);
+  br_awdl_count_add(&c, f, n + 40);                                  // PSF from b, no TSFT
+  uint8_t g[256];
+  memset(g, 0, sizeof g);
+  const uint32_t p0 = 1u << 1 | 1u << 31, p1 = 0;
+  memcpy(g + 4, &p0, 4); memcpy(g + 8, &p1, 4);
+  g[12] = 0x00;                                                      // FLAGS, after both words
+  g[2] = 16;
+  g[16] = 0xd0; memcpy(g + 16 + 10, a, 6); memcpy(g + 16 + 24, "\x7f\x00\x17\xf2\x08\x10\x03", 7);
+  CHECK(br_wifi_radiotap_frame(g, 16 + 40, &k) && k.kind == BR_AWDL_ACTION && k.subtype == 3 && !k.has_signal);
+  // Broken radiotap: another version, a length past the frame, a present word past the header.
+  g[0] = 1; CHECK(!br_wifi_radiotap_frame(g, 56, &k)); g[0] = 0;
+  g[2] = 200; CHECK(!br_wifi_radiotap_frame(g, 56, &k));
+  g[2] = 8; CHECK(!br_wifi_radiotap_frame(g, 56, &k));
+  CHECK(!br_wifi_radiotap_frame(g, 4, &k));
+  br_awdl_count_add(&c, g, 4);
+  CHECK(c.frames == 14 && c.unparsed == 2 && c.bad_fcs == 1 && c.control == 1 && c.data == 2 && c.management == 8);
+  CHECK(c.awdl_action == 6 && c.awdl_psf == 3 && c.awdl_mif == 2 && c.awdl_other == 1 && c.action == 8 && c.awdl_data == 1 && c.with_tsft == 10);
+  CHECK(c.peer_count == 2 && c.peers[0].action == 3 && c.peers[0].data == 1 && c.peers[0].best_dbm == -35 && c.peers[1].action == 3 && c.peers[1].data == 0 && c.peers[1].best_dbm == -45);
+  static char text[4096];
+  n = br_awdl_count_report(&c, 30, text, sizeof text);
+  CHECK(n == strlen(text));
+  CHECK(strstr(text, "frames: 14 in 30 s: 8 management (8 action), 1 control, 2 data; 2 not parsed, 1 with a bad FCS; 10 carry the radiotap TSFT\n") != NULL);
+  CHECK(strstr(text, "AWDL: 6 action frames (3 PSF, 2 MIF, 1 other subtypes), 1 data frames to AWDL's BSSID, from 2 peer(s)\n") != NULL);
+  CHECK(strstr(text, "AWDL peer: 02:aa:00:00:00:01: 3 action, 1 data, best -35 dBm\n") != NULL && strstr(text, "AWDL peer: 02:bb:00:00:00:02: 3 action, 0 data, best -45 dBm\n") != NULL);
+  CHECK(strstr(text, "radiotap: 1 frames without the TSFT") != NULL && !strstr(text, "no AWDL frame"));
+  // More peers than kept; nothing at all; frames but no AWDL.
+  for (unsigned i = 0; i < BR_AWDL_PEERS + 3; i++) { uint8_t s[6] = { 2, 0, 0, 0, 1, (uint8_t)i }; n = awdl_action(f, s, 0, -50); br_awdl_count_add(&c, f, n); }
+  CHECK(c.peer_count == BR_AWDL_PEERS && c.peers_dropped == 5);
+  memset(&c, 0, sizeof c);
+  br_awdl_count_report(&c, 5, text, sizeof text);
+  CHECK(strstr(text, "AWDL: no frame at all: Wonder's receive path gave nothing") != NULL);
+  at = radiotap(f, true, 0, -50); memset(f + at, 0, 24); f[at] = 0x80;
+  br_awdl_count_add(&c, f, at + 24);
+  br_awdl_count_report(&c, 5, text, sizeof text);
+  CHECK(strstr(text, "AWDL: no AWDL frame: no Apple device sends AWDL on this channel now") != NULL && !strstr(text, "without the TSFT"));
+}
+
+static void test_wonder_vendor(void)
+{
+  uint8_t d[64];
+  // SET_FREQUENCY: CHANNEL_FREQ u32 5745, CHANNEL_BANDWIDTH u16 0 (20 MHz) with its pad
+  CHECK(br_wonder_set_frequency(d, sizeof d, 5745) == 16 && !memcmp(d, "\x08\x00\x01\x00\x71\x16\x00\x00\x06\x00\x02\x00\x00\x00\x00\x00", 16));
+  // SET_REGULATORY: REG_COUNTRY_CODE "GB" with its NUL
+  CHECK(br_wonder_set_regulatory(d, sizeof d, "GB") == 8 && !memcmp(d, "\x07\x00\x01\x00GB\x00\x00", 8));
+  // SET_FIXED_TX_RATE: PREAMBLE 1 (HT), BW 0, GI 2 (0.8 us), NSS 1, MCS 0
+  CHECK(br_wonder_set_fixed_tx_rate(d, sizeof d) == 40 &&
+        !memcmp(d, "\x08\x00\x01\x00\x01\x00\x00\x00" "\x06\x00\x02\x00\x00\x00\x00\x00" "\x08\x00\x03\x00\x02\x00\x00\x00" "\x05\x00\x04\x00\x01\x00\x00\x00"
+                   "\x05\x00\x05\x00\x00\x00\x00\x00", 40));
+  // SET_FILTER: TOP_FILTER_TYPE u32 0 (BSSID), TOP_FILTER_PARAMS nested { ENABLED u8 1, ADDR AWDL's BSSID }
+  CHECK(br_wonder_set_bssid_filter(d, sizeof d, awdl_bss) == 32 &&
+        !memcmp(d, "\x08\x00\x01\x00\x00\x00\x00\x00" "\x18\x00\x02\x80" "\x05\x00\x01\x00\x01\x00\x00\x00" "\x0a\x00\x02\x00\x00\x25\x00\xff\x94\x73\x00\x00", 32));
+  CHECK(br_wonder_set_frequency(d, 12, 2437) == 0 && br_wonder_set_bssid_filter(d, 31, awdl_bss) == 0 && br_wonder_set_fixed_tx_rate(d, 39) == 0);
+  // GET_IF_MAC_ADDR's reply; after another attribute; cut; absent.
+  uint8_t m[6];
+  CHECK(br_wonder_mac_reply((const uint8_t *)"\x0a\x00\x01\x00\x02\x11\x22\x33\x44\x55\x00\x00", 12, m) && !memcmp(m, "\x02\x11\x22\x33\x44\x55", 6));
+  CHECK(br_wonder_mac_reply((const uint8_t *)"\x08\x00\x07\x00\x01\x02\x03\x04\x0a\x00\x01\x00\x02\x11\x22\x33\x44\x66\x00\x00", 20, m) && m[5] == 0x66);
+  CHECK(!br_wonder_mac_reply((const uint8_t *)"\x0a\x00\x01\x00\x02\x11\x22", 7, m) && !br_wonder_mac_reply((const uint8_t *)"\x08\x00\x07\x00\x01\x02\x03\x04", 8, m));
+  CHECK(br_wonder_freq_ok(2437) && br_wonder_freq_ok(5745) && br_wonder_freq_ok(5220) && !br_wonder_freq_ok(5180) && !br_wonder_freq_ok(0));
+}
+
+// ---- the stand-in nl80211 for br_wonder_run: what it was asked, in order, and what it answers
+struct fake_nl {
+  br_wifi_radios radios;
+  char country[3];
+  int country_rc, new_rc, up_rc, del_rc, open_rc, recv_rc, vendor_rc;
+  uint32_t vendor_fail;                // the subcommand that answers vendor_rc
+  bool up_now;                         // the monitor is up (wondertap0 shows)
+  bool monitor;                        // the monitor exists
+  br_wifi_link before, after;
+  bool linked_after;                   // wlan0 is up again after the session
+  unsigned links, lose_for;            // link calls; after the session, wlan0 is down for this many more calls
+  unsigned pauses;
+  uint8_t frames[8][128];
+  size_t frame_len[8];
+  unsigned frame_count, frame_next, stop_after;
+  volatile int *stop;
+  uint64_t now;
+  uint8_t freq_data[64];
+  size_t freq_length;
+  char calls[1024];
+};
+static void call(struct fake_nl *f, const char *what) { snprintf(f->calls + strlen(f->calls), sizeof f->calls - strlen(f->calls), "%s%s", f->calls[0] ? " " : "", what); }
+static int f_radios(void *ctx, br_wifi_radios *out)
+{
+  struct fake_nl *f = ctx;
+  call(f, "radios");
+  *out = f->radios;
+  if (f->monitor) {
+    if (out->iface_count < BR_WIFI_IFACES) out->ifaces[out->iface_count++] = (br_wifi_iface){ "wondermon0", 52, 1, T_MON, 0, { 0 } };
+    if (f->up_now && out->iface_count < BR_WIFI_IFACES) out->ifaces[out->iface_count++] = (br_wifi_iface){ "wondertap0", 51, 0, T_MON, 5745, { 0 } };
+  }
+  return 0;
+}
+static int f_country(void *ctx, uint32_t wiphy, char cc[3]) { struct fake_nl *f = ctx; char t[24]; snprintf(t, sizeof t, "country(%u)", wiphy); call(f, t); memcpy(cc, f->country, 3); return f->country_rc; }
+static int f_new(void *ctx, uint32_t wiphy, const char *name, uint32_t *ifindex)
+{
+  struct fake_nl *f = ctx;
+  char t[48];
+  snprintf(t, sizeof t, "new(%u,%s)", wiphy, name);
+  call(f, t);
+  if (f->new_rc) return f->new_rc;
+  f->monitor = true;
+  *ifindex = 52;
+  return 0;
+}
+static int f_del(void *ctx, uint32_t ifindex)
+{
+  struct fake_nl *f = ctx;
+  char t[24];
+  snprintf(t, sizeof t, "del(%u)", ifindex);
+  call(f, t);
+  if (f->del_rc) return f->del_rc;
+  f->monitor = false;
+  return 0;
+}
+static int f_up(void *ctx, const char *name, bool up)
+{
+  struct fake_nl *f = ctx;
+  call(f, up ? "up" : "down");
+  (void)name;
+  if (up && f->up_rc) return f->up_rc;
+  f->up_now = up;
+  return 0;
+}
+static int f_vendor(void *ctx, uint32_t ifindex, uint32_t subcmd, const uint8_t *data, size_t length, uint8_t *reply, size_t *reply_length)
+{
+  struct fake_nl *f = ctx;
+  char t[24];
+  snprintf(t, sizeof t, "vendor(%u)", subcmd);
+  call(f, t);
+  if (ifindex != 52) return -ENODEV;
+  if (subcmd == f->vendor_fail) return f->vendor_rc;
+  if (subcmd == 1 && length <= sizeof f->freq_data) { memcpy(f->freq_data, data, length); f->freq_length = length; }
+  if (subcmd == 5) {                                     // Wonder answers it only when up
+    if (!f->up_now) return -ENODEV;
+    memcpy(reply, "\x0a\x00\x01\x00\x02\x99\x88\x77\x66\x55\x00\x00", 12);
+    *reply_length = 12;
+  }
+  return 0;
+}
+static int f_open(void *ctx, uint32_t ifindex) { struct fake_nl *f = ctx; call(f, "open"); return f->open_rc ? f->open_rc : ifindex == 52 ? 7 : -ENODEV; }
+static int f_receive(void *ctx, int handle, uint8_t *buffer, size_t size, unsigned wait_ms)
+{
+  struct fake_nl *f = ctx;
+  if (handle != 7) return -EBADF;
+  if (f->recv_rc && f->frame_next == f->frame_count) return f->recv_rc;
+  if (f->stop && f->stop_after && f->frame_next == f->stop_after) { *f->stop = 1; return -EINTR; }
+  if (f->frame_next < f->frame_count && f->frame_len[f->frame_next] <= size) {
+    memcpy(buffer, f->frames[f->frame_next], f->frame_len[f->frame_next]);
+    f->now += 1;
+    return (int)f->frame_len[f->frame_next++];
+  }
+  f->now += wait_ms;                                     // nothing came in the wait
+  return 0;
+}
+static void f_close(void *ctx, int handle) { struct fake_nl *f = ctx; (void)handle; call(f, "close"); }
+static int f_link(void *ctx, const char *ifname, br_wifi_link *out)
+{
+  struct fake_nl *f = ctx;
+  call(f, "link");
+  if (strcmp(ifname, "wlan0")) return -ENODEV;
+  const bool first = f->links++ == 0;
+  if (first) { *out = f->before; return 0; }
+  if (f->lose_for) { f->lose_for--; memset(out, 0, sizeof *out); return 0; }
+  *out = f->linked_after ? f->after : (br_wifi_link){ 0 };
+  return 0;
+}
+static uint64_t f_now(void *ctx) { return ((struct fake_nl *)ctx)->now; }
+static void f_pause(void *ctx, unsigned ms) { struct fake_nl *f = ctx; f->pauses++; f->now += ms; call(f, "pause"); }
+static const br_wonder_ops fake_ops = { f_radios, f_country, f_new, f_del, f_up, f_vendor, f_open, f_receive, f_close, f_link, f_now, f_pause };
+
+static void fake_phone(struct fake_nl *f)
+{
+  memset(f, 0, sizeof *f);
+  phone_radios(&f->radios);
+  memcpy(f->country, "GB", 3);
+  const br_wifi_link l = { .up = true, .rssi_dbm = -55, .tx_rate_mbps = 433, .freq_mhz = 5180, .bssid = { 0x0c, 1, 2, 3, 4, 5 } };
+  f->before = f->after = l;
+  f->linked_after = true;
+  const uint8_t a[6] = { 0x02, 0xaa, 0, 0, 0, 1 }, b2[6] = { 0x02, 0xbb, 0, 0, 0, 2 };
+  f->frame_len[0] = awdl_action(f->frames[0], a, 0, -40);
+  f->frame_len[1] = awdl_action(f->frames[1], a, 0, -42);
+  f->frame_len[2] = awdl_action(f->frames[2], b2, 3, -61);
+  f->frame_len[3] = radiotap(f->frames[3], true, 0, -70);
+  memset(f->frames[3] + f->frame_len[3], 0, 24); f->frames[3][f->frame_len[3]] = 0x80; f->frame_len[3] += 24;   // a beacon
+  f->frame_count = 4;
+  f->now = 1000;
+}
+static int run(struct fake_nl *f, br_wonder_params *p, br_wonder_result *r)
+{
+  logs_used = 0;
+  logs[0] = 0;
+  void (*old)(int, const char *) = br_log_sink;
+  br_log_sink = log_line;
+  const int rc = br_wonder_run(&fake_ops, f, p, r);
+  br_log_sink = old;
+  return rc;
+}
+
+static void test_wonder_session(void)
+{
+  static struct fake_nl f;
+  static br_wonder_result r;
+  br_wonder_params p = { .station = "wlan0", .name = BR_WONDER_IFNAME, .freq_mhz = 5745, .seconds = 30 };
+  // ---- a session that works: every step in Samsung's order, the frames counted, everything back
+  fake_phone(&f);
+  int rc = run(&f, &p, &r);
+  CHECK(rc == 0);
+  CHECK(!strcmp(f.calls, "link radios country(0) new(1,wondermon0) vendor(4) vendor(1) vendor(3) vendor(2) up vendor(5) radios open close down del(52) link"));
+  if (strcmp(f.calls, "link radios country(0) new(1,wondermon0) vendor(4) vendor(1) vendor(3) vendor(2) up vendor(5) radios open close down del(52) link")) printf("  calls: %s\n", f.calls);
+  uint8_t want[64];
+  CHECK(f.freq_length == br_wonder_set_frequency(want, sizeof want, 5745) && !memcmp(f.freq_data, want, f.freq_length));
+  CHECK(r.have_mac && !memcmp(r.mac, "\x02\x99\x88\x77\x66\x55", 6) && r.opened && r.link_before && r.link_after && !f.monitor && !f.up_now);
+  CHECK(r.count.frames == 4 && r.count.awdl_action == 3 && r.count.awdl_psf == 2 && r.count.awdl_mif == 1 && r.count.peer_count == 2);
+  CHECK(f.now >= 1000 + 30000 && f.now < 1000 + 30000 + 600);                     // 30 s of the stand-in's clock
+  CHECK(logged("wonder: wlan0 before: associated to 0c:01:02:03:04:05 on 5180 MHz, -55 dBm, 433 Mb/s\n"));
+  CHECK(logged("wonder: radio: wiphy 1 (wonder)\n") && logged("wonder: country GB (the driver's own)\n"));
+  CHECK(logged("wonder: wlan0 is on 5180 MHz, Wonder on 5745 MHz: the radio shares its time between them (MCC), on one band\n"));
+  CHECK(logged("wonder: wondermon0: a monitor interface on wiphy 1 (NL80211_CMD_NEW_INTERFACE): ok\n") && logged("wonder: wondermon0 is index 52\n"));
+  CHECK(logged("wonder: country (vendor 00:1a:11 subcommand 4 SET_REGULATORY): ok\n") && logged("wonder: 5745 MHz, 20 MHz wide (vendor 00:1a:11 subcommand 1 SET_FREQUENCY): ok\n"));
+  CHECK(logged("subcommand 3 SET_FIXED_TX_RATE): ok\n") && logged("wonder: BSSID filter 00:25:00:ff:94:73 (AWDL's) (vendor 00:1a:11 subcommand 2 SET_FILTER): ok\n"));
+  CHECK(logged("wonder: wondermon0 up (Wonder's start: the provider's init opens the PASSTHRU vdev): ok\n"));
+  CHECK(logged("wonder: the PASSTHRU vdev's address 02:99:88:77:66:55 (GET_IF_MAC_ADDR)\n"));
+  CHECK(logged("wonder: up: wondermon0 (index 52) monitor, wiphy 1, 0 MHz\n") && logged("wonder: up: wondertap0 (index 51) monitor, wiphy 0, 5745 MHz\n"));
+  CHECK(logged("wonder: counting wondermon0's frames for 30 s\n") && logged("wonder: frames: 4 in 30 s: 4 management (3 action)"));
+  CHECK(logged("wonder: AWDL: 3 action frames (2 PSF, 1 MIF, 0 other subtypes), 0 data frames to AWDL's BSSID, from 2 peer(s)\n"));
+  CHECK(logged("wonder: AWDL peer: 02:aa:00:00:00:01: 2 action, 0 data, best -40 dBm\n"));
+  CHECK(logged("wonder: AF_PACKET on wondermon0 closed\n") && logged("wonder: wondermon0 down (Wonder's stop: the provider's deinit closes the PASSTHRU vdev): ok\n"));
+  CHECK(logged("wonder: wondermon0 removed (NL80211_CMD_DEL_INTERFACE): ok\n") && logged("wonder: wlan0: the same link as before\n") && !logged("\nE "));
+  if (getenv("ONEIOS_TEST_SHOW")) printf("---- wifictl wonder --seconds 30 --freq 5745 on the stand-in nl80211\n%s", logs);
+  // On 2437 MHz beside a 5 GHz station: MCC across the bands; a roam during it is said.
+  fake_phone(&f);
+  p.freq_mhz = 2437;
+  f.after.bssid[5] = 9;
+  CHECK(run(&f, &p, &r) == 0 && logged("on 2437 MHz: the radio shares its time between them (MCC)\n") && logged("associated to another access point than before (a roam)"));
+  p.freq_mhz = 5745;
+
+  // ---- the refusals: nothing made, nothing changed
+  fake_phone(&f);
+  p.freq_mhz = 5180;
+  CHECK(run(&f, &p, &r) == -EINVAL && !f.calls[0] && logged("E wonder: refused: 5180 MHz is no AWDL channel"));
+  p.freq_mhz = 5745;
+  fake_phone(&f);
+  f.radios.count = 1;                                    // no Wonder radio
+  CHECK(run(&f, &p, &r) == -ENODEV && !strcmp(f.calls, "link radios") && logged("E wonder: refused: no Wonder radio"));
+  fake_phone(&f);
+  f.radios.wiphys[1].command_count = 4;                  // no GET_IF_MAC_ADDR
+  CHECK(run(&f, &p, &r) == -EOPNOTSUPP && !strcmp(f.calls, "link radios"));
+  fake_phone(&f);
+  iface_msg(&f.radios, 51, "wondertap0", 0, T_MON, 2437);   // Quick Share holds Wonder
+  CHECK(run(&f, &p, &r) == -EBUSY && !strcmp(f.calls, "link radios") && logged("E wonder: refused: Wonder is in use: wondertap0 (monitor, wiphy 0) is up"));
+  fake_phone(&f);
+  iface_msg(&f.radios, 60, "mosey0", 1, T_MON, 0);          // another's interface on Wonder's radio
+  CHECK(run(&f, &p, &r) == -EBUSY && logged("Wonder is in use: mosey0 (monitor, wiphy 1)"));
+  fake_phone(&f);
+  f.radios.iface_count = 0;                              // no wlan0
+  CHECK(run(&f, &p, &r) == -ENODEV && logged("E wonder: refused: no wlan0"));
+  fake_phone(&f);
+  memcpy(f.country, "00", 3);                            // the world domain: not the phone's
+  CHECK(run(&f, &p, &r) == -EINVAL && !strcmp(f.calls, "link radios country(0)") && logged("E wonder: refused: the driver's country is not known (\"00)"));
+  fake_phone(&f);
+  f.country_rc = -EIO;
+  CHECK(run(&f, &p, &r) == -EINVAL && logged("not known (Input/output error)"));
+  fake_phone(&f);
+  memcpy(p.country, "DE", 3);                            // --country against a known, other one
+  CHECK(run(&f, &p, &r) == -EINVAL && logged("E wonder: refused: the driver's country is GB, --country DE would change it"));
+  fake_phone(&f);
+  memcpy(f.country, "00", 3);                            // --country where the driver's is not known: used
+  CHECK(run(&f, &p, &r) == 0 && logged("wonder: country DE (the driver's own) (as --country)\n"));
+  p.country[0] = 0;
+
+  // ---- a leftover of a killed session is removed first, then the session runs
+  fake_phone(&f);
+  f.monitor = true;
+  rc = run(&f, &p, &r);
+  CHECK(rc == 0 && !strncmp(f.calls, "link radios down del(52) radios country(0) new(1,wondermon0) ", strlen("link radios down del(52) radios country(0) new(1,wondermon0) ")) && logged("wonder: wondermon0 (index 52) is left from a session that did not end: removed first\n"));
+  fake_phone(&f);
+  f.monitor = true;
+  f.del_rc = -EPERM;
+  CHECK(run(&f, &p, &r) == -EPERM && !strcmp(f.calls, "link radios down del(52)"));
+
+  // ---- failed steps: everything made is closed in reverse, and wlan0 checked
+  fake_phone(&f);
+  f.new_rc = -EOPNOTSUPP;
+  CHECK(run(&f, &p, &r) == -EOPNOTSUPP && !strcmp(f.calls, "link radios country(0) new(1,wondermon0) link") && r.link_after);
+  fake_phone(&f);
+  f.vendor_fail = 1; f.vendor_rc = -EINVAL;              // SET_FREQUENCY refused: removed, never up
+  CHECK(run(&f, &p, &r) == -EINVAL && !strcmp(f.calls, "link radios country(0) new(1,wondermon0) vendor(4) vendor(1) del(52) link") && !f.monitor);
+  CHECK(logged("E wonder: 5745 MHz, 20 MHz wide (vendor 00:1a:11 subcommand 1 SET_FREQUENCY): Invalid argument\n"));
+  fake_phone(&f);
+  f.up_rc = -EBUSY;                                      // the provider's init: a connection in progress
+  CHECK(run(&f, &p, &r) == -EBUSY && !strcmp(f.calls, "link radios country(0) new(1,wondermon0) vendor(4) vendor(1) vendor(3) vendor(2) up del(52) link"));
+  CHECK(logged("E wonder: wondermon0 up (Wonder's start: the provider's init opens the PASSTHRU vdev): Device or resource busy (a connection or a roam of wlan0 in progress, or Wonder already up)\n"));
+  fake_phone(&f);
+  f.open_rc = -EPERM;
+  CHECK(run(&f, &p, &r) == -EPERM && !strcmp(f.calls, "link radios country(0) new(1,wondermon0) vendor(4) vendor(1) vendor(3) vendor(2) up vendor(5) radios open down del(52) link") && !r.opened);
+  fake_phone(&f);
+  f.recv_rc = -ENETDOWN;                                 // the interface went away under the count
+  CHECK(run(&f, &p, &r) == -ENETDOWN && r.count.frames == 4 && strstr(f.calls, "open close down del(52) link") && logged("E wonder: receive on wondermon0: Network is down\n"));
+  fake_phone(&f);
+  f.del_rc = -EBUSY;                                     // removal refused: the session's error, said
+  CHECK(run(&f, &p, &r) == -EBUSY && logged("E wonder: wondermon0 removed (NL80211_CMD_DEL_INTERFACE): Device or resource busy (the next `wifictl wonder` removes it)\n"));
+  // A Wonder without SET_FILTER and SET_FIXED_TX_RATE: those two are left out.
+  fake_phone(&f);
+  f.radios.wiphys[1].commands[1].subcmd = 7; f.radios.wiphys[1].commands[2].subcmd = 8;
+  CHECK(run(&f, &p, &r) == 0 && strstr(f.calls, "vendor(4) vendor(1) up vendor(5)") && logged("wonder: radio: wiphy 1 (wonder), no SET_FILTER, no SET_FIXED_TX_RATE\n"));
+
+  // ---- a signal ends the count; the teardown still runs
+  volatile int stop = 0;
+  fake_phone(&f);
+  p.stop = &stop; f.stop = &stop; f.stop_after = 2;
+  CHECK(run(&f, &p, &r) == 0 && r.count.frames == 2 && stop && strstr(f.calls, "open close down del(52) link") && logged("wonder: stopped by a signal after 2 ms\n"));
+  p.stop = NULL;
+
+  // ---- wlan0 afterwards: back within the 10 s, or lost
+  fake_phone(&f);
+  f.lose_for = 3;
+  CHECK(run(&f, &p, &r) == 0 && f.pauses == 3 && r.link_after);
+  fake_phone(&f);
+  f.linked_after = false;
+  CHECK(run(&f, &p, &r) == -ENOLINK && f.pauses == 10 && !r.link_after && logged("E wonder: wlan0 lost its link (associated before, not 10 s after the end)"));
+  fake_phone(&f);
+  f.before.up = false; f.linked_after = false;           // not associated before: nothing to wait for
+  CHECK(run(&f, &p, &r) == 0 && f.pauses == 0 && logged("wonder: wlan0 before: not associated\n") && !logged("MCC"));
+}
+
 int main(void)
 {
   test_frames();
   test_dhcp();
   test_bands();
   test_p2p();
+  test_radios();
+  test_awdl_frames();
+  test_wonder_vendor();
+  test_wonder_session();
   test_groups_segments();
   test_station();
   test_sim();

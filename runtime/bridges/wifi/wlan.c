@@ -814,27 +814,204 @@ int br_wlan_scan_once(const char *ifname, unsigned wait_ms, br_wlan_bss_fn fn, v
   return rc;
 }
 
-// The radio's peer-to-peer abilities for `wifictl p2p` (p2p.c, docs/hardware.md "AirDrop"): read only.
-static void caps_wiphy_msg(void *ctx, const uint8_t *attrs, size_t length) { br_wifi_caps_wiphy(ctx, attrs, length); }
-static void caps_iface_msg(void *ctx, const uint8_t *attrs, size_t length) { br_wifi_caps_iface(ctx, attrs, length); }
-int br_wlan_caps(const char *ifname, br_wifi_caps *out)
+// ---- every radio, and Wonder's session (wonder.c, `wifictl wonder`) -------------------------------
+// A netlink socket for nl80211 alone, no interface named.
+static struct br_wlan *wlan_nl(void)
+{
+  struct br_wlan *w = calloc(1, sizeof *w);
+  if (!w) return NULL;
+  w->packet = w->genl = w->events = w->wake[0] = w->wake[1] = -1;
+  if (nl80211_open(w) < 0) { wlan_free(w); return NULL; }
+  return w;
+}
+static void radios_wiphy_msg(void *ctx, const uint8_t *attrs, size_t length) { br_wifi_radios_wiphy(ctx, attrs, length); }
+static void radios_iface_msg(void *ctx, const uint8_t *attrs, size_t length) { br_wifi_radios_iface(ctx, attrs, length); }
+static int dump_radios(struct br_wlan *w, br_wifi_radios *out)
 {
   memset(out, 0, sizeof *out);
-  struct br_wlan *w = wlan_new(ifname);
-  if (!w) return -ENODEV;
-  uint8_t attrs[32];
+  uint8_t attrs[8];
   size_t len = 0;
-  uint32_t index = (uint32_t)w->ifindex;
-  put_attr(attrs, &len, NL80211_ATTR_IFINDEX, &index, 4);
   put_attr(attrs, &len, NL80211_ATTR_SPLIT_WIPHY_DUMP, NULL, 0);
-  int rc = genl_request(w, NL80211_CMD_GET_WIPHY, NLM_F_DUMP, attrs, len, w->family);
-  if (!rc) rc = genl_replies_msgs(w, NULL, caps_wiphy_msg, out);
-  if (!rc) {   // every interface of every radio, those with no network device too (a P2P device, NAN)
+  int rc = genl_request(w, NL80211_CMD_GET_WIPHY, NLM_F_DUMP, attrs, len, w->family);   // no wiphy named: every one
+  if (!rc) rc = genl_replies_msgs(w, NULL, radios_wiphy_msg, out);
+  if (!rc) {
     rc = genl_request(w, NL80211_CMD_GET_INTERFACE, NLM_F_DUMP, attrs, 0, w->family);
-    if (!rc) rc = genl_replies_msgs(w, NULL, caps_iface_msg, out);
+    if (!rc) rc = genl_replies_msgs(w, NULL, radios_iface_msg, out);
   }
+  return rc;
+}
+int br_wlan_radios(br_wifi_radios *out)
+{
+  struct br_wlan *w = wlan_nl();
+  if (!w) { memset(out, 0, sizeof *out); return -ENODEV; }
+  int rc = dump_radios(w, out);
   wlan_free(w);
   return rc;
+}
+
+struct wonder_ctx { struct br_wlan *w; };
+static int wd_radios(void *ctx, br_wifi_radios *out) { return dump_radios(((struct wonder_ctx *)ctx)->w, out); }
+
+static void reg_attr(void *ctx, uint16_t type, const uint8_t *data, uint16_t size)
+{
+  char *cc = ctx;
+  if (type == NL80211_ATTR_REG_ALPHA2 && size >= 2) { cc[0] = (char)data[0]; cc[1] = (char)data[1]; cc[2] = 0; }
+}
+// The wiphy's own regulatory domain (a self-managed one), else the kernel's: both answer GET_REG with the wiphy named.
+static int wd_country(void *ctx, uint32_t wiphy, char cc[3])
+{
+  struct br_wlan *w = ((struct wonder_ctx *)ctx)->w;
+  uint8_t attrs[8];
+  size_t len = 0;
+  cc[0] = 0;
+  put_attr(attrs, &len, NL80211_ATTR_WIPHY, &wiphy, 4);
+  int rc = genl_request(w, NL80211_CMD_GET_REG, 0, attrs, len, w->family);
+  if (!rc) rc = genl_replies(w, reg_attr, cc);
+  if (rc || !cc[0]) {
+    rc = genl_request(w, NL80211_CMD_GET_REG, 0, attrs, 0, w->family);
+    if (!rc) rc = genl_replies(w, reg_attr, cc);
+  }
+  return rc ? rc : cc[0] ? 0 : -ENOENT;
+}
+
+static void index_attr(void *ctx, uint16_t type, const uint8_t *data, uint16_t size)
+{
+  if (type == NL80211_ATTR_IFINDEX && size == 4) memcpy(ctx, data, 4);
+}
+static int wd_new_monitor(void *ctx, uint32_t wiphy, const char *name, uint32_t *ifindex)
+{
+  struct br_wlan *w = ((struct wonder_ctx *)ctx)->w;
+  uint8_t attrs[64];
+  size_t len = 0;
+  const uint32_t type = NL80211_IFTYPE_MONITOR;
+  put_attr(attrs, &len, NL80211_ATTR_WIPHY, &wiphy, 4);
+  put_attr(attrs, &len, NL80211_ATTR_IFNAME, name, (uint16_t)(strlen(name) + 1));
+  put_attr(attrs, &len, NL80211_ATTR_IFTYPE, &type, 4);
+  *ifindex = 0;
+  int rc = genl_request(w, NL80211_CMD_NEW_INTERFACE, NLM_F_ACK, attrs, len, w->family);
+  if (!rc) rc = genl_replies(w, index_attr, ifindex);
+  if (!rc && !*ifindex) *ifindex = if_nametoindex(name);
+  return rc ? rc : *ifindex ? 0 : -ENODEV;
+}
+static int wd_del_iface(void *ctx, uint32_t ifindex)
+{
+  struct br_wlan *w = ((struct wonder_ctx *)ctx)->w;
+  uint8_t attrs[8];
+  size_t len = 0;
+  put_attr(attrs, &len, NL80211_ATTR_IFINDEX, &ifindex, 4);
+  int rc = genl_request(w, NL80211_CMD_DEL_INTERFACE, NLM_F_ACK, attrs, len, w->family);
+  return rc ? rc : genl_replies(w, NULL, NULL);
+}
+static int wd_set_up(void *ctx, const char *name, bool up)
+{
+  (void)ctx;
+  int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) return -errno;
+  struct ifreq r;
+  memset(&r, 0, sizeof r);
+  snprintf(r.ifr_name, sizeof r.ifr_name, "%s", name);
+  int rc = ioctl(fd, SIOCGIFFLAGS, &r) ? -errno : 0;
+  if (!rc) {
+    r.ifr_flags = (short)(up ? r.ifr_flags | IFF_UP : r.ifr_flags & ~IFF_UP);
+    rc = ioctl(fd, SIOCSIFFLAGS, &r) ? -errno : 0;   // up: mac80211's start (Wonder's), whose error is this one
+  }
+  close(fd);
+  return rc;
+}
+struct vendor_reply { uint8_t *data; size_t *length, size; };
+static void vendor_reply_attr(void *ctx, uint16_t type, const uint8_t *data, uint16_t size)
+{
+  struct vendor_reply *v = ctx;
+  if (type != NL80211_ATTR_VENDOR_DATA) return;
+  const size_t n = size < v->size ? size : v->size;
+  memcpy(v->data, data, n);
+  *v->length = n;
+}
+static int wd_vendor(void *ctx, uint32_t ifindex, uint32_t subcmd, const uint8_t *data, size_t length, uint8_t *reply, size_t *reply_length)
+{
+  struct br_wlan *w = ((struct wonder_ctx *)ctx)->w;
+  uint8_t attrs[256];
+  size_t len = 0;
+  const uint32_t oui = BR_WIFI_OUI_GOOGLE;
+  if (length > sizeof attrs - 48) return -E2BIG;
+  put_attr(attrs, &len, NL80211_ATTR_IFINDEX, &ifindex, 4);
+  put_attr(attrs, &len, NL80211_ATTR_VENDOR_ID, &oui, 4);
+  put_attr(attrs, &len, NL80211_ATTR_VENDOR_SUBCMD, &subcmd, 4);
+  if (length) put_attr(attrs, &len, NL80211_ATTR_VENDOR_DATA, data, (uint16_t)length);   // raw: Wonder parses it
+  struct vendor_reply v = { reply, reply_length, reply_length ? *reply_length : 0 };
+  if (reply_length) *reply_length = 0;
+  int rc = genl_request(w, NL80211_CMD_VENDOR, NLM_F_ACK, attrs, len, w->family);
+  return rc ? rc : genl_replies(w, reply ? vendor_reply_attr : NULL, &v);
+}
+static int wd_open_frames(void *ctx, uint32_t ifindex)
+{
+  (void)ctx;
+  int fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_ALL));
+  if (fd < 0) return -errno;
+  struct sockaddr_ll ll = { .sll_family = AF_PACKET, .sll_protocol = htons(ETH_P_ALL), .sll_ifindex = (int)ifindex };
+  if (bind(fd, (struct sockaddr *)&ll, sizeof ll)) { int e = -errno; close(fd); return e; }
+  return fd;
+}
+static int wd_receive(void *ctx, int fd, uint8_t *buffer, size_t size, unsigned wait_ms)
+{
+  (void)ctx;
+  struct pollfd p = { .fd = fd, .events = POLLIN };
+  const int n = poll(&p, 1, (int)wait_ms);
+  if (n < 0) return -errno;
+  if (!n) return 0;
+  const ssize_t got = recv(fd, buffer, size, MSG_DONTWAIT);
+  return got < 0 ? -errno : (int)got;
+}
+static void wd_close_frames(void *ctx, int fd) { (void)ctx; close(fd); }
+// Associated: GET_STATION on a station gives its access point; the channel from GET_INTERFACE.
+static int wd_link(void *ctx, const char *ifname, br_wifi_link *out)
+{
+  struct br_wlan *w = ((struct wonder_ctx *)ctx)->w;
+  memset(out, 0, sizeof *out);
+  const uint32_t index = if_nametoindex(ifname);
+  if (!index) return -ENODEV;
+  uint8_t attrs[8];
+  size_t len = 0;
+  put_attr(attrs, &len, NL80211_ATTR_IFINDEX, &index, 4);
+  int rc = genl_request(w, NL80211_CMD_GET_STATION, NLM_F_DUMP, attrs, len, w->family);
+  if (!rc) rc = genl_replies(w, station_attr, out);
+  if (rc) return rc;
+  static const uint8_t none[6];
+  out->up = memcmp(out->bssid, none, 6) != 0;
+  if (!genl_request(w, NL80211_CMD_GET_INTERFACE, 0, attrs, len, w->family)) (void)genl_replies(w, interface_attr, out);
+  return 0;
+}
+static uint64_t wd_now_ms(void *ctx)
+{
+  (void)ctx;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+}
+static void wd_pause_ms(void *ctx, unsigned ms)
+{
+  (void)ctx;
+  struct timespec t = { ms / 1000, (long)(ms % 1000) * 1000000L };
+  while (nanosleep(&t, &t) && errno == EINTR) {}
+}
+const br_wonder_ops br_wlan_wonder_ops = {
+  .radios = wd_radios, .country = wd_country, .new_monitor = wd_new_monitor, .del_iface = wd_del_iface, .set_up = wd_set_up,
+  .vendor = wd_vendor, .open_frames = wd_open_frames, .receive = wd_receive, .close_frames = wd_close_frames, .link = wd_link,
+  .now_ms = wd_now_ms, .pause_ms = wd_pause_ms,
+};
+void *br_wlan_wonder_open(void)
+{
+  struct wonder_ctx *c = calloc(1, sizeof *c);
+  if (!c) return NULL;
+  if (!(c->w = wlan_nl())) { free(c); return NULL; }
+  return c;
+}
+void br_wlan_wonder_close(void *ctx)
+{
+  struct wonder_ctx *c = ctx;
+  if (!c) return;
+  wlan_free(c->w);
+  free(c);
 }
 #else
 br_net_open_fn br_wlan_prepare(const char *ifname, const char *session_dir, uint8_t mac_out[6]) { (void)ifname; (void)session_dir; (void)mac_out; return NULL; }
@@ -842,5 +1019,8 @@ int br_wlan_send(br_net *n, const uint8_t *frame, size_t length) { (void)n; (voi
 void br_wlan_close(void) {}
 int br_wlan_restore(const char *state_path) { (void)state_path; return -ENOSYS; }
 int br_wlan_scan_once(const char *ifname, unsigned wait_ms, br_wlan_bss_fn fn, void *ctx) { (void)ifname; (void)wait_ms; (void)fn; (void)ctx; return -ENOSYS; }
-int br_wlan_caps(const char *ifname, br_wifi_caps *out) { (void)ifname; memset(out, 0, sizeof *out); return -ENOSYS; }
+int br_wlan_radios(br_wifi_radios *out) { memset(out, 0, sizeof *out); return -ENOSYS; }
+const br_wonder_ops br_wlan_wonder_ops = { 0 };
+void *br_wlan_wonder_open(void) { return NULL; }
+void br_wlan_wonder_close(void *ctx) { (void)ctx; }
 #endif

@@ -24,10 +24,12 @@ bad() { echo "FAILED  $1${2:+: $2}"; FAILED=$((FAILED + 1)); }
 # ({"path", "size", "sha256"}, and "mode": "0755" for a file under bin/). The JSON files are written with
 # `$TOOL json set` (indent 2): the tests ran inline Python for this until 2026-11-21.
 file_entries() {
-  local d=$1 p sep=; shift
+  local d=$1 p sep= mode; shift
   for p in "$@"; do
-    printf '%s{"path":"%s","size":%s,"sha256":"%s"%s}' "$sep" "$p" "$(stat -c %s "$d/$p")" "$(sha256sum < "$d/$p" | cut -d' ' -f1)" \
-      "$(case "$p" in (bin/*) echo ',"mode":"0755"' ;; esac)"   # (bin/*): macOS's bash 3.2 cannot read a bare `bin/*)` inside $( )
+    # the mode before the printf: macOS's bash 3.2 cannot parse a `case` inside "$(...)" (every stage, manifest
+    # and switch check failed on the Mac with it, 2026-11-23)
+    case "$p" in bin/*) mode=',"mode":"0755"' ;; *) mode= ;; esac
+    printf '%s{"path":"%s","size":%s,"sha256":"%s"%s}' "$sep" "$p" "$(stat -c %s "$d/$p")" "$(sha256sum < "$d/$p" | cut -d' ' -f1)" "$mode"
     sep=,
   done
 }
