@@ -22,7 +22,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
 | Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
-| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths, to find One UI 8.5's AWDL for Quick Share | does not work: Bluetooth is off in sessions (sharingd needs it: the toggle cannot switch), and no AWDL path is known on this radio yet; `wifictl p2p` host-tested, not run on the phone (section 4a) |
+| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths; it does not yet dump Google's Wonder wiphy | does not work: Bluetooth is off in sessions (sharingd needs it: the toggle cannot switch), and iOS has no `awdl0`. The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. Not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
@@ -1251,50 +1251,108 @@ addresses are the binary's, unslid):
 - SCO audio goes through the HAL as HCI; A2DP is iOS's own stack over ACL. LE Audio (ISO) only with a 1.1 HAL.
 - UniXNU QcaBluetooth is a radio driver for a bare-metal WCN7850: not needed here.
 
-## 4a. AirDrop (airdrop, 2026-11-22)
+## 4a. AirDrop (airdrop, 2026-11-22; corrected by quick-share-airdrop, 2026-11-23)
 
 The owner's request (2026-11-22): AirDrop does not work in iOS, and its Control Center toggle does not switch; "check
-how Android works with AirDrop and port it over". **Result: AirDrop cannot work in a session yet, for two causes in
-our stack and one in the radio. No guest change can make the toggle switch while Bluetooth is off.** What was built:
-`wifictl p2p`, a lasting read-only report of the radio's peer-to-peer paths, for the phone check below.
+how Android works with AirDrop and port it over". **Result: AirDrop cannot work in a session yet. Bluetooth is off in
+sessions, so the toggle cannot switch, and the guest has no `awdl0`. The radio path exists on this phone: One UI's own
+Wi-Fi driver has Google's "Wonder" raw 802.11 path, and its source is open.** What was built: `wifictl p2p`, a lasting
+read-only report of the radio's peer-to-peer paths (below).
 
-### How Android does it
+**Correction (2026-11-23).** The first version of this section said that Google's code is closed and that nothing
+open runs AWDL on a Qualcomm chip. The owner disagreed. The owner is right for the kernel and radio half; only the
+AWDL engine in user space is closed. What the first version got wrong:
 
-- **Google's Quick Share for AirDrop** (Pixel 10, 2025-11-20; Pixel 9 2026-02-17; Samsung from 2026-03-22, the S26
-  first): it talks to an unmodified iPhone in AirDrop's **"Everyone for 10 minutes"** mode only; its core is in Rust and
-  was tested by NetSPI ([Google](https://blog.google/security/android-quick-share-support-for-airdrop-security/)).
-  Google names no radio ("direct and peer-to-peer"). Reports say it is Bluetooth LE discovery with Apple's
-  advertisement and then **AWDL**, Apple's own Wi-Fi link, not Wi-Fi Aware and not Wi-Fi Direct
-  ([9to5Google](https://9to5google.com/2025/11/21/googles-airdrop-support-for-pixel-10-likely-exists-because-of-the-eus-apple-ruling/),
-  [ifanr](https://www.ifanr.com/1649528)) [I: not confirmed by Google]. **The code is not public**: no AOSP source;
-  it ships in Play's Quick Share Extension and GMS.
-- **It needs the chip vendor's work** [I]: Qualcomm said it would come "once enabled on Snapdragon"
-  ([Notebookcheck](https://www.notebookcheck.net/Qualcomm-confirms-Quick-Share-to-AirDrop-file-transfer-feature-is-coming-to-Snapdragon-powered-devices.1168833.0.html));
-  the Galaxy S23 (FastConnect 7800 too) did not get it, the S24 did
-  ([Gadget Hacks](https://samsung.gadgethacks.com/news/galaxy-s23-one-ui-85-missing-airdrop-support-explained/)).
-- **This phone has it in One UI**: One UI 8.5's Quick Share "Share with Apple devices" lists the S24, S25, S26, Z6
-  and Z7 series ([Samsung](https://news.samsung.com/de/sommermomente-auch-ubergreifend-teilen-quick-share-meets-airdrop-in-one-ui-8-5),
-  [heise](https://heise.de/-11252760)). So the S24 Ultra's WCN785x firmware and Samsung's driver carry an
-  AWDL-compatible link for Quick Share [I: from the device list; how the driver offers it is not known: the phone
-  check below reads it].
-- **Ports to other rooted phones**: `thelok1s/mosey-extended` (KSU) takes the Pixel 10's `mosey_server` and a virtual
-  radio named `wonder`; its README says real 802.11 frames need Broadcom's native "wondertap" and lists the S24/S25
-  as "virtual phy only" ([GitHub](https://github.com/thelok1s/mosey-extended)). Nothing open runs AWDL on a Qualcomm
-  chip.
-- **Open projects**: OWL ([seemoo-lab/owl](https://github.com/seemoo-lab/owl), archived 2026-10-12) is AWDL in user
-  space on Linux: it needs a **monitor interface with frame injection** (active monitor for ACKs), channels 6, 44 and
-  149, and it cannot stay joined to an access point at the same time. OpenDrop
-  ([seemoo-lab/opendrop](https://github.com/seemoo-lab/opendrop)) is AirDrop's protocol (Bonjour and HTTPS over
-  `awdl0`, BLE advertisement type 0x05 with contact hashes) on macOS or on OWL; Everyone mode only. Qualcomm's Android
-  driver (qcacld) has monitor mode only as a whole driver mode (`con_mode=4`), with no injection on recent chips
-  ([Kali NetHunter](https://www.kali.org/docs/nethunter/wireless-cards/)), and that mode ends station mode.
-- **AWDL** ([Stute et al., MobiCom'18](https://ar5iv.labs.arxiv.org/html/1808.03156)): vendor action frames
-  (category 127, Apple's OUI 00:17:f2) for sync and service discovery, 16 TU availability windows on a channel sequence
-  of 16 slots, an elected master, data frames with Apple's LLC/SNAP header carrying IPv6 link-local only. The timing
-  is the chip firmware's on Apple's devices.
-- **Wi-Fi Aware (NAN)**: iOS 26 has a Wi-Fi Aware framework for apps (an EU requirement), but no source says AirDrop
-  uses it: AirDrop is AWDL in iOS 26 and 27 [I]. One report: NAN pairing between iOS 26 and an SM8650 phone failed
-  ([Apple forums](https://developer.apple.com/forums/thread/790195)).
+1. "The code is not public: no AOSP source". Google's kernel driver (Wonder, GPL-2.0), Qualcomm's provider in
+   qcacld-3.0 (ISC) and Samsung's copy of both for this phone (GPL release `S928BXXU5DZDP`) are public. Only
+   `mosey_server`, its library, the Quick Share Extension app and the firmware are closed.
+2. "Nothing open runs AWDL on a Qualcomm chip". Open drivers run AWDL on a Xiaomi 14 (SM8650, the same `kiwi_v2`
+   radio as ours) with the S24 Ultra's own firmware, both ways with an iPhone on iOS 27.0.1.
+3. "qcacld's monitor is a whole-driver mode, so OWL's way cannot work beside the station". That is true for
+   `con_mode=4`, but Wonder's PASSTHRU vdev is a raw 802.11 path in the normal driver mode, beside `wlan0`.
+4. "AWDL's 16 TU timing cannot be kept from user space". Google's design keeps AWDL in user space. The firmware
+   only holds the channel (Wonder 1.4 and 1.5) or follows a TSF channel schedule (Wonder 1.6 and later).
+5. "nl80211 vendor commands (Qualcomm OUI 00:13:74)". The commands are under Google's OUI `00:1a:11`, on Wonder's own
+   wiphy, not on `wlan0`'s.
+6. `thelok1s/mosey-extended` lists the Snapdragon S24 as "virtual phy only". Samsung's source shows otherwise.
+
+### How Android does it: open and closed parts
+
+The chain on a Pixel and on One UI 8.5 or later [F: the sources below; I: no part of it was read on our phone yet]:
+
+```
+GMS Quick Share -> com.google.android.mosey (Quick Share Extension app)
+  -> IMoseyService (binder) -> mosey_server -> libmosey_daemon_ffi.so   (Rust: AWDL and AirDrop in user space)
+  -> nl80211 vendor commands, OUI 00:1a:11, and radiotap frames on Wonder's interface
+  -> wonder.ko (a mac80211 soft-MAC) -> wondertap provider in the Wi-Fi driver -> wondertap0 (PASSTHRU vdev)
+  -> Wi-Fi firmware
+```
+
+| Part | Open? | Where |
+|---|---|---|
+| Wonder, the kernel driver ("Google Wonder WiFi Virtual Soft-MAC Driver") | **Yes, GPL-2.0** | [`android.googlesource.com/kernel/common-modules/wonder`](https://android.googlesource.com/kernel/common-modules/wonder): branches `android14-6.1` (head `71026f6`, 2026-06-06), `android15-6.6`, `android16-6.12`, `android17-6.18` (head `f70b3a4`, 2026-11-02). Also in Pixel kernel trees (`google-modules/wlan/wonder`) |
+| The provider API | **Yes, GPL-2.0** | `include/wondertap.h` there: `struct wondertap_ops` (`init`, `deinit`, `set_freq`, `set_filter`, `set_fixed_tx_rate`, `set_tx_rate_mask`, `get_capabilities`, `channel_schedule_request`, `get_mac_tsf`, `get_channel_status_report`, `set_station_info`) and capability bits (`sta_coexist`, `channel_hopping`, `nss`, ...) |
+| Providers in Wi-Fi drivers | **Yes** | Broadcom `bcmdhd4390` (Pixel 9 and 10); Intel `iwlmld` (commit `2ece331`, 2026-07-20); Qualcomm qcacld-3.0 `core/hdd/src/wlan_hdd_wondertap.c` (ISC; CodeLinaro tag `WLAN.LA.2.0.r3-10800-kaanapali.0`, mirrored in `LineageOS/android_kernel_qcom_sm8850-modules` `lineage-24.0`); MediaTek gen4m `gl_wondertap.h` (seen in `liudaoziwa/mainline-mt6991`) |
+| **This phone's copy** | **Yes** | Samsung's GPL release for SM-S928B `S928BXXU5DZDP`, mirrored in [`samsung-sm8650/opensource`](https://github.com/samsung-sm8650/opensource) commit `6be2ff6f6c27`: `vendor/qcom/opensource/wlan/wonder/` (Wonder 1.5), `.../qcacld-3.0/core/hdd/src/wlan_hdd_wondertap.c` (provider 1.4.1), `.../qcacld-3.0/configs/pineapple_gki_kiwi-v2_defconfig` with `CONFIG_DRIVER_PASSTHRU_MODE=y`. The releases before it (`S928BXXS5CZB2` and older) have no `wonder/` directory |
+| `mosey_server`, `libmosey_daemon_ffi.so` (the AWDL engine, Rust; embedded path `vendor/google/services/QuickShareExtension/src/`) | **No** | Google's binaries. One UI 9 ships them in `system_ext` [F per `ha0xin/houji-airdrop`, which unpacked `S928BXXU6EZIF`] |
+| `com.google.android.mosey`, GMS Quick Share | **No** | Google-signed APKs |
+| Wi-Fi firmware with the PASSTHRU service (`amss20.bin`) | **No** | `S928BXXS6DZF2` `vendor/firmware/kiwi/amss20.bin` ([`samsung-sm8650/proprietary_vendor_samsung_e3q`](https://github.com/samsung-sm8650/proprietary_vendor_samsung_e3q) `f749124168e9`) |
+| [`google/nearby`](https://github.com/google/nearby) (Apache-2.0) | Yes, but not this | Its AWDL "medium" (`connections/implementation/mediums/awdl`, since `8acf9249344e`, 2025-03-28) is for Apple hosts only: it uses Network.framework's peer-to-peer mode (`initWithPeerToPeer:YES`). It has no AirDrop or AWDL code for Android |
+
+**How the radio path works** [F: read in the Wonder and Samsung sources]:
+
+- **Wonder** registers its own mac80211 wiphy (interface types monitor, ad hoc, station, NAN) and the vendor commands
+  under `OUI_GOOGLE 0x001A11`: subcommand 1 `SET_FREQUENCY` (frequency in MHz, bandwidth), 2 `SET_FILTER` (BSSID or
+  frame type), 3 `SET_FIXED_TX_RATE`, 4 `SET_REGULATORY` (country code), 5 `GET_IF_MAC_ADDR`. Google's newer
+  branches add 6 `SET_CHANNEL_SCHEDULE_REQ`, 7 `GET_MAC_TSF`, 8 `GET_CAP`, 9 `GET_CHANNEL_STATUS_REPORT`,
+  0xA `SET_STATION_INFO`, 0xB `SET_FEATURES`, 0xF `SET_TX_RATE_TEST`. **Samsung's `S928BXXU5DZDP` copy has 1 to 5 only:
+  one channel, no hopping.**
+- **Start.** Wonder's mac80211 `start` (an interface up on its wiphy) calls the provider's `init`. qcacld then opens
+  an adapter in `QDF_PASSTHRU_MODE` named `wondertap%d`, a firmware vdev beside `wlan0`. The policy manager counts it
+  as a session (STA and PASSTHRU on one channel, or MCC). `init` fails with `-EBUSY` while a connection or a link
+  switch is in progress.
+- **Frames.** Wonder registers an `rx_handler` on `wondertap0`, which carries radiotap frames. It sends 802.11 frames
+  to it with `dev_queue_xmit`. The AWDL engine reads and writes frames on Wonder's monitor interface.
+- **Binding.** Samsung's Wonder 1.5 is a platform driver (`google,wonder-drv-v1`, a device-tree `wondertap-provider`
+  phandle, module parameter `physical_name`). It binds to cnss2's component (`qcom,cnss-vendor-wlan-wonder`), which
+  qcacld fills with `pld_set_vendor_wonder_priv_data()` -> `cnss_set_vendor_wonder_priv_data()`. Google's 3.x branches
+  use the auxiliary bus (`bcmdhd4390.wondertap`, `iwlmld.wondertap`).
+- **Our phone's build.** The phone runs `S928BXXU6EZIF` (One UI 9, kernel `6.1.162-android14-11-34343818-abS928BXXU6EZIF`,
+  `docs/agents.md`). `ha0xin/houji-airdrop` read that build's `qca_cld3_kiwi_v2.ko`: it imports
+  `cnss_set_vendor_wonder_priv_data` [F per that project, not read by us]. Which Wonder version that build has, and
+  whether `wonder.ko` loads at boot or only for Quick Share, is not known [U: the phone check below].
+
+**Ports to other phones, all with open Wonder and qcacld sources:**
+
+- [`YoWenhow/Xiaomi14-PixelOS-Airdrop`](https://github.com/YoWenhow/Xiaomi14-PixelOS-Airdrop) (GPL-2.0, v0.5.1-preview.1,
+  2026-10-26): Xiaomi 14 (`houji`, SM8650, `kiwi_v2`) on PixelOS. It runs Google's `mosey_server` on a qcacld-3.0
+  with a 115-file PASSTHRU overlay, a bridge module (the Xiaomi kernel's cnss2 lacks Samsung's Wonder symbols) and
+  **Samsung's `kiwi_v2` PASSTHRU firmware** (`docs/BUILD-zh.md`). Its validation: two-way transfers with an iPhone on
+  iOS 27.0.1. Normal Wi-Fi stops during a share.
+- [`ha0xin/houji-airdrop`](https://github.com/ha0xin/houji-airdrop) (2026-11): the same phone; its
+  `docs/airdrop/01-architecture.md` names the firmware: `S928BXXS6DZF2` `amss20.bin`. It runs on channel 6 (2437 MHz),
+  HT20, one spatial stream, with the station off (`pt_exclusive=1`). It also runs Xiaomi's AWDL engine `libxos.so`,
+  which it reads as derived from OWL (`OWL_mDNS` symbols) [I per that project].
+- [`midori01/XiaomiGlobalAirDrop`](https://github.com/midori01/XiaomiGlobalAirDrop): Xiaomi 17 Ultra (`peach_v2`), AWDL
+  on 5745 MHz while `wlan0` stays connected. Lessons for us: Mosey drops received frames without radiotap TSFT
+  (`Ignoring management frame without required radiotap fields`), and Mosey disconnects Wi-Fi when the station is on
+  5 or 6 GHz ("STA and mosey are running on the same band").
+- Others with `wondertap` providers: `Weverses/OPAirDrop` (OnePlus), `AdenXie/pandora-airdrop` (Xiaomi 17),
+  `Anton7444/MT6991-Airdrop` (MediaTek).
+- [`uamind/quickshare_airdrop`](https://github.com/uamind/quickshare_airdrop) (Galaxy S23 Ultra, One UI 9): One UI's
+  Quick Share calls this "Protocol X". On the S23 the `Mosey` service is missing, and a plain monitor interface
+  cannot change channel (`cfg80211_set_monitor_channel` returns `-EBUSY` while `wlan0` exists). That fits a driver
+  without PASSTHRU [I: the S23's driver source was not read].
+
+**The protocols** (unchanged): AWDL ([Stute et al., MobiCom'18](https://ar5iv.labs.arxiv.org/html/1808.03156)) uses
+vendor action frames (category 127, Apple's OUI 00:17:f2) for sync and service discovery, 16 TU availability windows,
+an elected master, and data frames with Apple's LLC/SNAP header (IPv6 link-local only). Apple's devices meet on
+channel 6 and channel 149 (44 too). [OWL](https://github.com/seemoo-lab/owl) (GPL-3.0, archived 2026-10-12) is an open
+AWDL engine in user space; it needs a monitor interface with frame injection on one of those channels, and Wonder's
+interface gives that. [OpenDrop](https://github.com/seemoo-lab/opendrop) is AirDrop's protocol over `awdl0` (Bonjour,
+HTTPS, the BLE advertisement type 0x05); Everyone mode only. Google's interop also works with an iPhone in "Everyone
+for 10 minutes" only ([Google](https://blog.google/security/android-quick-share-support-for-airdrop-security/)).
+Wi-Fi Aware (NAN) is not AirDrop's link [I].
 
 ### What iOS 27 needs (24A446, read in the image's binaries and the 2026-11-22 boot)
 
@@ -1322,24 +1380,42 @@ and `kbd-debug/xnuhost-s8.log`.
    create %s interface because the parent interface %s is missing`), then programs it with about 100 `AWDL_*`
    requests (115 to 262: sync, election, channel sequence, service parameters, peer database, keys). The guest's
    driver refuses every one of them (`kRefusedSets` in `kernel/patches/oneios-hosted/net/OneiOSWifi.cpp`), on
-   purpose: nothing behind it can do AWDL. The refusals cost nothing (wifip2pd asked once, 3% of a CPU for 10 s at its
+   purpose: no AWDL engine is behind it yet (the port plan below). The refusals cost nothing (wifip2pd asked once, 3% of a CPU for 10 s at its
    start).
    The names of the request numbers are 24A446's table (`_convertApple80211IOCTLToString`, 607 pointers at
    0x2d01b32f8 in IO80211.framework); the strings in order are not the numbers (they drift by up to 11).
 
-### The port plan, and what cannot be done
+### The port plan
+
+iOS's AWDL is in Apple's driver and chip firmware: wifip2pd sends parameters (about 100 `AWDL_*` requests), and the
+firmware does the frames and the timing. Our radio has no such firmware. So our side must run the AWDL engine in
+software, over Wonder's raw interface, the way Google's `mosey_server` does. Google's engine is closed, so we cannot
+reuse it in the guest's path. OWL's engine is open.
 
 | Step | What | Feasible? |
 |---|---|---|
-| 1 | **Bluetooth powered in iOS** (section 4): bluetoothd on the phone's controller. AirDrop's discovery and sharingd's "ready" need it. | Open: the VM path's power init (section 4 "What would reach the controller") |
-| 2 | **The radio's AWDL**: find what One UI 8.5's Quick Share uses on this chip: an interface, nl80211 vendor commands (Qualcomm OUI 00:13:74), or a vendor HAL. `wifictl p2p` (below) prints the radio's paths; run it with "Share with Apple devices" off and on, during a send, and compare. | Unknown until that run. If Samsung's driver has no AWDL interface of its own, **AWDL cannot be made on this phone**: no monitor beside the station, no injection, and AWDL's 16 TU timing cannot be kept from user space through nl80211 |
-| 3 | **Guest `awdl0`**: `VIRTUAL_IF_CREATE` (94) and the `AWDL_*` requests in `OneiOSWifi.cpp`, a second `IO80211Interface` with its own frames over the virtio-net device (a new message type in `oneios_wifi_proto.h`), mapped by the bridge to the vendor's AWDL. | Only after step 2 finds a vendor AWDL; its interface decides the mapping |
-| 4 | **The data**: AirDrop itself (Bonjour on `awdl0`, TLS on IPv6 link-local) is iOS's own: nothing to port once `awdl0` carries frames. | Yes, given steps 1 to 3 |
+| 1 | **Bluetooth powered in iOS** (section 4): bluetoothd on the phone's controller. AirDrop's discovery (BLE) and sharingd's "ready" need it. | Open: the VM path's power init (section 4 "What would reach the controller") |
+| 2 | **The radio, from the host** (`runtime/bridges/wifi`, root, beside One UI): find the Wonder wiphy (the one with vendor commands under `00:1a:11`); add a monitor interface on it (`NL80211_CMD_NEW_INTERFACE`) and bring it up (Wonder's `start` -> qcacld's `init` -> `wondertap0`); send `SET_REGULATORY` (4), `SET_FREQUENCY` (1: 2437 or 5745 MHz, 20 MHz), `GET_IF_MAC_ADDR` (5), `SET_FIXED_TX_RATE` (3); then send and receive radiotap frames with `AF_PACKET` on the monitor interface. On the way back: interface down, then delete it (Wonder's `stop` -> the provider's `deinit`). | Yes by the source [I: not run on our phone]. Limits: one channel (no hopping in 1.4.1/1.5); a 5 GHz station on the other channel means MCC; `init` refuses while a connection is in progress; One UI's Quick Share must not hold Wonder at the same time |
+| 3 | **The AWDL engine**: OWL (C, GPL-3.0) in the host bridge on that interface: sync, election, availability windows, action frames, data frames. Map wifip2pd's `AWDL_*` requests (service parameters, peers, keys) onto it, and convert Bonjour on `awdl0` to AWDL's service TLVs and back [I: houji's `libxos.so` does this conversion]. | Plausible; the largest work. OWL's GPL-3.0 must fit the runtime's licence [U] |
+| 4 | **Guest `awdl0`**: `VIRTUAL_IF_CREATE` (94) and the `AWDL_*` requests in `OneiOSWifi.cpp`, a second `IO80211Interface` whose Ethernet frames go to the host's engine over virtio-net (a new message type in `oneios_wifi_proto.h`). | After steps 2 and 3 |
+| 5 | **The data**: AirDrop itself (Bonjour on `awdl0`, TLS on IPv6 link-local) is iOS's own. | Yes, given steps 1 to 4 |
 
-What cannot be done: Google's Quick Share code cannot be reused (closed); OWL's way needs a monitor interface with
-injection beside the station, which this driver does not offer in a session (qcacld's monitor is a whole-driver
-mode); a guest `awdl0` with no radio behind it would make wifip2pd and sharingd wait on peers that never come (no
-fix, only a probe), so it is not written. Wi-Fi Aware is not AirDrop's link.
+What cannot be done: Google's `mosey_server` cannot be the engine for iOS, because it is closed and it speaks to
+Google's app and not to wifip2pd. A guest `awdl0` with no engine behind it would make wifip2pd and sharingd wait for
+peers that never come (no fix, only a probe), so it is not written.
+
+**The next step (a lasting tool, then the radio check):**
+
+1. Extend `wifictl p2p` (`runtime/bridges/wifi/p2p.c`) to dump every wiphy, not only `wlan0`'s. Add a `p2p: Wonder`
+   line: the Wonder wiphy, its vendor subcommands under `00:1a:11`, its interface types, the module (`/sys/module/wonder`,
+   `/sys/bus/platform/drivers/wonder`) and `mosey_server` (`/system_ext/bin/mosey_server`). Host tests in
+   `runtime/bridges/tests/test_wifi.c` with a dump of two wiphys.
+2. Run it on the phone, One UI running, no session: once idle, and once during a Quick Share "Share with Apple
+   devices" send to an iPhone in "Everyone for 10 minutes". The second run must show `wondertap0`, Wonder's monitor
+   interface and Mosey's `mosey0`. That decides the version (1.5 or later), the subcommands and the channel.
+3. Add `wifictl wonder`: open a Wonder session beside `wlan0` as in step 2 of the table, count the AWDL action frames
+   received (category 127, OUI 00:17:f2) with an iPhone near, then close the session and check that `wlan0` is
+   connected again. That proves the radio path before any OWL work.
 
 ### `wifictl p2p` (runtime/bridges/wifi/p2p.c, built 2026-11-22)
 
@@ -1361,8 +1437,10 @@ adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl p2p' > p2p-on.txt   
 diff p2p-off.txt p2p-on.txt
 ```
 
-A new `interface:`, `netdev:` or `process:` line in the second run is One UI's AWDL path; the `vendor commands`
-lines say which commands the driver has. Both decide step 2.
+A new `interface:`, `netdev:` or `process:` line in the second run is One UI's AWDL path (`wondertap0`, Wonder's
+monitor interface, `mosey0`, `mosey_server`). The `vendor commands` lines are `wlan0`'s radio only: `wifictl p2p`
+does not yet dump the Wonder wiphy, so its `00:1a:11` commands do not show, and its verdict line can say "no AWDL
+path" on a phone that has Wonder. The next step in "The port plan" fixes this.
 
 ## 5. Vibration and haptics
 
