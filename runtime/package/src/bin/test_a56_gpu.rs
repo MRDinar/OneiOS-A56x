@@ -2,10 +2,13 @@
 //! The Galaxy A56's GPU path, alone (port of tools/test_a56_gpu.c, docs/a56.md): opens the DRM render node (argv[1],
 //! default /dev/dri/renderD128), asks the driver's version and PRIME support, makes a 1 MiB udmabuf from a sealed memfd
 //! and imports it into the node with PRIME_FD_TO_HANDLE. Read only beside One UI: nothing it makes outlives it.
-use std::ffi::{c_char, c_int, c_ulong, CString};
+use std::ffi::{c_char, c_int};
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use xh_core::ioctl::{iow, iowr};
+use xh_core::sys::error_text;
+use xh_core::text::nul_text;
 
 #[repr(C)]
 struct DrmVersion {
@@ -44,48 +47,22 @@ struct UdmabufCreate {
     size: u64,
 }
 
-/// Linux's _IOC: direction, type, number, size.
-const fn ioc(dir: c_ulong, ty: u8, nr: u8, size: usize) -> c_ulong {
-    (dir << 30) | ((size as c_ulong) << 16) | ((ty as c_ulong) << 8) | nr as c_ulong
-}
-const IOC_WRITE: c_ulong = 1;
-const IOC_READ_WRITE: c_ulong = 3;
-const DRM_IOCTL_VERSION: c_ulong = ioc(IOC_READ_WRITE, b'd', 0x00, size_of::<DrmVersion>());
-const DRM_IOCTL_GET_CAP: c_ulong = ioc(IOC_READ_WRITE, b'd', 0x0c, size_of::<DrmGetCap>());
-const DRM_IOCTL_PRIME_FD_TO_HANDLE: c_ulong = ioc(IOC_READ_WRITE, b'd', 0x2e, size_of::<DrmPrimeHandle>());
-const UDMABUF_CREATE: c_ulong = ioc(IOC_WRITE, b'u', 0x42, size_of::<UdmabufCreate>());
+const DRM_IOCTL_VERSION: u32 = iowr(b'd', 0x00, size_of::<DrmVersion>());
+const DRM_IOCTL_GET_CAP: u32 = iowr(b'd', 0x0c, size_of::<DrmGetCap>());
+const DRM_IOCTL_PRIME_FD_TO_HANDLE: u32 = iowr(b'd', 0x2e, size_of::<DrmPrimeHandle>());
+const UDMABUF_CREATE: u32 = iow(b'u', 0x42, size_of::<UdmabufCreate>());
 const DRM_CAP_PRIME: u64 = 0x5;
 const BUFFER_SIZE: u64 = 1024 * 1024;
 
 /// ioctl(fd, request, arg): the call's result (a new fd for UDMABUF_CREATE) or the error.
-fn ioctl<T>(fd: &impl AsRawFd, request: c_ulong, arg: &mut T) -> io::Result<c_int> {
+fn ioctl<T>(fd: &impl AsRawFd, request: u32, arg: &mut T) -> io::Result<c_int> {
     // SAFETY: `arg` is a live, exclusively borrowed value of the type `request` encodes the size of.
-    let ret = unsafe { libc::ioctl(fd.as_raw_fd(), request as _, arg as *mut T) };
-    if ret < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(ret)
-    }
+    unsafe { xh_core::ioctl::ioctl(fd.as_raw_fd(), request, arg) }
 }
 
-/// "<strerror>" and, for the C's `(errno N)` lines, the number.
+/// The errno, for the C's `(errno N)` lines.
 fn errno_of(e: &io::Error) -> i32 {
     e.raw_os_error().unwrap_or(0)
-}
-
-/// The text of a C string buffer up to its NUL.
-fn c_text(buffer: &[u8]) -> String {
-    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).into_owned()
-}
-
-/// strerror's text without Rust's " (os error N)".
-fn reason(e: &io::Error) -> String {
-    let text = e.to_string();
-    match text.rfind(" (os error ") {
-        Some(at) => text[..at].to_string(),
-        None => text,
-    }
 }
 
 fn open_rw(path: &str) -> io::Result<File> {
@@ -106,17 +83,17 @@ fn query_version(node: &File) {
         version_patchlevel: 0,
     };
     match ioctl(node, DRM_IOCTL_VERSION, &mut version) {
-        Err(e) => println!("[-] DRM_IOCTL_VERSION failed: {}", reason(&e)),
+        Err(e) => println!("[-] DRM_IOCTL_VERSION failed: {}", error_text(&e)),
         Ok(_) => {
             println!(
                 "[+] DRM Driver: '{}' (version {}.{}.{}, date: '{}')",
-                c_text(&name),
+                nul_text(&name),
                 version.version_major,
                 version.version_minor,
                 version.version_patchlevel,
-                c_text(&date)
+                nul_text(&date)
             );
-            println!("[+] Description: '{}'", c_text(&desc));
+            println!("[+] Description: '{}'", nul_text(&desc));
         }
     }
 }
@@ -124,7 +101,7 @@ fn query_version(node: &File) {
 fn query_prime(node: &File) {
     let mut cap = DrmGetCap { capability: DRM_CAP_PRIME, ..Default::default() };
     match ioctl(node, DRM_IOCTL_GET_CAP, &mut cap) {
-        Err(e) => println!("[-] DRM_CAP_PRIME query failed: {}", reason(&e)),
+        Err(e) => println!("[-] DRM_CAP_PRIME query failed: {}", error_text(&e)),
         Ok(_) => {
             let yes = |bit: u64| if cap.value & bit != 0 { "YES" } else { "NO" };
             println!("[+] DRM_CAP_PRIME support: 0x{:x} (import={}, export={})", cap.value, yes(1), yes(2));
@@ -132,27 +109,21 @@ fn query_prime(node: &File) {
     }
 }
 
-/// A sealable memfd of BUFFER_SIZE bytes, its shrinking sealed (udmabuf needs F_SEAL_SHRINK).
+/// A sealable memfd of BUFFER_SIZE bytes, its shrinking sealed (udmabuf needs F_SEAL_SHRINK; a seal refused is
+/// UDMABUF_CREATE's to say).
 fn sealed_memfd() -> Result<OwnedFd, String> {
-    let name = CString::new("test_gpu_buf").expect("no NUL");
-    // SAFETY: memfd_create with a valid C string; the fd it returns is owned by the OwnedFd below.
-    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_ALLOW_SEALING) };
-    if fd < 0 {
-        return Err(format!("[-] memfd_create failed: {}", reason(&io::Error::last_os_error())));
-    }
-    // SAFETY: `fd` is a new descriptor nobody else owns.
-    let memfd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let memfd = xh_core::fd::memfd(c"test_gpu_buf", libc::MFD_ALLOW_SEALING)
+        .map_err(|e| format!("[-] memfd_create failed: {}", error_text(&e)))?;
     let file = File::from(memfd);
-    file.set_len(BUFFER_SIZE).map_err(|e| format!("[-] ftruncate failed: {}", reason(&e)))?;
-    // SAFETY: fcntl on a descriptor we own; F_ADD_SEALS takes an int.
-    unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK) };
+    file.set_len(BUFFER_SIZE).map_err(|e| format!("[-] ftruncate failed: {}", error_text(&e)))?;
+    let _ = xh_core::fd::seal_shrink(file.as_fd());
     Ok(file.into())
 }
 
 fn import_udmabuf(node: &File, node_path: &str) {
     println!("\n[2] Testing memory buffer creation via /dev/udmabuf...");
     let udmabuf = match open_rw("/dev/udmabuf") {
-        Err(e) => return println!("[-] Failed to open /dev/udmabuf: {}", reason(&e)),
+        Err(e) => return println!("[-] Failed to open /dev/udmabuf: {}", error_text(&e)),
         Ok(f) => f,
     };
     println!("[+] Opened /dev/udmabuf (fd={})", udmabuf.as_raw_fd());
@@ -162,7 +133,7 @@ fn import_udmabuf(node: &File, node_path: &str) {
     };
     let mut create = UdmabufCreate { memfd: memfd.as_raw_fd() as u32, size: BUFFER_SIZE, ..Default::default() };
     let dmabuf = match ioctl(&udmabuf, UDMABUF_CREATE, &mut create) {
-        Err(e) => return println!("[-] UDMABUF_CREATE failed: {}", reason(&e)),
+        Err(e) => return println!("[-] UDMABUF_CREATE failed: {}", error_text(&e)),
         // SAFETY: UDMABUF_CREATE returned a new dma-buf descriptor that we now own.
         Ok(fd) => unsafe { OwnedFd::from_raw_fd(fd) },
     };
@@ -170,7 +141,7 @@ fn import_udmabuf(node: &File, node_path: &str) {
     println!("[3] Importing dma-buf into {node_path} via PRIME_FD_TO_HANDLE...");
     let mut prime = DrmPrimeHandle { fd: dmabuf.as_raw_fd(), ..Default::default() };
     match ioctl(node, DRM_IOCTL_PRIME_FD_TO_HANDLE, &mut prime) {
-        Err(e) => println!("[-] PRIME_FD_TO_HANDLE failed: {} (errno {})", reason(&e), errno_of(&e)),
+        Err(e) => println!("[-] PRIME_FD_TO_HANDLE failed: {} (errno {})", error_text(&e), errno_of(&e)),
         Ok(_) => println!("[+] SUCCESS: dma-buf imported into SGPU! GEM Handle: {}", prime.handle),
     }
 }
@@ -182,7 +153,7 @@ fn main() {
     println!("[1] Opening DRM render node: {node_path} ...");
     let node = match open_rw(&node_path) {
         Err(e) => {
-            println!("[-] Failed to open {node_path}: {} (errno {})", reason(&e), errno_of(&e));
+            println!("[-] Failed to open {node_path}: {} (errno {})", error_text(&e), errno_of(&e));
             std::process::exit(1);
         }
         Ok(f) => f,

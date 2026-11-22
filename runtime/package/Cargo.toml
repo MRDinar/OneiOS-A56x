@@ -11,9 +11,9 @@ autotests = false
 autoexamples = false
 autobenches = false
 
-
 [dependencies]
 libc.workspace = true
+xh-core.workspace = true
 
 [lints]
 workspace = true

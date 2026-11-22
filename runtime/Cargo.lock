@@ -54,6 +54,7 @@ name = "oneios-package-tools"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "xh-core",
 ]
 
 [[package]]
