@@ -88,6 +88,14 @@ suite() {
     for f in runtime/xnuhost/build/android/xnuhost runtime/xnuhost/build/android/testkernel.elf; do
       [ -f "$f" ] || xn=(sh -c "echo 'host-tests: no $f: the Mac builds it before the container (runtime/host-tests.sh)'; exit 1")
     done
+    # -o makes testkernel.elf "old", so make never remade the test image from it: until 2026-11-23 check-arm64 booted a
+    # testimage/kernel.kc of 2026-11-12 (before irq_take was added to the vector: "FAIL host-call vector ABI"). An image
+    # that is not newer than the ELF is removed here; make then builds it again with build/host/mkkernel (a host tool).
+    local kc=runtime/xnuhost/build/android/testimage/kernel.kc
+    if [ -f "$kc" ] && ! [ "$kc" -nt runtime/xnuhost/build/android/testkernel.elf ]; then
+      echo "host-tests: $kc is older than testkernel.elf: removed, made again from it"
+      rm -f "$kc" runtime/xnuhost/build/android/testimage/os.img
+    fi
   fi
   part xnuhost "${xn[@]}" test
   part display make -s -C runtime/display test
