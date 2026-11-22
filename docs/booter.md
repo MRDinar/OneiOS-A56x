@@ -74,6 +74,8 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set haptics-native-impacts=0\|1` (`haptics-native-impacts=`, also in `xnuhost.conf`) | unset | iOS's short taps as the vibrator HAL's own presets (TICK, CLICK, HEAVY_CLICK) instead of 20 ms motor starts, both halves with one setting: 1 asks the haptics bridge for them and adds `oneios_native_impacts=1` after the boot arguments (kept whole); refused (exit 2) without `hw-backend-haptics=treble`, with `hw-backend-fallback=1`, with `haptics=off\|sim` or the bridges off, or when the boot arguments say `oneios_native_impacts=` otherwise. 0: off, whatever the environment says. Unset: `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` in xnuhost's environment decides, as before (the OneOS fork passes none). [hardware.md](hardware.md) 5, "Native impacts". Default off on every phone; host-tested only |
 | `--host-device auto\|none\|NAME` (`host-device=`, also in `xnuhost.conf`) | `auto` | the host phone ([hardware.md](hardware.md) 7h): `auto` reads `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (fallbacks: `/sys/devices/soc0/machine`, `/proc/device-tree/compatible`) and takes the matching entry of `runtime/bridges/hw/host_device.c` (`galaxy-s24-ultra`, `galaxy-s25-ultra`, `galaxy-s25`, `galaxy-s26-ultra`, `galaxy-a56`); `none`: no entry; a name forces that entry; another name is refused (exit 2). The entry's defaults go under the command line and the image set. One line at the start: `host: NAME (...), matched by ro.product.model=...; read: ...; defaults: ...` (or `host: unknown phone (read: ...): today's defaults`) |
 | `--host-props FILE`, `--host-root DIR` (`host-props=`, `host-root=`) | the property area, `/` | a getprop dump read instead of the property area (`[key]: [value]` or `key=value` lines; an unreadable file is refused), and a folder for `/` of the sysfs and proc fallbacks: host tests, or a PC replaying a phone's `adb shell getprop` |
+| `--set session-mode=hosted\|takeover` (`session-mode=`, also in `xnuhost.conf`; 2026-11-23) | `hosted` | `takeover`: the opt-in Android takeover (section 2.9d): only with `mode=takeover`, `input=1` and a host-table row that allows it (the S24 Ultra, the S26 Ultra), else exit 2; it grabs the native touchscreen alone (`touch-exclusive` on unless given), the side keys read and never grabbed. `hosted`: the session as before, byte for byte |
+| `--host-info` | - | prints `host-info: device=NAME takeover=yes\|no (why)` for this phone and exits (section 2.9d); no image needed. The OneOS switch's preflight reads it |
 | `--gpu auto\|3d\|2d` (`gpu=`, also in `xnuhost.conf` since 2026-11-21) | `auto` (the A56's entry: `2d`) | the GPU ([gpu.md](gpu.md) 2): `auto` 3D when KGSL opens, `3d` or do not start, `2d` the scanout only and no GPU pool. Before 2026-11-21 an image set's `gpu=` was read and dropped |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
 | `--set ready-content-wait=SECONDS` | 120 | `session/ready` comes at the guest's first frame of its own that is not all black, or this long after its first frame of its own when all were black; 0 = at its first frame (the rule before 2026-11-15); 0 to 480 (section 2.8, "the ready rule") |
@@ -1479,7 +1481,9 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
 The OneOS fork's way back to One UI depends on these (`docs/agents.md`, "booter -> oneos"); they hold today
 and any change that would break one goes on the board first:
 
-- no `EVIOCGRAB` on any input device, and never on the side keys; the Volume Up + Volume Down chord is the fork's;
+- no `EVIOCGRAB` on any input device, and never on the side keys; the Volume Up + Volume Down chord is the fork's.
+  One exception, opt-in and off by default (the owner, 2026-11-23): `session-mode=takeover` grabs the native
+  touchscreen `sec_touchscreen` alone (2.9d); a key device is never grabbed in any mode;
 - no thread in a realtime class or above nice -10 (affinity and uclamp only);
 - nothing leaves the mount namespace or the session's cgroup; no change to `oom_score_adj`; no signal to a
   process that is not xnuhost's own (the factory kills only its own process group);
@@ -1491,6 +1495,51 @@ the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is ki
 (neither breaks One UI's Wi-Fi: [hardware.md](hardware.md) section 3, "Return"; `bin/wifictl restore
 SESSION/wifi.state` puts them back). With `wifi=tap`, the tap's routing rules and iptables chains stay until
 `oneios-net.sh down` (the tap itself goes with the process).
+
+### 2.9d The Android takeover: `session-mode=takeover` (port-opt-in-takeover-session, 2026-11-23)
+
+The owner (2026-11-23): YMGPwcca/OneOS's Framework-takeover experiment, ported as an option "part of the iOS hosted
+session / Android takeover option we have", for the speed that the iOS-first plan
+([plan-ios-first-session.md](plan-ios-first-session.md), stages 2-4) gets later. Off by default. **Not run on a phone
+yet**; host-tested only (below).
+
+| Setting | Values | Default | Where |
+|---|---|---|---|
+| `session-mode` | `hosted` (the session as it always was), `takeover` (the opt-in Android takeover) | `hosted` | the command line (`--set session-mode=takeover`, which the OneOS switch adds in this mode only), or the image set's `xnuhost.conf` / `overlay/userland/xnuhost.conf` (the command line wins) |
+
+What xnuhost does in `takeover` (`config.c` `xh_config_finish`, `input.c`, `main.c`):
+
+- **Refused at the start (exit 2) unless** `mode=takeover` (the OneOS session), `input=1`, and the host phone's row of
+  the host table has `.takeover = true` (`runtime/bridges/hw/host_device.c`: the S24 Ultra and the S26 Ultra; no other
+  row, no unknown phone, not `host-device=none`): `xnuhost: session-mode=takeover is not supported on this phone
+  (NAME): ...`. A forced `host-device=NAME` is that row.
+- **The touchscreen grab:** `touch-exclusive` turns on (unless `touch-exclusive=` was given): `EVIOCGRAB` of the native
+  `sec_touchscreen` only (`xh_input_exclusive_touch_allowed`), so nothing else on the phone reads it while iOS has it.
+  The side keys are read as in every session and never grabbed (`xh_input_start`'s `read_keys`; only the bench preview,
+  `mode=bench` with `bridges=0`, leaves them out). The kernel ends the grab with the file: `xh_input_stop`, any exit, a
+  SIGKILL, and the `exec` of a restart in place (the fd is `O_CLOEXEC`; the new image grabs again). A grab that the
+  kernel refuses ends the start (`input: touch-exclusive: EVIOCGRAB ... refused`), which is a return like any exit.
+- Nothing else of xnuhost changes: the bridges, the CPU placement, the RAM, the display are the session's. The mode's
+  other parts are the fork's (the CPU cap, the way back: [oneos/interface.md](../oneos/interface.md) 4a).
+
+`xnuhost --host-info [--host-device ...] [--host-props FILE] [--config FILE]` prints one line and exits 0 (2 for a
+`host-device=` that names no row), without an image: `host-info: device=galaxy-s24-ultra takeover=yes (matched by
+ro.product.model=SM-S928B)`, or `host-info: device=none takeover=no (unknown phone; read: ...)`. The fork's switch asks
+it before it stops anything; a runtime from before this has no such option (exit 2, `unknown or incomplete argument`),
+and the switch then refuses the takeover.
+
+Log lines (only in this mode; a hosted session's log has none of them): after the `host:` line `session: Android
+takeover (session-mode=takeover; galaxy-s24-ultra allows it): the native touchscreen is grabbed for iOS; the side keys
+are read, never grabbed; ...`; `hw: touch: ... exclusive touch requested (session-mode=takeover: sec_touchscreen grab,
+the side keys read and never grabbed)`; `input: touch-exclusive: sec_touchscreen grabbed (session-mode=takeover; the side
+keys are read, never grabbed); Android input hidden until release`; at the stop `input: touch-exclusive: sec_touchscreen
+released to Android`.
+
+Tests (`runtime/xnuhost/tests/test_xnuhost.c` `test_session_mode`, on the build laptop, 2026-11-23: 14325 checks, 0
+failed): the table (only the two rows), hosted equal to no setting, takeover on both phones with the grab on,
+`touch-exclusive=0` kept, refused on the S25 Ultra, an unknown phone, `host-device=none`, the bench and `--no-input`,
+the image set's setting and the command line over it, every `--host-info` line. The Rust mirror (`oneios-tool`'s
+`host.rs`) checks `.takeover` against the C table (`table_matches_the_c_source`).
 
 ### 2.9c A host call that does not come back, and a stop the main loop does not see (fix-debugger-crosscall-panic, 2026-11-23)
 

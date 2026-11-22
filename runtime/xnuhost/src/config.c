@@ -32,7 +32,8 @@ void xh_config_defaults(xh_config *c)
   // gpu: "" until xh_config_finish (the command line, the image set, the host device's default, else auto)
   c->input = true;
   c->display_direct = -1;
-  c->touch_exclusive = false;  // bench-only touchscreen grab; never on in takeover
+  c->touch_exclusive = false;  // the touchscreen grab: a bench preview, or session-mode=takeover (which turns it on)
+  strcpy(c->session_mode, "hosted");   // the default session, byte for byte as before session-mode existed
   c->touch_sleep = true;
   c->tasks = true;
   c->task_uid = -1;
@@ -177,7 +178,12 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   }
   else if (!strcmp(key, "input")) return flag(value, &c->input);
   else if (!strcmp(key, "display-direct")) { bool on; if (flag(value, &on)) return -1; c->display_direct = on; }
-  else if (!strcmp(key, "touch-exclusive")) return flag(value, &c->touch_exclusive);
+  else if (!strcmp(key, "touch-exclusive")) { if (flag(value, &c->touch_exclusive)) return -1; c->touch_exclusive_given = true; }
+  else if (!strcmp(key, "session-mode")) {
+    // hosted (the default) or takeover (docs/booter.md 2.9d): xh_config_finish checks the host table and the mode
+    ok = !strcmp(value, "hosted") || !strcmp(value, "takeover");
+    if (ok) { strcpy(c->session_mode, value); c->session_mode_given = true; }
+  }
   else if (!strcmp(key, "input-script")) return copy(c->input_script, sizeof c->input_script, value);
   else if (!strcmp(key, "tasks")) return flag(value, &c->tasks);
   else if (!strcmp(key, "task-uid")) c->task_uid = atoi(value);
@@ -326,7 +332,9 @@ static void usage(void)
         "               [--set haptics-native-impacts=0|1] (1: needs hw-backend-haptics=treble, hw-backend-fallback=0)\n"
         "               [--host-device auto|none|NAME] [--host-props FILE] [--host-root DIR]\n"
         "               [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n"
+        "               [--set session-mode=hosted|takeover]\n"
         "       xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n"
+        "       xnuhost --host-info [--host-device ...] [--host-props FILE]   this phone's row of the host table, one line\n"
         "docs/booter.md describes the image set's files, the session files and the exit codes.\n", stderr);
 }
 
@@ -344,6 +352,7 @@ int xh_config_args(xh_config *c, int argc, char **argv)
     const char *a = argv[i];
     if (!strcmp(a, "-v")) { c->log_level = XH_LOG_DEBUG; continue; }
     if (!strcmp(a, "--selftest")) { c->selftest = true; continue; }
+    if (!strcmp(a, "--host-info")) { c->host_info = true; continue; }
     if (!strcmp(a, "--no-input")) { c->input = false; continue; }
     if (!strcmp(a, "--no-tasks")) { c->tasks = false; continue; }
     if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return -1; }
@@ -474,17 +483,34 @@ int xh_config_finish(xh_config *c)
   if (!c->encoder_given && from_image.encoder_given) strcpy(c->encoder, from_image.encoder);
   if (!c->camera_vm_given && from_image.camera_vm_given) strcpy(c->camera_vm, from_image.camera_vm);
   if (!c->camera_model_given && from_image.camera_model_given) strcpy(c->camera_model, from_image.camera_model);
-  // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
-  // Never let an input-grabbing guest take control of Android outside a SHM bench.
-  if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
-                            !c->input || c->bridges)) {
-    fprintf(stderr, "xnuhost: touch-exclusive=1 requires mode=bench, display=shm, input=1, bridges=0\n");
+  // session-mode= of the image set (its overlay/userland/xnuhost.conf) when the command line has none.
+  if (!c->session_mode_given && from_image.session_mode_given) strcpy(c->session_mode, from_image.session_mode);
+  const bool takeover_mode = !strcmp(c->session_mode, "takeover");
+  // The touchscreen grab, outside the opt-in Android takeover, is a bounded non-takeover diagnostic only: never let an
+  // input-grabbing guest take control of Android outside a SHM bench.
+  if (c->touch_exclusive && !takeover_mode && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
+                                               !c->input || c->bridges)) {
+    fprintf(stderr, "xnuhost: touch-exclusive=1 requires session-mode=takeover, or mode=bench, display=shm, input=1, bridges=0\n");
     return -1;
   }
   if (c->selftest) { if (!*c->gpu) strcpy(c->gpu, "auto"); return 0; }
   // The host phone's defaults (bridges/host_device.h), under both: the command line > the image set > the table > built in.
   xh_config device;
   if (host_device_layer(c, &from_image, &device)) return -1;
+  // session-mode=takeover (docs/booter.md 2.9d): only in the OneOS session, only where the host table allows it (the
+  // switch asked --host-info before it stopped One UI; this is the same rule, for a command line that did not), and
+  // with input: it turns the native touchscreen's grab on unless touch-exclusive= was given.
+  if (takeover_mode) {
+    if (strcmp(c->mode, "takeover")) { fprintf(stderr, "xnuhost: session-mode=takeover needs mode=takeover (the OneOS session)\n"); return -1; }
+    if (!c->host || !c->host->takeover) {
+      fprintf(stderr, "xnuhost: session-mode=takeover is not supported on this phone (%s): the host table "
+              "(runtime/bridges/hw/host_device.c) does not allow it; session-mode=hosted is the session as before\n",
+              c->host ? c->host->name : "no row of the host table");
+      return -1;
+    }
+    if (!c->input) { fprintf(stderr, "xnuhost: session-mode=takeover needs input=1 (its touchscreen grab)\n"); return -1; }
+    if (!c->touch_exclusive_given) c->touch_exclusive = true;
+  }
   if (!*c->gpu) strcpy(c->gpu, *from_image.gpu ? from_image.gpu : *device.gpu ? device.gpu : "auto");
   if (!*c->boot_args) strcpy(c->boot_args, from_image.boot_args);
   if (!c->width) c->width = from_image.width;
@@ -928,4 +954,27 @@ unsigned xh_scale_fixups(const char *build, unsigned scale, char *list, unsigned
     length += n;
   }
   return length;
+}
+
+// --host-info (main.c): the host table's row for this phone, one line on `out`, for the OneOS switch's preflight
+// (oneos/interface.md 4a): "host-info: device=galaxy-s24-ultra takeover=yes (matched by ro.product.model=SM-S928B)", or
+// "host-info: device=none takeover=no (unknown phone; read: ...)". It reads what xh_config_finish's host layer reads (the
+// properties, three sysfs and proc files; host-device=, host-props=, host-root= from the command line or a --config
+// file) and needs no image. -1 for a host-device= that names no row.
+int xh_config_host_info(const xh_config *c, FILE *out)
+{
+  br_host_facts f;
+  memset(&f, 0, sizeof f);
+  const br_host_device *e = NULL;
+  char why[260], read[400];
+  if (br_host_choose(*c->host_device ? c->host_device : "auto", c->host_props, c->host_root, &f, &e, why, sizeof why)) {
+    fprintf(stderr, "xnuhost: %s\n", why);
+    return -1;
+  }
+  if (e) fprintf(out, "host-info: device=%s takeover=%s (%s)\n", e->name, e->takeover ? "yes" : "no", why);
+  else {
+    br_host_describe(&f, read, sizeof read);
+    fprintf(out, "host-info: device=none takeover=no (%s; read: %s)\n", why, read);
+  }
+  return 0;
 }

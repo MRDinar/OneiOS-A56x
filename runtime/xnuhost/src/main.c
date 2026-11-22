@@ -749,16 +749,19 @@ static int boot(void)
   br_hw_configure(&config.hw);
   if (config.input) {
     // Touch and the side keys: one lookup for both backends (input.c: event0..31 by their capabilities, never grabbed,
-    // except an explicit bench+SHM touch-exclusive=1, which grabs only the native sec_touchscreen).
+    // except touch-exclusive=1, which grabs only the native sec_touchscreen: a bench+SHM preview, or
+    // session-mode=takeover, where the side keys are still read and never grabbed).
     char touch_why[64], keys_why[64];
     int touch_hw = br_hw_choose(&config.hw, BR_HW_TOUCH, BR_HW_UNSET, touch_why, sizeof touch_why);
     int keys_hw = br_hw_choose(&config.hw, BR_HW_KEYS, BR_HW_UNSET, keys_why, sizeof keys_why);
     LOGI("hw: touch: backend %s (%s); keys: backend %s (%s): the same lookup in both, /dev/input/event0..31 by their "
          "capabilities, exclusive touch %s", br_hw_name(touch_hw), touch_why, br_hw_name(keys_hw), keys_why,
-         config.touch_exclusive ? "requested (bench+SHM sec_touchscreen grab)" : "off");
+         !config.touch_exclusive ? "off" : !strcmp(config.mode, "bench") ? "requested (bench+SHM sec_touchscreen grab)" :
+         "requested (session-mode=takeover: sec_touchscreen grab, the side keys read and never grabbed)");
   }
+  // The bench preview leaves the side keys to the Android that runs under it; every session reads them.
   if (config.input && xh_input_start(input, pen.dev && pen.device.fd >= 0 ? &pen : NULL, fb_width, fb_height,
-                                     config.touch_exclusive)) {
+                                     config.touch_exclusive, !(config.touch_exclusive && !strcmp(config.mode, "bench")))) {
     if (config.touch_exclusive) {
       LOGE("input: exclusive touchscreen unavailable; refusing to boot guest, Android input stays usable");
       return -1;
@@ -1415,7 +1418,11 @@ int main(int argc, char **argv)
   android_set_application_target_sdk_version(30);
 #endif
   xh_config_defaults(&config);
-  if (xh_config_args(&config, argc, argv) || xh_config_finish(&config)) return EXIT_SETUP;
+  if (xh_config_args(&config, argc, argv)) return EXIT_SETUP;
+  // --host-info: the host table's answer for this phone, one line on stdout, nothing else (the OneOS switch's preflight
+  // asks it before it stops anything: oneos/interface.md 4a).
+  if (config.host_info) return xh_config_host_info(&config, stdout) ? EXIT_SETUP : 0;
+  if (xh_config_finish(&config)) return EXIT_SETUP;
   xh_log_open(NULL, config.log_level);
   LOGI("xnuhost: session ABI %d, mode %s, pid %d", config.session_abi, config.mode, getpid());
   xh_virtio_log = log_line;               // virtio.c's health lines (docs/booter.md 2.9b)
@@ -1424,6 +1431,11 @@ int main(int argc, char **argv)
   // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
   // variable the session already set wins.
   if (*config.host_line) LOGI("%s", config.host_line);
+  // Only in the opt-in mode: the default session's log has no such line (docs/booter.md 2.9d).
+  if (!strcmp(config.session_mode, "takeover"))
+    LOGI("session: Android takeover (session-mode=takeover; %s allows it): the native touchscreen is grabbed for iOS%s; the "
+         "side keys are read, never grabbed; the switch's CPU caps and the way back are the OneOS fork's",
+         config.host ? config.host->name : "?", config.touch_exclusive ? "" : " (not: touch-exclusive=0 was given)");
   br_host_env_apply(config.host);
   host_facts();
   if (!config.selftest) ram_choice_log();
