@@ -3055,6 +3055,14 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
   Period}`, read in 24A446's CoreBrightness): taken as the slider's level when its value is unambiguous (a float's bits,
   data or text; not the integers 0 and 1), and logged with what it held (`drivers/brightness/README.md`,
   "DisplayBrightness"). Host-tested decoder; not run.
+- **Every level the dimmest (fix-brightness-path, 2026-11-23).** Phone, 2026-11-23: CoreBrightness used
+  frame-synchronous brightness (`UseSyncBrightnessTransactionForDisplay: 1`), which goes to CoreAnimation, and QuartzCore
+  has no brightness handler here (`Display 1, no brightness handler registered`); the service got only a truncated
+  float and slider positions of 0. Fixed, not booted: backboardd's `useSyncBrightnessTransactionForDisplay:` answers NO
+  (`BacklightMode.inc`; `oneios-bl-sync=1` keeps iOS's answer), so CoreBrightness sets `brightness-nits`; `LmidProduct`
+  and `LminProduct` are 16.16 nits (CoreBrightness read the whole numbers as 1/65536 of them); `brightness-nits`, once
+  it came, wins over the slider position. Read in 24A446's CoreBrightness with the addresses:
+  `drivers/brightness/README.md`, "Why every level was the dimmest".
 - **The slider, nits 0 and the touch IC (fix-brightness-touch, 2026-11-14).** Phone, 2026-11-13 (main 9f6dc38): iOS
   sent `brightness-nits` 0 with its display on; the panel went to its floor and the bridge slept the touch IC (dead
   touch until woken by hand); Control Center's slider sent only `DisplayBrightnessSliderPosition` and

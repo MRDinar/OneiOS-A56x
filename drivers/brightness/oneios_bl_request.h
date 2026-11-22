@@ -252,6 +252,54 @@ obl_sent_forget(struct obl_sent *s)
 	s->valid = 0;
 }
 
+/*
+ * Which key sets the level (fix-brightness-path, 2026-11-23). CoreBrightness sets DisplayBrightnessSliderPosition beside
+ * its levels on every path; on the phone (2026-11-23) every one of them was 0 (raw 0 or 1: __DisplaySetLogicalBrightness
+ * makes 0 a 1 when the light is above 0) while the ramp it logged went from 168 to 218 nits. brightness-nits is the light
+ * itself (BLControl's own path, the one BacklightMode.inc now selects). So once a brightness-nits above 0 has come, it
+ * alone sets the level and a slider position is not sent (counted, logged now and then); before it, the slider position
+ * is used as before. Nits of 0 or less are not a level (obl_nits_level) and do not count.
+ */
+struct obl_sources {
+	int nits_seen;
+	uint64_t slider_ignored;       /* slider positions not used: brightness-nits sets the level */
+};
+
+static inline void
+obl_nits_came(struct obl_sources *s)
+{
+	s->nits_seen = 1;
+}
+
+static inline int
+obl_slider_used(struct obl_sources *s)
+{
+	if (s->nits_seen) {
+		s->slider_ignored++;
+		return 0;
+	}
+	return 1;
+}
+
+/*
+ * The product luminances CoreBrightness reads from their own properties [F, the phone 2026-11-23]: LmaxProduct, LmidProduct
+ * and LminProduct are all signed 16.16 nits. CoreBrightness printed the numbers 125 and 1 the driver published as
+ * "Lmid_product=0.0019073486328125" and "Lmin_product=0.0000152587890625" (125 and 1 over 65536), and the iPhone's own
+ * tree (24A446 V54, /exbright) has LminProduct 0xa0000 and LmaxProduct 0xbb80000 (10 and 3000 nits). Whole nits to 16.16;
+ * at least 1 nit, at most 32767.
+ */
+static inline uint32_t
+obl_product_nits16(uint32_t nits)
+{
+	if (nits < 1) {
+		nits = 1;
+	}
+	if (nits > 32767) {
+		nits = 32767;
+	}
+	return nits << 16;
+}
+
 /* The same for what the service publishes (IODisplayParameters' value, brightness-nits): only a change is set again. */
 struct obl_published {
 	int valid;

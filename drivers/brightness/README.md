@@ -146,7 +146,7 @@ request"; their fix, `external/UniXNU/scripts/appsync/BacklightMode.m`, gives ba
   `oneios-bl-mode=0` (kernel boot argument) turns it off.
 - **The service** (`OneiOSBacklight.cpp`), what iOS 27 reads besides, from UniXNU-sheng's working service:
   `IODisplayParameters.BrightnessMilliNits {min, max, value}` in millinits (38, 500000, the current level's);
-  `LmaxProduct` (4 bytes, 16.16 nits), `LmidProduct` (125) and `LminProduct` (1) as numbers in nits;
+  `LmaxProduct` (4 bytes, 16.16 nits), `LmidProduct` (125) and `LminProduct` (1) as numbers, 16.16 nits since 2026-11-23 (whole nits before, which CoreBrightness read as 1/65536 of them: "Why every level was the dimmest");
   `NativeSandboxGrantProcess = backboardd` (Droid-VM-UniXNU `zzwb-native-sandbox-grant-set-properties.patch`, in
   the arm64e series: backboardd's profile refuses `FadePeriod` on a backlight that is not Apple's, sheng int-276).
   `brightness-nits` is read as signed 16.16 (zero or less: level 0, the display dark); before, a negative value was
@@ -235,7 +235,7 @@ CoreBrightness [F]:
   16.16 of the slider's position 0..1** (`__DisplaySetLogicalBrightnessInternal` 0x22aa0d784 and 0x22aa0de14, from
   `__DisplayLogicalToSliderBrightnessInternal`), set on the service alone (`IORegistryEntrySetCFProperty` in
   `__DisplaySetBLDriverProperty_block_invoke` 0x22aa0f7fc). The driver now takes it as the slider's level
-  (`(of the slider)`, the host's curve squares it): **the Control Center and Settings sliders move the panel.**
+  (`(of the slider)`, the host's curve squares it): **the Control Center and Settings sliders move the panel** (expected then; the phone of 2026-11-23 showed every position 0: "Why every level was the dimmest" below).
 - `brightness-nits-cap`: also `kCFNumberSInt32Type`, 16.16 nits (`SetBLDriverNitsCap` 0x22aa0fdd8; one caller
   computes it with `fcvtzs w1, s0, #0x10` at 0x22a9f31d0). The driver keeps it and holds `brightness-nits` under it when
   it is above 0 (0 or less: no cap); it is logged with its value (`ONEIOS BACKLIGHT: brightness-nits-cap 0x... (N.NNN
@@ -263,6 +263,51 @@ Tests: `test_bl_request.c` (`drivers/tests/host.sh`): 2038 checks, with the 31/6
 (0, 0.42, 1, a hair over 1, 2, negative) and the nits levels with and without a cap. Compiled into the kernel of
 2026-11-14 (`HOSTED_OUT=fixbr`, prelink audit 0 failures, stubs 666 good); **not run on the phone**.
 (`docs/hardware.md` 7a has the state.)
+
+## Why every level was the dimmest (fix-brightness-path, 2026-11-23)
+
+The phone, 2026-11-23 (kernel `988c2a7b...`, runtime 0.1.16 + fixes): any level of Control Center's or Settings'
+slider left the panel near its floor. xnuhost's log of the session: one `{brightness-nits} -> level 22020` (request 3,
+the only one, and the panel moved), then only `{DisplayBrightness}` (`Brightness number 0x0 (31 bits)`: a Float32 that
+IOKit truncated, nothing sent) and `{DisplayBrightnessSliderPosition} -> level 0 of 65535`, hundreds of each, also in a
+drag. iOS's log: `Display ID: 1, UseSyncBrightnessTransactionForDisplay: 1` (CoreBrightness.BLControl) and `Display 1,
+no brightness handler registered` (coreanimation:WindowServer), while CoreBrightness ramped `L: 168.00 -> L: 218.75`.
+
+Read in 24A446's shared cache on the build laptop (llvm-objdump of the cache's bytes; `oneios-tool sym` for the names) [F]:
+
+- `useSyncBrightnessTransactionForDisplay:` (IMP 0x22aa98098, CoreBrightness; selector found by its relative
+  method-list entry at 0x22ab635b4) answers, for a `CAWindowServerDisplay` whose `displayType` is 0 (the built-in one),
+  `_CBU_IsSyncBrightnessTransactionsSupported()` (0x22aa40f88: `MGGetBoolAnswer("DeviceSupportsFrameSynchronousBrightness")`)
+  or else `[display brightnessAvailable]`; for other displays NO. QuartzCore's `CADeviceSupportsBrightnessTransactions`
+  (0x18473da60) asks the same MobileGestalt key, then the preference `SynchronousBrightnessTransactions`.
+- With YES, CoreBrightness hands each level to CoreAnimation's frame-synchronous brightness (on an iPhone the DCP's
+  `brightness_update`). This guest's display has no handler for it, so the level reached nothing; the backlight
+  service saw only the truncated float and the slider position.
+- `__DisplayLogicalToSliderBrightnessInternal` (0x22aa0a5a8) maps the light through the product and panel luminances
+  and the slider table; `__DisplaySetLogicalBrightnessInternal` sends `fcvtzs(slider, #16)` and makes a 0 a 1 when the
+  light is above 0 (0x22aa0d784..0x22aa0d794). So the position sent was 0 or 1 of 65536 for every light.
+- CoreBrightness printed this service's product luminances as `Lmax_product=500`, `Lmid_product=0.0019073486328125`,
+  `Lmin_product=0.0000152587890625`: the numbers 125 and 1 the driver published, divided by 65536. `LmidProduct` and
+  `LminProduct` are 16.16 nits, as `LmaxProduct`; the iPhone's own tree has `/exbright LminProduct = 0xa0000` (10)
+  and `LmaxProduct = 0xbb80000` (3000).
+
+The fix:
+
+1. **backboardd** (`BacklightMode.inc`, appended to the Metal plug-in): `useSyncBrightnessTransactionForDisplay:`
+   answers NO. CoreBrightness then takes BLControl's own path and sets `brightness-nits` (signed 16.16 nits) on the
+   service, the key that moved the panel. `oneios-bl-sync=1` in the boot arguments keeps iOS's answer. Lines in iOS's
+   log (backboardd): `OneiOS backlight: frame-synchronous brightness off (useSyncBrightnessTransactionForDisplay: of
+   BLControl)`, then `... answered NO (iOS said YES) for display CAWindowServerDisplay ...`.
+2. **The driver**: `LmidProduct` and `LminProduct` are published as 16.16 nits (`obl_product_nits16`: 125 and 1 nits).
+3. **The driver**: once a `brightness-nits` above 0 came, it alone sets the level; a `DisplayBrightnessSliderPosition`
+   is not sent (`obl_slider_used`; lines `ONEIOS BACKLIGHT: brightness-nits 0x... came: it sets the level from now on`
+   and `DisplayBrightnessSliderPosition 0x... (N bits, slider S of 65535) not used: ...`, the first four and every
+   1024th). Before one came the slider position works as before.
+
+Tests: `test_bl_request.c` (`drivers/tests/host.sh`): 2048 checks, with the precedence and the 16.16 product values.
+What proves it on the phone: the backboardd lines above; `ONEIOS BACKLIGHT: request N from backboardd
+{brightness-nits} -> level L` lines with L following the slider in a drag; iOS's `Lmid_product=125`,
+`Lmin_product=1`; the panel's level following the slider. Not booted yet.
 
 ## Only a session can show
 
