@@ -141,7 +141,7 @@ lane_apk() {
   vcode=$(sed -n "s/.* versionCode='\([0-9]*\)'.*/\1/p" <<< "$badging")
   [ -n "$vname" ] && [ -n "$vcode" ] || { echo "no versionName or versionCode in the APK"; return 1; }
   [ "$vcode" -gt 143 ] || { echo "versionCode $vcode did not grow past v0.1.10's 143"; return 1; }
-  signer=$("$bt/apksigner" verify --print-certs "$src" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+  signer=$("$bt/apksigner" verify --print-certs "$src" | sed -n 's/^.*[Ss]igner[^:]*: certificate SHA-256 digest: //p; s/^Signer #1 certificate SHA-256 digest: //p' | sort -u)
   [ "$signer" = "$KEY_SHA" ] || { echo "the APK is signed by $signer, not by $KEYSTORE ($KEY_SHA)"; return 1; }
   name=OneOS-oneios-$vname-debug.apk
   cp "$src" "$OUT/files/$name"
