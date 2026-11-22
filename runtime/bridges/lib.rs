@@ -1,17 +1,31 @@
 // SPDX-License-Identifier: MIT
 //! OneiOS's host bridges (docs/hardware.md): the Linux/Android side of each device the guest's drivers use.
 
-pub mod log; // the bridges' log (br_log): every bridge's lines, a sink xnuhost sets
-pub mod proto; // the protocols shared with the guest's drivers (drivers/bridge, drivers/net, drivers/haptics)
-pub mod cpu; // cpu/: host topology, the vCPU plan, thread placement
-pub mod hw; // hw/: the hardware backends and the host device
-pub mod hal; // hal/: the treble HAL clients
-pub mod haptics; // haptics/: the haptic actuator
-pub mod net; // net/: the network bridge
-pub mod bt; // bt/: Bluetooth
-pub mod audio; // audio/: sound
-pub mod brightness; // brightness/: the backlight and the light sensor
-pub mod battery; // battery/: the battery
-pub mod thermal; // thermal/: temperatures and thermal steps
-pub mod wifi; // wifi/: Wi-Fi
-pub mod devices; // devices/: the virtio device models on xnuhost's transport
+/// Sound.
+pub mod audio;
+/// The battery.
+pub mod battery;
+/// The backlight and the light sensor.
+pub mod brightness;
+/// Bluetooth.
+pub mod bt;
+/// Host topology, the vCPU plan, thread placement.
+pub mod cpu;
+/// The virtio device models on xnuhost's transport.
+pub mod devices;
+/// The treble HAL clients.
+pub mod hal;
+/// The haptic actuator.
+pub mod haptics;
+/// The hardware backends and the host device.
+pub mod hw;
+/// The bridges' log (br_log): every bridge's lines, a sink xnuhost sets.
+pub mod log;
+/// The network bridge.
+pub mod net;
+/// The protocols shared with the guest's drivers (drivers/bridge, drivers/net, drivers/haptics).
+pub mod proto;
+/// Temperatures and thermal steps.
+pub mod thermal;
+/// Wi-Fi.
+pub mod wifi;

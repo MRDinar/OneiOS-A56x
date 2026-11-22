@@ -1,9 +1,15 @@
 #!/bin/sh
 # The linker cargo uses for aarch64-linux-android (runtime/.cargo/config.toml): the NDK's clang for API 30, found the way
 # runtime/build.sh finds the NDK: $NDK, else $ANDROID_NDK_HOME, else the SDK's ndk/28.2.13676358.
+# rustc passes -no-pie to a crt-static link, where clang's -static already means it and clang warns that -no-pie is
+# unused: it is dropped here, so a static build's output has no linker warning.
 case "$(uname -s)" in
   Darwin) host=darwin-x86_64; default=$HOME/Library/Android/sdk/ndk/28.2.13676358 ;;
   *)      host=linux-x86_64;  default=$HOME/Android/Sdk/ndk/28.2.13676358 ;;
 esac
 ndk=${NDK:-${ANDROID_NDK_HOME:-$default}}
+for arg do
+  shift
+  [ "$arg" = -no-pie ] || set -- "$@" "$arg"
+done
 exec "$ndk/toolchains/llvm/prebuilt/$host/bin/aarch64-linux-android30-clang" "$@"
