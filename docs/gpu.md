@@ -65,6 +65,15 @@ Without `external/virglrenderer` xnuhost still builds, with the 2D device, and s
   (`/sys/module/udmabuf/parameters`), but never more than 64 MiB and 1024, so the PC splits as the phone does; not
   readable means the defaults. xnuhost logs them at start (`guest pages in udmabufs of up to 64 MiB and 1024 runs`).
   Nothing in the kernel is changed for this (section 4.2 has why not).
+  **When the kernel refuses one with ENOMEM** (2026-11-22, ported from `YumikoHayamato/OneiOS` 51124a6): a kernel before
+  6.10 keeps a udmabuf's page array in one kmalloc, 8 bytes a page, so a 64 MiB udmabuf needs 128 KiB of contiguous
+  memory (order 5); under fragmentation that fails although RAM is free (dmesg `page allocation failure: order:5`).
+  The S25 Ultra's 6.6 kernel did it to `gpuctl large`. Then the size limit halves (down to 4 MiB, for the rest of the
+  process) and the blob is split again: more chunks, which the chunked path above already takes. One line each time:
+  `xnuhost: gpu: udmabuf: the kernel refused a 64 MiB udmabuf (ENOMEM: its page array needs contiguous memory);
+  udmabufs of at most 32 MiB from now on`. Every phone (the S24 Ultra's 6.1 too); nothing changes until a refusal.
+  `test_xnuhost`: a stand-in kernel that refuses lists over 16 MiB gets 72 MiB as 16 + 16 + 16 + 16 + 8, the limit
+  stays 16 MiB, and another error (EINVAL) is returned as it is with the limit kept.
 - A resource made of several udmabufs: virglrenderer's resource holds one fd (the first chunk's); the whole list is
   kept by `gpu3d_kgsl.c` under the resource id until the resource is gone, and a second context that attaches the
   resource (`CTX_ATTACH_RESOURCE`: an IOSurface shared between processes, the display's surface) imports every chunk

@@ -75,6 +75,31 @@ The case thresholds are a guess on Samsung's scale above, not Samsung's own poli
 not readable). Apple's meaning of the names [F, `ProcessInfo.ThermalState` documentation]: serious (heavy here) is
 "the system reduces performance", critical (trapping and above) is "the device needs to cool down".
 
+### The SoC rule on the phone's own trips (opt-in, 2026-11-22)
+
+Ported from `YumikoHayamato/OneiOS` branch `s25-ultra-sm8750` (876419b, the S25 Ultra's sessions 1-7 on 2026-11-19),
+behind two environment variables so the S24 Ultra keeps today's rule (one reading, 95/105 C). The host-device table
+sets both on the SM8750 phones (`galaxy-s25-ultra`, `galaxy-s25`; `docs/hardware.md` 7h).
+
+- **The kernel's trips, read on every phone** (files backend; the HAL backend reads none): at the bridge's start each
+  SoC zone's (cpu, gpu, ddr) lowest passive trip from 60 to 129.9 C and lowest hot or critical trip from 60 to 149.9 C
+  (`trip_point_N_type`/`_temp`; Qualcomm's 135 C passive trips are placeholders), the median of each over the zones.
+  One line at the start, on every phone: `thermal: the SoC rule: heavy from 95.0 C, trapping from 105.0 C, on 1 reading;
+  the kernel's trips: first passive X C, hot Y C (the median of N SoC zones)`. `thermalctl` prints the same trips.
+- **`ONEIOS_THERMAL_SOC_TRIPS=1`**: HEAVY 10 C over the first passive trip (from there the kernel throttles: a SoC at
+  its trip is the kernel doing its job), TRAPPING 5 C under the hot trip (15 C over the first passive one without a hot
+  trip), never under 95/105 C. On the S25 Ultra (first passive 105 C, hot 125 C): 115 and 120 C. `ONEIOS_THERMAL_SOC=`
+  still wins over it.
+- **`ONEIOS_THERMAL_SOC_SAMPLES=N`** (1-4, default 1): the SoC rule reads the lowest of the last N readings (N x 5 s),
+  so it rises only on heat that lasts and falls at the first reading under its hysteresis; a missing reading keeps the
+  window and the level. The level lines then add `; X C the lowest of N` after the SoC's zone.
+- **Why**: on the S25 Ultra the hottest of about 30 junction sensors swung 68 -> 104 -> 68 C between two polls, and the
+  kernel's first passive trip (105 C) is the S24's TRAPPING threshold: 20 level changes in 8 minutes, 5 into TRAPPING
+  (iOS's "too hot" screen), with the case at 37-46 C. With the trips and 3 readings the fork's sessions 3-7 had no SoC
+  level; the levels came from the case. `test_thermal` replays that session's 33 SoC readings: 10 or more changes with
+  today's rule, none with the S25 Ultra's.
+- The SoC rule takes no step (only the case and the cell do), so this changes what iOS is told, not what xnuhost runs.
+
 ## xnuhost's step
 
 **One step, at a critical temperature only (fix-ram-locked, 2026-11-15; the owner's rule: all CPU cores, no caps of
@@ -182,8 +207,11 @@ reset stops the reports; the reads go on.
 `make -C runtime/bridges/thermal test` (Linux; on a Mac in the container: `runtime/host-tests.sh`, part `bridges`): the
 limits parser, each rule and its hysteresis, the steps' CPUs and pins on the S24 Ultra's topology and on a one-kind host, the
 sysfs reader on a fake tree (an off zone, no `lrp`), the base S25's five thermistors (ap, cf, lp, pa, wf; only ap is a
-reading, `lrp` wins for the case, an off sensor is missing), the worker's two listeners. 106 checks with the merge of
-hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for
+reading, `lrp` wins for the case, an off sensor is missing; NoNameBuilder/OneiOS), the kernel's trips (the S25 Ultra's
+zones: a 135 C placeholder, 105, 118 and 125 C hot; the median, the start line with and without `soc_trips`), the trips
+rule and the N-reading window (the S25 Ultra's session 2 replayed), the worker's two listeners. 158 checks on
+2026-11-22 (the test files are written whole and renamed: a truncated `lrp` read as missing made `test_worker` fail
+about 1 run in 6). 99 with the merge of hw-backend (79 on fix-ram-locked's own, 2026-11-15: the step at the case or the cell at 50 C only, none at "heavy" or for
 the SoC, its hysteresis, the worker's cap listener at 50 C).
 
 ## On the phone

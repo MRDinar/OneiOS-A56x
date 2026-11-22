@@ -90,9 +90,20 @@ static int report(void)
     printf("  %-14s %-4s %lld\n", s.zone[i].type, (const char *[]){ "cpu", "gpu", "ddr", "xo" }[s.zone[i].group], v);
   }
   br_thermal_read(&s, &raw);
+  {
+    char first[16], hot[16];
+    deci(first, sizeof first, s.trip_first);
+    deci(hot, sizeof hot, s.trip_hot);
+    printf("kernel trips (C): first passive %s, hot %s (the median of %u SoC zones)\n", first, hot, s.trip_zones);
+  }
 decide:;
   br_thermal_limits l;
   br_thermal_limits_default(&l);
+  // As xnuhost takes them (br_thermal_open): the kernel's trips with ONEIOS_THERMAL_SOC_TRIPS=1 (files backend only), the
+  // window of ONEIOS_THERMAL_SOC_SAMPLES (one reading here: thermalctl reads once).
+  const char *trips = getenv("ONEIOS_THERMAL_SOC_TRIPS");
+  if (!from_hal && trips && !strcmp(trips, "1") && br_thermal_limits_from_trips(&l, s.trip_first, s.trip_hot))
+    printf("SoC rule: raised to the kernel's trips (ONEIOS_THERMAL_SOC_TRIPS=1)\n");
   br_thermal_state st;
   br_thermal_decide(&l, &raw, NULL, &st);
   char t[9][16];

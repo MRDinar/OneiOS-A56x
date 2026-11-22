@@ -2,35 +2,72 @@
 # A record for the port docs; no code reads it. What xnuhost does differently on this phone comes from its row in
 # runtime/bridges/hw/host_device.c (galaxy-s25-ultra, the source of truth: docs/hardware.md 7h). The guest image stays
 # profiles/ios-27.0.1-iPhone18,2.toml.
+#
+# [F] values below were measured on a phone by two forks: denis0001-dev/OneiOS-S25-Ultra (gpuctl, 2026-11-15) and
+# YumikoHayamato/OneiOS branch s25-ultra-sm8750 (its docs/SM8750_PORT.md: a read-only audit, bridge tools and
+# sessions 1-7 on 2026-11-19). Nothing here was re-run by this tree.
 
 [host]
 label = "Galaxy S25 Ultra"
 model_prefix = "SM-S938"
 codename = "pa3q"
 soc = "SM8750"
-platform = "sun"  # Qualcomm DT name; verify on device via ro.board.platform
+platform = "sun"  # [F] the fork's SM-S938B: board sun
 oneos_profile_id = "s-ultra-8750"
 form = "bar"
 
+[firmware]
+# The build of YumikoHayamato/OneiOS's phone (SM-S938B, pa3qxeea).
+build = "S938BXXSDDZJ1"
+android = "17 (SDK 37)"
+one_ui = "9.0"
+kernel = "6.6.127-android15-8, 4 KiB pages, VA 39 bits, PA 48 bits"
+root = "KernelSU LKM loaded by an exploit on a locked bootloader: gone after any reboot (the return's failsafe reboot too)"
+
 [cpu]
-# Snapdragon 8 Elite: 8x Oryon (2 prime + 6 performance). Linux exposes capacities via cpu_capacity;
-# the CPU bridge (runtime/bridges/cpu) classifies lowest-capacity CPUs as E, rest as P.
+# Snapdragon 8 Elite: 8x Oryon. [F] bridgectl cpu: cpu0-5 capacity 765 (384000..3532800 kHz, MIDR 0x514f0014),
+# cpu6-7 capacity 1024 (1017600..4473600 kHz, MIDR 0x513f0014); PAC (paca pacg), BTI. The CPU bridge's Oryon rule
+# (runtime/bridges/cpu/topology.c) plans 6 E + 2 P vCPUs, as on the S26 Ultra.
 nvcpu_default = 8
-note = "Re-read sysfs on device; do not assume Cortex part IDs from S24."
+note = "Cache sysfs has level/type but no size (caches print 0; nothing passes them to the guest)."
 
 [gpu]
-chip_name = "Adreno 830"
+chip_name = "Adreno 830 (Adreno830v2)"
 kgsl_device = "/dev/kgsl-3d0"
 path = "virtio-gpu 3D -> drm2kgsl -> KGSL (same stack as S24)"
-# S24 Ultra measured values (SM8650, Adreno 750) for comparison — replace after gpuctl on S25:
-#   chip 0x43051400, gpu id 6770, gmem 3072 KiB
-s24_reference_gpu_id = 6770
-status = "unverified_on_sm8750"
+chip_id = "0x44050000"  # [F] gpuctl
+gpu_id = 6850           # [F]
+gmem_kib = 12288        # [F]
+gpu_va = "0x4000000000 + 192 GiB"   # [F] the 256 GiB VBO rung starves imports; drm2kgsl takes a smaller one
+udmabuf = "64 MiB, 1024 runs"       # [F]; ENOMEM under fragmentation on this 6.6 kernel: gpu3d.c halves the size
+freq_mhz = "160..832 (msm-adreno-tz)"
+status = "sessions with the 3D GPU in YumikoHayamato/OneiOS (sessions 4-7): stable, GPU time 2.6-4.2 ms a frame"
 
 [display]
-# Same class as S24 Ultra bar: QHD+ panel; exact modes from One UI, not copied from S24.
-native_resolution = "verify_via_oneui"
+# [F] nt37801 AMOLED, DSI command mode with DSC, card0-DSI-1 1440x3120 at 120/80/60/48/30/24/10 Hz. One UI's
+# "Screen resolution" setting changes what the display helper reports (HD+ 720x1560, WQHD+ 1440x3120): set WQHD+.
+native_resolution = "1440x3120"
+refresh_hz = 120
 oneios_display = "oneios-display + surfaceflinger layer"
+
+[input]
+# [F] evdev on the fork's phone. The touch screen is chosen by name (sec_touchscreen); the touchpad is not direct and the
+# proximity device has no MT, so neither is a touch candidate.
+touch = "sec_touchscreen (event8, direct, MT)"
+touchpad = "sec_touchpad (event9, MT, not direct)"
+pen = "sec_e-pen (event12, pressure, tilt)"
+volume_up = "gpio-keys (event0)"
+power = "pmic_pwrkey (event3)"
+volume_down = "pmic_resin (event4)"
+haptics = "sec_vibrator_inputff (event6: FF periodic, sine, custom)"
+als = "als_rear (event7)"
+
+[sensors]
+battery = "power_supply/battery, max77775 fuel gauge, 5000 mAh (samsung backend works)"
+backlight = "panel0-backlight, max_brightness 12750; One UI's manual top not measured here (the S26 Ultra's: 2300)"
+thermal = "first passive trip 105 C, hot 125 C (the median of 25 SoC zones); no cpu-hw-trip-* zones"
+bluetooth = "AIDL IBluetoothHci/default only (hwservicemanager stopped, no HIDL): runtime/bridges/bt/hci_hidl.c does not speak it"
+hals = "health, thermal, vibrator, lights, sensors, wifi supplicant (AIDL), bluetooth (AIDL), audio core, camera internal/0"
 
 [switch]
 stage = "/data/local/tmp/oneios"

@@ -138,6 +138,14 @@ check_fails "a symbol nothing has" "$T/alone" \
   "$(missing libuser.so oneios_no_such_symbol 'libdl.so, libc.so' 'no API 30 stub and no library the runtime ships has it')"
 ok "a symbol that no stub has: elf-check.sh fails and says so"
 
+# 6a. A stage without the GPU's renderer is refused before anything is built (YumikoHayamato/OneiOS b7efdea).
+rc=0
+VIRGL=$T/no-virglrenderer XNUHOST_2D_ONLY=0 "$ROOT/runtime/build.sh" "$T/stage2d" > "$T/build2d.log" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q "^build: no GPU renderer: $T/no-virglrenderer/src/drm/drm2kgsl is missing" "$T/build2d.log" && [ ! -e "$T/stage2d" ] ||
+  { cat "$T/build2d.log"; fail "runtime/build.sh without external/virglrenderer: not refused (rc $rc)"; }
+ok "runtime/build.sh STAGE without external/virglrenderer: refused (exit 1, nothing staged)"
+# A tree without the checkout (a fresh worktree) still checks the links below: the 2D-only xnuhost, on purpose.
+[ -f "$ROOT/external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c" ] || export XNUHOST_2D_ONLY=1
 # 6. A stage of runtime/build.sh: it runs elf-check.sh itself; then the same stage with the faulty library in it.
 "$ROOT/runtime/build.sh" "$T/stage" > "$T/build.log" 2>&1 || { cat "$T/build.log"; fail "runtime/build.sh"; }
 for elf in liboneios-display.so oneios-audio oneios-camera camctl oneios-encoder encctl; do
