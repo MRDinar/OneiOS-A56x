@@ -1114,21 +1114,10 @@ fn udmabufs_here(g: &Guest) {
         );
         return;
     }
-    let memfd = |name: &str, sealing: bool, bytes: usize| {
-        let c = std::ffi::CString::new(name).unwrap();
-        // SAFETY: a new memfd of ours.
-        let fd = unsafe { libc::syscall(libc::SYS_memfd_create, c.as_ptr(), if sealing { 2u32 } else { 0 }) } as i32;
-        // SAFETY: sizes and (when asked) seals our memfd.
-        assert!(fd >= 0 && unsafe { libc::ftruncate(fd, bytes as i64) } == 0);
-        if sealing {
-            // SAFETY: as above.
-            assert_eq!(unsafe { libc::fcntl(fd, 1033, 2) }, 0); // F_ADD_SEALS, F_SEAL_SHRINK
-        }
-        // SAFETY: ours.
-        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) }
-    };
-    let ram_fd = memfd("test-ram", true, 1 << 20);
-    let bare = memfd("test-bare", false, 1 << 20);
+    // A memfd sealed against shrinking (what udmabuf takes), and one without the seal.
+    let ram_fd = xh_core::fd::sealed_memfd(c"test-ram", 0, 1 << 20).unwrap();
+    let bare = xh_core::fd::memfd(c"test-bare", 0).unwrap();
+    std::fs::File::from(bare.try_clone().unwrap()).set_len(1 << 20).unwrap();
     let mut ram = oneios_display::sys::Map::new(ram_fd.as_fd(), 1 << 20, true).unwrap();
     for i in 0..256 {
         ram.bytes_mut()[i * 0x1000] = i as u8;
@@ -1185,7 +1174,7 @@ fn udmabufs_here(g: &Guest) {
     gpu3d::udmabuf_set_limits(0, 0);
     let (bytes, runs) = gpu3d::udmabuf_limits();
     assert!(bytes != 0 && bytes <= 64 << 20 && runs != 0 && runs <= 1024);
-    let big_fd = memfd("test-big", true, 96 << 20);
+    let big_fd = xh_core::fd::sealed_memfd(c"test-big", 0, 96 << 20).unwrap();
     let bfd = big_fd.as_raw_fd();
     if bytes == 64 << 20 && runs == 1024 {
         let big = [Entry::new(base + (8 << 20), 72 << 20)];

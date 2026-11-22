@@ -514,15 +514,13 @@ unsafe fn fake_udmabuf_create(arg: *const c_void) -> c_int {
         let items = (arg as *const u8).add(8) as *const u64;
         (0..count).map(|i| *items.add(i * 3 + 2)).sum()
     };
-    // SAFETY: a new memfd of ours.
-    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, c"fake-udmabuf".as_ptr(), 1u32) } as c_int;
-    // SAFETY: sizes it; closes it on failure.
-    if fd >= 0 && unsafe { libc::ftruncate(fd, bytes as i64) } != 0 {
-        // SAFETY: our memfd, not used after.
-        unsafe { libc::close(fd) };
+    // A dma-buf's stand-in, handed to the renderer as the ioctl's new descriptor (closed when it fails).
+    let Ok(fd) = xh_core::fd::memfd(c"fake-udmabuf", libc::MFD_CLOEXEC) else { return -1 };
+    let file = std::fs::File::from(fd);
+    if file.set_len(bytes).is_err() {
         return -1;
     }
-    fd
+    std::os::fd::IntoRawFd::into_raw_fd(file)
 }
 
 extern "C" fn open_hook(path: *const c_char, flags: c_int, mode: c_uint) -> c_int {

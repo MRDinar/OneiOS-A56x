@@ -155,26 +155,32 @@ pub fn host_facts() {
 pub fn selftest(config: &Config) -> i32 {
     let info = hostcalls::info();
     let mut ok = info.host_page_size <= 16384 && info.user_va_bits >= 39 && info.features & XH_FEATURE_PAC != 0;
-    let name = c"xnuhost-selftest";
-    // SAFETY: memfd_create with a NUL-terminated name; ftruncate and mmap of the descriptor it gave (kept to the exit).
-    let mapped = unsafe {
-        let fd = libc::memfd_create(name.as_ptr(), 0);
-        fd >= 0 && libc::ftruncate(fd, 16384) == 0 && {
-            let x = libc::mmap(
+    let mapped = (|| -> std::io::Result<()> {
+        let file = std::fs::File::from(xh_core::fd::memfd(c"xnuhost-selftest", 0)?);
+        file.set_len(16384)?;
+        // SAFETY: a new shared mapping of our memfd, kept to the exit.
+        let x = unsafe {
+            libc::mmap(
                 std::ptr::null_mut(),
                 16384,
                 libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
                 libc::MAP_SHARED,
-                fd,
+                std::os::fd::AsRawFd::as_raw_fd(&file),
                 0,
-            );
-            x != libc::MAP_FAILED
+            )
+        };
+        if x == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
         }
+        Ok(())
+    })();
+    let error = match &mapped {
+        Ok(()) => "yes".to_owned(),
+        Err(e) => xh_core::sys::error_text(e),
     };
-    let error = if mapped { "yes".to_owned() } else { xh_core::sys::strerror(xh_core::sys::errno()) };
     logi!("selftest: executable shared memfd mapping: {}", error);
     mem::map_limit();
-    ok = ok && mapped;
+    ok = ok && mapped.is_ok();
     if mem::create(64 << 20).is_ok() && task::init(config).is_ok() {
         logi!(
             "selftest: task factory: started; system-call trapping (seccomp): {}",

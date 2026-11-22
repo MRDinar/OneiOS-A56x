@@ -141,11 +141,8 @@ pub fn create(size: u64) -> Result<(), SetupFailed> {
         unsafe { libc::close(fd) };
         return Err(SetupFailed);
     }
-    // SAFETY: as above.
-    if unsafe {
-        libc::fcntl(fd, 1033 /* F_ADD_SEALS */, 2 /* F_SEAL_SHRINK */)
-    } != 0
-    {
+    // SAFETY: our new descriptor, kept raw for the process's life.
+    if xh_core::fd::seal_shrink(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }).is_err() {
         loge!("RAM: no shrink seal ({}): the GPU cannot import guest pages", strerror(errno()));
     }
     MEM.fd.store(fd, Relaxed);

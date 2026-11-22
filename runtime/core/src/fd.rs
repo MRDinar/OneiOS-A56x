@@ -55,6 +55,26 @@ pub fn memfd(name: &CStr, flags: libc::c_uint) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
+/// F_ADD_SEALS F_SEAL_SHRINK: the file can no longer shrink (udmabuf takes no memfd without it). The memfd must have
+/// been made with MFD_ALLOW_SEALING.
+pub fn seal_shrink(fd: BorrowedFd<'_>) -> io::Result<()> {
+    // SAFETY: fcntl on a descriptor the caller holds open; F_ADD_SEALS takes an int.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A memfd of `size` bytes sealed against shrinking, what udmabuf imports (the GPU's guest RAM, the tests' and
+/// gpuctl's buffers): MFD_ALLOW_SEALING and `flags` (MFD_CLOEXEC or 0), sized, sealed. The first step's errno.
+pub fn sealed_memfd(name: &CStr, flags: libc::c_uint, size: u64) -> io::Result<OwnedFd> {
+    let fd = memfd(name, flags | libc::MFD_ALLOW_SEALING)?;
+    let file = std::fs::File::from(fd);
+    file.set_len(size)?;
+    seal_shrink(std::os::fd::AsFd::as_fd(&file))?;
+    Ok(file.into())
+}
+
 /// The control buffer's size for [`send_with_fds`] and [`recv_with_fds`]: CMSG_SPACE of up to 56 descriptors.
 const CONTROL_BYTES: usize = 256;
 
@@ -232,5 +252,14 @@ mod tests {
         let f = std::fs::File::from(m);
         f.set_len(8192).unwrap();
         assert_eq!(f.metadata().unwrap().len(), 8192);
+        // Sealed: it may grow, never shrink; a memfd made without MFD_ALLOW_SEALING takes no seal.
+        let f = std::fs::File::from(sealed_memfd(c"xh-core-sealed", libc::MFD_CLOEXEC, 16384).unwrap());
+        assert_eq!(f.metadata().unwrap().len(), 16384);
+        assert_eq!(f.set_len(4096).unwrap_err().raw_os_error(), Some(libc::EPERM));
+        f.set_len(32768).unwrap();
+        assert_eq!(
+            seal_shrink(memfd(c"xh-core-unsealable", libc::MFD_CLOEXEC).unwrap().as_fd()).unwrap_err().raw_os_error(),
+            Some(libc::EPERM)
+        );
     }
 }

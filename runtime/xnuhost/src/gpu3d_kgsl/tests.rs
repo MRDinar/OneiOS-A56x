@@ -98,12 +98,8 @@ struct Renderer {
 
 fn renderer(profile: kgsl::Profile) -> Renderer {
     kgsl::install(profile, std::env::var("XH_GPU_FAKE_UDMABUF").as_deref() == Ok("1"));
-    // A sealable memfd, sized and sealed against shrinking (udmabuf wants it).
-    let fd = xh_core::fd::memfd(c"test-ram", libc::MFD_ALLOW_SEALING).unwrap();
-    // SAFETY: sizes and seals our memfd.
-    assert!(unsafe {
-        libc::ftruncate(fd.as_raw_fd(), RAM_BYTES as i64) == 0 && libc::fcntl(fd.as_raw_fd(), 1033, 2) == 0
-    });
+    // A memfd sized and sealed against shrinking (udmabuf wants it).
+    let fd = xh_core::fd::sealed_memfd(c"test-ram", 0, RAM_BYTES).unwrap();
     // SAFETY: a shared map of our memfd, kept for the process's life.
     let ram = unsafe {
         libc::mmap(

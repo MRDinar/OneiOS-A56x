@@ -147,13 +147,7 @@ pub(crate) mod tests {
 
     impl TestRam {
         pub(crate) fn new(size: u64) -> Option<TestRam> {
-            let fd = xh_core::fd::memfd(c"xnuhost-test-ram", libc::MFD_ALLOW_SEALING).ok()?;
-            // SAFETY: ftruncate and fcntl on our descriptor.
-            let sized = unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } == 0;
-            // SAFETY: as above.
-            if !sized || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK) } != 0 {
-                return None;
-            }
+            let fd = xh_core::fd::sealed_memfd(c"xnuhost-test-ram", 0, size).ok()?;
             let base = map(fd.as_raw_fd(), size, libc::PROT_READ | libc::PROT_WRITE)?;
             Some(TestRam { fd, base, size })
         }

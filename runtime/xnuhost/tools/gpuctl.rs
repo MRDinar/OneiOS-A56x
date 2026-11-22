@@ -16,12 +16,13 @@
 //! It stands where virtio_gpu.rs stands in xnuhost: the same renderer (gpu3d_kgsl.rs), a memfd of its own as the guest's
 //! RAM. Each step prints what it found; the last line is "ok" or the step that failed and why. Nothing is left behind:
 //! the KGSL contexts and the memory go with the process.
-use std::ffi::CString;
+use std::io;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use xh_core::bytes::le;
-use xh_core::sys::{errno, set_errno, strerror};
+use xh_core::sys::error_text;
 
 use xnuhost::gpu3d::{
     self, Entry, Gpu3d, BLOB_FLAG_GUEST_HANDLE, BLOB_FLAG_MAPPABLE, BLOB_HOST3D, BLOB_HOST3D_GUEST, CAPSET_DRM,
@@ -58,21 +59,20 @@ fn log_line(level: u8, line: &str) {
     }
 }
 
-fn open(path: &str, flags: i32) -> i32 {
-    let c = CString::new(path).unwrap();
-    // SAFETY: a NUL-terminated path.
-    unsafe { libc::open(c.as_ptr(), flags | libc::O_CLOEXEC) }
+/// A device node, close-on-exec: read-write, or read only.
+fn open(path: &str, write: bool) -> io::Result<OwnedFd> {
+    std::fs::OpenOptions::new().read(true).write(write).open(path).map(OwnedFd::from)
 }
 
-fn close(fd: i32) {
-    // SAFETY: our descriptor.
-    unsafe { libc::close(fd) };
+/// An error as the steps print it: strerror's text and the errno, "Permission denied (13)".
+fn why(e: &io::Error) -> String {
+    format!("{} ({})", error_text(e), e.raw_os_error().unwrap_or(0))
 }
 
-/// A KGSL ioctl, true when it worked.
-fn ioctl<T>(fd: i32, request: u32, arg: &mut T) -> bool {
+/// A KGSL ioctl on its structure.
+fn ioctl<T>(fd: BorrowedFd<'_>, request: u32, arg: &mut T) -> io::Result<()> {
     // SAFETY: each caller passes the structure its request encodes.
-    unsafe { xh_core::ioctl::ioctl(fd, request, arg) }.is_ok()
+    unsafe { xh_core::ioctl::ioctl(fd.as_raw_fd(), request, arg) }.map(drop)
 }
 
 fn nodes() -> bool {
@@ -80,13 +80,9 @@ fn nodes() -> bool {
     let limits = ["/sys/module/udmabuf/parameters/list_limit", "/sys/module/udmabuf/parameters/size_limit_mb"];
     let mut bad = false;
     for (i, p) in paths.iter().enumerate() {
-        let fd = open(p, if i == 2 { libc::O_RDONLY } else { libc::O_RDWR });
-        println!("{:<22} {}", p, if fd >= 0 { "opens".into() } else { strerror(errno()) });
-        if fd >= 0 {
-            close(fd);
-        } else {
-            bad = true;
-        }
+        let opened = open(p, i != 2);
+        println!("{:<22} {}", p, opened.as_ref().map_or_else(error_text, |_| "opens".into()));
+        bad |= opened.is_err();
     }
     for l in limits {
         // One udmabuf: at most list_limit runs of adjacent pages and size_limit_mb MiB. A blob past either is several.
@@ -177,71 +173,61 @@ const K_VBO_NO_MAP_ZERO: u64 = 1 << 35; // the reservation alone, without the ze
 const K_IOCOHERENT: u64 = 1 << 31;
 const ROUTE_BYTES: u64 = 1 << 20;
 
-fn k_vbo(kgsl: i32, size: u64, flags: u64) -> Option<(u32, u64)> {
+/// UDMABUF_CREATE (linux/udmabuf.h): `_IOW('u', 0x42, struct udmabuf_create)`.
+const UDMABUF_CREATE: u32 = xh_core::ioctl::iow(b'u', 0x42, 24);
+/// DMA_HEAP_IOCTL_ALLOC (linux/dma-heap.h): `_IOWR('H', 0, struct dma_heap_allocation_data)`.
+const DMA_HEAP_ALLOC: u32 = xh_core::ioctl::iowr(b'H', 0, 24);
+
+/// A VBO of `size` (KGSL_MEMFLAGS_VBO and `flags`): its id and GPU address.
+fn k_vbo(kgsl: BorrowedFd<'_>, size: u64, flags: u64) -> io::Result<(u32, u64)> {
     let mut a = KAlloc { size, flags: K_VBO | flags, ..Default::default() };
-    if !ioctl(kgsl, K_ALLOC, &mut a) {
-        return None;
-    }
+    ioctl(kgsl, K_ALLOC, &mut a)?;
     let mut info = KInfo { id: a.id, ..Default::default() };
-    ioctl(kgsl, K_INFO, &mut info).then_some((a.id, info.gpuaddr))
+    ioctl(kgsl, K_INFO, &mut info)?;
+    Ok((a.id, info.gpuaddr))
 }
 
-fn k_release(kgsl: i32, id: u32) {
+fn k_release(kgsl: BorrowedFd<'_>, id: u32) {
     let mut f = KFree { id, ..Default::default() };
-    ioctl(kgsl, K_FREE, &mut f);
+    let _ = ioctl(kgsl, K_FREE, &mut f);
 }
 
-fn k_import(kgsl: i32, dmabuf: i32) -> Option<u32> {
-    let fd = dmabuf;
+/// A dma-buf imported into KGSL: the object's id.
+fn k_import(kgsl: BorrowedFd<'_>, dmabuf: BorrowedFd<'_>) -> io::Result<u32> {
+    let fd: RawFd = dmabuf.as_raw_fd();
     let mut req = KImport {
-        private: &fd as *const i32 as u64,
+        private: &fd as *const RawFd as u64,
         priv_len: 4,
         flags: K_IOCOHERENT,
         kind: 3, // KGSL_USER_MEM_TYPE_DMABUF
         ..Default::default()
     };
-    ioctl(kgsl, K_IMPORT, &mut req).then_some(req.id)
+    ioctl(kgsl, K_IMPORT, &mut req)?;
+    Ok(req.id)
 }
 
-/// A udmabuf of a sealed memfd's first `bytes`, or -1 with errno.
-fn a_udmabuf(bytes: u64) -> i32 {
-    // SAFETY: a new sealable memfd of ours.
-    let memfd = unsafe { libc::syscall(libc::SYS_memfd_create, c"gpuctl-route".as_ptr(), 2u32) } as i32;
-    if memfd < 0 {
-        return -1;
+/// A udmabuf of a sealed memfd's first `bytes` (the memfd is closed after: the dma-buf holds its pages).
+fn a_udmabuf(bytes: u64) -> io::Result<OwnedFd> {
+    let memfd = xh_core::fd::sealed_memfd(c"gpuctl-route", 0, bytes)?;
+    let dev = open("/dev/udmabuf", true)?;
+    // struct udmabuf_create { u32 memfd, flags; u64 offset, size }
+    #[repr(C)]
+    struct Create {
+        memfd: u32,
+        flags: u32,
+        offset: u64,
+        size: u64,
     }
-    let mut fd = -1;
-    // SAFETY: sizes and seals our memfd.
-    if unsafe { libc::ftruncate(memfd, bytes as i64) == 0 && libc::fcntl(memfd, 1033, 2) == 0 } {
-        let dev = open("/dev/udmabuf", libc::O_RDWR);
-        if dev >= 0 {
-            // struct udmabuf_create { u32 memfd, flags; u64 offset, size }
-            #[repr(C)]
-            struct Create {
-                memfd: u32,
-                flags: u32,
-                offset: u64,
-                size: u64,
-            }
-            let mut c = Create { memfd: memfd as u32, flags: 1, offset: 0, size: bytes };
-            // SAFETY: UDMABUF_CREATE with its structure.
-            fd = unsafe { libc::ioctl(dev, xh_core::ioctl::iow(b'u', 0x42, 24) as _, &mut c as *mut Create) };
-            let e = errno();
-            close(dev);
-            set_errno(e);
-        }
-    }
-    let e = errno();
-    close(memfd);
-    set_errno(e);
-    fd
+    let mut c = Create { memfd: memfd.as_raw_fd() as u32, flags: 1, offset: 0, size: bytes };
+    // SAFETY: UDMABUF_CREATE with its structure.
+    let fd = unsafe { xh_core::ioctl::ioctl(dev.as_raw_fd(), UDMABUF_CREATE, &mut c) }?;
+    // SAFETY: the new dma-buf's descriptor, ours.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-fn a_heap(path: &str, bytes: u64) -> i32 {
-    let heap = open(path, libc::O_RDONLY);
-    if heap < 0 {
-        return -1;
-    }
+/// A buffer of `bytes` from a DMA heap (`path`).
+fn a_heap(path: &str, bytes: u64) -> io::Result<OwnedFd> {
+    let heap = open(path, false)?;
     // struct dma_heap_allocation_data { u64 len; u32 fd, fd_flags; u64 heap_flags }
     #[repr(C)]
     struct Alloc {
@@ -251,52 +237,60 @@ fn a_heap(path: &str, bytes: u64) -> i32 {
         heap_flags: u64,
     }
     let mut a = Alloc { len: bytes, fd: 0, fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32, heap_flags: 0 };
-    // SAFETY: DMA_HEAP_IOCTL_ALLOC (_IOWR('H', 0, struct dma_heap_allocation_data)) with its structure.
-    let r = unsafe { libc::ioctl(heap, xh_core::ioctl::iowr(b'H', 0, 24) as _, &mut a as *mut Alloc) };
-    let e = errno();
-    close(heap);
-    set_errno(e);
-    if r != 0 {
-        -1
-    } else {
-        a.fd as i32
-    }
+    // SAFETY: DMA_HEAP_IOCTL_ALLOC with its structure.
+    unsafe { xh_core::ioctl::ioctl(heap.as_raw_fd(), DMA_HEAP_ALLOC, &mut a) }?;
+    // SAFETY: the buffer's new descriptor, ours.
+    Ok(unsafe { OwnedFd::from_raw_fd(a.fd as RawFd) })
+}
+
+/// Where a route's memory comes from.
+#[derive(Clone, Copy)]
+enum Memory<'a> {
+    /// a udmabuf of memfd pages
+    Udmabuf,
+    /// a DMA heap's buffer
+    Heap(&'a str),
+    /// KGSL's own GPUOBJ_ALLOC
+    Kgsl,
 }
 
 /// One route: the memory, KGSL's object of it, its place in a VBO, the CPU's view of it. Whether the GPU side passed.
-fn route(kgsl: i32, vbo: u32, slot: u64, name: &str, kind: i32, heap: &str) -> bool {
+fn route(kgsl: BorrowedFd<'_>, vbo: u32, slot: u64, name: &str, memory: Memory<'_>) -> bool {
     let mut line = format!("  {name:<28}");
-    let (mut dmabuf, mut id, mut ok) = (-1, 0u32, false);
-    let fail = |line: &mut String, what: &str| {
-        let e = errno();
-        *line += &format!("FAIL {}: {} ({})", what, strerror(e), e);
-    };
+    let (mut dmabuf, mut id, mut ok) = (None::<OwnedFd>, 0u32, false);
+    let fail = |line: &mut String, what: &str, e: &io::Error| *line += &format!("FAIL {}: {}", what, why(e));
     'out: {
-        if kind == 2 {
+        if let Memory::Kgsl = memory {
             let mut a = KAlloc { size: ROUTE_BYTES, ..Default::default() };
-            if !ioctl(kgsl, K_ALLOC, &mut a) {
-                fail(&mut line, "GPUOBJ_ALLOC");
+            if let Err(e) = ioctl(kgsl, K_ALLOC, &mut a) {
+                fail(&mut line, "GPUOBJ_ALLOC", &e);
                 break 'out;
             }
             id = a.id;
             line += "PASS alloc";
         } else {
-            dmabuf = if kind == 0 { a_udmabuf(ROUTE_BYTES) } else { a_heap(heap, ROUTE_BYTES) };
-            if dmabuf < 0 {
-                fail(&mut line, if kind == 0 { "UDMABUF_CREATE" } else { "the heap's allocation" });
-                break 'out;
-            }
-            match k_import(kgsl, dmabuf) {
-                Some(i) => id = i,
-                None => {
-                    fail(&mut line, "GPUOBJ_IMPORT");
+            let (made, what) = match memory {
+                Memory::Heap(path) => (a_heap(path, ROUTE_BYTES), "the heap's allocation"),
+                _ => (a_udmabuf(ROUTE_BYTES), "UDMABUF_CREATE"),
+            };
+            let buf = match made {
+                Ok(buf) => dmabuf.insert(buf),
+                Err(e) => {
+                    fail(&mut line, what, &e);
+                    break 'out;
+                }
+            };
+            match k_import(kgsl, buf.as_fd()) {
+                Ok(i) => id = i,
+                Err(e) => {
+                    fail(&mut line, "GPUOBJ_IMPORT", &e);
                     break 'out;
                 }
             }
             line += "PASS import";
         }
         let mut info = KInfo { id, ..Default::default() };
-        if ioctl(kgsl, K_INFO, &mut info) {
+        if ioctl(kgsl, K_INFO, &mut info).is_ok() {
             line += &format!(" (id {}, GPU address 0x{:x}, {} KiB)", id, info.gpuaddr, info.size >> 10);
         }
         let mut range = KRange {
@@ -315,17 +309,20 @@ fn route(kgsl: i32, vbo: u32, slot: u64, name: &str, kind: i32, heap: &str) -> b
         };
         if vbo == 0 {
             line += ", no VBO to bind in";
-        } else if !ioctl(kgsl, K_BIND, &mut bind) {
-            let e = errno();
-            line += &format!(", FAIL bind in a VBO: {} ({})", strerror(e), e);
+        } else if let Err(e) = ioctl(kgsl, K_BIND, &mut bind) {
+            line += &format!(", FAIL bind in a VBO: {}", why(&e));
         } else {
             line += ", PASS bind in a VBO";
             ok = true;
             range.op = 2; // the same range, unbound
             bind.ranges = &mut range as *mut KRange as u64;
-            ioctl(kgsl, K_BIND, &mut bind);
+            let _ = ioctl(kgsl, K_BIND, &mut bind);
         }
-        let (fd, offset) = if kind == 2 { (kgsl, (id as i64) << 12) } else { (dmabuf, 0) };
+        // KGSL's own object is mapped through KGSL at its id; a dma-buf through itself.
+        let (fd, offset) = match &dmabuf {
+            Some(buf) => (buf.as_raw_fd(), 0),
+            None => (kgsl.as_raw_fd(), (id as i64) << 12),
+        };
         // SAFETY: maps the object (or dma-buf) of ROUTE_BYTES; unmapped below.
         let at = unsafe {
             libc::mmap(
@@ -338,8 +335,7 @@ fn route(kgsl: i32, vbo: u32, slot: u64, name: &str, kind: i32, heap: &str) -> b
             )
         };
         if at == libc::MAP_FAILED {
-            let e = errno();
-            line += &format!(", FAIL mmap: {} ({})", strerror(e), e);
+            line += &format!(", FAIL mmap: {}", why(&io::Error::last_os_error()));
         } else {
             let words = at as *mut u32;
             let last = (ROUTE_BYTES / 4 - 1) as usize;
@@ -358,9 +354,7 @@ fn route(kgsl: i32, vbo: u32, slot: u64, name: &str, kind: i32, heap: &str) -> b
     if id != 0 {
         k_release(kgsl, id);
     }
-    if dmabuf >= 0 {
-        close(dmabuf);
-    }
+    drop(dmabuf); // after KGSL let go of its object
     ok
 }
 
@@ -390,30 +384,28 @@ fn in_child(run: fn(u64) -> i32, arg: u64) -> i32 {
 }
 
 fn routes_child(_: u64) -> i32 {
-    let kgsl = open("/dev/kgsl-3d0", libc::O_RDWR);
-    if kgsl < 0 {
-        println!("  /dev/kgsl-3d0: {}", strerror(errno()));
-        return 3;
-    }
+    let kgsl = match open("/dev/kgsl-3d0", true) {
+        Ok(fd) => fd,
+        Err(e) => {
+            println!("  /dev/kgsl-3d0: {}", error_text(&e));
+            return 3;
+        }
+    };
+    let kgsl = kgsl.as_fd();
     let vbo = match k_vbo(kgsl, 4 << 30, 0) {
-        Some((id, base)) => {
+        Ok((id, base)) => {
             println!("  a 4 GiB VBO at GPU address 0x{base:x} to bind in");
             id
         }
-        None => {
-            let e = errno();
-            println!(
-                "  a 4 GiB VBO (KGSL_MEMFLAGS_VBO): {} ({}): nothing can be bound at a guest's address",
-                strerror(e),
-                e
-            );
+        Err(e) => {
+            println!("  a 4 GiB VBO (KGSL_MEMFLAGS_VBO): {}: nothing can be bound at a guest's address", why(&e));
             0
         }
     };
-    let udmabuf = route(kgsl, vbo, 0, "udmabuf of memfd pages", 0, "");
-    route(kgsl, vbo, 1, "/dev/dma_heap/system", 1, "/dev/dma_heap/system");
-    route(kgsl, vbo, 2, "/dev/dma_heap/qcom,system", 1, "/dev/dma_heap/qcom,system");
-    route(kgsl, vbo, 3, "KGSL GPUOBJ_ALLOC + mmap", 2, "");
+    let udmabuf = route(kgsl, vbo, 0, "udmabuf of memfd pages", Memory::Udmabuf);
+    route(kgsl, vbo, 1, "/dev/dma_heap/system", Memory::Heap("/dev/dma_heap/system"));
+    route(kgsl, vbo, 2, "/dev/dma_heap/qcom,system", Memory::Heap("/dev/dma_heap/qcom,system"));
+    route(kgsl, vbo, 3, "KGSL GPUOBJ_ALLOC + mmap", Memory::Kgsl);
     if udmabuf {
         0
     } else {
@@ -424,30 +416,40 @@ fn routes_child(_: u64) -> i32 {
 /// A VBO of `size` where drm2kgsl reserves its own, then one import beside it. 0: imported; 1: the import failed; 2: no
 /// such VBO.
 fn room_child(size: u64) -> i32 {
-    let (kgsl, dmabuf) = (open("/dev/kgsl-3d0", libc::O_RDWR), a_udmabuf(65536));
-    if kgsl < 0 || dmabuf < 0 {
-        println!("  VBO of {:4} GiB: not tried: {}", size >> 30, strerror(errno()));
-        return 2;
-    }
-    let Some((_, base)) = k_vbo(kgsl, size, K_VBO_NO_MAP_ZERO) else {
-        let e = errno();
-        println!("  VBO of {:4} GiB: not granted: {} ({})", size >> 30, strerror(e), e);
-        return 2;
+    // Both are tried, in this order; the error said is the udmabuf's when both fail.
+    let (kgsl, dmabuf) = match (open("/dev/kgsl-3d0", true), a_udmabuf(65536)) {
+        (Ok(kgsl), Ok(dmabuf)) => (kgsl, dmabuf),
+        (_, Err(e)) | (Err(e), Ok(_)) => {
+            println!("  VBO of {:4} GiB: not tried: {}", size >> 30, error_text(&e));
+            return 2;
+        }
     };
-    let Some(id) = k_import(kgsl, dmabuf) else {
-        let e = errno();
-        println!(
-            "  VBO of {:4} GiB at 0x{:x}: granted; a udmabuf import beside it FAIL: {} ({}){}",
-            size >> 30,
-            base,
-            strerror(e),
-            e,
-            if e == libc::ENOMEM { ": the VBO leaves KGSL no GPU address for the object" } else { "" }
-        );
-        return 1;
+    let base = match k_vbo(kgsl.as_fd(), size, K_VBO_NO_MAP_ZERO) {
+        Ok((_, base)) => base,
+        Err(e) => {
+            println!("  VBO of {:4} GiB: not granted: {}", size >> 30, why(&e));
+            return 2;
+        }
+    };
+    let id = match k_import(kgsl.as_fd(), dmabuf.as_fd()) {
+        Ok(id) => id,
+        Err(e) => {
+            println!(
+                "  VBO of {:4} GiB at 0x{:x}: granted; a udmabuf import beside it FAIL: {}{}",
+                size >> 30,
+                base,
+                why(&e),
+                if e.raw_os_error() == Some(libc::ENOMEM) {
+                    ": the VBO leaves KGSL no GPU address for the object"
+                } else {
+                    ""
+                }
+            );
+            return 1;
+        }
     };
     let mut info = KInfo { id, ..Default::default() };
-    ioctl(kgsl, K_INFO, &mut info);
+    let _ = ioctl(kgsl.as_fd(), K_INFO, &mut info);
     println!(
         "  VBO of {:4} GiB at 0x{:x}: granted; a udmabuf import beside it PASS (its own GPU address 0x{:x})",
         size >> 30,
@@ -523,8 +525,18 @@ fn step(what: &str, ok: bool, why: impl FnOnce() -> String) -> Result<(), Failed
     Err(Failed)
 }
 
+/// A step that gives a value: the value, or "FAILED at: <what>: <the error's text>".
+fn check<T>(what: &str, r: io::Result<T>) -> Result<T, Failed> {
+    r.map_err(|e| {
+        println!("FAILED at: {}: {}", what, error_text(&e));
+        Failed
+    })
+}
+
 struct Gpu {
     gpu: Box<dyn Gpu3d>,
+    /// the RAM memfd the renderer imports from (after `gpu`: dropped after it)
+    _ram_fd: OwnedFd,
     ram: *mut u8,
     shmem: *mut u8,
     seqno: u32,
@@ -623,11 +635,8 @@ fn pkt7(opcode: u32, count: u32) -> u32 {
 }
 
 fn open_renderer() -> Result<Gpu, Failed> {
-    // SAFETY: a new sealable memfd of ours.
-    let fd = unsafe { libc::syscall(libc::SYS_memfd_create, c"gpuctl-ram".as_ptr(), 2u32) } as i32; // MFD_ALLOW_SEALING
-                                                                                                    // SAFETY: sizes and seals it (F_ADD_SEALS, F_SEAL_SHRINK).
-    let ok = fd >= 0 && unsafe { libc::ftruncate(fd, RAM_BYTES as i64) == 0 && libc::fcntl(fd, 1033, 2) == 0 };
-    step("the RAM memfd", ok, || strerror(errno()))?;
+    // The guest's RAM: sealed against shrinking, as xnuhost's (udmabuf takes no other memfd).
+    let fd = check("the RAM memfd", xh_core::fd::sealed_memfd(c"gpuctl-ram", 0, RAM_BYTES))?;
     // SAFETY: a shared map of our memfd, kept for the process's life.
     let ram = unsafe {
         libc::mmap(
@@ -635,16 +644,16 @@ fn open_renderer() -> Result<Gpu, Failed> {
             RAM_BYTES as usize,
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_SHARED,
-            fd,
+            fd.as_raw_fd(),
             0,
         )
     };
-    step("mapping the RAM", ram != libc::MAP_FAILED, || strerror(errno()))?;
+    step("mapping the RAM", ram != libc::MAP_FAILED, || error_text(&io::Error::last_os_error()))?;
     let ram = ram as *mut u8;
     let pool = RAM_BYTES - POOL_BYTES;
     // SAFETY: inside the map.
     let host = unsafe { ram.add(pool as usize) };
-    let gpu = match gpu3d::kgsl_open(fd, RAM_PHYS, RAM_BYTES, host, RAM_PHYS + pool, POOL_BYTES, log_line) {
+    let gpu = match gpu3d::kgsl_open(fd.as_raw_fd(), RAM_PHYS, RAM_BYTES, host, RAM_PHYS + pool, POOL_BYTES, log_line) {
         Ok(g) => g,
         Err(why) => {
             println!("FAILED at: opening the renderer: {why}");
@@ -687,7 +696,7 @@ fn open_renderer() -> Result<Gpu, Failed> {
     step("the capset's content", w(4) == 1 && va_size != 0 && chip_id != 0, || {
         "not an msm context or no GPU address range".into()
     })?;
-    Ok(Gpu { gpu, ram, shmem: std::ptr::null_mut(), seqno: 0 })
+    Ok(Gpu { gpu, _ram_fd: fd, ram, shmem: std::ptr::null_mut(), seqno: 0 })
 }
 
 /// A context as a guest opens one: its response buffer from the pool, GET_PARAM answered there, a submit queue. Its
