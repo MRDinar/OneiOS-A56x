@@ -188,43 +188,17 @@ fn read_text(dir: &str, supply: &str, name: &str, max: usize) -> Option<String> 
     Some(text.trim_end_matches(['\n', ' ', '\r', '\t']).to_owned())
 }
 
-/// C's strtoll/strtoul with base 0 on a prefix: leading white space, an optional sign, then decimal, 0x hex or 0
-/// octal digits. The signed value (None without digits or past 64 bits) and the length taken.
-fn c_number(text: &str) -> Option<(i128, usize)> {
-    let t = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-    let mut at = text.len() - t.len();
-    let negative = t.starts_with('-');
-    if t.starts_with(['-', '+']) {
-        at += 1;
-    }
-    let t = &text[at..];
-    let hex = (t.starts_with("0x") || t.starts_with("0X")) && t[2..].starts_with(|c: char| c.is_ascii_hexdigit());
-    let (radix, skip) = if hex {
-        (16, 2)
-    } else if t.starts_with('0') {
-        (8, 0)
-    } else {
-        (10, 0)
-    };
-    let digits = t[skip..].bytes().take_while(|c| (*c as char).is_digit(radix)).count();
-    if digits == 0 {
-        return None;
-    }
-    let magnitude = i128::from(u64::from_str_radix(&t[skip..skip + digits], radix).ok()?);
-    Some((if negative { -magnitude } else { magnitude }, at + skip + digits))
-}
-
 /// C's strtoll(text, &end, 0) of the whole text (the node's text, its trailing white space already cut).
 fn parse_c_int(text: &str) -> Option<i64> {
-    match c_number(text) {
-        Some((v, len)) if len == text.len() => i64::try_from(v).ok(),
+    match xh_core::parse::leading_i64(text, 0) {
+        Some((v, "")) => Some(v),
         _ => None,
     }
 }
 
 /// C's (uint32_t)strtoul(text, NULL, 0): the leading number, 0 without one.
 fn parse_c_prefix(text: &str) -> u64 {
-    c_number(text).map_or(0, |(v, _)| v as u64)
+    xh_core::parse::strtoul(text, 0).map_or(0, |(v, _)| v)
 }
 
 fn read_number(dir: &str, supply: &str, name: &str) -> Option<i64> {

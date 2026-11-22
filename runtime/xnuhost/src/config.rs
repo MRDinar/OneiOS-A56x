@@ -18,6 +18,7 @@ use std::path::Path;
 /// xh_parse_size, xh_meminfo_value, xh_proc_values: xh-core's (the same rules; a size that overflows is refused).
 pub use xh_core::fs::{meminfo_value, proc_values};
 use xh_core::log::Level;
+use xh_core::parse;
 pub use xh_core::parse::size as parse_size;
 
 use onebridges::hw::{self as bhw, Backend, Bridge, HostDevice, HwSettings};
@@ -556,9 +557,8 @@ fn flag(value: &str) -> Result<bool, BadSetting> {
 
 /// A whole decimal number in [lo, hi] (strtol: leading blanks and a sign allowed, nothing after).
 fn number(value: &str, lo: i64, hi: i64) -> Result<u32, BadSetting> {
-    let (v, rest) = c_strtol(value);
-    match v {
-        Some(v) if rest.is_empty() && (lo..=hi).contains(&v) => Ok(v as u32),
+    match parse::strtol(value, 10) {
+        Some((v, rest)) if rest.is_empty() && (lo..=hi).contains(&v) => Ok(v as u32),
         _ => Err(BadSetting),
     }
 }
@@ -573,32 +573,6 @@ fn size_below_tib(value: &str) -> Result<u64, BadSetting> {
 
 fn is_c_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
-}
-
-/// strtol(text, &end, 10): the number (None: no digits) and what follows it. Saturates as strtol does.
-fn c_strtol(text: &str) -> (Option<i64>, &str) {
-    let b = text.as_bytes();
-    let mut i = b.iter().take_while(|&&c| is_c_space(c)).count();
-    let negative = i < b.len() && b[i] == b'-';
-    if i < b.len() && (b[i] == b'-' || b[i] == b'+') {
-        i += 1;
-    }
-    let start = i;
-    let mut v: i64 = 0;
-    while i < b.len() && b[i].is_ascii_digit() {
-        let d = (b[i] - b'0') as i64;
-        v = if negative { v.saturating_mul(10).saturating_sub(d) } else { v.saturating_mul(10).saturating_add(d) };
-        i += 1;
-    }
-    if i == start {
-        return (None, text);
-    }
-    (Some(v), &text[i..])
-}
-
-/// atoi: the leading number, 0 when there is none.
-fn atoi(text: &str) -> i64 {
-    c_strtol(text).0.unwrap_or(0).clamp(i32::MIN as i64, i32::MAX as i64)
 }
 
 /// `%Nu` of sscanf: optional blanks, an optional '+', 1..=width digits. The value and what follows.
@@ -744,7 +718,7 @@ impl Config {
     fn apply(&mut self, key: &str, value: &str) -> Result<(), BadSetting> {
         let fmt_ok = |ok: bool| if ok { Ok(()) } else { Err(BadSetting) };
         match key {
-            "session-abi" => self.session_abi = atoi(value) as i32,
+            "session-abi" => self.session_abi = parse::atoi(value),
             "mode" => {
                 text(value, 16)?;
                 match Mode::parse(value) {
@@ -778,7 +752,7 @@ impl Config {
             "gpu-level" => self.gpu_level = named(GpuLevel::parse(value))?,
             "gpu-priority" => self.gpu_priority = number(value, 0, 1)? == 1,
             "cpus" => {
-                let n = atoi(value);
+                let n = i64::from(parse::atoi(value));
                 fmt_ok((1..=MAX_CPUS as i64).contains(&n))?;
                 self.ncpu = n as u32;
             }
@@ -815,17 +789,17 @@ impl Config {
             "ram-unlock-below" => self.ram_unlock_below = size_below_tib(value)?,
             "return-graceful-ms" => self.return_graceful_ms = number(value, 0, 120000)?,
             "ready-content-wait" => self.ready_content_wait = number(value, 0, 480)?,
-            "width" => self.width = atoi(value) as u32,
-            "height" => self.height = atoi(value) as u32,
+            "width" => self.width = parse::atoi(value) as u32,
+            "height" => self.height = parse::atoi(value) as u32,
             "hz" => {
-                let hz = atoi(value) as u32;
+                let hz = parse::atoi(value) as u32;
                 fmt_ok(hz == 0 || (24..=240).contains(&hz))?;
                 self.hz = hz;
             }
             // WxH or WxH@HZ: the mode a session assumes when the panel cannot be read (panel_fallback)
             "panel-fallback" => self.panel_fallback = Some(panel_fallback(value).ok_or(BadSetting)?),
             "scale" => {
-                let scale = atoi(value) as u32;
+                let scale = parse::atoi(value) as u32;
                 fmt_ok(scale == 2 || scale == 3)?;
                 self.scale = scale;
             }
@@ -841,7 +815,7 @@ impl Config {
             "touch-exclusive" => self.touch_exclusive = flag(value)?,
             "input-script" => self.input_script = text(value, 512)?,
             "tasks" => self.tasks = flag(value)?,
-            "task-uid" => self.task_uid = u32::try_from(atoi(value)).ok(),
+            "task-uid" => self.task_uid = u32::try_from(parse::atoi(value)).ok(),
             "touch-sleep" => self.touch_sleep = flag(value)?,
             "pen" => self.pen = named(Pen::parse(value))?,
             "pen-rotate" => self.pen_rotate = named(PenRotate::parse(value))?,
@@ -882,7 +856,7 @@ impl Config {
             }
             "host-props" => self.host_props = text(value, 256)?,
             "host-root" => self.host_root = text(value, 256)?,
-            "log-level" => self.log_level = Level::from_index(atoi(value)),
+            "log-level" => self.log_level = Level::from_index(parse::atoi(value).into()),
             "disk" | "disk-rw" | "data-store" => {
                 // disk=FILE (read-only), disk-rw=FILE[,SEED], data-store=FILE[,SEED]
                 fmt_ok(self.disks.len() < MAX_DISKS)?;
@@ -1507,7 +1481,7 @@ pub fn boot_args_bt_transport(args: &str) -> Option<u32> {
             continue;
         }
         if let Some((_, value)) = w.split_once('=') {
-            let v = c_strtol(value).0.unwrap_or(0);
+            let v = parse::strtol(value, 10).map_or(0, |(v, _)| v);
             if (0..13).contains(&v) {
                 found = Some(v as u32);
             }

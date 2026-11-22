@@ -349,13 +349,7 @@ fn read_line(path: &str, max: usize) -> Option<String> {
 
 /// C's strtoll of base 10 on a prefix: leading white space, a sign, the digits; None without digits or past 64 bits.
 pub fn strtoll(text: &str) -> Option<i64> {
-    let t = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-    let sign = usize::from(t.starts_with(['-', '+']));
-    let digits = t[sign..].bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return None;
-    }
-    t[..sign + digits].trim_start_matches('+').parse().ok()
+    xh_core::parse::leading_i64(text, 10).map(|(v, _)| v)
 }
 
 fn read_int(path: &str) -> Option<i64> {

@@ -72,16 +72,8 @@ fn number_prefix(text: &str, allowed: impl Fn(usize, char) -> bool) -> &str {
     &t[..end]
 }
 
-/// C's `atoi`: leading blanks, a sign, digits; 0 when there are none.
-pub fn atoi(text: &str) -> i32 {
-    let n = number_prefix(text, |i, c| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')));
-    let (sign, digits) = match n.strip_prefix('-') {
-        Some(d) => (-1i64, d),
-        None => (1, n.trim_start_matches('+')),
-    };
-    let value = digits.bytes().fold(0i64, |v, d| (v * 10 + i64::from(d - b'0')).min(i64::from(i32::MAX)));
-    (sign * value) as i32
-}
+/// C's `atoi` (xh-core's).
+pub use xh_core::parse::atoi;
 
 /// C's `atof` for plain decimals: the longest prefix that is a number; 0 when there is none.
 pub fn atof(text: &str) -> f64 {

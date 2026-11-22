@@ -36,15 +36,11 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xh_core::parse::atoi;
 use xh_core::sys::{error_text, strerror};
 
 fn sleep_ms(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
-}
-
-/// C's atoi of an argument (0 for none or no number).
-fn atoi(text: Option<&String>) -> i64 {
-    text.and_then(|t| xh_core::parse::leading_i64(t, 10)).map_or(0, |(v, _)| v)
 }
 
 /// `bridgectl host`: the host phone as xnuhost sees it, read only: what was read, which entry it matched and why, and
@@ -86,7 +82,7 @@ fn host_cmd() -> i32 {
 }
 
 fn cpu(args: &[String]) -> i32 {
-    let nvcpu = if args.len() > 2 { atoi(args.get(2)) as usize } else { 8 };
+    let nvcpu = if args.len() > 2 { atoi(&args[2]) as usize } else { 8 };
     let Some(t) = Topology::read("/sys") else {
         println!("no CPUs under /sys/devices/system/cpu");
         return 1;
@@ -424,7 +420,7 @@ fn haptic(args: &[String], pattern: bool) -> i32 {
         }
         sleep_ms(300);
     } else {
-        let arg = |i: usize, default: u32| if args.len() > i { atoi(args.get(i)) as u32 } else { default };
+        let arg = |i: usize, default: u32| if args.len() > i { atoi(&args[i]) as u32 } else { default };
         let ms = arg(2, 200);
         h.vib(ms, arg(3, 1000), arg(4, 0));
         sleep_ms(u64::from(ms) + 100);
@@ -571,7 +567,7 @@ fn db(v: f64) -> f64 {
 /// periods; then, with `record`, two seconds of the microphone: frames, peak and RMS. The helper's own lines (its
 /// stream's mode, the ring's report) are on stderr.
 fn audio(args: &[String]) -> i32 {
-    let mut seconds = if args.len() > 3 { atoi(args.get(3)) as u32 } else { 2 };
+    let mut seconds = if args.len() > 3 { atoi(&args[3]) as u32 } else { 2 };
     let record = args.get(4).is_some_and(|a| a == "record");
     if !(1..=30).contains(&seconds) {
         seconds = 2;
@@ -663,7 +659,7 @@ fn audio(args: &[String]) -> i32 {
 /// trip is the speaker's latency plus the air plus the microphone's latency. The helper's speaker report (stderr) says
 /// the speaker's part from AAudio's timestamps; the difference is the microphone's and the air's.
 fn audio_loop(args: &[String]) -> i32 {
-    let mut clicks = if args.len() > 3 { atoi(args.get(3)) as usize } else { 10 };
+    let mut clicks = if args.len() > 3 { atoi(&args[3]) as usize } else { 10 };
     if !(1..=20).contains(&clicks) {
         clicks = 10;
     }

@@ -40,11 +40,7 @@ use onebridges::wifi::{frames, station, wlan};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-
-/// C's atoi.
-fn atoi(s: &str) -> i64 {
-    xh_core::parse::leading_i64(s, 10).map_or(0, |v| v.0)
-}
+use xh_core::parse::atoi;
 
 fn security_text(ies: &[u8], capability: u16) -> String {
     let s = security_parse(ies);

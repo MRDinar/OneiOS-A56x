@@ -26,14 +26,7 @@ const OBJ_VIBRATOR: u64 = 3;
 
 /// C's strtol on the start of `s` (leading blanks, a sign, digits): None without a digit.
 fn long_prefix(s: &str) -> Option<i64> {
-    let s = s.trim_start();
-    let (sign, digits) = match s.as_bytes().first() {
-        Some(b'-') => (-1, &s[1..]),
-        Some(b'+') => (1, &s[1..]),
-        _ => (1, s),
-    };
-    let end = digits.bytes().take_while(u8::is_ascii_digit).count();
-    digits[..end].parse::<i64>().ok().map(|v| sign * v)
+    xh_core::parse::leading_i64(s, 10).map(|(v, _)| v)
 }
 
 /// C's strtof on a whole word, or its longest prefix that is a number.

@@ -426,7 +426,7 @@ pub fn huge_choose(root: &str, want: bool) -> HugeChoice {
         }
     }
     if let Some(text) = read_line(format!("{thp}/hpage_pmd_size")) {
-        c.pmd_size = text.trim().bytes().take_while(u8::is_ascii_digit).fold(0u64, |v, d| v * 10 + u64::from(d - b'0'));
+        c.pmd_size = xh_core::parse::leading_u64(text.trim(), 10).map_or(0, |(v, _)| v);
     }
     let v = proc_values(format!("{root}/proc/meminfo"), &["HugePages_Free", "Hugepagesize"]);
     c.hugetlb_free = v[0].unwrap_or(0);

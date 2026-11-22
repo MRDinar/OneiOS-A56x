@@ -108,18 +108,7 @@ fn wait_ms(ms: u32) {
 
 /// C's (unsigned)atoi or strtoul of a variable: the leading number, 0 without one.
 fn number(text: &str) -> u32 {
-    let t = text.trim_start();
-    let (negative, t) = match t.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, t.strip_prefix('+').unwrap_or(t)),
-    };
-    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
-    let v = t[..digits].parse::<u64>().unwrap_or(0) as u32;
-    if negative {
-        v.wrapping_neg()
-    } else {
-        v
-    }
+    xh_core::parse::strtoul(text, 10).map_or(0, |(v, _)| v as u32)
 }
 
 fn var(name: &str) -> Option<String> {

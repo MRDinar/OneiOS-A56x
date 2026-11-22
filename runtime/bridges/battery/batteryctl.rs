@@ -11,6 +11,7 @@ use onebridges::hw::{self, Backend, Bridge, HwSettings};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
+use xh_core::parse::atoi;
 
 fn print(what: &str, s: &Sample) {
     println!(
@@ -29,17 +30,6 @@ fn print(what: &str, s: &Sample) {
         s.cycles,
         s.minutes
     );
-}
-
-/// C's atoi: the leading number, 0 without one.
-fn atoi(text: &str) -> i64 {
-    let t = text.trim_start();
-    let (sign, t) = match t.strip_prefix('-') {
-        Some(rest) => (-1, rest),
-        None => (1, t.strip_prefix('+').unwrap_or(t)),
-    };
-    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
-    sign * t[..digits].parse::<i64>().unwrap_or(0)
 }
 
 fn main() -> ExitCode {

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use xh_core::parse;
 
 const STEP: Duration = Duration::from_millis(16);
 const TOUCH_MAX: usize = 4;
@@ -62,7 +63,7 @@ pub struct Options {
 /// C's strtoul(text, NULL, 10) of a variable that is set and not empty; else `fallback`.
 fn env_u32(name: &str, fallback: u32) -> u32 {
     match std::env::var(name) {
-        Ok(text) if !text.is_empty() => strtoul(&text).map_or(0, |(v, _)| v as u32),
+        Ok(text) if !text.is_empty() => parse::strtoul(&text, 10).map_or(0, |(v, _)| v as u32),
         _ => fallback,
     }
 }
@@ -723,27 +724,10 @@ impl Drop for Bright {
 
 // ---- the files ----------------------------------------------------------------------------------
 
-/// C's strtoul of base 10 on a prefix: leading white space, an optional sign, the digits. The value (wrapped as C's
-/// unsigned long on a 64-bit phone) and the rest; None without digits.
-fn strtoul(text: &str) -> Option<(u64, &str)> {
-    let t = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-    let (negative, t) = match t.as_bytes().first() {
-        Some(b'-') => (true, &t[1..]),
-        Some(b'+') => (false, &t[1..]),
-        _ => (false, t),
-    };
-    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return None;
-    }
-    let value = t[..digits].parse::<u64>().unwrap_or(u64::MAX);
-    Some((if negative { value.wrapping_neg() } else { value }, &t[digits..]))
-}
-
 /// The first 31 bytes of a file as a number (C's read_u32: strtoul, what follows the digits ignored).
 fn read_u32(path: &Path) -> io::Result<u32> {
     let text = read_head(path, 31)?;
-    strtoul(&text).map(|(v, _)| v as u32).ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))
+    parse::strtoul(&text, 10).map(|(v, _)| v as u32).ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))
 }
 
 /// Up to `max` bytes of a file, one read; empty is an error.

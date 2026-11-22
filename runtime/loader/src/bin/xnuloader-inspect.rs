@@ -5,6 +5,7 @@
 //!   xnuloader-inspect board NCPU      the tree xnuhost builds for its board, flat, on stdout
 use std::io::{self, Write};
 use std::process::ExitCode;
+use xh_core::parse::atoi;
 use xnuloader::machine::{DeviceKind, Machine};
 use xnuloader::{Kernel, Node};
 
@@ -13,18 +14,6 @@ fn slurp(path: &str) -> Result<Vec<u8>, ExitCode> {
         eprintln!("{path}: {}", xh_core::sys::error_text(&e));
         ExitCode::from(1)
     })
-}
-
-/// C's atoi: optional blanks and sign, then digits; 0 when there are none.
-fn atoi(text: &str) -> i32 {
-    let t = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-    let (negative, digits) = match t.as_bytes().first() {
-        Some(b'-') => (true, &t[1..]),
-        Some(b'+') => (false, &t[1..]),
-        _ => (false, t),
-    };
-    let n = digits.bytes().take_while(u8::is_ascii_digit).fold(0i64, |n, d| (n * 10 + (d - b'0') as i64) % (1 << 32));
-    (if negative { -n } else { n }) as i32
 }
 
 fn kernel(path: &str, out: &mut dyn Write) -> Result<(), ExitCode> {

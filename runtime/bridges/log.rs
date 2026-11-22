@@ -68,7 +68,9 @@ mod tests {
         let c = Capture::start();
         crate::br_info!("hw: {}: backend {}", "touch", "treble");
         crate::br_error!("{}", "é".repeat(300));
-        let lines = c.lines();
+        // The capture holds every thread's lines meanwhile: the other tests' too.
+        let lines: Vec<_> =
+            c.lines().into_iter().filter(|(_, l)| l.starts_with("hw: touch") || l.starts_with('é')).collect();
         assert_eq!(lines[0], (Level::Info, "hw: touch: backend treble".to_owned()));
         assert_eq!(lines[1].0, Level::Error);
         assert_eq!(lines[1].1.len(), 510); // 511 would split a two-byte character

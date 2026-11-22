@@ -15,6 +15,7 @@ use onebridges::thermal::{self, decide, level_name, Limits, Options, Raw, Sensor
 use onebridges::thermal::{stat_ticks, UNKNOWN};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+use xh_core::parse::atoi;
 
 fn root() -> String {
     std::env::var("ONEIOS_THERMAL_ROOT").unwrap_or_default()
@@ -224,11 +225,9 @@ fn clk_tck() -> f64 {
     }
 }
 
-/// C's atoi of an option's value.
-fn atoi(text: &str) -> u32 {
-    let t = text.trim_start();
-    let digits = t.bytes().take_while(u8::is_ascii_digit).count();
-    t[..digits].parse().unwrap_or(0)
+/// An option's value: C's atoi, a negative one 0.
+fn uint(text: &str) -> u32 {
+    u32::try_from(atoi(text)).unwrap_or(0)
 }
 
 fn local_time() -> (i32, i32, i32) {
@@ -246,8 +245,8 @@ fn watch(args: &[String]) -> ExitCode {
     let mut it = args[2..].iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "-i" if it.len() > 0 => interval = atoi(it.next().unwrap()),
-            "-n" if it.len() > 0 => count = atoi(it.next().unwrap()),
+            "-i" if it.len() > 0 => interval = uint(it.next().unwrap()),
+            "-n" if it.len() > 0 => count = uint(it.next().unwrap()),
             "-q" => quiet = true,
             _ => {
                 eprintln!("usage: thermalctl watch [-i SECONDS] [-n LINES] [-q]");
@@ -396,7 +395,7 @@ fn top(args: &[String]) -> ExitCode {
     let mut it = args[2..].iter();
     while let Some(a) = it.next() {
         if a == "-i" && it.len() > 0 {
-            interval = atoi(it.next().unwrap());
+            interval = uint(it.next().unwrap());
         } else {
             eprintln!("usage: thermalctl top [-i SECONDS]");
             return ExitCode::from(2);
