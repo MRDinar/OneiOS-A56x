@@ -70,9 +70,14 @@ not listed. "New" means not in this file before today.
 
 ## How one tree supports many phones (the pattern)
 
-- **Host device table** (2026-11-21, `host-device-detect`): xnuhost detects the host phone at start (`ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer`; soc0 and the device tree as fallbacks) and takes its defaults from one table, `runtime/bridges/hw/host_device.c`: S24 Ultra (none, today's), S25 Ultra (`ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` since 2026-11-22), S25 (`panel-fallback=1080x2340@120` and the same thermal rule), S26 Ultra (`ONEIOS_BRIGHT_MAX=2300`), A56 (`gpu=2d`, `panel-fallback=1080x2340@120`). The command line and the image set win over it; `host-device=none` turns it off, `host-device=NAME` forces a row. A port adds a table row (existing options only) plus its record, instead of a fork. `docs/hardware.md` 7h.
+- **Host device table** (2026-11-21, `host-device-detect`): xnuhost detects the host phone at start (`ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer`; soc0 and the device tree as fallbacks) and takes its defaults from one table, `runtime/bridges/hw/host_device.rs`: S24 Ultra (none, today's), S25 Ultra (`ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` since 2026-11-22), S25 (`panel-fallback=1080x2340@120` and the same thermal rule), S26 Ultra (`ONEIOS_BRIGHT_MAX=2300`), A56 (`gpu=2d`, `panel-fallback=1080x2340@120`). The command line and the image set win over it; `host-device=none` turns it off, `host-device=NAME` forces a row. A port adds a table row (existing options only) plus its record, instead of a fork. `docs/hardware.md` 7h.
 - **Backends, not forks**: `runtime/bridges/hw` (`hw-backend=samsung|treble`, per-bridge overrides) plus the
   stand-in tests above. A new phone starts by proving its backend against fakes, not by forking the repo.
+- **The runtime is Rust since 2026-11-23** ([runtime/RUST.md](../runtime/RUST.md)): a fork branched before that
+  carries the C runtime, whose files are gone here. Its runtime changes come over as changes to the Rust module that
+  replaced the C file (one C file became one module: `topology.c` is `runtime/bridges/cpu/topology.rs`, `gpu3d_kgsl.c`
+  is `runtime/xnuhost/src/gpu3d_kgsl.rs`, ...), with the C tests' cases as Rust tests. Kernel patches, `drivers/` and
+  `userland/` are still C and merge as before.
 - **Per-device records**: `docs/s25.md` is the template (F/I/U-marked device table, verdict table, probe→decision
   matrix). A port lands as a record plus its profile/config, not as a parallel universe.
 - **Per-device config**: `userland/config/device-iphone18,2.toml` is the guest-side pattern; the host side follows

@@ -2,13 +2,13 @@
 
 > iOS 27 next to One UI on a rooted Samsung Galaxy S24 Ultra — switched to and back the way OneOS switches Androids. Nothing flashed, the image lives in a folder, One UI's kernel keeps running.
 
-**Status: experimental, under active development.** On the phone it boots to the Home Screen (unlock works, GPU-composited, touch, keyboard and S Pen work) and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest.
+**Status: experimental, under active development.** On the phone it boots to the Home Screen (unlock works, GPU-composited, touch, keyboard and S Pen work) and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest. The phone results below are of the C runtime: the host runtime (xnuhost, its loader, the bridges, the display helper) was rewritten in Rust on 2026-11-23 ([runtime/RUST.md](runtime/RUST.md)); its host tests pass and it boots the test kernel under qemu, but **no phone has run the Rust runtime yet**.
 
-OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel** (`runtime/xnuhost`): iOS's processes are Linux processes whose system calls and faults go to it. How it fits together: [docs/architecture.md](docs/architecture.md).
+OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel** (`runtime/xnuhost`, Rust): iOS's processes are Linux processes whose system calls and faults go to it. How it fits together: [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
 
-Prerequisites: the build host is a Mac (Xcode, NDK 28.2, Rust 1.95+; Linux-only host tests run in Apple's `container`), or a Linux x86_64 PC with `qemu-aarch64`; the pinned Apple IPSW pieces (fetched, never committed). Full flow: [docs/building.md](docs/building.md).
+Prerequisites: the build host is a Mac (Xcode, NDK 28.2, Rust 1.95+ with the targets `aarch64-linux-android` and `aarch64-unknown-none`; Linux-only host tests run in Apple's `container`), or a Linux x86_64 PC with `qemu-aarch64`; the pinned Apple IPSW pieces (fetched, never committed). Full flow: [docs/building.md](docs/building.md).
 
 ```sh
 P=iphone18,2-ios27.0.1-24A446
@@ -36,7 +36,7 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Haptics | The haptic server starts (0078); the Actuator then played silence (no DSP chain): hosted 0086 merged, phone proof pending | Host-tested | [docs/hardware.md](docs/hardware.md) §5 |
 | Interrupts / Mach RPC | — | Verified: 41k host-call IPIs vs 110 trapped | `oneios-perf` `rpc:`/`0081:` lines |
 | Return to One UI | Yes — chord, SIGKILL backstop | n/a | Never touches side keys, realtime, or `/sys/power` |
-| Host test suites | n/a | All green (loader, xnuhost, bridges, display, prelink audit 0 failures) | `runtime/host-tests.sh` |
+| Host test suites | n/a | All green: the Rust runtime's `cargo test --workspace` and clippy, the test kernel's three boots under qemu (`runtime/xnuhost/check-arm64.sh`); the prelink audit 0 failures | `runtime/host-tests.sh`, [runtime/RUST.md](runtime/RUST.md) |
 
 ## Known issues
 
@@ -82,7 +82,7 @@ scripts/fetch/        fetch only the needed IPSW members from Apple's CDN (never
 scripts/image/        build the image set (manifest, SHA-256, .tar.zst)
 userland/             iOS 27 root and Data tweaks (the image hook), guest helpers, the camera plug-in
 kernel/               XNU 12377 (UniXNU / Droid-VM fork) built on Linux; oneios-hosted/ patches; prelink/ (kernel.kc)
-runtime/              xnuhost and its loader, the display helper, the hardware bridges, the runtime package
+runtime/              xnuhost and its loader, the display helper, the hardware bridges, the runtime package (Rust: runtime/RUST.md)
 drivers/              iOS-side drivers for the bridges (CPU, network, Bluetooth, haptics, audio, brightness, camera)
 oneos/                the contract with the OneOS fork (akshaynexus/OneOS, branch oneios)
 ```
