@@ -58,6 +58,8 @@ typedef struct {
   const char *touch_dir;                  // NULL: /sys/class/sec (the touch IC's power state, README.md)
   uint32_t start_percent;                 // 0: 50. The slider's start when One UI left the panel at 0 (ONEIOS_BRIGHT_START)
   bool     no_touch_off;                  // the IC is not put to sleep at level 0 (ONEIOS_TSP_OFF=0)
+  bool     pen_ic;                        // also the S Pen's IC, <touch_dir>/sec_epen/enabled, as the touch IC (ONEIOS_PEN_IC=1: xnuhost
+                                          // sets it when it gives the guest the host's pen, pen=auto; docs/hardware.md 7f)
   uint32_t ceiling;                       // 0: br_bright_ceiling(max_brightness)   (ONEIOS_BRIGHT_MAX)
   uint32_t floor;                         // 0: 1                                   (ONEIOS_BRIGHT_MIN)
   uint32_t max_nits;                      // 0: 500, what iOS is told the top is    (ONEIOS_BRIGHT_NITS)
@@ -78,6 +80,7 @@ typedef struct {
   uint32_t max_nits;
   uint32_t start;                         // the node's value iOS starts from: saved, or the start level when saved is 0
   unsigned touch_nodes;                   // touch ICs found (sec_touchscreen)
+  unsigned pen_nodes;                     // of those, the S Pen's IC (sec_epen; only with pen_ic)
   int      backend;                       // BR_HW_SAMSUNG or BR_HW_TREBLE: the form in use
 } br_bright_info;
 

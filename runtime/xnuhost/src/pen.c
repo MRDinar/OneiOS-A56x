@@ -24,8 +24,18 @@
 // the touch screen: oneos/interface.md), and One UI gets it back as it was. A device that has the side keys (KEY_POWER,
 // KEY_VOLUMEUP, KEY_VOLUMEDOWN) or multitouch positions is never taken as the pen.
 //
+// The S24 Ultra's device, from Samsung's Wacom driver (drivers/input/sec_input/wacom, docs/hardware.md 7f): one device,
+// "sec_e-pen", with BTN_TOOL_PEN, BTN_TOOL_RUBBER, BTN_TOUCH, BTN_STYLUS, ABS_X/Y (0..the IC's maximum, no resolution),
+// ABS_PRESSURE 0..4095, ABS_DISTANCE 0..255 (sent in every frame, also while touching: only a hovering frame's is used),
+// ABS_TILT_X/Y -63..63 (degrees, no resolution), SW_PEN_INSERT (the garage), and the screen-off keys KEY_WAKEUP_UNLOCK and
+// KEY_HOMEPAGE; no INPUT_PROP_DIRECT. Those keys come only in the IC's screen-off (AOP) mode, which sends no positions:
+// they are never passed on, and the first one is logged (the IC asleep for iOS: the brightness bridge wakes it with the
+// touch IC when xnuhost gives the guest this pen, ONEIOS_PEN_IC=1). input.c never takes this device (no side key, no
+// multitouch), so its KEY_HOMEPAGE never presses Home. The leave is two frames: the tip up, then the tool out.
+//
 // One line per time in range (the pen comes near, then leaves): `pen: in range N ms: F frames (H hovering, T touching),
-// S strokes, pressure up to P/4095, tilt x a..b y c..d degrees, the side button pressed B times; U unchanged frames not sent`.
+// S strokes, pressure up to P/4095, height a..b/255 hovering, tilt x a..b y c..d degrees, the side button pressed B times;
+// U unchanged frames not sent`.
 #define _GNU_SOURCE
 #include "xnuhost.h"
 #include <errno.h>
@@ -36,7 +46,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { EV_SYN_ = 0, EV_KEY_ = 1, EV_ABS_ = 3, SYN_REPORT_ = 0, SYN_DROPPED_ = 3,
+enum { EV_SYN_ = 0, EV_KEY_ = 1, EV_ABS_ = 3, EV_SW_ = 5, SYN_REPORT_ = 0, SYN_DROPPED_ = 3, SW_PEN_INSERTED_ = 0x0f,
        ABS_X_ = 0, ABS_Y_ = 1, ABS_PRESSURE_ = 0x18, ABS_DISTANCE_ = 0x19, ABS_TILT_X_ = 0x1a, ABS_TILT_Y_ = 0x1b,
        ABS_MT_POSITION_X_ = 0x35, KEY_VOLUMEDOWN_ = 114, KEY_VOLUMEUP_ = 115, KEY_POWER_ = 116,
        BTN_TOOL_PEN_ = 0x140, BTN_TOOL_RUBBER_ = 0x141, BTN_TOUCH_ = 0x14a, BTN_STYLUS_ = 0x14b, BTN_STYLUS2_ = 0x14c };
@@ -117,6 +127,13 @@ void xh_pen_sample_of(const xh_pen_device *d, unsigned rotate, bool mirror, cons
 
 static void emit_virtio(void *context, uint16_t type, uint16_t code, int32_t value) { xh_virtio_input_event(context, type, code, value); }
 
+void xh_pen_set_panel(xh_pen_source *s, unsigned width, unsigned height)
+{
+  // One panel pixel in the guest's units (0..32767 across the panel), at least 1: the hover's "moved" step.
+  s->pixel_x = width ? (int32_t)((XH_PEN_XY_MAX + width - 1) / width) : 1;
+  s->pixel_y = height ? (int32_t)((XH_PEN_XY_MAX + height - 1) / height) : 1;
+}
+
 void xh_pen_source_init(xh_pen_source *s, xh_virtio *dev, const xh_pen_device *d, unsigned rotate, bool mirror)
 {
   memset(s, 0, sizeof *s);
@@ -126,26 +143,30 @@ void xh_pen_source_init(xh_pen_source *s, xh_virtio *dev, const xh_pen_device *d
   s->fd = d->fd;
   s->rotate = rotate;
   s->mirror = mirror;
+  s->period_ns = XH_PEN_PERIOD_NS;
+  xh_pen_set_panel(s, 1440, 3120);         // the S24 Ultra's panel until input.c says the guest's frame
 }
 
 static void log_proximity(xh_pen_source *s, int64_t now_ns)
 {
   xh_pen_stats *t = &s->stats;
   long long ms = t->since_ns && now_ns > t->since_ns ? (now_ns - t->since_ns) / 1000000 : 0;
-  char tilt[64] = "";
+  char tilt[64] = "", height[48] = "";
+  if (t->hover) snprintf(height, sizeof height, ", height %d..%d/255 hovering", t->height_min, t->height_max);
   if (s->device.axis[XH_PEN_TILT_X].present) snprintf(tilt, sizeof tilt, ", tilt x %d..%d y %d..%d degrees", t->tilt_min[0], t->tilt_max[0], t->tilt_min[1], t->tilt_max[1]);
-  LOGI("pen: in range %lld ms: %u frame%s (%u hovering, %u touching), %u stroke%s, pressure up to %d/4095%s, the side button pressed %u time%s; %u unchanged frame%s not sent",
-       ms, t->frames, t->frames == 1 ? "" : "s", t->hover, t->touching, t->strokes, t->strokes == 1 ? "" : "s", t->pressure_max, tilt,
-       t->presses, t->presses == 1 ? "" : "s", t->unchanged, t->unchanged == 1 ? "" : "s");
+  LOGI("pen: in range %lld ms: %u frame%s (%u hovering, %u touching), %u stroke%s, pressure up to %d/4095%s%s, the side button pressed %u time%s; "
+       "%u unchanged frame%s not sent, %u coalesced (at most one frame per %lld.%lld ms but the edges), %u hovering frame%s moved under a pixel; %u sent",
+       ms, t->frames, t->frames == 1 ? "" : "s", t->hover, t->touching, t->strokes, t->strokes == 1 ? "" : "s", t->pressure_max, height, tilt,
+       t->presses, t->presses == 1 ? "" : "s", t->unchanged, t->unchanged == 1 ? "" : "s", t->coalesced,
+       (long long)(s->period_ns / 1000000), (long long)(s->period_ns / 100000 % 10), t->still, t->still == 1 ? "" : "s", t->sent);
   memset(t, 0, sizeof *t);
 }
 
-// One sample to the guest: the fields that changed, then the frame's end. Nothing when nothing changed.
-static void send(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
+// What one frame of the device adds to its time in range's line (every frame, sent or not).
+static void account(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
 {
-  const xh_pen_sample *o = &s->sent;
-  bool all = !s->sent_any, any = false;
   xh_pen_stats *t = &s->stats;
+  const xh_pen_sample *o = &s->prev;
   if (n->in_range && !t->since_ns) {
     t->since_ns = now_ns ? now_ns : 1;
     t->tilt_min[0] = t->tilt_max[0] = n->tilt_x;
@@ -153,7 +174,12 @@ static void send(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
   }
   if (n->in_range) {
     t->frames++;
-    if (n->touch) t->touching++; else t->hover++;
+    if (n->touch) t->touching++;
+    else {
+      if (!t->hover || n->distance < t->height_min) t->height_min = n->distance;
+      if (!t->hover || n->distance > t->height_max) t->height_max = n->distance;
+      t->hover++;
+    }
     if (n->pressure > t->pressure_max) t->pressure_max = n->pressure;
     if (n->tilt_x < t->tilt_min[0]) t->tilt_min[0] = n->tilt_x;
     if (n->tilt_x > t->tilt_max[0]) t->tilt_max[0] = n->tilt_x;
@@ -162,6 +188,15 @@ static void send(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
     if (n->touch && !o->touch) t->strokes++;
     if (n->barrel && !o->barrel) t->presses++;
   }
+  s->prev = *n;
+}
+
+// One sample to the guest: the fields that changed, then the frame's end. Nothing when nothing changed.
+static void send(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
+{
+  const xh_pen_sample *o = &s->sent;
+  bool all = !s->sent_any, any = false;
+  xh_pen_stats *t = &s->stats;
 #define FIELD(field, type, code) do { if (all || n->field != o->field) { s->emit(s->context, type, code, n->field); any = true; } } while (0)
   // Positions and axes before the keys, so that a tip that comes down does so where its frame says.
   if (n->in_range) {
@@ -184,10 +219,62 @@ static void send(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
   }
   s->emit(s->context, EV_SYN_, SYN_REPORT_, 0);
   s->frames_sent++;
+  t->sent++;
   bool left = o->in_range && !n->in_range;
   s->sent = *n;
   s->sent_any = true;
   if (left) log_proximity(s, now_ns);
+}
+
+// Send now: the sample, with the most pressure of the frames folded into it while the tip was down. The held frame
+// (if any) is replaced by this one.
+static void deliver(xh_pen_source *s, const xh_pen_sample *n, int64_t now_ns)
+{
+  xh_pen_sample m = *n;
+  if (m.touch && s->held_pressure > m.pressure) m.pressure = s->held_pressure;
+  s->held_pressure = 0;
+  s->pending = false;
+  s->sent_ns = now_ns;
+  send(s, &m, now_ns);
+}
+
+static bool same(const xh_pen_sample *a, const xh_pen_sample *b)
+{
+  return a->in_range == b->in_range && a->eraser == b->eraser && a->touch == b->touch && a->barrel == b->barrel && a->x == b->x &&
+         a->y == b->y && a->pressure == b->pressure && a->distance == b->distance && a->tilt_x == b->tilt_x && a->tilt_y == b->tilt_y;
+}
+
+// One frame of the device (at its SYN_REPORT, its own time `at`), coalesced to the panel's rate (spen-lag, 2026-11-22: the
+// S Pen's ~480 frames a second were each a HID report and a stylus event, and backboardd took 100-160 % of a CPU while
+// drawing). An edge (in range or out, the tip down or up, the eraser end, the side button) goes at once, with the newest
+// position. Any other frame goes when period_ns has passed since the last send; until then it is held, a newer one
+// replaces it (counted as coalesced), and xh_pen_tick sends the held one when its time comes. The pressure sent is the
+// most of the frames folded together while the tip was down. A hovering frame within a pixel of the one last sent is
+// not sent at all. A frame like the last one sent is not sent (unchanged).
+static void frame(xh_pen_source *s, const xh_pen_sample *n, int64_t at)
+{
+  const xh_pen_sample *o = &s->sent;
+  xh_pen_stats *t = &s->stats;
+  account(s, n, at);
+  bool edge = !s->sent_any || n->in_range != o->in_range || n->touch != o->touch || n->eraser != o->eraser || n->barrel != o->barrel;
+  if (s->pending) { t->coalesced++; s->pending = false; }     // the held frame: this newer one takes its place
+  if (edge || !s->period_ns) { deliver(s, n, at); return; }
+  if (same(n, o)) { if (n->in_range) t->unchanged++; s->held_pressure = 0; return; }
+  if (!n->touch) {
+    int32_t dx = n->x - o->x, dy = n->y - o->y;
+    if (dx < s->pixel_x && dx > -s->pixel_x && dy < s->pixel_y && dy > -s->pixel_y) { t->still++; return; }
+  }
+  if (n->touch && n->pressure > s->held_pressure) s->held_pressure = n->pressure;
+  if (at - s->sent_ns >= s->period_ns) { deliver(s, n, at); return; }
+  s->held = *n;
+  s->pending = true;
+}
+
+int64_t xh_pen_due(const xh_pen_source *s) { return s->pending ? s->sent_ns + s->period_ns : 0; }
+
+void xh_pen_tick(xh_pen_source *s, int64_t now_ns)
+{
+  if (s->pending && now_ns >= s->sent_ns + s->period_ns) deliver(s, &s->held, now_ns);
 }
 
 static void resync(xh_pen_source *s, int64_t now_ns)
@@ -201,7 +288,9 @@ static void resync(xh_pen_source *s, int64_t now_ns)
   s->state = st;
   xh_pen_sample n;
   xh_pen_sample_of(&s->device, s->rotate, s->mirror, &s->state, &n);
-  send(s, &n, now_ns);
+  account(s, &n, now_ns);
+  if (s->pending) s->stats.coalesced++;
+  deliver(s, &n, now_ns);                  // at once: the state read again replaces whatever was held
   LOGI("pen: events dropped by the kernel (the reader was too slow, %u time%s); the state was read again: %s", s->drops,
        s->drops == 1 ? "" : "s", n.touch ? "touching" : n.in_range ? "in range" : "out of range");
 }
@@ -220,7 +309,8 @@ void xh_pen_feed(xh_pen_source *s, const xh_input_ev *ev, unsigned n, int64_t no
       if (v->code != SYN_REPORT_) continue;
       xh_pen_sample sample;
       xh_pen_sample_of(&s->device, s->rotate, s->mirror, &s->state, &sample);
-      send(s, &sample, now_ns);
+      // The frame's own time (CLOCK_MONOTONIC, EVIOCSCLOCKID), so that a batch read late is spaced as it was made.
+      frame(s, &sample, v->time_ns > 0 ? v->time_ns : now_ns);
     } else if (v->type == EV_KEY_) {
       bool down = v->value != 0;
       switch (v->code) {
@@ -229,9 +319,19 @@ void xh_pen_feed(xh_pen_source *s, const xh_input_ev *ev, unsigned n, int64_t no
       case BTN_TOUCH_: s->state.touch = down; break;
       case BTN_STYLUS_: s->state.stylus_bits = down ? s->state.stylus_bits | 1 : s->state.stylus_bits & ~1u; break;
       case BTN_STYLUS2_: s->state.stylus_bits = down ? s->state.stylus_bits | 2 : s->state.stylus_bits & ~2u; break;
-      default: break;
+      default:
+        // Another key of the pen's IC: Samsung's driver sends KEY_WAKEUP_UNLOCK and KEY_HOMEPAGE (and nothing of a pen)
+        // only in its screen-off survey mode (AOP), which One UI's `1,0` to /sys/class/sec/sec_epen/enabled puts it in:
+        // the IC is asleep for iOS. Never sent to the guest (no Home press from the pen). Said once, then counted.
+        if (v->value && !s->aop_keys++)
+          LOGI("pen: key %u from the pen's IC, not a pen key: its screen-off (AOP) mode, which sends no positions (the IC asleep: "
+               "the brightness bridge's `brightness: pen:` line says whether it was woken); ignored", v->code);
+        break;
       }
       s->state.stylus = s->state.stylus_bits != 0;
+    } else if (v->type == EV_SW_ && v->code == SW_PEN_INSERTED_) {
+      // The pen's garage (Samsung's driver: 1 with the pen out). Rare: one line each time.
+      LOGI("pen: SW_PEN_INSERT %d: the pen %s", v->value, v->value ? "taken out of its garage" : "put back in its garage");
     } else if (v->type == EV_ABS_) {
       for (unsigned a = 0; a < XH_PEN_AXES; a++)
         if (v->code == axis_code[a]) s->state.value[a] = v->value;
@@ -245,13 +345,18 @@ unsigned xh_pen_rotation(const char *setting, const xh_pen_device *d, unsigned w
     if (why) *why = "pen-rotate";
     return (unsigned)atoi(setting);
   }
-  // auto: a digitizer whose long side is its x axis under a portrait panel (or the other way round) is turned a quarter.
-  // Which quarter is not known for the S24 Ultra's [U]: 90 is a guess; pen-rotate=270 (and pen-mirror) otherwise.
+  // auto: a digitizer whose frame has the panel's shape is taken as it is (0); one whose long side lies across the panel's is
+  // turned a quarter (90, a guess for such a device: pen-rotate=270 and pen-mirror cover the others).
+  // The S24 Ultra (SM-S928): Samsung's Wacom driver (drivers/input/sec_input/wacom, wacom_coord_handler) reports the IC's
+  // own coordinates with no swap and no flip (it has no xy_switch or invert), and its device tree gives the IC 7315 x 15687
+  // (sec,max_coords; the IC's query at probe may replace them): the short side on x, as the 1440 x 3120 panel's (0.466 and
+  // 0.462). So auto is 0 there [F the driver's source and device tree; I that the IC's origin is the panel's top left: the
+  // first phone session's stroke from the top left corner checks it].
   const xh_pen_axis *x = &d->axis[XH_PEN_X], *y = &d->axis[XH_PEN_Y];
   int64_t w = (int64_t)x->max - x->min, h = (int64_t)y->max - y->min;
   if (x->res > 0 && y->res > 0) { w = w * 1000 / x->res; h = h * 1000 / y->res; }
   bool pen_portrait = h >= w, panel_portrait = height >= width;
-  if (why) *why = pen_portrait == panel_portrait ? "auto: the digitizer and the panel are both portrait or both landscape" : "auto: the digitizer's long side is across the panel's (a guess: pen-rotate=270 if strokes come out turned)";
+  if (why) *why = pen_portrait == panel_portrait ? "auto: the digitizer and the panel are both portrait or both landscape" : "auto: the digitizer's long side is across the panel's (90 is a guess: pen-rotate=270 if strokes come out turned)";
   return pen_portrait == panel_portrait ? 0 : 90;
 }
 
@@ -282,7 +387,11 @@ void xh_pen_describe(const xh_pen_device *d, char *text, size_t size)
     if (n < 0 || (size_t)n >= size - used) return;
     used += (size_t)n;
   }
-  snprintf(text + used, size - used, "; keys: tool pen%s, touch%s", d->rubber ? ", rubber" : "", d->stylus ? ", stylus (the side button)" : ", no side button");
+  int n = snprintf(text + used, size - used, "; keys: tool pen%s, touch%s", d->rubber ? ", rubber" : "", d->stylus ? ", stylus (the side button)" : ", no side button");
+  if (n < 0 || (size_t)n >= size - used) return;
+  used += (size_t)n;
+  // Samsung's driver: SW_PEN_INSERT 1 with the pen out of its garage [F its source; the first session's line checks it].
+  if (d->garage) snprintf(text + used, size - used, "; SW_PEN_INSERT %d (Samsung: %s)", d->pen_out, d->pen_out ? "the pen out of its garage" : "the pen in its garage");
 }
 
 #if defined(__linux__)
@@ -346,6 +455,13 @@ int xh_pen_lookup_evdev(xh_pen_device *out, char *why, size_t size)
   ioctl(best_fd, EVIOCGBIT(EV_ABS, sizeof abs), abs);
   out->rubber = byte_bit(key, sizeof key, BTN_TOOL_RUBBER);
   out->stylus = byte_bit(key, sizeof key, BTN_STYLUS) || byte_bit(key, sizeof key, BTN_STYLUS2);
+  // The pen's garage switch, when it has one (Samsung's sec_e-pen: SW_PEN_INSERT, 1 with the pen out): for the log only.
+  uint8_t sw[SW_MAX / 8 + 1] = { 0 }, sw_now[SW_MAX / 8 + 1] = { 0 };
+  if (ioctl(best_fd, EVIOCGBIT(EV_SW, sizeof sw), sw) >= 0 && byte_bit(sw, sizeof sw, SW_PEN_INSERTED) &&
+      ioctl(best_fd, EVIOCGSW(sizeof sw_now), sw_now) >= 0) {
+    out->garage = true;
+    out->pen_out = byte_bit(sw_now, sizeof sw_now, SW_PEN_INSERTED);
+  }
   for (unsigned a = 0; a < XH_PEN_AXES; a++) {
     struct input_absinfo info;
     if (!byte_bit(abs, sizeof abs, axis_code[a]) || ioctl(best_fd, EVIOCGABS(axis_code[a]), &info)) continue;

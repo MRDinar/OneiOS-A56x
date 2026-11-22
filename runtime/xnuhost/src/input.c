@@ -311,7 +311,13 @@ static void *input_main(void *arg)
 {
   (void)arg;
   while (running) {
-    if (poll(fds, nfds, 500) <= 0) continue;
+    // A pen frame held by the coalescing (pen.c) is sent when its time comes, even if the pen sends nothing more.
+    int timeout = 500;
+    int64_t due = pen_index >= 0 ? xh_pen_due(&pen_source) : 0;
+    if (due) { int64_t left = due - monotonic_ns(); timeout = left <= 0 ? 0 : (int)((left + 999999) / 1000000); }
+    int ready = poll(fds, nfds, timeout);
+    if (pen_index >= 0) xh_pen_tick(&pen_source, monotonic_ns());
+    if (ready <= 0) continue;
     for (unsigned i = 0; i < nfds; i++) {
       if (!(fds[i].revents & POLLIN)) continue;
       struct input_event ev[64];
@@ -332,7 +338,6 @@ static void *input_main(void *arg)
 
 int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive)
 {
-  (void)width; (void)height;
   bool have_touch = false;
   const bool native_touch = native_touch_present();
   for (unsigned i = 0; i < 32 && nfds < MAX_DEVICES - 1; i++) {     // one place kept for the pen
@@ -415,6 +420,7 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
   // The pen (pen.c): found and opened before (main.c, xh_pen_lookup), read here beside the others, its own filter.
   if (pen && pen->dev && pen->device.fd >= 0 && nfds < MAX_DEVICES) {
     xh_pen_source_init(&pen_source, pen->dev, &pen->device, pen->rotate, pen->mirror);
+    xh_pen_set_panel(&pen_source, width, height);   // a hover that moves less than one of the guest's pixels is not sent
     pen_source.read_state = xh_pen_read_state;
     pen_index = (int)nfds;
     fds[nfds++] = (struct pollfd){ .fd = pen->device.fd, .events = POLLIN };

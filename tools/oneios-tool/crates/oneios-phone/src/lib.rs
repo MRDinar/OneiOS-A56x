@@ -75,6 +75,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TouchCommand,
     },
+    /// Only during a session: the S Pen's IC power state (/sys/class/sec/sec_epen/enabled; docs/hardware.md 7f)
+    Pen {
+        #[command(subcommand)]
+        command: TouchCommand,
+    },
     /// Where iOS's CPU work can run, read only: each CPU's core, frequency domain, top and capped clocks, governor and
     /// boost; Android's cpusets; in a session xnuhost's threads (CPU, nice, cpuset, uclamp) and the iOS threads by CPU
     Cpu {
@@ -208,6 +213,9 @@ pub struct LogArgs {
     hid: bool,
     #[arg(long)]
     mem: bool,
+    /// The S Pen: xnuhost's `pen:` lines, the guest's pen device and HID service (docs/hardware.md 7f)
+    #[arg(long)]
+    pen: bool,
     /// Only lines from this second of the log's own clock on (its [seconds.millis] stamps)
     #[arg(long, value_name = "SECONDS")]
     since: Option<f64>,
@@ -221,7 +229,7 @@ fn phone_log(serial: Option<&str>, a: LogArgs) -> anyhow::Result<()> {
     if a.list {
         return log::list(&adb);
     }
-    let named: Vec<&str> = [("panic", a.panic), ("display", a.display), ("gpu", a.gpu), ("wifi", a.wifi), ("hid", a.hid), ("mem", a.mem)].iter().filter(|(_, on)| *on).map(|(name, _)| *name).collect();
+    let named: Vec<&str> = [("panic", a.panic), ("display", a.display), ("gpu", a.gpu), ("wifi", a.wifi), ("hid", a.hid), ("mem", a.mem), ("pen", a.pen)].iter().filter(|(_, on)| *on).map(|(name, _)| *name).collect();
     let filter = log::Filter::new(&a.grep, &named, a.markers, a.since)?;
     let save = match (a.save, a.save_auto || a.analyze) {
         (Some(path), _) => Some(path),
@@ -259,6 +267,8 @@ pub fn main(cli: Cli) -> i32 {
         }
         Command::Touch { command: TouchCommand::Status } => Adb::connect(serial).and_then(|adb| session::touch_status(&adb)),
         Command::Touch { command: TouchCommand::Wake } => Adb::connect(serial).and_then(|adb| session::touch_wake(&adb)),
+        Command::Pen { command: TouchCommand::Status } => Adb::connect(serial).and_then(|adb| session::pen_status(&adb)),
+        Command::Pen { command: TouchCommand::Wake } => Adb::connect(serial).and_then(|adb| session::pen_wake(&adb)),
         Command::Cpu { trace, out } => Adb::connect(serial).and_then(|adb| cpu::cpu(&adb, trace, out.as_deref())),
         Command::Backlight { command: BacklightCommand::Status } => Adb::connect(serial).and_then(|adb| session::backlight_status(&adb)),
         Command::Backlight { command: BacklightCommand::Set { level } } => Adb::connect(serial).and_then(|adb| session::backlight_set(&adb, level)),

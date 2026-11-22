@@ -1725,8 +1725,22 @@ Limits:
 
 ## log
 
-`oneios-tool log stacks|timeline|diff|gpu|cpu|display|perf LOG...` reads an xnuhost session log
+`oneios-tool log stacks|timeline|diff|gpu|cpu|display|perf|pen LOG...` reads an xnuhost session log
 ([todo_rust.md](todo_rust.md) has each subcommand). No Python original.
+
+`oneios-tool log pen LOG [--json | --csv]` (spen, 2026-11-22; `crates/oneios-log/src/reports.rs` `pen`): the S Pen's
+path through one session log (`docs/hardware.md` 7f). Four tables: the stages in order, each with its count, its first
+line's time, line number and text, or `missing:` and the likely reason (host: device found, guest device, pen IC woken;
+guest: transport, HID device, event driver, published, backboardd; host: first event, in range; guest: frames, queue);
+the lines that end the path early (`pen: none found`, `pen=off`, `events dropped`, the guest's `oneios-pen=1, but ...`
+and `not published`); one row per `pen: in range` line (ms, frames, hovering, touching, strokes, the most pressure, the
+hover height, tilt, side-button presses, unchanged, coalesced, hovering under a pixel, sent; a field the line does not
+have, as before 2026-11-22, is `-`); and the guest's counts (pen frames, HID reports, sent, stylus events given the
+pencil's angles, of a layout not known, queued, dropped). The notes say whether the stylus wrapper is on the pen's
+event driver (by the frames line, not by the publish line's `edge wrapper N`) and where iOS's own side is
+(`oneios-tool ioslog ... --grep 'pencil digitizer'`). Tested: `pen_report` in `tests/synthetic.rs` (the PC boot's line
+formats, a session without the pen, a host that found none) and the malformed-lines test; run on the phone sessions of
+2026-11-22 (`kbd-debug/live2.log`: every host and guest stage up to backboardd, no event yet).
 
 `oneios-tool log panic LOG [--kc PATH] [--kernel PATH]` prints the log's kernel panics named through `sym kernel`
 ("sym kernel" above), and `log stacks` ends with the same part when the log has a panic (`--no-sym` leaves it
@@ -1773,6 +1787,8 @@ oneios-tool phone display-restart [--lib PATH] [--dex PATH] [--timeout 30] [--ki
                                               #   waits for `first frame posted` in control/display.log
 oneios-tool phone touch status                # /sys/class/sec/tsp/enabled: 1 on, 0 off (read only)
 oneios-tool phone touch wake                  # 2,0 then 2,1 to that node, then reads it back
+oneios-tool phone pen status                  # /sys/class/sec/sec_epen/enabled (the S Pen's IC): 1 on, 0 off (read only)
+oneios-tool phone pen wake                    # 2,0 then 2,1 to that node, then reads it back
 oneios-tool phone backlight status            # the panel's level, max_brightness, One UI's own value (read only)
 oneios-tool phone backlight set N             # 1..max_brightness (12750); the return writes One UI's own value back
 oneios-tool phone cpu [--trace S] [--out F]   # cores, domains, top and capped clocks, cpusets, xnuhost's threads and uclamps (read only)
@@ -1895,7 +1911,9 @@ What each does:
     `--display` (`oneios-display`, `sheng-vsync`, `ONEIOS BACKLIGHT`, `ONEIOS ALS`, `oneios-swap`), `--gpu`
     (`oneios-gpu*`, `sheng-gpu`, `oneios-adreno`), `--wifi` (`ONEIOS WIFI`, `oneios-wifi`, `sheng-wifi`,
     `oneios-net`), `--hid` (`oneios-hid`, `ONEIOS HAPTIC`, `oneios-haptic`, `ONEIOS VIBRATOR`, `oneios-actuator`, xnuhost's `haptics:` and `DroidVMAudio:`; fix-haptics 2026-11-13),
-    `--mem` (`oneios-swap`, `oneios-fault-around`, `oneios-gpu-memory`, `memorystatus`, `jetsam`). The prefixes
+    `--mem` (`oneios-swap`, `oneios-fault-around`, `oneios-gpu-memory`, `memorystatus`, `jetsam`). `--pen` (spen,
+    2026-11-22): xnuhost's `pen:` lines, the guest's `oneios-hid: pen:`, `droidvm input /arm-io/input-1` and
+    `oneios-hid: virtio-input:` (the S Pen's path, `docs/hardware.md` 7f; tested on the PC boot's formats). The prefixes
     are the ones `docs/booter.md`, `docs/hardware.md`, `docs/gpu.md` and the hosted patches' README name; they were
     not checked against a real session's log here.
   - `--markers`: the stages of `oneos/interface.md` section 8, each once per boot (xnuhost, kernel, darwin,
@@ -2069,6 +2087,12 @@ What all of them keep:
 HAL writes when the panel comes on, and what the brightness bridge writes when iOS's level leaves 0,
 `runtime/bridges/brightness/README.md`), reads it back and prints it; status 1 when it does not read `1`. Only
 that one named node: the bridge's own search of `tsp*` folders is not repeated here.
+
+**`phone pen status`, `phone pen wake`** (spen, 2026-11-22). The same for the S Pen's IC, `/sys/class/sec/sec_epen/enabled`
+(Samsung's Wacom driver: `2,1` runs its `wacom_enable`; `0` means its screen-off mode, which sends no positions;
+`docs/hardware.md` 7f). Only in a session, only that node. The brightness bridge wakes it with the touch IC when xnuhost
+gives iOS the pen (`ONEIOS_PEN_IC=1`); this is the check and the fix by hand. Unit-tested (the scripts name only
+that node); the stand-in phone (`tests/phone`) has no `sec_epen` node, and the commands have not run on the phone.
 
 **`phone cpu [--trace SECONDS] [--out FILE]`** (fix-host-overhead, 2026-11-15; `crates/oneios-phone/src/cpu.rs`). Read
 only, with or without a session: for each of cpu0-7 by name, the core (`regs/identification/midr_el1`), `cpu_capacity`,

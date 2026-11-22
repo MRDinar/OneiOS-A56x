@@ -491,7 +491,7 @@ fn malformed_lines_never_panic() {
     let path = f.root.join("g.log");
     std::fs::write(&path, &text).unwrap();
     let path = path.display().to_string();
-    for command in ["stacks", "timeline", "gpu", "cpu", "display", "perf"] {
+    for command in ["stacks", "timeline", "gpu", "cpu", "display", "perf", "pen"] {
         let out = f.run(&[command, &path]);
         assert!(!out.is_empty(), "{command}");
         for format in ["--json", "--csv"] {
@@ -502,7 +502,7 @@ fn malformed_lines_never_panic() {
     }
     f.run(&["diff", &path, &path]);
     let empty = f.log("empty.log", "");
-    for command in ["stacks", "timeline", "gpu", "cpu", "display", "perf"] {
+    for command in ["stacks", "timeline", "gpu", "cpu", "display", "perf", "pen"] {
         f.run(&[command, &empty]);
     }
     assert!(timeline::report(&parse::parse("e", b"")).contains("0 lines"));
@@ -543,4 +543,62 @@ fn kernel_panics_of_a_log() {
     let quiet = f.log("q.log", "[    1.000] guest     Darwin Kernel Version 25.5.0\n");
     assert!(f.run(&["panic", &quiet]).ends_with("no kernel panic (no `panic(cpu N caller 0x...)` line)\n"));
     assert!(!f.run(&["stacks", &quiet]).contains("kernel panics"));
+}
+
+/// `log pen`: the S Pen's stages in the formats of xnuhost's pen.c and the guest's OneiOSHidInput.cpp (the lines of
+/// the PC boot of 2026-11-15, docs/hardware.md 7f), a session without a pen, and a cut line.
+#[test]
+fn pen_report() {
+    let f = Fixture::new("pen");
+    let log = f.log(
+        "pen.log",
+        concat!(
+            "[     1.000] xnuhost I pen: /dev/input/event14 \"sec_e-pen\": read only, not grabbed; x 0..17280 (res 100), y 0..37440 (res 100), pressure 0..4095, distance 0..255, tilt x -63..63, tilt y -63..63; keys: tool pen, rubber, touch, stylus (the side button); turned 0 degrees (auto: the digitizer and the panel are both portrait)\n",
+            "[     1.001] xnuhost I pen: the guest's pen device is /arm-io/input-1 (the host's pen); oneios-pen=1\n",
+            "[     2.000] xnuhost I brightness: pen: the S Pen's IC (/sys/class/sec/sec_epen/enabled) woken (2,0 then 2,1); it sleeps and wakes with the touch IC\n",
+            "[     4.000] guest     droidvm input /arm-io/input-0: OneiOS touchscreen, touch\n",
+            "[     4.001] guest     droidvm input /arm-io/input-1: OneiOS pen, pen\n",
+            "[     4.002] guest     oneios-hid: virtio-input: 2 device(s) in the device tree, 2 started\n",
+            "[     4.100] guest     oneios-hid: pen: HID device started under IOHIDResource\n",
+            "[     4.200] guest     oneios-hid: pen: event driver IOHIDEventDriver attached (0x0)\n",
+            "[     4.300] guest     oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 0\n",
+            "[    30.000] guest     oneios-hid: pen: 1 user client(s) on the event service: IOHIDEventServiceUserClient (pid 54, backboardd)\n",
+            "[    40.000] xnuhost I pen: the first event from sec_e-pen\n",
+            "[    42.000] xnuhost I pen: in range 1988 ms: 70 frames (8 hovering, 62 touching), 2 strokes, pressure up to 3800/4095, height 1..200/255 hovering, tilt x 0..40 y -30..0 degrees, the side button pressed 1 time; 0 unchanged frames not sent\n",
+            "[    43.000] xnuhost I pen: in range 500 ms: 9 frames (9 hovering, 0 touching), 0 strokes, pressure up to 0/4095, the side button pressed 0 times; 3 unchanged frames not sent, 4 coalesced (at most one frame per 8.3 ms but the edges), 1 hovering frame moved under a pixel; 2 sent\n",
+            "[    44.000] guest     oneios-hid: pen: 79 pen frames, 79 HID reports (last result 0x0), 79 sent (62 stylus events given the pencil's angles, pressure and height, 0 of a layout not known); the last: out of range, x 50.0% y 50.0%, pressure 0/4095, height 0/255, tilt x 0 y 0 degrees\n",
+            "[    44.001] guest     oneios-hid: pen: 70 HID events queued for the service's client(s), 0 dropped\n",
+            "[    45.000] xnuhost I pen: events dropped by the kernel (the reader was too slow, 1 time); the state was read again: in range\n",
+        ),
+    );
+    let (tables, notes) = reports::pen(&parse::load(Path::new(&log)).unwrap());
+    let stage = |name: &str| tables[0].rows.iter().find(|r| r[0] == Cell::text(name)).unwrap().clone();
+    // Every stage seen once, the transport's line is the pen's (input-1), not the touch screen's.
+    for name in ["device found", "guest device", "pen IC woken", "transport", "HID device", "event driver", "published", "backboardd", "first event", "guest frames", "guest queue"] {
+        assert_eq!(stage(name)[2], Cell::Int(1), "{name}");
+    }
+    assert_eq!(stage("in range")[2], Cell::Int(2));
+    assert_eq!(stage("transport")[4], Cell::Int(5));
+    assert_eq!(stage("backboardd")[4], Cell::Int(10));
+    assert_eq!(tables[1].rows.len(), 1, "the drop is a stop line");
+    // Each time in range; the second has no tilt.
+    assert_eq!(ints(&tables[2].rows[0]), [42_000, 12, 1988, 70, 8, 62, 2, 3800, 1, 200, 0, 40, -30, 0, 1, 0, -1, -1, -1]);
+    assert_eq!(ints(&tables[2].rows[1]), [43_000, 13, 500, 9, 9, 0, 0, 0, -1, -1, -1, -1, -1, -1, 0, 3, 4, 1, 2]);
+    // The guest's counts, the queue's line on the same row.
+    assert_eq!(ints(&tables[3].rows[0]), [44_000, 14, 79, 79, 79, 62, 0, 70, 0]);
+    assert_eq!(tables[3].rows.len(), 1);
+    assert!(notes.iter().any(|n| n.contains("acquired pencil digitizer")));
+    assert!(notes.iter().any(|n| n.starts_with("wrapper: on the pen's event driver (62 ")), "{notes:?}");
+
+    // A session without the pen (pen=off: no `pen:` line): every stage missing, the first says why.
+    let off = f.log("off.log", "[     1.000] xnuhost I input: /dev/input/event8 \"sec_touchscreen\" touch\n[     4.001] guest     droidvm input /arm-io/input-0: OneiOS touchscreen, touch\n");
+    let (tables, _) = reports::pen(&parse::load(Path::new(&off)).unwrap());
+    assert!(tables[0].rows.iter().all(|r| r[2] == Cell::Int(0)));
+    assert!(matches!(&tables[0].rows[0][5], Cell::Text(t) if t.contains("pen=off")));
+    // A host that found none: the stop line says why.
+    let none = f.log("none.log", "[     1.000] xnuhost I pen: none found: no input device has a pen's bits\n");
+    let (tables, _) = reports::pen(&parse::load(Path::new(&none)).unwrap());
+    assert!(matches!(&tables[1].rows[0][3], Cell::Text(t) if t.starts_with("pen: none found")));
+    let text = f.run(&["pen", &log]);
+    assert!(text.contains("== pen stages"), "{text}");
 }

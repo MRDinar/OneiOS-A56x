@@ -24,6 +24,7 @@ usage: oneios-tool log stacks LOG [--proc NAME] [--thread 0xT] [--slide HEX] [--
        oneios-tool log cpu LOG [--json | --csv]
        oneios-tool log display LOG [--json | --csv]
        oneios-tool log perf LOG [--json | --csv]
+       oneios-tool log pen LOG [--json | --csv]
 
 LOG is an xnuhost session log (xnuhost.log). A line cut by another writer is split into its records; a cut
 record gives the fields it still has.
@@ -38,7 +39,9 @@ record gives the fields it still has.
   timeline  the milestones of every boot with time and line: start, kernel, launchd, frames, gestures and whether
             the guest drew after them, crashes, the end
   diff      the kinds of lines one log has and the other does not, with counts and first lines
-  gpu, cpu, display, perf   tables over time from the periodic report lines (--json, --csv for machines)";
+  gpu, cpu, display, perf   tables over time from the periodic report lines (--json, --csv for machines)
+  pen       the S Pen's path stage by stage (host device, guest device, transport, HID service, backboardd, events),
+            the lines that end it early, each time in range and the guest's pen counts (docs/hardware.md 7f)";
 
 /// `oneios-tool log`'s subcommands (clap). Every subcommand takes the same options, as before clap: one that a
 /// subcommand has no use for is read and ignored.
@@ -60,6 +63,8 @@ pub enum Command {
     Display(Opts),
     /// The performance report lines as tables over time
     Perf(Opts),
+    /// The S Pen's path stage by stage, its times in range and the guest's counts
+    Pen(Opts),
 }
 
 #[derive(clap::Args, Debug)]
@@ -223,6 +228,7 @@ fn run_command(command: Command, mut loc: Locate, err: &mut dyn Write) -> Result
         Command::Cpu(o) => ("cpu", o),
         Command::Display(o) => ("display", o),
         Command::Perf(o) => ("perf", o),
+        Command::Pen(o) => ("pen", o),
     };
     let a = options(opts, &mut loc)?;
     let wanted = if command == "diff" { 2 } else { 1 };
@@ -263,12 +269,13 @@ fn run_command(command: Command, mut loc: Locate, err: &mut dyn Write) -> Result
             let (first, second) = rayon::join(|| load(&a.paths[0]), || load(&a.paths[1]));
             Ok(diff::report(&first?, &second?, a.words, a.all))
         }
-        "gpu" | "cpu" | "display" | "perf" => {
+        "gpu" | "cpu" | "display" | "perf" | "pen" => {
             let log = load(&a.paths[0])?;
             let (tables, notes) = match command {
                 "gpu" => reports::gpu(&log),
                 "cpu" => reports::cpu(&log),
                 "display" => reports::display(&log),
+                "pen" => reports::pen(&log),
                 _ => reports::perf(&log),
             };
             Ok(table::render(&tables, &notes, a.format))

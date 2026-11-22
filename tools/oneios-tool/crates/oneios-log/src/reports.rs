@@ -415,3 +415,163 @@ pub fn perf(log: &Log) -> (Vec<Table>, Vec<String>) {
     }
     (vec![guest_t, pmap, calls, host_t, lat, cpus], notes.lines())
 }
+
+/// The S Pen's stages, host to guest, in the order `docs/hardware.md` 7f "On the phone" lists them: the needle that
+/// starts a stage (host or guest text), and what a missing one most likely means.
+const PEN_STAGES: [(&str, bool, &str, &str); 12] = [
+    ("device found", true, "pen: /dev/input/", "pen=off (no `pen:` line at all), or `pen: none found` (the next row)"),
+    ("guest device", true, "pen: the guest's pen device is /arm-io/input-1", "no pen device for the guest"),
+    ("pen IC woken", true, "brightness: pen: the S Pen's IC", "the brightness bridge did not wake the pen's IC (before 2026-11-22 it never did; oneios-tool phone pen status|wake)"),
+    ("transport", false, "droidvm input /arm-io/input-1:", "the guest's transport did not take /arm-io/input-1 as a pen"),
+    ("HID device", false, "oneios-hid: pen: HID device started", "oneios-pen=0, or the transport found no pen"),
+    ("event driver", false, "oneios-hid: pen: event driver ", "no IOHIDEventDriver on the pen's HID device"),
+    ("published", false, "oneios-hid: pen: Digitizer/Stylus", "the event service's pencil properties were not set"),
+    ("backboardd", false, "user client(s) on the event service", "backboardd did not open the pen's event service"),
+    ("first event", true, "pen: the first event from ", "the pen's device sent nothing: its IC asleep (oneios-tool phone pen status, then wake), or the pen not used"),
+    ("in range", true, "pen: in range ", "the pen never came near and left again"),
+    ("guest frames", false, "pen frames, ", "no pen frame reached the HID device"),
+    ("guest queue", false, "HID events queued for the service's client(s)", "no HID event reached backboardd's queue"),
+];
+
+/// Lines that end the pen's path early, with what they say.
+const PEN_STOPS: [(bool, &str); 5] = [
+    (true, "pen: none found: "),
+    (true, "pen: pen=off"),
+    (true, "pen: events dropped by the kernel"),
+    (false, "oneios-hid: pen: oneios-pen=1, but xnuhost gave no pen device"),
+    (false, "oneios-hid: pen: xnuhost has a pen device; not published"),
+];
+
+/// `log pen`: the S Pen's path, stage by stage (the first line of each and how many there are), each time in range
+/// (xnuhost's `pen: in range` lines) and the guest's counts (`oneios-hid: pen: N pen frames`).
+pub fn pen(log: &Log) -> (Vec<Table>, Vec<String>) {
+    let mut notes = Notes::default();
+    let mut stages = Table::new("pen stages (docs/hardware.md 7f; the first line of each)", &["stage", "side", "count", "time", "line", "text"]);
+    let mut stops = Table::new("pen stops (lines that end the path early)", &["time", "line", "side", "text"]);
+    let mut ranges = Table::new(
+        "host pen in range (xnuhost pen: in range: one row per time the pen came near and left)",
+        &["time", "line", "ms", "frames", "hovering", "touching", "strokes", "pressure_max", "height_min", "height_max", "tilt_x_min", "tilt_x_max", "tilt_y_min", "tilt_y_max", "presses", "unchanged", "coalesced", "hover_still", "sent"],
+    );
+    let mut counts = Table::new(
+        "guest pen counts (oneios-hid: pen: since the boot)",
+        &["time", "line", "pen_frames", "hid_reports", "sent", "as_pencil", "layout_unknown", "queued", "dropped"],
+    );
+    let mut seen: Vec<(usize, Option<&Rec>)> = vec![(0, None); PEN_STAGES.len()];
+    let pending_queue = |counts: &mut Table, r: &Rec, text: &str| {
+        // `N HID events queued ..., M dropped`: on the row of the frames line before it, else a row of its own.
+        let mut s = Scan::new(text);
+        let queued = s.num("oneios-hid: pen: ");
+        let dropped = s.num("client(s), ");
+        match counts.rows.last_mut() {
+            Some(row) if matches!(row[7], Cell::None) => {
+                row[7] = Cell::int(queued);
+                row[8] = Cell::int(dropped);
+            }
+            _ => {
+                let mut row = head(r);
+                row.extend([Cell::None, Cell::None, Cell::None, Cell::None, Cell::None, Cell::int(queued), Cell::int(dropped)]);
+                counts.push(row);
+            }
+        }
+    };
+    for r in &log.recs {
+        let is_host = matches!(r.src, Src::Host(_));
+        if !is_host && r.src != Src::Guest {
+            continue;
+        }
+        let text = r.text.as_str();
+        for (i, (name, host_side, needle, _)) in PEN_STAGES.iter().enumerate() {
+            let hit = if *host_side { is_host && text.starts_with(needle) } else { !is_host && (text.starts_with(needle) || (text.starts_with("oneios-hid: pen: ") && text.contains(needle))) };
+            // The transport's line names the pen's kind: `..., pen`.
+            if hit && !(*name == "transport" && !text.ends_with(", pen")) {
+                seen[i].0 += 1;
+                seen[i].1.get_or_insert(r);
+            }
+        }
+        for (host_side, needle) in PEN_STOPS {
+            if host_side == is_host && text.starts_with(needle) {
+                let mut row = head(r);
+                row.extend([Cell::text(if is_host { "host" } else { "guest" }), Cell::text(text)]);
+                stops.push(row);
+            }
+        }
+        if let Some(rest) = host(r, "pen: in range ") {
+            let mut s = Scan::new(rest);
+            let Some(ms) = s.num("") else {
+                notes.unparsed("pen: in range", r.line);
+                continue;
+            };
+            notes.seen("pen: in range", r);
+            let mut row = head(r);
+            row.push(Cell::Int(ms as i64));
+            for label in [" ms: ", "(", "hovering, ", "touching), "] {
+                row.push(Cell::int(s.num(label)));
+            }
+            row.push(Cell::int(s.num("pressure up to ")));
+            // The hover height (since 2026-11-22) only for a time with hovering frames, the tilt only for a device that has it.
+            let mut h = Scan::new(s.rest());
+            if h.skip(", height ") {
+                let low = h.num("");
+                row.extend([Cell::int(low), Cell::int(h.num(".."))]);
+            } else {
+                row.extend([Cell::None, Cell::None]);
+            }
+            let mut t = Scan::new(s.rest());
+            let tilt: Vec<Option<f64>> = if t.skip("tilt x ") {
+                let x0 = t.num("");
+                let x1 = t.num("..");
+                let y0 = t.num(" y ");
+                let y1 = t.num("..");
+                vec![x0, x1, y0, y1]
+            } else {
+                vec![None; 4]
+            };
+            row.extend(tilt.into_iter().map(Cell::int));
+            row.push(Cell::int(s.num("pressed ")));
+            row.push(Cell::int(s.num("; ")));
+            // Since spen-lag (2026-11-22): the frames coalesced to the panel's rate, the hovering ones within a pixel, those sent.
+            row.push(Cell::int(s.num(" not sent, ")));
+            row.push(Cell::int(s.num(" edges), ")));
+            row.push(Cell::int(s.num("pixel; ")));
+            ranges.push(row);
+        } else if let Some(rest) = guest(r, "oneios-hid: pen: ") {
+            if rest.contains(" pen frames, ") {
+                let mut s = Scan::new(rest);
+                let mut row = head(r);
+                row.push(Cell::int(s.num("")));
+                row.push(Cell::int(s.num("pen frames, ")));
+                s.skip("(last result ");
+                row.push(Cell::int(s.num("), ")));
+                row.push(Cell::int(s.num("sent (")));
+                row.push(Cell::int(s.num("pressure and height, ")));
+                row.extend([Cell::None, Cell::None]);
+                counts.push(row);
+            } else if rest.contains("HID events queued") {
+                pending_queue(&mut counts, r, &r.text);
+            }
+        }
+    }
+    for (i, (name, host_side, _, missing)) in PEN_STAGES.iter().enumerate() {
+        let side = Cell::text(if *host_side { "host" } else { "guest" });
+        match seen[i] {
+            (n, Some(r)) => stages.push(vec![Cell::text(*name), side, Cell::Int(n as i64), Cell::float(r.time, 3), Cell::Int(r.line as i64), Cell::text(r.text.clone())]),
+            _ => stages.push(vec![Cell::text(*name), side, Cell::Int(0), Cell::None, Cell::None, Cell::text(format!("missing: {missing}"))]),
+        }
+    }
+    let mut lines = notes.lines();
+    // The stylus wrapper (staged/hid_pen.rs orient()): it goes on at the pen device's first report, so the publish
+    // line's `edge wrapper N` (a global counter, printed before any report) says nothing about it. Its proof is the
+    // frames line: stylus events given the pencil's angles. Sent but none given: the wrapper is not on the pen's driver.
+    if let Some(row) = counts.rows.iter().rev().find(|r| matches!(r[4], Cell::Int(n) if n > 0)) {
+        match (&row[5], &row[6]) {
+            (Cell::Int(0), Cell::Int(unknown)) => lines.push(format!(
+                "wrapper: the pen's reports were sent but no stylus event was given the pencil's angles ({unknown} of a layout not known): the wrapper is not on the pen's event driver, or the event data is not the layout orient() knows (line {})",
+                match row[1] { Cell::Int(l) => l, _ => 0 }
+            )),
+            (Cell::Int(given), _) => lines.push(format!("wrapper: on the pen's event driver ({given} stylus events given the pencil's angles, pressure and height)")),
+            _ => {}
+        }
+    }
+    lines.push("iOS's side is in its own log, not here: oneios-tool ioslog show DATA.img --proc backboardd --grep 'pencil digitizer' (`*** acquired pencil digitizer`)".to_string());
+    (vec![stages, stops, ranges, counts], lines)
+}

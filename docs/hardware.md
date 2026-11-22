@@ -31,7 +31,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
 | Host device (2026-11-21) | - | `runtime/bridges/hw/host_device.c`: which known phone xnuhost runs on (properties, soc0, the device tree) and its defaults from one table; `host-device=auto\|none\|NAME` (section 7h) | host-tested; not run on a phone |
 | Touch screen and buttons | `kernel/patches/oneios-hosted/hid`: UniXNU's NativeHidInput (digitizer, buttons) under the collection's `IOHIDDevice`, UniXNU-droidvm's virtio-input transport with the side keys | xnuhost's `input.c` (evdev, no grab) and `virtio_input.c`; `input_script.c` for a host with no panel | built; in a PC boot backboardd opens both services and scripted touches and keys are queued for it as HID events; never run on the phone (section 7b) |
-| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); never run on the phone (section 7f) |
+| S Pen (off by default: xnuhost `pen=auto`, guest `oneios-pen=1`) | the HID archive's third NativeHidInput, Digitizer / Stylus (`staged/hid_pen.rs`): backboardd's pencil digitizer; the transport's pen code (UniXNU-droidvm, unchanged) | xnuhost's `pen.c`: one replaceable lookup by bits (`xh_pen_lookup`), evdev read only, no grab, a second virtio-input device `/arm-io/input-1` | built; host-tested; PC boot with the demo script's pen: backboardd "*** acquired pencil digitizer", its touchstats count the strokes as pencil touches (section 7f); first phone session 2026-11-22: device found, the pen service published and opened by backboardd, no pen event yet (the pen IC asleep [I]: the brightness bridge now wakes it, `phone pen wake` by hand; section 7f) |
 
 Common pieces:
 
@@ -2639,7 +2639,7 @@ who or what it waits for).
 |---|---|---|---|---|---|
 | Backend choice | `bridges/hw/`, `xnuhost/src/config.c` | - | - | settings above | **done** (this PR) |
 | Panel backlight | `bridges/brightness/brightness.c` | `/sys/class/backlight/panel`, then `panel0-backlight`, then the class folder listed; Samsung's doubled ranges (510, 51000) halved | the standard backlight class: the first of `panel0-backlight`, `panel1-backlight`, `backlight`, `lcd-backlight`, `panel` with a `max_brightness`; the whole range (`ONEIOS_BRIGHT_MAX` caps it) | named paths only | **done** (this PR: test_brightness, hw-backend.sh) |
-| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1` | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
+| Touch IC power | `bridges/brightness/brightness.c` | `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen` (folder listed), `2,0`/`2,1` and `1,0`/`1,1`; with xnuhost's pen (`ONEIOS_PEN_IC=1`) also the S Pen's `/sys/class/sec/sec_epen/enabled` in the same writes | none: no vendor-neutral node; the panel driver's own notifier handles it [I]; one line, left alone | - | **done** (treble: nothing written) |
 | Ambient light | `bridges/brightness/brightness.c` | evdev `als_rear` by name (`/dev/input` listed), its `/sys/class/input/eventN/device/enable` | the sensors HAL (AIDL `android.hardware.sensors.ISensors/default`): events come through an FMQ, not written yet; missing line, `hw-backend-fallback=1` uses the samsung lookup | - | next |
 | Battery | `bridges/battery/battery.c` | `/sys/class/power_supply/battery/*`, `usb,ac,wireless,pogo/online`; 5000 mAh default | the health HAL: `android.hardware.health.IHealth/default`, `getHealthInfo()` | servicemanager by name | **done** (test_battery, test_hal_binder, hw-backend.sh) |
 | Thermal sensors | `bridges/thermal/thermal.c` (`br_thermal_find`, `br_thermal_read`) | `/sys/class/thermal/thermal_zone*` (folder listed; types `cpu-*`, `cpuss-*`, `gpuss-*`, `ddr`, `xo-therm`), `/sys/class/sec/sec-ap-thermistor/temperature`, `power_supply/battery/{temp,lrp}` | the thermal HAL: `android.hardware.thermal.IThermal/default`, `getTemperatures()`: CPU, GPU, BATTERY, SKIN | servicemanager by name | **done** (test_thermal, test_hal_binder, hw-backend.sh) |
@@ -2744,20 +2744,42 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
 
 ### The phone
 
-- [F] The pen's input device is `sec_e-pen` (event11 on the owner's phone on 2026-11-10, `docs/agents.md`; numbers move
-  between boots, so xnuhost goes by bits and name). Its axes, ranges, resolution, tilt and distance bits are **not read
-  yet** [U]: the first session's `pen:` line prints them. One UI keeps the hardware; `/sys/class/sec/sec_epen` holds
-  Samsung's controls, which nothing of OneiOS reads or writes (no sysfs walk, no wake writes).
+- [F] The pen's input device is `sec_e-pen` (event11 on the owner's phone on 2026-11-10 and in the session of
+  2026-11-22; numbers move between boots, so xnuhost goes by bits and name). Read in the first session with `pen=auto`
+  (2026-11-22, runtime 0.1.15 and the parent's config merge fix): `x 0..7229, y 0..15662, pressure 0..4095, distance
+  0..255, tilt x -63..63, tilt y -63..63; keys: tool pen, rubber, touch, stylus`, no resolution on any axis.
+- [F] Samsung's driver (read in its source, 2026-11-22: the S24 Ultra kernel tree `Elchanz3/android_kernel_samsung_pineapple_e3q`
+  at 34d7e2d, `drivers/input/sec_input/wacom/wacom_core.c`; the same functions in `samsung-sm8650/android_kernel_samsung_sm8650`
+  lineage-22.1; the device tree `samsung-sm8650/android_kernel_samsung_sm8650-devicetrees` 2f6a973,
+  `samsung/e3q_eur_openx_w00_r09.dts`, node `wacom@56`, `wacom,wez02`):
+  - one input device, `sec_e-pen`: `BTN_TOOL_PEN`, `BTN_TOOL_RUBBER`, `BTN_TOUCH`, `BTN_STYLUS` (no `BTN_STYLUS2`),
+    `SW_PEN_INSERT` (1 with the pen **out** of its garage), and for its screen-off (AOP) mode `KEY_WAKEUP_UNLOCK` and
+    `KEY_HOMEPAGE`; **no `INPUT_PROP_DIRECT`**; `ABS_X/Y` 0..the IC's maximum (fuzz 4), `ABS_PRESSURE` 0..4095,
+    `ABS_DISTANCE` 0..255, `ABS_TILT_X/Y` -63..63, no `input_abs_set_res`. The maximums come from the IC's query at probe
+    (the device tree's `sec,max_coords` 7315 x 15687, `wacom,max_tilt` 63, `wacom,max_height` 255 otherwise).
+  - **no coordinate transform**: `wacom_coord_handler` reports the IC's own x and y (no `xy_switch`, no invert in the
+    driver or in the device tree). The IC's frame has the short side on x, the panel's shape (7229 / 15662 = 0.462, the
+    panel 1440 / 3120 = 0.462), so `pen-rotate=auto` gives 0 [F]; that the IC's origin is the panel's top left is [I]
+    (the first Notes stroke from the top left corner checks it).
+  - a frame: X, Y, `BTN_STYLUS`, `BTN_TOUCH`, pressure, distance (in every frame, also while touching), tilt, the tool
+    key, `SYN`. The first frame of a proximity is dropped by the driver. The leave is two frames: pressure 0, `BTN_STYLUS`
+    0, `BTN_TOUCH` 0, `SYN`; then distance 0, the tool keys 0, `SYN`. Whether a larger distance is farther is not in the
+    source [U]: the `pen: in range` line's `height a..b/255 hovering` shows it.
+  - **power**: probe ends in `wacom_enable`; after that only a userspace write changes it. `sec,enable_sysinput_enabled`
+    is set, so `/sys/class/sec/sec_epen/enabled` takes `<display state>,<event>` as the touch IC's does: `2,1` runs
+    `wacom_enable`, `1,0` `wacom_disable`, which leaves the IC in its garage / AOP survey mode: it sends no positions,
+    only `KEY_WAKEUP_UNLOCK`, `KEY_HOMEPAGE` or a tap. One UI's input HAL writes it at panel power changes [I, as for the
+    touch IC], so after the switch's blank it is asleep for iOS [I]. **Fix (2026-11-22):** with the host's pen xnuhost
+    sets `ONEIOS_PEN_IC=1` and the brightness bridge writes the pen's node with the touch IC's: `2,0`, `2,1` at its open,
+    at iOS's display on, at a power-key press and at the close; `1,0`, `1,1` at iOS's display off
+    (`runtime/bridges/brightness/README.md`). By hand: `oneios-tool phone pen status`, `phone pen wake`.
 - [I] No `EVIOCGRAB` is needed: in a session zygote and system_server are gone, so nothing else reads the device (as for
   the touch screen, `oneos/interface.md` 1); evdev gives every reader every event, and an ungrabbed device is One UI's
-  again at the return as it was. xnuhost never grabs it.
-- [U] Whether Samsung's pen driver reports while One UI's framework is stopped (the touch IC needed a wake, 7b; the pen
-  may too). The `pen: the first event from ...` line says whether anything came.
-- [U] The digitizer's frame against the panel's: `pen-rotate=auto` turns a landscape digitizer under the portrait panel
-  a quarter clockwise (a guess); `pen-rotate=270`, `180` and `pen-mirror=1` cover the other ways. Check: a Notes stroke
-  from the top left corner must start there.
+  again at the return as it was. xnuhost never grabs it. input.c never takes it either (no side key, no multitouch), so
+  the pen IC's `KEY_HOMEPAGE` never presses Home; pen.c drops those keys and logs the first (`pen: key N from the pen's
+  IC, not a pen key: its screen-off (AOP) mode ...`).
 - [U] Palm rejection: the touch IC reports a resting hand as fingers; iOS's own handling of fingers while a pencil is in
-  range is all there is.
+  range is all there is (the two are separate digitizer services in iOS; nothing of ours drops fingers).
 
 ### What iOS needs (read in 24A446's shared cache on the Linux PC with `out/bin/ipsw`, 2026-11-15)
 
@@ -2783,7 +2805,8 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
    `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a pen's name; never a device with a side key or multitouch) and opens
    it read only. The filter turns each frame into one sample in fixed units (x, y 0..32767 turned to the panel; pressure
    0..4095 while the tip is down; height 1..255 while hovering; tilt in degrees; tip, side button, eraser end), sends
-   only what changed, skips a frame like the last, and reads the state again after `SYN_DROPPED`.
+   only what changed, skips a frame like the last, and reads the state again after `SYN_DROPPED`. It sends at most one frame per
+   8.33 ms (the panel's 120 Hz) but the edges, which go at once (see "Lag" below).
 2. **The channel**: a second virtio-input device, `/arm-io/input-1` ("OneiOS pen"), with those fixed ranges, read on
    input.c's thread. The touch screen's device is unchanged.
 3. **Guest transport**: the staged `DroidVMVirtioInput.c` (UniXNU-droidvm's code, unchanged: `KIND_PEN`) takes a device
@@ -2831,7 +2854,47 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
   pathsSeen: 4, destinations: { ... touchIDs: ... } ]`: backboardd counts the strokes as pencil touches and routes them
   to a destination. Not shown on the PC: an app drawing them (the boot shows no UI to the script), UIKit's hover, and
   the stroke's width.
-- Not run on the phone.
+- Host, 2026-11-22 (the Mac's arm64 Linux container of `runtime/host-tests.sh`, the xnuhost unit tests and the brightness
+  bridge's only: xnuhost 14227 checks 0 failed, brightness 126 checks 0 failures; the Android xnuhost builds with
+  `-Werror` on the Mac's NDK): `test_pen` with the S24 Ultra's
+  `sec_e-pen` as the driver states and sends it (x 0..7314, y 0..15686, tilt -63..63, `KEY_HOMEPAGE` and
+  `KEY_WAKEUP_UNLOCK` beside the pen's keys: rank 8; `pen-rotate=auto` 0 for the 1440 x 3120 panel; a hover frame in the
+  driver's order, a contact whose distance the guest gets as 0, the two-frame leave, the hover height range, the
+  screen-off keys and the garage switch never passed on); the coalescing (an edge at once, hover moves held and the newest sent at its
+  time by `xh_pen_tick`, a hover within a pixel not sent, touching frames folded with the most pressure, the tip up and
+  the leave at once 1 ms apart, a batch read late spaced by its own times: 5 of 40 frames sent and the 41st held, no
+  period: every frame); `test_brightness`: the pen's node woken, slept and woken with
+  the touch IC only with `pen_ic`, refused when its `input/name` is not `sec_e-pen`, taken by its folder without an
+  `input/` link, never written without `pen_ic`. `oneios-tool`: `cargo test -p oneios-log --test synthetic`
+  (`pen_report`), `cargo test -p oneios-phone` (`--pen`, `phone pen`'s scripts). The full `runtime/host-tests.sh` was
+  not run.
+- Phone, 2026-11-22 (the parent; runtime 0.1.15, without this branch's fixes): the device found (`pen: /dev/input/event11
+  "sec_e-pen": ... x 0..7229, y 0..15662 ...; turned 0 degrees`), `/arm-io/input-1` given, the guest's transport took it,
+  the pen service published and opened by backboardd (pid 53). No `pen: the first event` while that log was read: the
+  bridge of 0.1.15 never wakes the pen's IC (see "The phone"). Strokes in Notes not shown yet.
+
+### Lag (spen-lag, 2026-11-22)
+
+The owner's first drawing in Notes (2026-11-22, `out/session-logs/2026-11-22/kbd-debug/xnuhost-s3.log`): "S Pen works,
+but the drawing is quite laggy at best and pressure does not work". The log: the IC sends about 480 frames a second while
+in range (`pen: in range 188 ms: 91 frames (21 hovering, 70 touching)`), and before this fix each changed frame was a
+virtio-input frame, a HID report and a stylus event (`oneios-hid: pen: 10116` at 7456.3 s to `12572` at 7464.2 s, all
+sent); backboardd's CPU went to 99 %, 164 % and 126 % (`oneios-cpu`) while drawing, against about 30 to 45 % in sessions
+without the pen.
+
+**Fix (pen.c's filter):** at most one frame per 8.33 ms (`XH_PEN_PERIOD_NS`, the panel's 120 Hz), timed by the frames'
+own kernel times. An edge (in range or out, the tip down or up, the eraser end, the side button) is sent at once with
+the newest position and never held. Between sends the newest frame is held, a newer one replaces it, and input.c's
+poll wakes when the held one is due (`xh_pen_due`, `xh_pen_tick`), so the last position of a pen that stops is sent too.
+The pressure sent is the most of the frames folded together while the tip was down. A hovering frame within one guest
+pixel of the last one sent is not sent. The `pen: in range` line counts all of it: `U unchanged frames not sent, C
+coalesced (at most one frame per 8.3 ms but the edges), K hovering frames moved under a pixel; N sent`. Expected on the
+phone: about 120 sent a second while drawing (a quarter of before) and backboardd's CPU back near the sessions without
+the pen [I: not yet measured].
+
+The wrapper was not the pressure's fault: that session's guest line says `12542 stylus events given the pencil's angles,
+pressure and height, 0 of a layout not known` (of 12572), so every stylus event carried pressure 0..500, the polar
+angles and Z. `edge wrapper 0` on the publish line is a global install counter printed before the pen's first report.
 
 ### On the phone: the lines that prove it
 
@@ -2841,11 +2904,14 @@ With `pen=auto` in the session's `xnuhost.conf` (or `--set pen=auto`):
 |---|---|
 | The device found, read only | xnuhost.log `pen: /dev/input/eventN "sec_e-pen": read only, not grabbed; x ..., y ..., pressure ..., distance ..., tilt x ...; keys: tool pen, ..., stylus (the side button); turned D degrees (...)` |
 | The guest has the device | `pen: the guest's pen device is /arm-io/input-1 (the host's pen); oneios-pen=1`; guest `droidvm input /arm-io/input-1: OneiOS pen, pen` |
-| The pen service published | `oneios-hid: pen: HID device started under IOHIDResource`; `oneios-hid: pen: event driver IOHIDEventDriver attached (...)`; `oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 0` (0 before the first report) |
+| The pen's IC awake | `brightness: pen: the S Pen's IC (/sys/class/sec/sec_epen/enabled) woken (2,0 then 2,1); it sleeps and wakes with the touch IC` (this branch's bridge); by hand `oneios-tool phone pen status` (`1`: on) and `phone pen wake`. Asleep: no `pen: the first event`, and at most `pen: key N from the pen's IC, not a pen key: its screen-off (AOP) mode ...` |
+| The pen service published | `oneios-hid: pen: HID device started under IOHIDResource`; `oneios-hid: pen: event driver IOHIDEventDriver attached (...)`; `oneios-hid: pen: Digitizer/Stylus, Built-In, DisplayIntegrated, MaxHoverHeight, AccurateMaxDigitizerPressureValue published on the event service; edge wrapper 0` (a global install counter printed before the first report: it says nothing of the pen's wrapper, which goes on at the pen's first report; its proof is the frames line's `stylus events given the pencil's angles` above 0) |
 | backboardd holds it | `oneios-hid: pen: 1 user client(s) on the event service: IOHIDEventServiceUserClient (pid N, backboardd)` |
-| Events arrive | `pen: the first event from sec_e-pen`; per time in range `pen: in range T ms: F frames (H hovering, C touching), S strokes, pressure up to P/4095, tilt x ... degrees, the side button pressed B times`; guest `oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus events given the pencil's angles, pressure and height, 0 of a layout not known); the last: ...` and `oneios-hid: pen: N HID events queued for the service's client(s), 0 dropped` |
+| Events arrive | `pen: the first event from sec_e-pen`; per time in range `pen: in range T ms: F frames (H hovering, C touching), S strokes, pressure up to P/4095, height a..b/255 hovering, tilt x ... degrees, the side button pressed B times; U unchanged frames not sent, C coalesced (...), K hovering frames moved under a pixel; N sent` (N about 120 a second while drawing); `pen: SW_PEN_INSERT 1: the pen taken out of its garage`; guest `oneios-hid: pen: N pen frames, N HID reports (last result 0x0), N sent (N stylus events given the pencil's angles, pressure and height, 0 of a layout not known); the last: ...` and `oneios-hid: pen: N HID events queued for the service's client(s), 0 dropped` |
 | iOS takes it as a pencil | `oneios-tool ioslog show DATA.img --proc backboardd --grep 'pencil digitizer'`: `*** acquired pencil digitizer` (not `already have`); `--grep 'digitizer attached'` lists the service |
 | Pencil touches | Notes (or any PencilKit canvas): strokes whose width follows the pressure. `oneios-tool ioslog show DATA.img --proc backboardd --grep stylus`, `--grep 'ignoring digitizer event'` (must be absent for the pen's service), `--proc Notes --grep pencil` |
+
+All of these at once: `oneios-tool log pen xnuhost.log` (each stage's first line or why it is missing, the stop lines, one row per time in range, the guest's counts, and whether the wrapper is on the pen's driver); live: `oneios-tool phone log --pen -f`. The tilt: this IC's -63..63 is taken as degrees (a range within +-90 without a resolution), sent as degrees, and the guest computes the altitude and azimuth from them; an S Pen leaned past 63 degrees reads 63.
 
 `N of a layout not known` above 0 with `0 stylus events given ...` means the event data is not the layout orient()
 knows: tilt and pressure then stay as the driver made them (pressure 0..1, no angles).

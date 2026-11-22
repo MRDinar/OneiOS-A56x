@@ -112,8 +112,18 @@ a level set while off, the close after an off (One UI's value and the IC on). `r
 channel's `OB_BRIGHT_POWER`. Not run on the phone; whether backboardd calls `RequestPowerChange` at the lock in
 this guest is what the next boot's `ONEIOS BACKLIGHT: display off: backboardd[N] asked its framebuffer` says.
 
-- Which nodes: every `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen`. Never the pen's or the
-  touchpad's, whatever the folder is called; nothing under `/sys/power`. No such node: one log line, the panel
+- Which nodes: every `/sys/class/sec/tsp*/enabled` whose `input/name` is `sec_touchscreen`. Never the touchpad's,
+  whatever the folder is called; nothing under `/sys/power`. The pen's only as below.
+- **The S Pen's IC (2026-11-22).** With `ONEIOS_PEN_IC=1` (xnuhost sets it when it gives iOS the host's pen, `pen=auto`;
+  options `pen_ic`) the bridge also takes `/sys/class/sec/sec_epen/enabled`, Samsung's Wacom driver's node of the same
+  sec input class (its device tree sets `sec,enable_sysinput_enabled`, so it takes the same `<state>,<event>`: `2,1` runs
+  `wacom_enable`, `1,0` `wacom_disable`, which leaves the IC in its screen-off survey mode with no positions;
+  `docs/hardware.md` 7f). Taken only when the folder is `sec_epen` and, if it has an `input/` link, that names
+  `sec_e-pen`. It gets the touch IC's writes, in the same order and at the same times (open, display off and on,
+  power key, close). Log: `brightness: pen: the S Pen's IC (PATH) woken (2,0 then 2,1); it sleeps and wakes with the touch
+  IC`, or `brightness: pen: no writable .../sec_epen/enabled of sec_e-pen: ... left alone`. Without `ONEIOS_PEN_IC=1` the
+  pen's node is never written (pen=off is no change for One UI's pen). Host-tested (`test_touch`); not run on the phone
+  yet. No such node: one log line, the panel
   works as before. A write that fails is logged (the first three) and nothing else changes.
 - The backlight itself is still never 0 (level 0 is the lowest setting, also for a display off), so "after the
   backlight is not 0" holds for every wake.

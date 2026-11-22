@@ -77,13 +77,15 @@ pub fn sleep_or_stop(time: Duration) -> bool {
 // ---------------------------------------------------------------- filters
 
 /// The named filters: the prefixes of docs/booter.md, docs/hardware.md, docs/gpu.md and the hosted patches' README.
-pub const NAMED: [(&str, &str); 6] = [
+pub const NAMED: [(&str, &str); 7] = [
     ("panic", r"panic\(|xnuhost !!|xnuhost E |kernel fault|sheng-exc|sheng-exit|crashed: |killed\] exiting|stopping: |xnuhost I exit "),
     ("display", r"oneios-display|sheng-vsync|ONEIOS BACKLIGHT|oneios-swap|ONEIOS ALS|displayctl|brightctl"),
     ("gpu", r"oneios-gpu|sheng-gpu|oneios-adreno|kgsl"),
     ("wifi", r"ONEIOS WIFI|oneios-wifi|sheng-wifi|oneios-net|wifictl"),
     ("hid", r"oneios-hid|ONEIOS HAPTIC|oneios-haptic|ONEIOS VIBRATOR|oneios-actuator|xnuhost . haptics: |DroidVMAudio: "),
     ("mem", r"oneios-swap|oneios-fault-around|oneios-gpu-memory|memorystatus|jetsam|vm_pageout|low swap|Too many corpses"),
+    // The S Pen (docs/hardware.md 7f): xnuhost's `pen:` lines, the guest's pen device and HID service, the virtio-input count.
+    ("pen", r"xnuhost . pen: |oneios-hid: pen: |droidvm input /arm-io/input-1|oneios-hid: virtio-input: "),
 ];
 
 /// The stages of a boot in the order oneos/interface.md section 8 gives them, each with what its first line holds.
@@ -545,6 +547,14 @@ mod tests {
         assert!(f.takes("[    5.000] guest     oneios-gpu-report: 600 frames"));
         assert!(f.takes("[    6.000] guest     oneios-hid: touch down 1 2"));
         assert!(!f.takes("[    7.000] guest     oneios-hid: move"));
+        // --pen: the S Pen's lines on both sides (docs/hardware.md 7f), not the touch screen's.
+        let mut pen = Filter::new(&[], &["pen"], false, None).unwrap();
+        assert!(pen.takes("[    1.000] xnuhost I pen: /dev/input/event14 \"sec_e-pen\": read only, not grabbed"));
+        assert!(pen.takes("[    2.000] guest     droidvm input /arm-io/input-1: OneiOS pen, pen"));
+        assert!(pen.takes("[    3.000] guest     oneios-hid: pen: HID device started under IOHIDResource"));
+        assert!(pen.takes("[    3.100] guest     oneios-hid: virtio-input: 2 device(s) in the device tree, 2 started"));
+        assert!(!pen.takes("[    4.000] guest     droidvm input /arm-io/input-0: OneiOS touchscreen, touch"));
+        assert!(!pen.takes("[    5.000] guest     oneios-hid: touch screen: 190 virtio-input events"));
         let mut all = Filter::new(&[], &[], false, None).unwrap();
         assert!(all.takes("anything"));
         assert!(path_of("xnuhost").unwrap().ends_with("/session/xnuhost.log"));

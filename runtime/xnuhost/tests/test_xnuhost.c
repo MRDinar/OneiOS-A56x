@@ -1362,6 +1362,12 @@ static int pen_find(uint16_t type, uint16_t code, int32_t *value)
     if (pen_got[i].type == type && pen_got[i].code == code) { if (value) *value = pen_got[i].value; return (int)i; }
   return -1;
 }
+static unsigned pen_syns(void)
+{
+  unsigned k = 0;
+  for (unsigned i = 0; i < pen_n; i++) k += pen_got[i].type == 0;
+  return k;
+}
 static xh_pen_state pen_fake_state;
 static int pen_fake_read(xh_pen_source *s, xh_pen_state *state) { (void)s; *state = pen_fake_state; return 0; }
 
@@ -1489,6 +1495,137 @@ static void test_pen(void)
   pen_n = 0;
   xh_pen_feed(&src, same, 2, t + 5);                                             // out of range, still: nothing
   CHECK(pen_n == 0);
+
+  // The S24 Ultra's sec_e-pen as Samsung's Wacom driver states and reports it (drivers/input/sec_input/wacom,
+  // docs/hardware.md 7f): x 0..7314, y 0..15686 (the device tree's max coords), no resolution, tilt -63..63, and the
+  // screen-off keys KEY_HOMEPAGE and KEY_WAKEUP_UNLOCK beside the pen's.
+  {
+    uint8_t skeys[96] = { 0 }, sabs[8] = { 0 };
+    const unsigned key_bits[] = { 0x140, 0x141, 0x14a, 0x14b, 172, 0x2bf }, abs_bits[] = { 0, 1, 0x18, 0x19, 0x1a, 0x1b };
+    for (unsigned i = 0; i < 6; i++) skeys[key_bits[i] / 8] |= (uint8_t)(1u << (key_bits[i] % 8));
+    for (unsigned i = 0; i < 6; i++) sabs[abs_bits[i] / 8] |= (uint8_t)(1u << (abs_bits[i] % 8));
+    CHECK(xh_pen_rank("sec_e-pen", skeys, sizeof skeys, sabs, sizeof sabs, &why) == 8 && why == NULL);   // KEY_HOMEPAGE is no side key
+    xh_pen_device sp = { .fd = -1, .rubber = true, .stylus = true, .garage = true, .pen_out = true };
+    sp.axis[XH_PEN_X] = (xh_pen_axis){ 0, 7314, 0, true };
+    sp.axis[XH_PEN_Y] = (xh_pen_axis){ 0, 15686, 0, true };
+    sp.axis[XH_PEN_PRESSURE] = (xh_pen_axis){ 0, 4095, 0, true };
+    sp.axis[XH_PEN_DISTANCE] = (xh_pen_axis){ 0, 255, 0, true };
+    sp.axis[XH_PEN_TILT_X] = (xh_pen_axis){ -63, 63, 0, true };
+    sp.axis[XH_PEN_TILT_Y] = (xh_pen_axis){ -63, 63, 0, true };
+    // pen-rotate=auto: the IC's frame is the 1440 x 3120 panel's shape, so it is taken as it is.
+    const char *sp_how = NULL;
+    CHECK(xh_pen_rotation("auto", &sp, 1440, 3120, &sp_how) == 0 && sp_how && strstr(sp_how, "both portrait"));
+    char text[320];
+    xh_pen_describe(&sp, text, sizeof text);
+    CHECK(strstr(text, "x 0..7314, y 0..15686, pressure 0..4095, distance 0..255, tilt x -63..63") && strstr(text, "SW_PEN_INSERT 1 (Samsung: the pen out of its garage)"));
+    xh_pen_source sps;
+    xh_pen_source_init(&sps, NULL, &sp, 0, false);
+    sps.emit = pen_capture;
+    const int64_t u = 9000000000;
+    // A hover frame in the driver's order: X, Y, BTN_STYLUS, BTN_TOUCH, pressure, distance, tilt, the tool, SYN.
+    const xh_input_ev near[] = { { u, 3, 0, 3657 }, { u, 3, 1, 15686 }, { u, 1, 0x14b, 0 }, { u, 1, 0x14a, 0 }, { u, 3, 0x18, 0 },
+                                 { u, 3, 0x19, 40 }, { u, 3, 0x1a, 10 }, { u, 3, 0x1b, -5 }, { u, 1, 0x140, 1 }, { u, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&sps, near, 10, u);
+    CHECK(pen_find(3, 0, &v) >= 0 && v == 16383 && pen_find(3, 1, &v) >= 0 && v == 32767 && pen_find(3, 0x19, &v) >= 0 && v == 40 &&
+          pen_find(3, 0x1a, &v) >= 0 && v == 10 && pen_find(3, 0x1b, &v) >= 0 && v == -5 && pen_find(1, 0x140, &v) >= 0 && v == 1);
+    // Contact: the driver sends the distance while touching too; the guest gets 0 then, and the pressure.
+    const xh_input_ev tip[] = { { u + 1, 3, 0, 3657 }, { u + 1, 1, 0x14a, 1 }, { u + 1, 3, 0x18, 2048 }, { u + 1, 3, 0x19, 12 }, { u + 1, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&sps, tip, 5, u + 1);
+    CHECK(pen_find(1, 0x14a, &v) >= 0 && v == 1 && pen_find(3, 0x18, &v) >= 0 && v == 2048 && pen_find(3, 0x19, &v) >= 0 && v == 0);
+    // The leave, two frames: the tip up (a hover again, never at height 0), then the tool out.
+    const xh_input_ev up[] = { { u + 2, 3, 0x18, 0 }, { u + 2, 1, 0x14b, 0 }, { u + 2, 1, 0x14a, 0 }, { u + 2, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&sps, up, 4, u + 2);
+    CHECK(pen_find(1, 0x14a, &v) >= 0 && v == 0 && pen_find(3, 0x19, &v) >= 0 && v == 12 && pen_find(1, 0x140, NULL) < 0);
+    CHECK(sps.stats.hover == 2 && sps.stats.height_min == 12 && sps.stats.height_max == 40 && sps.stats.strokes == 1 && sps.stats.pressure_max == 2048);
+    const xh_input_ev out[] = { { u + 3, 3, 0x19, 0 }, { u + 3, 1, 0x141, 0 }, { u + 3, 1, 0x140, 0 }, { u + 3, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&sps, out, 4, u + 3);
+    CHECK(pen_find(1, 0x140, &v) >= 0 && v == 0 && sps.stats.frames == 0);       // out of range: logged and reset
+    // The screen-off keys and the garage switch: never passed on.
+    const xh_input_ev aop[] = { { u + 4, 1, 0x2bf, 1 }, { u + 4, 0, 0, 0 }, { u + 4, 1, 0x2bf, 0 }, { u + 4, 1, 172, 1 }, { u + 4, 0, 0, 0 },
+                                { u + 4, 5, 0x0f, 0 }, { u + 4, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&sps, aop, 7, u + 4);
+    CHECK(pen_n == 0 && sps.aop_keys == 2);
+
+    // The coalescing (spen-lag, 2026-11-22: ~480 frames a second, each a HID report, made backboardd take 100-160 % of a
+    // CPU): at most one frame per 8.33 ms but the edges, which go at once; the held frame goes at its time (xh_pen_tick);
+    // the pressure sent is the most of the folded frames; a hover within a pixel is not sent.
+    xh_pen_source c;
+    xh_pen_source_init(&c, NULL, &sp, 0, false);
+    c.emit = pen_capture;
+    CHECK(c.period_ns == 8333333 && c.pixel_x == 23 && c.pixel_y == 11);         // 1440 x 3120 by default
+    const int64_t ms = 1000000, w = 20000000000;
+    const xh_input_ev h0[] = { { w, 3, 0, 1000 }, { w, 3, 1, 1000 }, { w, 3, 0x19, 50 }, { w, 1, 0x140, 1 }, { w, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&c, h0, 5, w);
+    CHECK(pen_syns() == 1 && !xh_pen_due(&c));                                   // in range: an edge, at once
+    // Hover moves 2 ms later: held, not sent; a newer one replaces it.
+    const xh_input_ev h1[] = { { w + 2 * ms, 3, 0, 1100 }, { w + 2 * ms, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&c, h1, 2, w + 2 * ms);
+    CHECK(pen_n == 0 && c.pending && xh_pen_due(&c) == w + 8333333);
+    // Back within a pixel of what was sent: nothing to send, the held frame is dropped.
+    const xh_input_ev h2[] = { { w + 3 * ms, 3, 0, 1000 }, { w + 3 * ms, 3, 1, 1003 }, { w + 3 * ms, 0, 0, 0 } };
+    xh_pen_feed(&c, h2, 3, w + 3 * ms);
+    CHECK(pen_n == 0 && !c.pending && c.stats.still == 1 && c.stats.coalesced == 1);
+    const xh_input_ev h3[] = { { w + 4 * ms, 3, 0, 1400 }, { w + 4 * ms, 0, 0, 0 } };
+    xh_pen_feed(&c, h3, 2, w + 4 * ms);
+    xh_pen_tick(&c, w + 5 * ms);
+    CHECK(pen_n == 0 && c.pending);                                               // not due yet
+    xh_pen_tick(&c, w + 9 * ms);                                                  // due: the held hover goes, nothing more came
+    int32_t cx = 0;
+    CHECK(pen_syns() == 1 && pen_find(3, 0, &cx) >= 0 && cx == (int32_t)(1400LL * 32767 / 7314) && !c.pending);
+    // The tip down 1 ms after that send: an edge, at once.
+    const xh_input_ev d0[] = { { w + 10 * ms, 3, 0x18, 500 }, { w + 10 * ms, 1, 0x14a, 1 }, { w + 10 * ms, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&c, d0, 3, w + 10 * ms);
+    CHECK(pen_syns() == 1 && pen_find(1, 0x14a, &v) >= 0 && v == 1 && pen_find(3, 0x18, &v) >= 0 && v == 500);
+    // Three touching frames within 8.33 ms: held, each replacing the last; the next one, 9 ms after the send, goes with
+    // the newest position and the most pressure of the four (3000).
+    const xh_input_ev m[] = { { w + 11 * ms, 3, 0, 1500 }, { w + 11 * ms, 3, 0x18, 1000 }, { w + 11 * ms, 0, 0, 0 },
+                              { w + 12 * ms, 3, 0, 1600 }, { w + 12 * ms, 3, 0x18, 3000 }, { w + 12 * ms, 0, 0, 0 },
+                              { w + 13 * ms, 3, 0, 1700 }, { w + 13 * ms, 3, 0x18, 2000 }, { w + 13 * ms, 0, 0, 0 },
+                              { w + 19 * ms, 3, 0, 1800 }, { w + 19 * ms, 3, 0x18, 1500 }, { w + 19 * ms, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&c, m, 12, w + 19 * ms);
+    CHECK(pen_syns() == 1 && pen_find(3, 0, &cx) >= 0 && cx == (int32_t)(1800LL * 32767 / 7314) && pen_find(3, 0x18, &v) >= 0 && v == 3000);
+    CHECK(c.stats.coalesced == 4 && !c.pending);
+    // The tip up 1 ms later and the leave 1 ms after it: both edges, both at once, whatever the rate.
+    const xh_input_ev up2[] = { { w + 20 * ms, 3, 0x18, 0 }, { w + 20 * ms, 1, 0x14a, 0 }, { w + 20 * ms, 0, 0, 0 },
+                                { w + 21 * ms, 1, 0x140, 0 }, { w + 21 * ms, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&c, up2, 5, w + 21 * ms);
+    CHECK(pen_syns() == 2 && pen_find(1, 0x14a, &v) >= 0 && v == 0 && pen_find(1, 0x140, &v) >= 0 && v == 0 && c.stats.frames == 0);
+    // A batch read late (the frames' own times 1 ms apart, read at once): coalesced by their times, not the read's.
+    xh_pen_source b;
+    xh_pen_source_init(&b, NULL, &sp, 0, false);
+    b.emit = pen_capture;
+    xh_input_ev late[3 * 40];
+    for (unsigned i = 0; i < 40; i++) {
+      int64_t at = w + 100 * ms + (int64_t)i * ms;
+      late[3 * i] = (xh_input_ev){ at, 3, 0, (int32_t)(1000 + 50 * i) };
+      late[3 * i + 1] = (xh_input_ev){ at, 1, 0x140, 1 };
+      late[3 * i + 2] = (xh_input_ev){ at, 0, 0, 0 };
+    }
+    pen_n = 0;
+    xh_pen_feed(&b, late, 3 * 40, w + 200 * ms);
+    // 40 ms of frames: the first (an edge), then one per 8.33 ms (at 9, 18, 27, 36 ms), the newest still held.
+    CHECK(pen_syns() == 5 && b.pending && b.stats.coalesced == 34);
+    // With no period, every frame that changed goes (the old behaviour).
+    xh_pen_source all;
+    xh_pen_source_init(&all, NULL, &sp, 0, false);
+    all.emit = pen_capture;
+    all.period_ns = 0;
+    pen_n = 0;
+    xh_pen_feed(&all, late, 3 * 20, w + 200 * ms);                               // 20 frames: their events fit the capture
+    CHECK(pen_syns() == 20 && !all.pending);
+    xh_pen_set_panel(&all, 720, 1560);
+    CHECK(all.pixel_x == 46 && all.pixel_y == 22);
+  }
 
   // The guest's pen device: its name, keys and fixed ranges in its configuration.
   driver g = { .dev = xh_virtio_input_create(0, 46) };

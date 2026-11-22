@@ -597,7 +597,7 @@ $T phone manifest DIR --stage      # DIR's files (a new kernel.kc, kernel.kc.has
 $T phone switch                    # oneios_root.sh switch <the installed app's versionCode> 1
 $T phone log --follow --markers    # kernel, launchd, backboardd, SpringBoard, the first frame, a panic, as they come
                                    #   (right after a switch it waits for this session's log: the switch replaces it ~40 s in)
-$T phone log --gpu --tail 200      # named filters: --panic --markers --display --gpu --wifi --hid --mem; --grep REGEX; --since SECONDS
+$T phone log --gpu --tail 200      # named filters: --panic --markers --display --gpu --wifi --hid --mem --pen; --grep REGEX; --since SECONDS
 $T phone log --follow --save-auto  # also into out/session-logs/DATE/live-HHMMSS.log; --analyze: timeline and stacks at the end
 $T phone log --list                # the logs by name: xnuhost, switch, return, outcome, display, watchdog, usb, logs/xnuhost-<epoch>.log
 $T phone log --file usb            # the session's USB watcher: the gadget and adbd, its repairs (oneos/interface.md 6a)
@@ -612,6 +612,8 @@ $T phone display-restart --lib runtime/display/build/android/liboneios-display.s
                                    #   refused when the phone's copy differs; runtime.sha256 and runtime.ids follow)
 $T phone touch status              # /sys/class/sec/tsp/enabled: 1 on, 0 off
 $T phone touch wake                # 2,0 then 2,1 to it (the touch IC sleeps after iOS's brightness was 0), then reads it back
+$T phone pen status                # /sys/class/sec/sec_epen/enabled (the S Pen's IC): 1 on, 0 off
+$T phone pen wake                  # 2,0 then 2,1 to it (One UI's 1,0 leaves it in its screen-off mode), then reads it back
 $T phone backlight status          # the panel's level, max_brightness, and One UI's own value (control/base/backlight)
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
