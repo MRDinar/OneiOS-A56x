@@ -27,7 +27,7 @@ file_entries() {
   local d=$1 p sep=; shift
   for p in "$@"; do
     printf '%s{"path":"%s","size":%s,"sha256":"%s"%s}' "$sep" "$p" "$(stat -c %s "$d/$p")" "$(sha256sum < "$d/$p" | cut -d' ' -f1)" \
-      "$(case "$p" in bin/*) echo ',"mode":"0755"' ;; esac)"
+      "$(case "$p" in (bin/*) echo ',"mode":"0755"' ;; esac)"
     sep=,
   done
 }

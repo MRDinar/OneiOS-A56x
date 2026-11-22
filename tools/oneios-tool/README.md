@@ -2680,6 +2680,12 @@ oneios-tool app dir                      # the checkout's path alone (for script
 tools/oneios-tool/tests/app/run.sh            # 103 checks; ALL OK
 ```
 
+On the Mac (2026-11-22) it runs with GNU coreutils and sed first on `PATH` (the suite says so when they are not)
+under macOS's own `/bin/bash` 3.2: 103 checks, ALL OK, on the fork at its upstream 0.5.35 merge. Before that day
+5 checks failed there (the two "refused while a session is open" and the three `stage-scripts` per file): bash 3.2
+cannot parse a `case` pattern without its opening `(` inside `$(...)`, so `tests/phone/lib.sh`'s `file_entries`
+wrote no JSON for the stand-in stage's manifest. The pattern is `(bin/*)` now.
+
 The stand-ins: a OneOS checkout whose `gradlew` is a script that records its arguments and "builds" an APK; APKs
 made by `oneios-tool debug mkapk` (`tests/app/mkapk.py` until 2026-11-21; a zip with an APK Signing Block v2 around a certificate made with `openssl`; the
 signature is filler, the tool reads the certificate and does not verify the APK); a `gh` that serves a release's
