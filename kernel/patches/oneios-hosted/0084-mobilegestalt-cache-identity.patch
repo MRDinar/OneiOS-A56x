@@ -1,9 +1,9 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 5461869..a60bd5e 100644
+index d132bde..25934d7 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -9710,6 +9710,78 @@ oneios_audio_tunings(proc_t p, user_addr_t scratch)
- 	    oneios_audio_tunings_status);
+@@ -9827,6 +9827,78 @@ oneios_dictation_status(void)
+ 	kfree_data(text, cap);
  }
  #endif /* XNU_HOSTED */
 +#if XNU_HOSTED
@@ -81,7 +81,7 @@ index 5461869..a60bd5e 100644
  static void
  native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
  {
-@@ -9782,7 +9854,11 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+@@ -9899,7 +9971,11 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
  	    "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/7570.iPadOS_17-1032w-1376h@2x~ipad.wallpaper/"
  	    "7570.iPadOS_17_Floating-1032w-1376h@2x~ipad.ca/Red-Light.png", &native_gpu_addon5_stage, &native_gpu_addon5_status);
  	native_cryptex_os_view(p, scratch);

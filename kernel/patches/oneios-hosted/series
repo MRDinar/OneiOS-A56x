@@ -358,6 +358,7 @@
 # when that differs from /private/var/oneios/mobilegestalt-identity (or there is none), then writes the marker. So a
 # device-tree change (the camera nodes) still reaches an existing Data store, once. `oneios-mg-cache:` line;
 # oneios-mg-cache=2 is the old way (at every boot), =0 never. README.md, "0084".
+# Rebased 2026-11-23 on 0083 (made on a tree without it: it did not apply on main; only the hunks' offsets changed).
 0084-mobilegestalt-cache-identity.patch
 # fix-launch-control-center-fitness (2026-11-22): the Edge scheduler's E -> P edges. DroidVMCpufreq gives every thread
 # group the E cluster (2 vCPUs, the A520s) with only the UI, above-UI and realtime classes on P (6 vCPUs, the A720s and

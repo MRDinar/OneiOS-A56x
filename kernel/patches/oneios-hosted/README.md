@@ -1724,4 +1724,6 @@ Tested (Mac, 2026-11-22): built in `HOSTED_OUT=cam` from the series (the full bu
 sha256 `ad0a2993d910cdf7...`, 167 patches; prelinked (`KERNEL=out/kernel/current-hosted-cam/xnu.macho
 OUT=out/kernel/cam-24A446 kernel/prelink/build.sh`): `kernel.kc` sha256 `3c66f79ee04fbcbf...`, audit 2712 paired, 92 on
 the stub, 0 failures; `prelink stubs-check`: 666 good, 0 bad. The loader's hash in `runtime/loader/tests/test_loader.c`.
-Not run on the phone yet.
+Not run on the phone yet. Rebased on 0083 (2026-11-23): the camera helper made it on a tree without 0083, so it did not
+apply on main (`patch failed: bsd/kern/kern_exec.c:9710`); now its function comes after 0083's `oneios_dictation_status`,
+the same code, and 0085 and 0086 apply after it.
