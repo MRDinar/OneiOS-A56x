@@ -411,6 +411,7 @@
 # each IPI to a busy vCPU is a signal to its iOS thread, each move a sched_setaffinity and a slower core. Now a thread
 # that prefers E and runs on P stays until it blocks or its quantum ends; an idle E CPU steals by the edges instead; a
 # P-preferring thread on E is still pulled to an idle P CPU. oneios-edge-pullback=1 is XNU's way. One `oneios-perf:
-# 0090:` line per perf period: the pull-backs not made and made, and the scheduler's IPIs by reason to idle and busy
-# CPUs. Built and prelinked (kernel.kc ad4f70fa); not booted yet. README.md, "0090".
-0090-edge-no-pullback-ipi-counts.patch
+# 0091:` line per perf period: the pull-backs not made and made, and the scheduler's IPIs by reason to idle and busy
+# CPUs. Numbered 0091: 0090 is the camera helper's boot addon (t3/camera-preview-stream-fix); the two touch no file in common.
+# Built and prelinked as 0090 (kernel.kc ad4f70fa); not booted yet. README.md, "0091".
+0091-edge-no-pullback-ipi-counts.patch

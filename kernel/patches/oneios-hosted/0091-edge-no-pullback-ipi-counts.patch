@@ -6,7 +6,7 @@ diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
  }
  
 +/*
-+ * 0090 (fix-fps-scheduler-migration, 2026-11-23): no pull-back of a spilled thread from P to E, and the scheduler's
++ * 0091 (fix-fps-scheduler-migration, 2026-11-23): no pull-back of a spilled thread from P to E, and the scheduler's
 + * IPIs by reason.
 + *
 + * With 0089 the Edge scheduler's completion step runs, so 0085's E -> P spill works (weight 0 for default and higher)
@@ -23,7 +23,7 @@ diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
 + * or its quantum ends: no rebalance IPI from an idle E CPU, which steals by the edges' weights instead (XNU's P -> E
 + * edge, 64 us), and no preemption by the two rules. Its next wake-up places it again (E when E has room). A thread that
 + * prefers P and runs on E is still pulled to an idle P CPU (the UI's threads). oneios-edge-pullback=1 is XNU's way.
-+ * The `oneios-perf:   0090:` line every perf period: what was kept, the pull-backs made, and the scheduler's IPIs by
++ * The `oneios-perf:   0091:` line every perf period: what was kept, the pull-backs made, and the scheduler's IPIs by
 + * event, to an idle CPU or a busy one.
 + */
 +TUNABLE(uint32_t, hosted_edge_pullback, "oneios-edge-pullback", 0);
@@ -52,7 +52,7 @@ diff --git a/osfmk/arm64/hosted/hosted_smp.c b/osfmk/arm64/hosted/hosted_smp.c
 +		}
 +	}
 +	/* sched_ipi_event_t: 1 bound thread, 2 preempt, 3 SMT rebalance, 4 spill, 5 rebalance, 6 realtime preempt */
-+	printf("oneios-perf:   0090: spilled threads kept on P: %llu pull-back IPIs not sent, %llu preemptions not made; "
++	printf("oneios-perf:   0091: spilled threads kept on P: %llu pull-back IPIs not sent, %llu preemptions not made; "
 +	    "pull-back IPIs sent %llu (oneios-edge-pullback=%u); scheduler IPIs to idle/busy CPUs: preempt %llu/%llu, "
 +	    "spill %llu/%llu, rebalance %llu/%llu, realtime %llu/%llu, bound %llu/%llu, other %llu/%llu\n",
 +	    c[0] - last_counts[0], c[1] - last_counts[1], c[2] - last_counts[2], hosted_edge_pullback,
@@ -72,7 +72,7 @@ diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
  		hosted_perf_kernel_threads(wall_us);    /* 0051 */
  		hosted_irq_report(wall_us);             /* 0081 */
 +		extern void hosted_edge_report(void);
-+		hosted_edge_report();                   /* 0090 (hosted_smp.c) */
++		hosted_edge_report();                   /* 0091 (hosted_smp.c) */
  		hosted_fast_irq_period();               /* 0081, oneios-fast-irq=2: the other path next */
  		hosted_top_report(wall_us);             /* 0080 */
  		hosted_perf_last = c;
@@ -85,7 +85,7 @@ diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
  static pset_id_t sched_edge_thread_bound_pset_id(thread_t);
 +#if XNU_HOSTED
 +/*
-+ * OneiOS hosted 0090 (hosted_smp.c): no pull-back of a spilled thread from a P CPU to an E CPU. True when the thread
++ * OneiOS hosted 0091 (hosted_smp.c): no pull-back of a spilled thread from a P CPU to an E CPU. True when the thread
 + * running on `running` would be preempted only to move it to `to`, a slower kind of CPU (oneios-edge-pullback=0).
 + */
 +extern uint32_t hosted_edge_pullback;
@@ -104,7 +104,7 @@ diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
  	/* Find foreign running threads to rebalance; the actual rebalance is done in sched_edge_balance() */
  	boolean_t rebalance_needed = sched_edge_foreign_running_thread_available(pset);
 +#if XNU_HOSTED
-+	/* 0090: an E CPU pulls no spilled thread back from P (sched_edge_balance); it steals by the edges' weights instead */
++	/* 0091: an E CPU pulls no spilled thread back from P (sched_edge_balance); it steals by the edges' weights instead */
 +	if (rebalance_needed && pset->pset_type == PSET_AMP_E && hosted_edge_pullback == 0) {
 +		rebalance_needed = false;
 +	}
@@ -118,7 +118,7 @@ diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
  
 +#if XNU_HOSTED
 +	/*
-+	 * 0090: a thread that prefers E and spilled to a P CPU runs on there until it blocks or its quantum ends: no
++	 * 0091: a thread that prefers E and spilled to a P CPU runs on there until it blocks or its quantum ends: no
 +	 * preemption to move it back to an E CPU (the two rules below). Its next wake-up places it again by the edges.
 +	 */
 +	if (hosted_edge_keep_on(processor->processor_set, preferred_pset)) {
@@ -138,7 +138,7 @@ diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
  	pset_unlock(idle_pset);
 +#if XNU_HOSTED
 +	/*
-+	 * 0090: an E CPU going idle sends no IPI to a P CPU to preempt a spilled thread and take it back. Here that IPI is a
++	 * 0091: an E CPU going idle sends no IPI to a P CPU to preempt a spilled thread and take it back. Here that IPI is a
 +	 * kick of the iOS thread the P vCPU runs (xnuhost: a signal, 100 us or more against about 1 us on an iPhone), and
 +	 * the move puts the thread on a core about half as fast; the thread comes back to E at its next wake-up anyway.
 +	 */
@@ -158,7 +158,7 @@ diff --git a/osfmk/kern/sched_clutch.c b/osfmk/kern/sched_clutch.c
  			sched_ipi_perform(ast_processor, ipi_type);
 +#if XNU_HOSTED
 +			if (idle_pset->pset_type == PSET_AMP_E) {
-+				os_atomic_inc(&hosted_edge_counts[2], relaxed);     /* 0090: a pull-back (oneios-edge-pullback=1) */
++				os_atomic_inc(&hosted_edge_counts[2], relaxed);     /* 0091: a pull-back (oneios-edge-pullback=1) */
 +			}
 +#endif /* XNU_HOSTED */
  			KDBG(MACHDBG_CODE(DBG_MACH_SCHED_CLUTCH, MACH_SCHED_EDGE_REBAL_RUNNING) | DBG_FUNC_NONE,
@@ -173,7 +173,7 @@ diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
  	ipi_type = SCHED(ipi_policy)(dst, thread, dst_idle, event);
 +#if XNU_HOSTED
 +	/*
-+	 * OneiOS hosted 0090: the scheduler's IPIs by event, to an idle CPU or to a busy one (the `0090:` perf line). Under
++	 * OneiOS hosted 0091: the scheduler's IPIs by event, to an idle CPU or to a busy one (the `0091:` perf line). Under
 +	 * xnuhost an IPI to a busy vCPU whose iOS thread runs is a kick of that thread (a signal), not a store.
 +	 */
 +	if (ipi_type != SCHED_IPI_NONE) {

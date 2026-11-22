@@ -1288,9 +1288,9 @@ Not booted under qemu (the owner asked for the combined phone boot first); stage
 On the phone (2026-11-23 03:28, kernel `988c2a7b`): `oneios-smp: all 8 CPUs booted ...`, `oneios-edge: E -> P migration
 and steal allowed on 6 edges ...`, `oneios-smp: the scheduler's completion step done in 10 ms (... pcs_init_completed
 1)`. vCPU 2-7 carried work (22-38% idle where they were 80-99%), and the threads went back and forth between the
-clusters: 0090.
+clusters: 0091.
 
-## 0090-edge-no-pullback-ipi-counts.patch (fix-fps-scheduler-migration, 2026-11-23)
+## 0091-edge-no-pullback-ipi-counts.patch (fix-fps-scheduler-migration, 2026-11-23)
 
 The fault: with 0089, page switches felt slower than in the boots before, and the host did far more work for the same
 screens. xnuhost's lines of the 2026-11-23 03:28 boot against the boot before (0085 inactive), per 30 s: task traps
@@ -1329,7 +1329,7 @@ What the patch changes (`XNU_HOSTED`; `oneios-edge-pullback=0`, the default):
 - `oneios-edge-pullback=1` is XNU's way (the IPIs and preemptions are made, and counted).
 
 The line, every perf period (`osfmk/arm64/hosted/hosted_smp.c` `hosted_edge_report`, after 0081's): `oneios-perf:
-0090: spilled threads kept on P: N pull-back IPIs not sent, M preemptions not made; pull-back IPIs sent K
+0091: spilled threads kept on P: N pull-back IPIs not sent, M preemptions not made; pull-back IPIs sent K
 (oneios-edge-pullback=0); scheduler IPIs to idle/busy CPUs: preempt a/b, spill a/b, rebalance a/b, realtime a/b, bound
 a/b, other a/b`. The busy counts are the kicks the scheduler asked for; xnuhost's `kick` and `perf:   queue:` lines say
 what they cost.
@@ -1338,11 +1338,11 @@ Not changed: 0085's weights (default and higher at 0: the spill that took the RP
 the steal of an idle P CPU from E, the UI's P preference. An A/B without a rebuild: `oneios-edge-pullback=1` against
 the default in two boots with the same screens.
 
-Tested (build laptop, 2026-11-23): `HOSTED_OUT=fps ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0090, `xnu.macho`
+Tested (build laptop, 2026-11-23): `HOSTED_OUT=fps ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0089 and 0091 (no 0090 in this tree), `xnu.macho`
 sha256 `7a1c0ed7...`; the prelink: `kernel.kc` sha256 `ad4f70fa2543c64e5cac4bf8cd769f6b3e5770a5b5023c7745b0f0120eb5ff90`, audit 2711
-paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `0090:`
+paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `0091:`
 line and the `oneios-edge-pullback` boot-arg are in the kernel. Not booted under qemu or on the phone yet. On the phone:
-the `0090:` line (pull-backs not sent; preempt IPIs to busy CPUs), and xnuhost's `release:` and `kick` lines back near
+the `0091:` line (pull-backs not sent; preempt IPIs to busy CPUs), and xnuhost's `release:` and `kick` lines back near
 the boot before 0089 (about 15,000 moves and 950 kicks in 30 s) while `perf: cpuN:` still shows vCPU 2-7 busy.
 
 ## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)

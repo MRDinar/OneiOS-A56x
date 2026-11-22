@@ -979,9 +979,9 @@ nothing called `ml_cpu_init_completed`, so the scheduler's completion step (and 
 once the last vCPU is booted (`oneios-smp:` lines). With the completion step XNU's own rules ran too: an E vCPU
 going idle sent a rebalance IPI to the P vCPU running a spilled thread, and a P vCPU preempted it when the E cluster's
 load was 0, so threads went back and forth on most dispatches (2026-11-23 03:28: `release:` 70,200 moves and `kick`
-24,419 in 30 s, against 14,824 and 931 before 0089). Hosted `0090` keeps a thread that prefers E on the P vCPU it
+24,419 in 30 s, against 14,824 and 931 before 0089). Hosted `0091` keeps a thread that prefers E on the P vCPU it
 spilled to until it blocks or its quantum ends (`oneios-edge-pullback=1` is XNU's way; the kernel's `oneios-perf:
-0090:` line counts what it kept and the scheduler's IPIs by reason, to idle and to busy vCPUs).
+0091:` line counts what it kept and the scheduler's IPIs by reason, to idle and to busy vCPUs).
 
 **The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
 `sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's

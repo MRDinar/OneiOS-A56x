@@ -513,10 +513,10 @@ for, in order:
    (`oneios-tool log stacks`, the 0080 `oneios-top` line; an IOSurface mapped and unmapped per frame is a guess) and keep
    them mapped.
 5. **The host's CPU time.** With 0085 and 0089 all eight vCPUs carry iOS's work, so the display helper and xnuhost's
-   GPU threads share the cores with it; at 711% and a 95 C SoC the phone also slows its clocks. Hosted `0090` and
+   GPU threads share the cores with it; at 711% and a 95 C SoC the phone also slows its clocks. Hosted `0091` and
    xnuhost's direct kick (`docs/booter.md` 2.6a, "The kick") remove the host work of the thread moves and of the
    kicks (70,200 moves and 24,419 kicks in that 30 s period, 136 us each). Phone lines: `perf:   release:`, `kick`,
-   `perf:   queue: ... (N of them by a kick of the iOS thread ...)` and the kernel's `oneios-perf:   0090:` line.
+   `perf:   queue: ... (N of them by a kick of the iOS thread ...)` and the kernel's `oneios-perf:   0091:` line.
 
 The order to work in, by the size of each cost per frame against the 8.3 ms: 4 (5.4 ms of faults), 2 (5.5 ms of copy
 on the CPU), 3 (5-9 ms of fence time beyond the GPU's work), then 5. 1 and the host work of 5 are done in this change
