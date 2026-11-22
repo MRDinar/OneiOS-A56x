@@ -109,6 +109,7 @@ static void secondary_entry(struct xh_cpu *cpu, uint64_t arg)
 {
   secondary_seen = arg + cpu->index;
   H->irq_enable(cpu, 6, 1);
+  H->irq_enable(cpu, 7, 1);                    // test_xcall's cross-call
   H->ipi(cpu, 0, 5);
   for (;;) {
     if (!worker.armed) { H->cpu_idle(cpu); if (cpu->irq_pending) irq_upcall(cpu, NULL); continue; }
@@ -294,6 +295,49 @@ static void test_unmap_race(uint64_t task, uint64_t a, uint64_t code_va, uint64_
   check(H->thread_destroy(C0, b) == 0, "unmap race: the second thread destroyed");
 }
 
+// The debugger's cross-call to a vCPU that waits in the hand-off (phone, 2026-11-23: a stackshot's SIGPdebug went to
+// every CPU, and a vCPU that did not answer within debug-ack panicked the guest). vCPU 1 releases a thread that spins in
+// user code and never traps, so vCPU 1 waits in thread_run's futex; vCPU 0 sends it SGI 7, as DebuggerXCallEnter's
+// cross-call does, and vCPU 1 must take it (the kick stops the thread; its interrupt upcall sees the SGI) well within
+// debug-ack, every time. 20 rounds, the thread in the hand-off 20 ms before each; then the word ends its loop.
+static void test_xcall(uint64_t task, uint64_t code_va)
+{
+  uint64_t b = 0, flag_pa = page_alloc();
+  const uint64_t flag_va = 0x500000000ull, hz = H->info->timebase_hz;
+  if (H->thread_create(C0, task, &b) || H->task_map(C0, task, flag_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, flag_pa)) {
+    check(0, "cross-call: a spinning thread");
+    return;
+  }
+  volatile uint64_t *flag = (volatile uint64_t *)(uintptr_t)kva(flag_pa);
+  *flag = 0;
+  worker.thread = b;
+  worker.done = worker.go = 0;
+  zero(&worker_st, sizeof worker_st);
+  worker_st.pc = code_va + 40;
+  worker_st.x[1] = flag_va;
+  __atomic_store_n(&worker.armed, 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&worker.go, 1, __ATOMIC_RELEASE);
+  H->ipi(C0, 1, 6);
+  unsigned taken = 0, rounds = 20;
+  uint64_t worst = 0;
+  for (unsigned i = 0; i < rounds; i++) {
+    for (uint64_t t = now(); now() - t < hz / 50;) {}            // 20 ms: vCPU 1 is in the hand-off's futex wait
+    __atomic_and_fetch(&sgi_seen, ~(1u << 7), __ATOMIC_SEQ_CST);
+    uint64_t sent = now();
+    H->ipi(C0, 1, 7);
+    while (!(__atomic_load_n(&sgi_seen, __ATOMIC_ACQUIRE) & 1u << 7) && now() - sent < hz) {}
+    if (__atomic_load_n(&sgi_seen, __ATOMIC_ACQUIRE) & 1u << 7) { taken++; if (now() - sent > worst) worst = now() - sent; }
+  }
+  *flag = 1;                                                      // the thread leaves its loop and stops at brk
+  uint64_t start = now();
+  while (__atomic_load_n(&worker.done, __ATOMIC_ACQUIRE) != 1 && now() - start < hz * 5) {}
+  __atomic_store_n(&worker.armed, 0, __ATOMIC_RELEASE);
+  put("  cross-call to a vCPU in the hand-off: taken "); hex(taken); put(" of 20, slowest (us) "); hex(worst * 1000000 / hz); put("\n");
+  check(taken == rounds && worst < hz / 2, "cross-call: an SGI to a vCPU whose thread spins in user code is taken each time, within 500 ms");
+  check(worker.done == 1 && worker.kind == XH_TRAP_BRK, "cross-call: the thread then ends its loop (brk)");
+  check(H->thread_destroy(C0, b) == 0 && H->task_unmap(C0, task, flag_va, 0x4000) == 0, "cross-call: the thread destroyed, the word unmapped");
+}
+
 // WebKit's JIT (MAP_JIT) at the host-call level: a page is writable through one mapping and executable through
 // another of the same physical page (the "separated W^X heaps" WebKit uses on a host with no APRR/SPRR: real
 // hardware here has none). The thread writes an instruction sequence through the read-write alias, does the i-cache
@@ -436,9 +480,12 @@ static void test_tasks(void)
   code[6] = 0x14000000;      // b .
   code[8] = 0xf9400020;      // ldr x0, [x1]      (test_unmap_race)
   code[9] = 0xd4200020;      // brk #1
+  code[10] = 0xf9400020;     // ldr x0, [x1]      (test_xcall: spin, never trapping, until the word is set)
+  code[11] = 0xb4ffffe0;     // cbz x0, .-4
+  code[12] = 0xd4200020;     // brk #1
   // As the kernel does with a page of signed text before it maps it: on a host with no seccomp the
   // svc becomes the undefined instruction thread_run reports as a system call.
-  H->text_fixup(C0, code, 10 * 4);
+  H->text_fixup(C0, code, 13 * 4);
   const uint64_t code_va = 0x100000000ull, data_va = 0x200000000ull;
   check(H->task_map(C0, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa) == 0, "task_map of a code page at 0x100000000");
   check(H->task_map(C0, task, H->info->user_va_limit, 0x4000, XH_PROT_READ, code_pa) < 0, "task_map refuses the stub's region");
@@ -494,6 +541,7 @@ static void test_tasks(void)
         "it is in force when the thread runs again: the store faults");
   if (trapped) test_unmap_queue(task, thread, code_va, data_pa);
   if (trapped) test_unmap_race(task, thread, code_va, data_pa);
+  if (trapped) test_xcall(task, code_va);
   // Preemption: a thread that never traps is stopped when the vCPU's timer fires.
   st.pc = code_va + 24;
   uint32_t fires = timer_fires;

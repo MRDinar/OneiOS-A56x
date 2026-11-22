@@ -3813,6 +3813,20 @@ adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
   `oneios-gpu-pixels: WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`) [I: that iOS 27 saves
   one as HEIC]. `oneios-tool ioslog checks` counts these failure lines in its `heic` row: 0 is the proof.
 
+**The freeze of 2026-11-23 (v0.1.16, two boots).** The helper backend's open waited for the helper's reply with no
+limit, on the vCPU that answered the guest's `VIDIOC_STREAMON`, with the virtio-media device held. The helper never
+answered (MediaCodec's open did not come back in it; where it waits is not known yet), so that vCPU took no interrupt
+for 80-90 s, a stackshot's cross-call panicked the guest (`Debugger synch pending on cpu 1`), and xnuhost's main loop
+waited for the same device and never ended the session ([booter.md](booter.md) 2.9c). Fixed in
+`backend_helper.c`: the HELLO and each write 1 s, an open's reply 2.5 s; a helper that misses one is killed with a
+line that says where it waited (`encoder: the helper (pid N) did not answer an open in 2500 ms (state S, waiting in
+WCHAN): killed (1 of 2); the next open starts a new one`), the next open starts a new helper, and after two hangs the
+encoder is off for the session (`encoder: the helper hung 2 times: no more helpers this session (VideoToolbox keeps
+its software encoder)`). Host-tested (`test_hung_helper`); not yet on the phone. **Left:** the open still runs on the
+vCPU (up to 2.5 s of a deaf vCPU, under the 5 s `debug-ack`); moving it to the device's worker would make STREAMON
+return before the session is open, which the guest's V4L2 path does not expect today. Why MediaCodec's open hangs in
+the helper is the next thing to find from the new line.
+
 ## 7h. The host device (host-device, 2026-11-21)
 
 One tree for every known host phone: xnuhost finds which phone it runs on at its start and takes that phone's

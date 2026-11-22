@@ -1490,6 +1490,71 @@ the phone reboots, and wlan0 keeps GRO off and `disable_ipv6` 1 if xnuhost is ki
 SESSION/wifi.state` puts them back). With `wifi=tap`, the tap's routing rules and iptables chains stay until
 `oneios-net.sh down` (the tap itself goes with the process).
 
+### 2.9c A host call that does not come back, and a stop the main loop does not see (fix-debugger-crosscall-panic, 2026-11-23)
+
+**The fault.** Two phone boots of v0.1.16 (kernels `776f6c56613a` and `81b85dd4`, 2026-11-23) froze about 6 minutes
+in, the same way. The guest panicked: `panic(cpu 0 caller ...): DebuggerXCallEnter>Debugger synch pending on cpu 1`
+(the second boot: `cpu 1 ... on cpu 2`). A user process took a stackshot (`stack_snapshot_with_config`: spindump,
+ReportCrash), the debugger's cross-call went to every CPU, one vCPU did not answer within `debug-ack` (about 5 s,
+hosted 0017), and a stackshot does not go on without every CPU, so the kernel panicked. The panicking vCPU called
+`halt` and waited in `pause()` (its wchan `sigsuspend`), six vCPUs spun in the debugger's wait loops (690% of 800),
+and xnuhost never exited: the session stayed frozen until the user's chord.
+
+**The cause** (from the logs, `out/session-logs/2026-11-23/boot-0.1.16/` and `boot-edge/`). The vCPU that did not
+answer (wchan `futex_wait_queue`) was not in the hand-off to an iOS thread: it was inside a host call, in the
+virtio-media device's handler. The guest's `VIDIOC_STREAMON` opened an encoder session; `maybe_open_encoder` called
+the helper backend's open on the vCPU, with the device's lock held; `helper_open` started `oneios-encoder` (its
+receive thread is the thread named after the vCPU that waits in `read()` / `unix_stream_read_generic`: the encoder's
+socket is xnuhost's only `SOCK_STREAM` one), sent the OPEN and waited in `pthread_cond_wait` with no limit. The helper
+never answered (MediaCodec's open did not come back in it: why is not known yet; the next boot's `encoder: the
+helper ... (state ..., waiting in ...)` line says where it waits). A vCPU in a host call takes no interrupt, so that
+vCPU stayed deaf for 80-90 s, until the stackshot. Meanwhile xnuhost's main loop reached its 60 s virtio report,
+which took every device's lock in turn and waited for ever in the media device's: its 30 s and 60 s lines (`perf:`,
+`memory:`, `tasks:`, `virtio:`) end at 24391 s in the first boot and 25871 s in the second, 78 s and 92 s before the
+panic. So the main loop never saw the halt's stop either.
+
+**The fixes.**
+
+- The encoder's helper backend never waits for the helper without a limit (`runtime/bridges/encoder/README.md`): the
+  HELLO and each write 1 s, an open's reply 2.5 s (under `debug-ack`). A helper that misses one is killed and the next
+  open starts a new one (twice a session at most; then VideoToolbox keeps its software encoder). The stop kills the
+  helper.
+- `xh_virtio_health` never waits for a device's lock (`pthread_mutex_trylock`): a device held for 2 s or longer by
+  one request is said once per hold, with the vCPU in its handler, and again when it is free: `virtio media#0: held
+  by a request on queue 0 for 78 s (cpu1 in its handler): the guest's next access to the device waits for it` /
+  `virtio media#0: free again: the request that held it ended after N s` (a device thread's `xh_virtio_lock`: `held
+  by a device thread for N s`). One clock read (the vDSO's) per queue notify.
+- **The stop watch** (`main.c`): a thread, started before the vCPUs, waits for `xh_stop`. When the main loop has not
+  left its loop 3 s after the stop, it says `stopping: the main loop did not take the stop (WHY) in 3000 ms: it waits
+  in STEP; the stop path runs from the stop watch` (STEP: the loop's step, e.g. `the virtio report`), logs where each
+  vCPU is (the SIGQUIT lines), and runs the stop path from another thread; only one thread runs it (`end_session`).
+  When the stop path has not ended 60 s after the stop: `stopping: the stop path did not end in 60 s (it is at:
+  STEP): exit N now` and `_exit(N)`. So a guest panic always ends the session with exit 4, its log written, and the
+  fork's way back runs.
+- The halt host call says a panic: `guest panic: the kernel halted on cpu0 (code 0, panic()): ending the session`
+  (codes: 0 `panic()`, 1 a start-up check, 2 a fatal kernel fault, 3 a panic while panicking).
+- The hand-off's kick (section 2.6) was sent once and its result not looked at. A vCPU whose iOS thread is not back
+  200 ms after the kick now sends it again at each futex step while its line is up; a refused `tgkill` (a full queue of
+  real-time signals) is said once (`tasks: the kick of pid N tid T (vCPU K's interrupt) was refused: ...`), and the
+  perf line counts the second kicks (`kicks of iOS threads sent again N (not back 200 ms after the first)`). Not seen
+  in these boots; it keeps a lost kick from leaving a vCPU deaf the same way.
+
+**Tests** (build laptop): `make -C runtime/xnuhost test` (`test_health_held`: a handler that blocks on another
+thread; the report comes back, says `held by a request on queue 0 ... (cpu1 in its handler)` once, and `free again`
+after; and check-arm64's test kernel, `test_xcall`: vCPU 1 hands off to an iOS thread that spins in user code and
+never traps, so it waits in the hand-off's futex as the phone's vCPUs did; vCPU 0 sends it SGI 7 as the debugger's
+cross-call does, 20 times, and each must be taken within 500 ms: `cross-call to a vCPU in the hand-off: taken 0x14 of
+20, slowest (us) 0x...`), `make -C runtime/bridges/encoder test` (`test_hung_helper`: the stand-in's open hangs in the helper process
+(`ONEIOS_ENCODER_STUB_HANG_OPEN`); the open comes back in its limit, the helper is killed, a new one works, after two
+hangs no helper starts). Results on the build laptop, 2026-11-23: `xnuhost tests: 14269 checks, 0 failed`, `TESTKERNEL: all
+passed` under qemu-aarch64 with `cross-call to a vCPU in the hand-off: taken 0x14 of 20, slowest (us) 0x146` (326 us),
+`test_encoder: 218/218 checks passed`, `runtime/host-tests.sh` exit 0, the oneios-tool crates' tests 0 failed. The stop
+watch and the second kick have no host test of their own (a host test that stops
+the process would need a fork of xnuhost's main; not done). **Phone:** the lines to look for in the next boot that
+opens an encoder session are `encoder: helper ... (pid N)`, then either `encoder: session N: HEVC ...` or `encoder:
+the helper (pid N) did not answer an open in 2500 ms (...): killed (1 of 2)`, and never a `virtio media#0: held by`
+line longer than 2-3 s.
+
 ### 2.9a The USB gadget in the log (`src/usb.c`, 2026-11-13)
 
 xnuhost never opens, writes or binds anything of USB, the USB gadget, configfs, Type-C or power supplies but

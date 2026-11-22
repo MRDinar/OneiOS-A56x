@@ -511,6 +511,7 @@ typedef struct {
   uint64_t ops_joined;                    // task_map/task_unmap calls joined to the queue's last entry (stub_abi.h xs_queue_join)
   uint64_t uclamp_sets;                   // sched_setattr calls that gave an iOS thread its vCPU's uclamp.min (task.c)
   uint64_t kicks, kicks_skipped;          // raises of another vCPU's line that signalled or woke it; those it had up already
+  uint64_t kicks_again;                   // kicks of an iOS thread sent again: it was not back 200 ms after the first (task.c)
   uint64_t places, prep_ticks;            // fix-mach-rpc: sched_setaffinity calls that put an iOS thread with its vCPU (thread_run),
                                           // and the ticks thread_run spent before the release (placement, uclamp, the queue)
   // thread_run's bookkeeping between two calls
@@ -684,7 +685,12 @@ typedef void (*xh_line_fn)(void *ctx, const char *line);
 // (+N: chains returned to the guest in the span), and once per episode a queue that holds chains with none returned
 // for a whole span (`virtio gpu#0: queue 0: 2 chain(s) in flight and none returned in 60 s ...`), a queue whose
 // posted chains nobody took, and the line that says it moves again. xh_virtio_tick calls it from the main loop.
+// The report never waits for a device's lock (now_ms is CLOCK_MONOTONIC ms): a device held for xh_virtio_held_ms or
+// longer by one request (or a device thread's xh_virtio_lock) is said once per hold, with the vCPU in its handler
+// (`virtio media#0: held by a request on queue 0 for 78 s (cpu1 in its handler): ...`), and again when it is free.
 #define XH_VIRTIO_REPORT_MS 60000u
+extern unsigned xh_virtio_held_ms;      // 2000; the tests set less
+extern int (*xh_virtio_cpu)(void);      // the calling vCPU's index, -1 for another thread (main.c sets it; NULL: -1)
 void       xh_virtio_health(uint64_t now_ms, xh_line_fn out, void *ctx);
 void       xh_virtio_tick(void);
 // Where virtio.c's lines go (the driver's state changes, xh_virtio_tick's report): main.c sets it to its log. NULL (the

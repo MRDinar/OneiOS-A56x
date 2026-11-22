@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,16 +46,104 @@ uint64_t xh_mono_ms(void)
   return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
 }
 
+// The stop watch (fix-debugger-crosscall-panic, 2026-11-23). Two phone boots of v0.1.16 froze for good after a guest
+// panic: the panicking vCPU called halt (xh_stop) and waited in pause(), but the main loop never saw the stop, because
+// it was blocked in a device's lock (the virtio report, while a vCPU waited in the encoder's open with that device
+// held). The session stayed up with six cores spinning until the user's chord. The stop watch is a thread that waits
+// for xh_stop: when the main loop has not left its loop STOP_SEE_MS after it, the stop path runs from another thread
+// (end_session, which only one thread runs); and when the stop path has not ended STOP_PATH_MS after the stop, the
+// process ends with its exit code all the same. main_step names what the main thread does, for these lines.
+#define STOP_SEE_MS 3000
+#define STOP_PATH_MS 60000
+static sem_t stop_sem;                       // posted by xh_stop (async-signal-safe: a vCPU's fault handler stops too)
+static bool stop_watch_on;
+static pthread_mutex_t watch_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t watch_cond;            // CLOCK_MONOTONIC
+static bool loop_left;
+static const char *volatile main_step = "the boot";
+static uint32_t ending;
+static xh_return_state ret;
+static void end_session(void) __attribute__((noreturn));
+
+static int exit_code(void)
+{
+  return stop_state.reason == XH_HALT_RESTART ? EXIT_RESTART : stop_state.reason == XH_HALT_PANIC ? EXIT_PANIC :
+         stop_state.code ? EXIT_PANIC : EXIT_GUEST_OFF;
+}
+
 void xh_stop(uint32_t reason, uint32_t code, const char *why)
 {
+  bool first = false;
   pthread_mutex_lock(&stop_lock);
   if (!stop_state.requested) {
     stop_state.reason = reason;
     stop_state.code = code;
     snprintf(stop_state.why, sizeof stop_state.why, "%s", why);
     __atomic_store_n(&stop_state.requested, 1, __ATOMIC_RELEASE);
+    first = true;
   }
   pthread_mutex_unlock(&stop_lock);
+  if (first && __atomic_load_n(&stop_watch_on, __ATOMIC_ACQUIRE)) sem_post(&stop_sem);
+}
+
+// The main loop left: the stop path runs on the main thread.
+static void loop_leave(void)
+{
+  pthread_mutex_lock(&watch_lock);
+  loop_left = true;
+  pthread_cond_broadcast(&watch_cond);
+  pthread_mutex_unlock(&watch_lock);
+}
+
+static void *end_thread(void *arg) { (void)arg; end_session(); }
+
+static void *stop_watch(void *arg)
+{
+  (void)arg;
+  while (sem_wait(&stop_sem) && errno == EINTR) {}
+  struct timespec see, end;
+  clock_gettime(CLOCK_MONOTONIC, &see);
+  end = see;
+  see.tv_sec += STOP_SEE_MS / 1000; see.tv_nsec += (long)(STOP_SEE_MS % 1000) * 1000000L;
+  if (see.tv_nsec >= 1000000000L) { see.tv_sec++; see.tv_nsec -= 1000000000L; }
+  end.tv_sec += STOP_PATH_MS / 1000;
+  pthread_mutex_lock(&watch_lock);
+  while (!loop_left && pthread_cond_timedwait(&watch_cond, &watch_lock, &see) != ETIMEDOUT) {}
+  bool left = loop_left;
+  pthread_mutex_unlock(&watch_lock);
+  if (!left) {
+    LOGE("stopping: the main loop did not take the stop (%s) in %d ms: it waits in %s; the stop path runs from the stop watch",
+         stop_state.why, STOP_SEE_MS, main_step);
+    xh_cpu_dump_all();                       // where each vCPU is (the SIGQUIT lines)
+    pthread_t t;
+    if (pthread_create(&t, NULL, end_thread, NULL)) end_session();
+  }
+  // Nothing posts the cond again: this is the stop path's limit.
+  pthread_mutex_lock(&watch_lock);
+  while (pthread_cond_timedwait(&watch_cond, &watch_lock, &end) != ETIMEDOUT) {}
+  pthread_mutex_unlock(&watch_lock);
+  LOGE("stopping: the stop path did not end in %d s (it is at: %s): exit %d now", STOP_PATH_MS / 1000, main_step, exit_code());
+  _exit(exit_code());
+}
+
+// Started once, before the vCPUs, with every signal blocked.
+static void stop_watch_start(void)
+{
+  pthread_condattr_t attr;
+  pthread_condattr_init(&attr);
+  pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+  pthread_cond_init(&watch_cond, &attr);
+  pthread_condattr_destroy(&attr);
+  if (sem_init(&stop_sem, 0, 0)) { LOGE("stopping: no stop watch: sem_init: %s", strerror(errno)); return; }
+  sigset_t all, old;
+  sigfillset(&all);
+  pthread_sigmask(SIG_SETMASK, &all, &old);
+  pthread_t t;
+  int rc = pthread_create(&t, NULL, stop_watch, NULL);
+  pthread_sigmask(SIG_SETMASK, &old, NULL);
+  if (rc) { LOGE("stopping: no stop watch: %s", strerror(rc)); return; }
+  pthread_setname_np(t, "xnuhost-stop");
+  __atomic_store_n(&stop_watch_on, true, __ATOMIC_RELEASE);
 }
 
 static void session_file(const char *name, const char *content)
@@ -1293,6 +1382,7 @@ static void usb_tick(bool now, const char *when)
 
 // A lasting line's sink (xh_line_fn): the log.
 static void log_line(void *ctx, const char *line) { (void)ctx; LOGI("%s", line); }
+static int vcpu_index(void) { xh_vcpu *v = xh_cpu_self(); return v ? (int)v->cpu.index : -1; }
 
 // Every 60 s: the haptics' counters when they moved (docs/booter.md "Health lines"). Before, they were one line at the
 // stop only, so a session that ended by a kill or a panic said nothing of what iOS asked of the motor.
@@ -1329,6 +1419,7 @@ int main(int argc, char **argv)
   xh_log_open(NULL, config.log_level);
   LOGI("xnuhost: session ABI %d, mode %s, pid %d", config.session_abi, config.mode, getpid());
   xh_virtio_log = log_line;               // virtio.c's health lines (docs/booter.md 2.9b)
+  xh_virtio_cpu = vcpu_index;             // who holds a device, in its "held by" line
   // The host phone (bridges/host_device.h, config.c): what was found, from which property, and each default it changed.
   // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
   // variable the session already set wins.
@@ -1368,6 +1459,7 @@ int main(int argc, char **argv)
   for (int s = SIGRTMIN; s <= SIGRTMIN + 3; s++) sigaddset(&stops, s);
   pthread_sigmask(SIG_BLOCK, &stops, NULL);
   signal(SIGPIPE, SIG_IGN);
+  stop_watch_start();
 
   if (*config.session) {
     char pid[32];
@@ -1406,10 +1498,10 @@ int main(int argc, char **argv)
   // stop below runs as always. A panic (it sets stop directly, not through a signal), a second signal, the guest
   // halting itself, or the deadline all leave the wait at once. The way back never depends on any of this: the
   // deadline is ours, and the fork's SIGKILL is the backstop under everything.
-  xh_return_state ret;
   xh_return_init(&ret);
   while (!xh_stopping()) {
     struct timespec tick = { 0, 100 * 1000 * 1000 };
+    main_step = "the wait for a signal";
     int signo = sigtimedwait(&waited, NULL, &tick);
     if (signo == SIGQUIT) { xh_cpu_dump_all(); xh_tasks_dump(); xh_sysreg_stats_log(); xh_perf_log(true); continue; }      // debugging: where each vCPU is
     if (signo > 0) {
@@ -1435,16 +1527,27 @@ int main(int argc, char **argv)
       LOGI("return: graceful shutdown timed out after %llu ms; stopping", (unsigned long long)xh_return_elapsed_ms(&ret, xh_mono_ms()));
       xh_stop(XH_HALT_OFF, 0, "graceful shutdown timed out");
     }
+    main_step = "the perf report";
     xh_perf_tick();                         // "perf:" lines every perf-log seconds
+    main_step = "the disk report";
     xh_blk_tick();                          // "disk NAME: 30 s:" lines (blk.c)
+    main_step = "the memory report";
     host_memory_tick(false);                // "memory: host MemAvailable" every host-mem-log seconds
+    main_step = "the swap watch";
     swap_watch();                           // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
+    main_step = "the RAM valve";
     ram_valve_tick();                       // the lock's valve, once a second while locked
+    main_step = "the 2 MiB page report";
     huge_tick();                            // "memory: 2 MiB pages (the prefault done): ..." once
+    main_step = "the USB watch";
     usb_tick(false, "");                    // "usb: state ..." when the USB gadget changed
+    main_step = "the virtio report";
     xh_virtio_tick();                       // "virtio: 60 s: ..." and a queue that holds chains (virtio.c)
+    main_step = "the tasks report";
     xh_tasks_tick();                        // "tasks: 60 s: ..." made, ended, died on their own (task.c)
+    main_step = "the haptics report";
     haptic_tick();                          // "haptics: 60 s: ..." when iOS used the motor
+    main_step = "the ready rule";
     ready_tick();                          // session/ready for an iOS that only draws black (ready-content-wait)
     // Until the guest's display driver presents a frame of its own, show what its kernel console draws (not until
     // ready: between its first frame and ready the frames are the guest's, and the console must not be copied over them).
@@ -1468,6 +1571,16 @@ int main(int argc, char **argv)
       }
     }
   }
+  main_step = "the stop path";
+  loop_leave();
+  end_session();
+}
+
+// The stop path, once: from the main thread when its loop sees the stop, or from the stop watch when the loop does not
+// (stop_watch). The thread that comes second waits; the first ends the process.
+static void end_session(void)
+{
+  if (__atomic_exchange_n(&ending, 1, __ATOMIC_ACQ_REL)) for (;;) pause();
   // A return was asked: a guest-initiated restart in the window is iOS finishing its shutdown, not a reboot to re-run
   // in place. Take it as the return (exit 0), so the fork's watcher goes back to One UI instead of xnuhost re-exec'ing.
   if (ret.active && stop_state.reason == XH_HALT_RESTART) {
@@ -1481,6 +1594,7 @@ int main(int argc, char **argv)
     LOGI("return: iOS shut down in %llu ms", (unsigned long long)xh_return_elapsed_ms(&ret, xh_mono_ms()));
 
   LOGI("stopping: %s (reason %u, code %u)", stop_state.why, stop_state.reason, stop_state.code);
+  main_step = "the stop path: the reports";
   host_memory_tick(true);
   if (g_mem.huge) huge_report(" at the stop");
   usb_tick(true, " (at the stop)");
@@ -1500,6 +1614,8 @@ int main(int argc, char **argv)
     uint64_t limit = (uint64_t)(getenv("XNUHOST_DUMP_MB") ? strtoul(getenv("XNUHOST_DUMP_MB"), NULL, 0) : 64) << 20;
     if (dump) { fwrite(g_mem.host, 1, g_mem.size < limit ? g_mem.size : limit, dump); fclose(dump); }
   }
+  main_step = "the stop path: the tasks and the bridges";
+  br_encoder_helper_stop();                // the encoder helper, also one that hangs in MediaCodec
   xh_tasks_shutdown();
   if (haptic) br_haptic_close(haptic);      // stops the motor
   if (camera) br_camera_close(camera);      // the helper closes the camera and exits
@@ -1511,6 +1627,7 @@ int main(int argc, char **argv)
   xh_input_script_stop();
   xh_input_stop();
   xh_display_close();
+  main_step = "the stop path: sync";
   sync();                                   // the Data store's pages
   // The RAM goes back to the host at once with this process (its last mapping and descriptor: the tasks and the factory
   // are gone already); a kill does the same. Nothing to undo: mlock ends with the mapping.
@@ -1519,8 +1636,7 @@ int main(int argc, char **argv)
        (unsigned long long)(g_mem.size >> 20), (unsigned long long)(__atomic_load_n(&g_ramfix.locked, __ATOMIC_RELAXED) >> 20));
   if (stop_state.reason == XH_HALT_RETURN) session_file("return.request", "the guest asked to return\n");
   if (stop_state.reason == XH_HALT_RESTART) guest_restart();     // returns only if it could not
-  int code = stop_state.reason == XH_HALT_RESTART ? EXIT_RESTART : stop_state.reason == XH_HALT_PANIC ? EXIT_PANIC :
-             stop_state.code ? EXIT_PANIC : EXIT_GUEST_OFF;
+  int code = exit_code();
   LOGI("exit %d", code);
   _exit(code);
 }

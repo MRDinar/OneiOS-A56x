@@ -318,9 +318,63 @@ static void run(const br_encoder_backend *backend, uint64_t base) {
   }
 }
 
+// A helper that hangs in its open (the phone, 2026-11-23: MediaCodec's open never came back, the vCPU that asked waited
+// for ever with the device held, and a stackshot panicked the guest): the open comes back within its limit with no
+// session, the helper is killed, the next open starts a new one that works, and after two hangs no helper is started.
+static uint64_t ms_now(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+}
+// Opens until one call takes `slow` (the hang) or one succeeds; returns that call's time (ms), or -1.
+static long open_until(const br_encoder_backend *b, bool want_hang, br_enc_session **got) {
+  *got = NULL;
+  for (uint64_t began = ms_now(); ms_now() - began < 5000;) {
+    uint64_t t = ms_now();
+    br_enc_session *s = b->open(MEDIA_PIXFMT_HEVC, 64, 64);
+    long took = (long)(ms_now() - t);
+    if (s) { *got = s; return want_hang ? -1 : took; }
+    if (want_hang && took >= 250) return took;
+    struct timespec ms = { 0, 2000000 };
+    nanosleep(&ms, NULL);
+  }
+  return -1;
+}
+static void test_hung_helper(const char *helper) {
+  const br_encoder_backend *b = br_encoder_backend_helper(helper);
+  br_encoder_helper_open_ms = 300;
+  br_encoder_helper_stop();                                        // run()'s helper goes; a stop is not a hang
+  setenv("ONEIOS_ENCODER_STUB_HANG_OPEN", "1", 1);
+  br_enc_session *s;
+  long took = open_until(b, true, &s);
+  CHECK(took >= 250 && took < 1500 && !s);                         // bounded: the vCPU is back
+  unsetenv("ONEIOS_ENCODER_STUB_HANG_OPEN");
+  took = open_until(b, false, &s);                                 // a new helper, after the killed one ended
+  CHECK(took >= 0 && took < 1000 && s);
+  if (s) b->close(s);
+  setenv("ONEIOS_ENCODER_STUB_HANG_OPEN", "1", 1);
+  br_encoder_helper_stop();
+  took = open_until(b, true, &s);                                  // the second hang
+  CHECK(took >= 250 && took < 1500 && !s);
+  unsetenv("ONEIOS_ENCODER_STUB_HANG_OPEN");
+  uint64_t began = ms_now();
+  bool any = false, slow = false;
+  while (ms_now() - began < 500) {                                 // two hangs: no more helpers, every open fails at once
+    uint64_t t = ms_now();
+    br_enc_session *x = b->open(MEDIA_PIXFMT_HEVC, 64, 64);
+    if (x) { any = true; b->close(x); }
+    if (ms_now() - t > 100) slow = true;
+    struct timespec ms = { 0, 5000000 };
+    nanosleep(&ms, NULL);
+  }
+  CHECK(!any && !slow);
+  br_encoder_helper_stop();
+}
+
 int main(int argc, char **argv) {
   const char *helper = argc > 1 ? argv[1] : "build/host/oneios-encoder";
   run(br_encoder_backend_helper(helper), 0x0a000000);
+  test_hung_helper(helper);
   int after_helper = checks;
   run(br_encoder_backend_stub(), 0x0a001000);
   printf("test_encoder: %d/%d checks passed (%d through the helper process, %d with the stand-in in the device's process)\n",

@@ -147,9 +147,9 @@ pub fn blocks(text: &str) -> Vec<Block> {
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let text = body(raw);
-        if let Some(at) = text.find("panic(cpu ") {
+        if let Some(at) = oneios_common::panic_head(text) {
             close(&mut open, &mut out);
-            let head = &text[at + "panic(cpu ".len()..];
+            let head = &text[at..];
             let digits = head.find(|c: char| !c.is_ascii_digit()).unwrap_or(head.len());
             let mut block = Block { line, cpu: head[..digits].parse().ok(), link_base, ram_base, slide, ..Block::default() };
             let message = match head.find("): ") {
@@ -254,6 +254,26 @@ mod tests {
         );
         // x1, cpsr, fp, sp, far are not code addresses; the dump's pc and lr repeat the text's.
         assert_eq!(b.entries.iter().filter(|e| e.kind == Kind::Pc).count(), 1);
+    }
+
+    #[test]
+    fn a_head_that_lost_its_first_letter() {
+        // The phone's panic of 2026-11-23 (v0.1.16): the console lost the `p`, and a cut line of another writer came first.
+        let log = "\
+[ 24469.789] guest     oneios-hid: touch screen: 7528 virtio-input events, 2 devicep
+[ 24469.789] guest     anic(cpu 0 caller 0xfffffff00ade5440): DebuggerXCallEnter>Debugger synch pending on cpu 1
+[ 24469.789] guest      @model_dep.c:1260
+[ 24469.789] guest       frame 0xfffffff00b4d2aac
+[ 24469.789] guest       frame 0xfffffff00ade5440
+";
+        let found = blocks(log);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].line, found[0].cpu), (2, Some(0)));
+        assert_eq!(found[0].text, "DebuggerXCallEnter>Debugger synch pending on cpu 1");
+        assert_eq!(
+            found[0].entries.iter().map(|e| (e.kind, e.addr)).collect::<Vec<_>>(),
+            [(Kind::Caller, 0xfffffff00ade5440), (Kind::Frame, 0xfffffff00b4d2aac), (Kind::Frame, 0xfffffff00ade5440)]
+        );
     }
 
     #[test]

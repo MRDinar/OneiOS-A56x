@@ -193,7 +193,7 @@ fn ending(recs: &[Rec]) -> Option<(&Rec, String)> {
             Src::Host(_) if t.starts_with("exit ") || t.starts_with("stopping: ") || t.starts_with("the guest asked for a restart") => {
                 Some((r, t.to_string()))
             }
-            Src::Guest if t.starts_with("panic(") => Some((r, format!("PANIC: {}", short(t, 90)))),
+            Src::Guest if t.starts_with("panic(") || oneios_common::panic_head(t).is_some() => Some((r, format!("PANIC: {}", short(t, 90)))),
             Src::Raw if t.starts_with("xnuhost !!") => Some((r, short(t, 90))),
             _ => None,
         }
@@ -281,7 +281,7 @@ pub fn report(log: &Log, window: Window, all: bool) -> String {
                 first_error.get_or_insert(r);
             }
             match r.src {
-                Src::Guest if t.starts_with("panic(") => panics += 1,
+                Src::Guest if t.starts_with("panic(") || oneios_common::panic_head(t).is_some() => panics += 1,
                 Src::Guest if t.starts_with("sheng-exc: ") && t.contains("] exception ") => exceptions += 1,
                 Src::Guest if t.starts_with("memorystatus: ") && (t.contains("SIGKILL") || t.contains("killing")) => jetsam += 1,
                 Src::Host(_) if t.starts_with("tasks: pid ") && t.contains(" trap kind ") => traps += 1,

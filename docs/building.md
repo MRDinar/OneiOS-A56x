@@ -1202,7 +1202,7 @@ oneios-tool log summary xnuhost.log --last 60       # the rows of the boot's las
 oneios-tool log timeline xnuhost.log                # the same stages among every milestone, in the log's order
 ```
 
-A kernel panic of a session (`panic(cpu N caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in
+A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in
 the `kernel.kc` that ran and the `xnu.macho` it was prelinked from: member and segment, function + offset,
 file:line and inlined frames. The first call for a pair of files builds an index under `out/ksym-index/` (2 to 9 s);
 later calls take milliseconds:

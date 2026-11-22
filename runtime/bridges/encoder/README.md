@@ -27,7 +27,7 @@ make               # build/android/{oneios-encoder, encctl, liboneencoder.a}   (
 | `media_proto.h` | the wire layout of the `droidvm,virtio-media` device: the commandq (OPEN/CLOSE/IOCTL/MMAP), the eventq (DQBUF/EVENT), and the V4L2 structs (`v4l2_buffer`, `v4l2_format`) as UniXNU-droidvm's `DroidVMVirtioMedia.c`/`DroidVMVTHost.cpp` read them |
 | `media_device.c` | xnuhost's stateful V4L2 **encoder** device on `xh_virtio_*`: OUTPUT = tightly packed NV12, CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. `liboneencoder.a` (static, into xnuhost) |
 | `encoder.h` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) and `br_encoder_create` |
-| `backend_helper.c` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`encoder_link.h`), buffers coded AUs for `poll()` |
+| `backend_helper.c` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`encoder_link.h`), buffers coded AUs for `poll()` . **Never waits for the helper without a limit** (a vCPU calls it): the HELLO and each write 1 s, an open's reply `br_encoder_helper_open_ms` (2.5 s); a helper that misses one is killed (`encoder: the helper (pid N) did not answer an open ... killed (1 of 2)`), the next open starts a new one, twice a session at most; `br_encoder_helper_stop` (xnuhost's stop) kills it. Session ids are never reused. `ONEIOS_ENCODER_STUB_HANG_OPEN=1` in the helper's environment makes the stand-in's open hang (the test) |
 | `helper.c` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic |
 | `backend_ndk.c` | the real backend: the NDK's `AMediaCodec` (`video/hevc` → Codec2 `c2.qti.hevc.encoder`, `video/avc`), NV12 ByteBuffer input, Annex-B output. Still-image settings: one keyframe, constant quality. Both the `samsung` and `treble` hardware backends use this same path |
 | `backend_stub.c` | the **stand-in encoder** for a host with no MediaCodec (below). In `liboneencoder.a` too: xnuhost runs it in its own process on the PC |
@@ -110,7 +110,8 @@ The stand-in is never taken in a session on the phone unless `encoder=sim` asks 
   the helper; the helper opens Android's MediaCodec and nothing of One UI's `/data`.
 - **No realtime threads:** the device's worker is an ordinary `SCHED_OTHER` thread; the helper is a plain process.
 - **Closed at the return:** the device's `reset` closes every encoder session; closing the socket ends the helper (it
-  exits when its `read` returns 0), and MediaCodec is released per session. Nothing is grabbed, nothing persists.
+  exits when its `read` returns 0), and MediaCodec is released per session. xnuhost's stop also kills the helper (one that hangs in
+  MediaCodec would never see its socket's end). Nothing is grabbed, nothing persists.
 
 ## On the phone
 
