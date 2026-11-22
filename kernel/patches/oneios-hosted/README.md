@@ -1203,6 +1203,70 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0082-dyld-rw-data-const.patch (fix-dyld-cache-unnesting, 2026-11-22)
+
+The owner's report: app labels show late on every boot, and apps open and close slowly. In every session log each
+process, from launchd, fsck and mount on, printed `triggered unnest of range 0x1fa600000->0x1fc600000 of DYLD shared
+region` (280-505 a session; xpcproxy 102 times in one). 0080's `oneios-srprot:` lines (launchd's first 24) show what
+dyld does, and `oneios-top: shared region:` showed 1,278-16,835 vm_protect calls and 133-1,916 unnests per 30 s, 0 of
+them no-ops (session `out/session-logs/2026-11-22/kbd-debug`, runtime 0.1.15).
+
+What was found (dyld-27062 of 24A446, `/usr/lib/dyld` copied out of `os.img`; the cache copied out of
+`systemos.img`; `otool`, `ipsw dyld info/dump/a2s`):
+
+- **Who calls.** launchd's dyld is at `0x1008e7000`. pc `0x1008f13ac` is `__kernelrpc_mach_vm_protect_trap`+8, lr
+  `0x10093a388` is in `_vm_protect`, frame `0x10093a20c` is the region block of
+  `ProcessConfig::DyldCache::makeDataConstWritable`, `0x1008e8b54` is `DyldSharedCache::forEachRegion`, `0x10093a2c0`
+  is `makeDataConstWritable`, `0x1008e8998` is `forEachCache`. The small ranges (frames `0x10096c120`...) are
+  `lsl::MemoryManager::writeProtect`: dyld's protected memory, made writable around its work because this host has no
+  TPRO.
+- **The ranges.** The slide of that boot is `0x1a688000`. The six prot 0x13 ranges (`0x1fa768000-0x1fc594000` and five
+  more) are exactly the cache's six `CONST_DATA` mappings (three `__DATA_CONST`, three large `__AUTH_CONST`: about
+  367 MiB); the three small ones are its three `__TPRO_CONST` mappings (0x24000, 0x4000, 0x4000).
+  `makeDataConstWritable` takes every `CONST_DATA` region and skips `CONST_TPRO_DATA`.
+- **Why.** `prepare` calls `Loader::adjustFunctionVariantsInDyldCache`. The cache (header `0x208`) has 7 function-variant
+  patch sites, all in `__TPRO_CONST`, all of kind 1 (per process) and flag bit 2 = apple[] `has_sec_transition` (MTE):
+  five in QuartzCore (`__builtin_available.mte_enabled.ifunc.27` or `__builtin_available.yes`), one in libdispatch
+  (`_dispatch_tagging_enabled` or `_tagging_enabled_mte_enabled`), one in AVConference (`__builtin_available.mte_enabled.ifunc`
+  or `.yes`). They are 0 in the file, so dyld writes
+  all 7 in every process. Before the first write it calls `DyldCacheDataConstLazyScopedWriter::makeWriteable`, which runs
+  `makeDataConstWritable(true)` unless `enableReadOnlyDataConst` is off or apple[] has `dyld_hw_tpro_pagers`; the
+  scope's end runs it again with READ. Apple's kernelcache of 24A446 has the strings `dyld_hw_tpro=1` and
+  `dyld_hw_tpro_pagers=1` (TPRO hardware); ours cannot pass them. So every process here made 367 MiB of the nested
+  shared region `VM_PROT_COPY|READ|WRITE`, which unnests it (0080's no-op shortcut excludes `VM_PROT_COPY`: its count
+  stayed 0), and then faulted those pages into its own tables again. Not the cause: no root and no interposing (the
+  root tweaks write only the Data volume; the GPU plug-in is not in fsck or mount), and the ObjC optimizations are on
+  (0080).
+- **The switch.** `ProcessConfig::Process` sets `enableReadOnlyDataConst = !(commpage dyld flags & 0x200000)`
+  (`_COMM_PAGE_DYLD_FLAGS`, `0xfffffc160`). With it off, launchd's dyld maps the `CONST_DATA` mappings of the shared
+  region with init protection READ|WRITE (copy-on-write, as `__DATA`; without `VM_PROT_TPRO`, which
+  `shared_region_tpro_protect` ignores here anyway), and `makeWriteable` returns at once. dyld keeps the bit when
+  launchd writes `kern.dyld_flags` (`setupDyldCommPage` clears only bits 0-2, 6 and 35).
+
+What the patch changes (`bsd/kern/kern_sysctl.c`, all under `XNU_HOSTED`):
+
+- `hosted_dyld_flags_init` (`STARTUP(LOCKDOWN)`: after `vm_commpage_init`, before `bsd_init` starts launchd) writes the
+  commpage's dyld flags with bit 0x200000 and prints `oneios-dyld-flags: commpage dyld flags 0x200000 (...)`.
+- `sysctl_dyld_flags` prints `oneios-dyld-flags: launchd set kern.dyld_flags 0x...` at launchd's write (once per launchd
+  start) and adds the bit again if that write lacks it (`, 0x200000 added again`).
+- `oneios-dyld-rw-data-const=0`: not done; the commpage line says so (the old way, for a comparison).
+
+What it costs: `__DATA_CONST` of the shared cache is writable copy-on-write in every process, as it was before iOS
+made it read-only; a stray write changes only that process's copy of one page. TPRO, which protects it on an iPhone, is
+not on this host in any case. dyld's `__TPRO_CONST` protects (12 calls per process start, 3 small ranges) stay.
+
+Tested (Mac, 2026-11-22): `HOSTED_OUT=dyldrw kernel/build-hosted.sh` applied the series with 0082 and built
+`xnu.macho` in 366 s (`_hosted_dyld_flags_init` with its `LOCKDOWN` startup entry and the `oneios-dyld-rw-data-const`
+tunable are in it); `kernel/prelink/build.sh` gave `out/kernel/dyldrw-24A446/kernel.kc` (96,813,056 bytes, sha256
+`17729490...`; audit 2,712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad); `kernel/tests/host.sh` 7 of 7.
+Both copies of dyld (`/usr/lib/dyld` and the cache's at `0x180482000`) have the same `makeWriteable` bytes. Not booted
+yet (no PC; the phone test is the next step). On the phone, these lines prove it: `oneios-dyld-flags: commpage dyld flags 0x200000` and `oneios-dyld-flags:
+launchd set kern.dyld_flags 0x...` with bit 0x200000 set and no `, 0x200000 added again`; no `triggered unnest of range ... of DYLD shared
+region` line at all (the lowest writable mapping is now `__DATA_CONST`'s start, and nothing below it is unnested);
+`oneios-srprot:` lines only for the three `__TPRO_CONST` ranges (`0x24000` and `0x4000` long), none with prot 0x13
+over a range of MiB; `oneios-top: shared region:` with about half the vm_protect calls per process start and 6 fewer
+unnests per start; and fewer `vm_fault` and fills per 30 s in `oneios-perf` while apps start.
+
 ## 0081-irq-host-calls-rpc-stats.patch (fix-mach-rpc, 2026-11-15)
 
 The keyboard lagged everywhere (phone session 8644ae9-b: Preferences at 102-104 % while typing in Settings' search, its main
@@ -1309,6 +1373,9 @@ pairs and 0 failures. On the S24 Ultra (`ram=auto`, 6,912 MiB, `shmem_enabled=ad
 first frame with content and `session/ready`. Log: `out/session-logs/2026-11-16/phonefix-xnuhost.log`. No PC A/B run yet.
 The report showed **0 shared-region no-ops** and continuing unnests, so the no-op half is not proven effective; the
 pmap report did show entries kept mapped (48,376 unchanged in one 30 s period). The typing comparison is still open.
+**2026-11-22:** the no-op count stays 0 because every shared-region protect of dyld carries `VM_PROT_COPY`, which the
+shortcut excludes. The big ones were dyld's `makeDataConstWritable` over all of `__DATA_CONST`; 0082 removes them.
+
 ## 0076-compressor-jetsam-report.patch (fix-ios-compressor, 2026-11-15)
 
 Three more lines in 0058's `oneios-mem:` report (every 30 s), from counters XNU keeps anyway, and one debugging tool, off by

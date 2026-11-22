@@ -1,0 +1,70 @@
+diff --git a/bsd/kern/kern_sysctl.c b/bsd/kern/kern_sysctl.c
+--- a/bsd/kern/kern_sysctl.c
++++ b/bsd/kern/kern_sysctl.c
+@@ -2316,6 +2316,50 @@
+ extern void commpage_update_dyld_flags(uint64_t);
+ TUNABLE_WRITEABLE(uint64_t, dyld_flags, "dyld_flags", 0);
+ 
++#if XNU_HOSTED
++/*
++ * OneiOS hosted (0082): the shared cache's __DATA_CONST is mapped copy-on-write, as __DATA is, because this host has
++ * no TPRO.
++ *
++ * dyld (dyld-27062, 24A446) writes the cache's 7 function-variant pointers (QuartzCore, libdispatch, AVConference:
++ * `__builtin_available.mte_enabled`, `_dispatch_tagging_enabled`) into the cache's __TPRO_CONST in every process,
++ * because they depend on has_sec_transition (MTE) of that process. Before the first such write,
++ * DyldCacheDataConstLazyScopedWriter::makeWriteable calls makeDataConstWritable, which vm_protects every CONST_DATA
++ * mapping of the cache (6 ranges, about 367 MiB) to VM_PROT_COPY|READ|WRITE and, at the end of the scope, back to READ.
++ * The 7 pointers are in __TPRO_CONST, which makeDataConstWritable skips and dyld's MemoryManager already made writable.
++ * Apple's kernel passes the apple[] string dyld_hw_tpro_pagers=1 (TPRO hardware), and makeWriteable then does nothing.
++ * Here every process from launchd on unnested the shared region over all of __DATA_CONST and __AUTH_CONST
++ * (`triggered unnest of range 0x1fa600000->0x1fc600000`, 0080's oneios-srprot lines: prot 0x13 then 0x1 over
++ * 0x1fa768000-0x1fc594000 and five more ranges), then faulted those pages into its own tables again.
++ *
++ * Bit 21 (0x200000) of the commpage's dyld flags (_COMM_PAGE_DYLD_FLAGS) turns dyld's read-only __DATA_CONST off:
++ * ProcessConfig::Process sets enableReadOnlyDataConst = !(flags & 0x200000). Then launchd's dyld maps the CONST_DATA
++ * mappings of the shared region with init protection READ|WRITE (copy-on-write, as __DATA; without VM_PROT_TPRO,
++ * which has no use here), and makeWriteable returns without a vm_protect. A write that a process still makes to
++ * __DATA_CONST (a root, interposing) copies only the page that it writes. The commpage gets the bit before launchd
++ * runs. A write of kern.dyld_flags by launchd keeps it: dyld reads the commpage and keeps bit 21 when it writes the
++ * flags back (setupDyldCommPage), and this kernel adds the bit again if it is not there.
++ * oneios-dyld-rw-data-const=0: not done (the old way, for a comparison).
++ */
++static TUNABLE(uint32_t, hosted_dyld_rw_data_const, "oneios-dyld-rw-data-const", 1);
++#define HOSTED_DYLD_FLAG_RW_DATA_CONST 0x200000ULL
++
++static void
++hosted_dyld_flags_init(void)
++{
++	if (hosted_dyld_rw_data_const == 0) {
++		printf("oneios-dyld-flags: commpage dyld flags 0x%llx (oneios-dyld-rw-data-const=0: read-only __DATA_CONST, "
++		    "every process unnests the shared cache)\n", dyld_flags);
++		return;
++	}
++	commpage_update_dyld_flags(dyld_flags | HOSTED_DYLD_FLAG_RW_DATA_CONST);
++	printf("oneios-dyld-flags: commpage dyld flags 0x%llx (0x200000: the shared cache's __DATA_CONST is copy-on-write, "
++	    "no TPRO on this host)\n", dyld_flags | HOSTED_DYLD_FLAG_RW_DATA_CONST);
++}
++/* after vm_commpage_init (kernel_bootstrap_thread) and before bsd_init starts launchd */
++STARTUP(LOCKDOWN, STARTUP_RANK_MIDDLE, hosted_dyld_flags_init);
++#endif /* XNU_HOSTED */
++
+ STATIC int
+ sysctl_dyld_flags(__unused struct sysctl_oid *oidp, void *arg1, int arg2, struct sysctl_req *req)
+ {
+@@ -2329,6 +2373,15 @@
+ 
+ 	int res = sysctl_handle_quad(oidp, arg1, arg2, req);
+ 	if (req->newptr && res == 0) {
++#if XNU_HOSTED
++		/* 0082: the flags launchd's dyld wrote, once per launchd start (its bit 21 is kept, see above) */
++		printf("oneios-dyld-flags: launchd set kern.dyld_flags 0x%llx%s\n", dyld_flags,
++		    hosted_dyld_rw_data_const != 0 && !(dyld_flags & HOSTED_DYLD_FLAG_RW_DATA_CONST) ?
++		    ", 0x200000 added again" : "");
++		if (hosted_dyld_rw_data_const != 0) {
++			dyld_flags |= HOSTED_DYLD_FLAG_RW_DATA_CONST;
++		}
++#endif /* XNU_HOSTED */
+ 		commpage_update_dyld_flags(dyld_flags);
+ 	}
+ 	return res;
