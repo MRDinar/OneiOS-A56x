@@ -14,8 +14,20 @@ autobenches = false
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "xnuloader-inspect"
+path = "src/bin/xnuloader-inspect.rs"
+
+[[bin]]
+name = "mkkernel"
+path = "src/bin/mkkernel.rs"
+
+[[test]]
+name = "loader"
+path = "tests/loader.rs"
+
 [dependencies]
-libc.workspace = true
+xh-core.workspace = true
 xnuhost-abi.workspace = true
 
 [lints]
