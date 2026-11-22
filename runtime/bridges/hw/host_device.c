@@ -20,6 +20,8 @@
 //   - an entry holds only settings that already exist as options: an xnuhost setting that config.c merges as a device
 //     default (xh_config_finish: gpu, panel-fallback, hw-backend*), or an environment variable a bridge reads;
 //   - the home device (the S24 Ultra) has none: its behaviour is today's, byte for byte;
+//   - .takeover = true allows session-mode=takeover there (the opt-in Android takeover, docs/booter.md 2.9d): only on a
+//     phone where that mode ran (the S26 Ultra, YMGPwcca's experiment) or that is the owner's (the S24 Ultra);
 //   - a value the docs mark unverified on that phone is not set (today's default is the conservative one) and is said
 //     here. Marks as in docs/s25.md: [F] read from the source named, [I] inferred, [U] unknown until a phone shows it.
 // Match strings: the model prefixes and codenames are the phone gates' (scripts/port/verify-host.sh, docs/a56-oneos-fork.md);
@@ -35,8 +37,10 @@ static const br_host_device table[] = {
   // matched by its own ro.product.model. e3q and SM8650 on the U, U1, W, N and 0 [I] (one hardware family; only the B
   // has booted iOS). The Japanese ones (SC-52E, SCG26) are not SM-S928 and their codename is [U]: they
   // get this entry by their SoC (SM8650, the SoC's entry), which has no defaults either.
+  // takeover: session-mode=takeover is allowed (the owner's phone, 2026-11-23: the opt-in Android takeover, ported from
+  // YMGPwcca/OneOS's S26 experiment; docs/booter.md 2.9d). Not run on the phone yet.
   { .name = "galaxy-s24-ultra", .label = "Galaxy S24 Ultra (SM-S928, SM8650)",
-    .models = { "SM-S928" }, .devices = { "e3q" }, .socs = { "SM8650" }, .platforms = { "pineapple" } },
+    .models = { "SM-S928" }, .devices = { "e3q" }, .socs = { "SM8650" }, .platforms = { "pineapple" }, .takeover = true },
   // docs/s25.md "Galaxy S25 Ultra", profiles/host-galaxy-s25-ultra-sm8750.toml. [F] SM-S938, pa3q, SM8750, platform sun
   // (YumikoHayamato/OneiOS s25-ultra-sm8750: the fork's SM-S938B, One UI 9.0, sessions 1-7 on 2026-11-19).
   // ONEIOS_THERMAL_SOC_TRIPS=1, ONEIOS_THERMAL_SOC_SAMPLES=3 [F] (the same sessions): the kernel's first passive trip on
@@ -65,11 +69,14 @@ static const br_host_device table[] = {
   // wrote 2300 to panel0-backlight, whose max_brightness is 12750 (brightness/test_brightness.c,
   // test_sm8850_manual_brightness_cap). Without it the iOS slider's top writes 12750, 5.5 times One UI's manual top
   // (HBM territory: heat and current). 2300 is the conservative value, not a claim about the panel's maximum.
-  // Not set: touch-exclusive (bench-only, config.c refuses it in a takeover); the native-touchscreen priority
-  // (xh_input_accept_touch) and the cpu-hw-trip-* exclusion (thermal.c) already apply on every phone.
+  // takeover: session-mode=takeover is allowed [F: the phone YMGPwcca's root-only Framework-takeover experiment ran on,
+  // 2026-11-20..22, with the native touchscreen grabbed]. Not through this tree's switch yet. touch-exclusive itself is
+  // not a default here: session-mode=takeover turns it on (config.c), session-mode=hosted keeps it off on every phone.
+  // The native-touchscreen priority (xh_input_accept_touch) and the cpu-hw-trip-* exclusion (thermal.c) already apply
+  // on every phone.
   { .name = "galaxy-s26-ultra", .label = "Galaxy S26 Ultra (SM-S948, SM8850)",
     .models = { "SM-S948" }, .devices = { "m3q" }, .socs = { "SM8850" }, .platforms = { "canoe" },
-    .env = { "ONEIOS_BRIGHT_MAX=2300" } },
+    .env = { "ONEIOS_BRIGHT_MAX=2300" }, .takeover = true },
   // docs/a56.md, profiles/ios-*-a56.toml, docs/a56-oneos-fork.md. [F] SM-A566E, a56x, s5e8855 (the fork's gate:
   // ro.soc.model); platform s5e8855 [I]. gpu=2d [F]: no KGSL (Xclipse 540 on amdgpu, /dev/dri/renderD128) and xnuhost's
   // 3D half is drm2kgsl only, so gpu=auto would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the

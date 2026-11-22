@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
-// Touch and side keys, read from /dev/input/event*. During normal takeover,
-// zygote and system_server are gone; the touchscreen is not grabbed, allowing
-// the separate switcher's Volume Up + Down watcher to continue receiving keys.
-// The explicitly opted-in bench+SHM touch-exclusive mode is different: only
-// Samsung's native sec_touchscreen is EVIOCGRABbed to prevent simultaneous
-// touches in Android underneath the preview. Side keys are NEVER grabbed.
-// Closing the xnuhost fd (including SIGKILL) releases the touch for One UI.
+// Touch and side keys, read from /dev/input/event*. In the default session (session-mode=hosted) zygote and
+// system_server are gone and nothing is grabbed, so the switcher's Volume Up + Down readers keep receiving keys.
+// touch-exclusive=1 is different: only Samsung's native sec_touchscreen is EVIOCGRABbed, in two cases:
+//   - the bench+SHM preview (Android still runs underneath: no tap may reach it), where read_keys is false and no
+//     side-key device is opened at all;
+//   - session-mode=takeover (the opt-in Android takeover, docs/booter.md 2.9d: the touchscreen is iOS's alone), where
+//     the side keys are still read as in every session, and never grabbed.
+// Side keys are NEVER grabbed. Closing the xnuhost fd (xh_input_stop, an exit, SIGKILL, the exec of a restart in
+// place: the fd is O_CLOEXEC) releases the touchscreen for One UI: the kernel ends a grab with its file.
 //
 // Each touch frame goes to the guest with its scan time: an EV_MSC / MSC_TIMESTAMP event before the
 // SYN_REPORT whose value is the low 32 bits of the time the kernel stamped the frame with, in counter
@@ -336,7 +338,8 @@ static void *input_main(void *arg)
   return NULL;
 }
 
-int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive)
+int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive,
+                   bool read_keys)
 {
   bool have_touch = false;
   const bool native_touch = native_touch_present();
@@ -351,10 +354,10 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
     ioctl(fd, EVIOCGNAME(sizeof name - 1), name);
     bool touch = bit(abs, ABS_MT_POSITION_X) && bit(abs, ABS_MT_POSITION_Y);
     bool keys = bit(key, KEY_VOLUMEDOWN) || bit(key, KEY_VOLUMEUP) || bit(key, KEY_POWER);
-    // Keep physical side keys on Android during the interactive bench.
+    // Keep physical side keys on Android during the interactive bench preview (read_keys false).
     // Skipping all key-only nodes also reserves the reader's limited slots
     // for sec_touchscreen even if it was assigned a late eventN number.
-    if (touch_exclusive) keys = false;
+    if (!read_keys) keys = false;
     // One touchscreen: the multitouch device that is the screen itself (INPUT_PROP_DIRECT). The S24 Ultra also has
     // "sec_touchpad", a multitouch pointer device with the same axes: its events went into the same guest device as
     // the screen's (one slot state for two sources) and its ranges replaced the screen's. Not taken.
@@ -387,7 +390,8 @@ int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsi
           return -1;
         }
         exclusive_touch_fd = fd;
-        LOGI("input: touch-exclusive: sec_touchscreen grabbed for bounded guest; Android input hidden until release");
+        LOGI("input: touch-exclusive: sec_touchscreen grabbed%s; Android input hidden until release",
+             read_keys ? " (session-mode=takeover; the side keys are read, never grabbed)" : " for the bench preview");
       }
       have_touch = true;
       // The guest gets the panel's own coordinate ranges and scales them to its frame.
@@ -443,7 +447,8 @@ void xh_input_stop(void)
   close_input_sources();
 }
 #else
-int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive)
-{ (void)dev; (void)pen; (void)width; (void)height; return touch_exclusive ? -1 : 0; }
+int xh_input_start(xh_virtio *dev, const xh_input_pen *pen, unsigned width, unsigned height, bool touch_exclusive,
+                   bool read_keys)
+{ (void)dev; (void)pen; (void)width; (void)height; (void)read_keys; return touch_exclusive ? -1 : 0; }
 void xh_input_stop(void) {}
 #endif
