@@ -2135,6 +2135,50 @@ plays (a toggle in Settings, a long press on an icon); then `ONEIOS HAPTIC: coun
 Settings > Sounds & Haptics > Keyboard Feedback > Haptic on (iOS's default is off). If the strip is visible and the
 Actuator still gets silence, the next reading is VirtualAudio's DSP set-up lines for `[vzzz]` in the same log.
 
+### The boot of 2026-11-23: no haptic was asked for (fix-haptics-waveform, 2026-11-23)
+
+**What the boot was read as:** main `44d9c49` with 0086 on the phone, `ONEIOS HAPTIC: counters: Actuator 1 opens ...
+(1 StartIO, 1 StopIO ...), 2689 periods (13445 ms), 0 with samples, 0 loud`, so "the Actuator still plays silence".
+
+**What iOS's log of that boot says [F, `ioslog haptics` on its `phone pull-log` text]:** 0086 works, and the boot
+played no haptic at all.
+- The chain is there and well formed: no `Cannot find strips file`, then `DSPChainConfig:d42_actuator_general ...
+  [dpio] {2, 1} ... [dprt]: 1751216240` (`happ`, AUHapticsProtection, 2 channels to 1) and `[dpio] {1, 1} ... [dprp]
+  {[64002]: 1} ... [dprt]: 1987013737` (`voli`, AUVolumeForHaptics), `Instantiated DSP Processor type 'happ'` and
+  `'voli'`, the mapping `0v: 32/48000/2` to `0a: 16/48000/1`.
+- The one I/O run is SpringBoard's prewarm: `prewarm engine <_UIFeedbackCoreHapticsHapticsOnlyEngine>` at 21:59:52,
+  `Starting prewarm on cold client ID`, `StartIOProcID: 79 Actuator` at 21:59:52.94, `Stopping prewarmed client` and
+  `StopIOProcID` at 22:00:06.39: the 13445 ms. A prewarm plays nothing, so its periods are zero by design.
+- No haptic was sent: `engine: made 1, prewarm 1, start 0, events 0`, `server: start 0`. The one feedback of the boot
+  (`UINotificationFeedbackGenerator`, the power-connected sound, SSID 1106) went to `_UIFeedbackSystemSoundEngine`,
+  and MediaExperience gave it `Vibration = 0` (`mShouldVibe 0`). The session had 28 touch contacts and SpringBoard
+  logged no feedback after 22:00:06. The keyboard says `Haptics: supported. Haptics: disabled` (iOS's default).
+
+So the waveform's path after the synth (the chain, the device's copy, the bridge) is **not tested yet on the phone**.
+[U] whether AUHapticsProtection gives a level without the iPhone's actuator calibration: the graph form of the chain
+(`AID8022/VAD/actuator_general.dspg`) wires two properties from the host into the units (`hprt` to
+AUHapticsProtection 88000, `acst` to AUVolumeForHaptics 64003) that the strip form does not set, and `/product/haptics
+controller-coeff-cal "syscfg/CLCL"` names a calibration the guest does not have. AUVolumeForHaptics' preset has `_swv`
+0, `volt` 3, `volv` 3; `failed to fetch software volume command ... port pact` is logged once at the route's set-up
+(its effect is not known).
+
+**The lasting tool:** `oneios-tool ioslog haptics` (`tools/oneios-tool/README.md` "haptics"; `phone pull-log` writes
+`ioslog-haptics.txt`): one line per step of the path, each step's count shown, so the first 0 is where a haptic stops.
+
+**The phone check (the test this boot did not make):** in the session, press an icon on the Home Screen long (the
+context menu's haptic), move a switch in Settings, and with Settings > Sounds & Haptics > Keyboard Feedback > Haptic
+on, type. Then `oneios-tool phone pull-log DIR` and read `DIR/ioslog-haptics.txt`:
+- `feedback: ... core haptics N` and `engine: ... events N` with N > 0: a haptic was sent (else nothing was asked);
+- then `device: ... stopped with requests N`, `ONEIOS HAPTIC: counters: ... N with samples, N loud ... N requests to
+  the motor` and xnuhost's `haptics: 60 s: ... +N played` with N > 0: the path works;
+- `events` above 0 with `level: silent N` and `device: stopped silent` only: the chain gives silence. The next fix is
+  then our own strip for `oneios,xnuhost/VAD/d42_actuator_general` without AUHapticsProtection (0086's folder of
+  links can hold a file of ours in place of the link), not a third reading of the same logs.
+
+Not done here: a boot on the PC with a scripted long press (`haptics=sim`, 2026-11-23) was stopped at the owner's
+word before SpringBoard had made its engine (a first boot on a new Data store: 38 minutes, audiomxd had opened the
+Actuator, `server: up 1`, `chain: made 1`, no feedback asked yet).
+
 ### The bridge (`runtime/bridges/haptics/haptic.c`)
 
 - Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the

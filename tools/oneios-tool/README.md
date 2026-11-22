@@ -778,6 +778,9 @@ oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [
 oneios-tool ioslog keyboard [SOURCE] [the same options as health]
                                                       # the keyboard's path: key taps by app, hangs, asset locks and
                                                       # queries, language models, keyboard layouts ("keyboard" below)
+oneios-tool ioslog haptics [SOURCE] [the same options as health]
+                                                      # the path of a haptic, step by step: feedbacks asked, the engine,
+                                                      # the server, the Actuator's chain, level and device ("haptics" below)
 oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual steps made, for other tools
 # every subcommand: [--volume N|NAME] [--block0 | --checkpoint XID] [--apfs own|fuse|auto] [-v]
 ```
@@ -1007,6 +1010,35 @@ com.apple.linguisticdata 71), `asset-query 165` (kbd 112), `language-model 8`, `
 log lines. That run's times ran 52 times too slow (the library's timebase, fixed 2026-11-22 above: the boot lasted
 47.6 min, not 55 s); the counts do not change. Tests: `cargo test -p oneios-ioslog` (keyboard_tests.rs: lines written by hand in the
 shapes of that session's lines, no Apple file).
+
+### haptics: the path of a haptic in one boot
+
+`ioslog haptics` (2026-11-23) counts, for one boot, the lines of a haptic's path in the order the haptic travels, with
+the same counter and report as `health` (`crates/oneios-ioslog/src/haptics.rs`, its own table `HAPTICS`). Its options
+are health's. Each line gives every step's count, so a 0 is visible. The first step with a 0 is where the haptic stops.
+`phone pull-log` writes it as `ioslog-haptics.txt`.
+
+| Kind | Its steps |
+|---|---|
+| `feedback` | UIKit's feedback generators, by app: `asked` (a generator plays a feedback), `core haptics` (played by a Core Haptics engine, on to the Actuator), `system sound` (played as a sound: no haptic) |
+| `keyboard-mode` | the keyboard's feedback mode: `haptics on`, `off in Settings` (iOS's default: Settings > Sounds & Haptics > Keyboard Feedback > Haptic), `unsupported` (no closed-loop answer: no `/product/haptics`) |
+| `engine` | the app's Core Haptics engine: `made`, `prewarm`, `start`, `events` (an event array sent to the server: a haptic to play), `timed out` (the server did not answer: hosted 0078) |
+| `server` | audiomxd's haptic server: `up`, `prewarm`, `start` (a client started with haptics), `haptics muted` (an audio-only client), `preset missing`, `gave up` (hosted 0078's faults) |
+| `chain` | VirtualAudio's DSP chain of the Actuator's stream: `made`, `no strips file` (hosted 0086's fault), `no volume command` |
+| `level` | audiomxd's meter (RTAID) at the Actuator's nodes (`Actuator-Output`, the port's `PreDSP`, `PostDSP`): `silent` (-120 dB), `with a level` |
+| `device` | the guest's Actuator device (the kernel's `ONEIOS HAPTIC:` lines): `opened`, `I/O started`, `stopped with requests` (an I/O run with loud periods), `stopped silent` (a prewarm, or samples lost on the way) |
+| `system-sound` | the system sound server's actions: `with vibration`, `sound only` |
+
+How to read it: `feedback` with `asked 0` means nothing was asked for (touch a switch, press an icon long). `engine`
+with `events 0` means no haptic was sent to the server: a `prewarm` plays nothing, and its I/O run is silent by design.
+`events` above 0 with `level` only `silent` and `device` only `stopped silent` means the samples are lost between the
+synth and the device (the DSP chain).
+
+```sh
+oneios-tool ioslog haptics data.img                        # the last boot of a copy of the Data store
+oneios-tool ioslog haptics ioslog.txt --detail -o h.txt    # a text file that `ioslog show -o` wrote; details in h.txt
+```
+
 
 ### The comparison
 
@@ -1927,7 +1959,7 @@ oneios-tool phone procs [--seconds 5] [--sort cpu|mem] [--top N] [--kernel] [--r
 oneios-tool phone pull-log DIR [--boot last|UUID] [--keep]   # iOS's log only: ioslog show runs on the phone (the runtime's
                                               #   oneios-tool on the staged store; an open session is fine, its newest
                                               #   checkpoint is read), only the gzipped text crosses adb; then DIR/ioslog.txt,
-                                              #   ioslog-health.txt, ioslog-keyboard.txt. 2026-11-22: 615713 entries, 11 MB over
+                                              #   ioslog-health.txt, ioslog-keyboard.txt, ioslog-haptics.txt. 2026-11-22: 615713 entries, 11 MB over
                                               #   adb, 9.4 s (pull-data: 0.8-2.8 GB, about 7.5 min, the session ended first)
 oneios-tool phone pull-data OUT [--ioslog]    # data/data.img in chunks, each checked against the phone's sha256, zero runs as holes;
                                               #   run again after a stop and it goes on (OUT.part, OUT.part.progress)

@@ -8,6 +8,7 @@
 //! checks and the health counts (`health.rs`). Everything that decodes a log file is the library's.
 
 mod checks;
+pub mod haptics;
 pub mod health;
 pub mod keyboard;
 #[cfg(test)]
@@ -76,6 +77,10 @@ pub enum Command {
     /// The keyboard's path in a boot: key taps by app (downs and ups), hangs, MobileAsset lock failures and asset
     /// queries, language models, keyboard screen errors, keyboard layouts sent again, text input requests
     Keyboard(Box<keyboard::Args>),
+    /// The path of a haptic in a boot, step by step: feedbacks asked and the engine that played them, the keyboard's
+    /// mode, the app's Core Haptics engine, audiomxd's haptic server, the Actuator's DSP chain and level, the guest's
+    /// Actuator device, system sounds with vibration. The first step with a 0 is where the haptic stops
+    Haptics(Box<haptics::Args>),
 }
 
 #[derive(Args)]
@@ -189,6 +194,7 @@ pub fn main(command: Command) -> i32 {
         Command::Checks { from, boot, examples } => checks::run(from, &boot, examples),
         Command::Health(args) => health::run(*args),
         Command::Keyboard(args) => keyboard::run(*args),
+        Command::Haptics(args) => haptics::run(*args),
     };
     match result {
         Ok(()) => 0,

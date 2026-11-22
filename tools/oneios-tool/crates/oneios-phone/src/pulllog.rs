@@ -3,7 +3,7 @@
 //! (a 32 GiB sparse file, 1.7-2.8 GB written) to read a few hundred MB of log files. Here the runtime's own oneios-tool
 //! (`STAGE/runtime/bin/oneios-tool`, aarch64 Android) reads the staged store on the phone (`ioslog show`, our APFS
 //! reader: no mount), writes the boot's entries as text, busybox gzips it, and only that stream crosses adb. Then the
-//! text gets `ioslog health` and `ioslog keyboard` here, beside it.
+//! text gets `ioslog health`, `ioslog keyboard` and `ioslog haptics` here, beside it.
 //!
 //! Works beside an open session: the store is then being written, and `ioslog` reads its newest checkpoint that
 //! passes the reader's checks (it says so); what iOS logged in the last seconds may not be in it yet.
@@ -15,9 +15,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-/// The text file, the keyboard report, beside the health report (`pull::HEALTH_FILE`).
+/// The text file, the keyboard and haptics reports, beside the health report (`pull::HEALTH_FILE`).
 pub const TEXT_FILE: &str = "ioslog.txt";
 pub const KEYBOARD_FILE: &str = "ioslog-keyboard.txt";
+pub const HAPTICS_FILE: &str = "ioslog-haptics.txt";
 
 /// The phone's side: refuse without a runtime tool or a store, write the boot's text, gzip it, print its size.
 /// `tmp` is the text file's path on the phone (the `.gz` beside it is what is pulled).
@@ -76,13 +77,15 @@ pub fn pull_log(adb: &Adb, out_dir: &str, boot: &str, keep: bool) -> Result<()> 
 
     let source = text.display().to_string();
     ioslog_health(&source, Path::new(out_dir))?;
-    let report = oneios_ioslog::health::read_with(oneios_ioslog::keyboard::KEYBOARD, &source, &Default::default(), "last", 3)
-        .map_err(|e| anyhow::anyhow!("ioslog keyboard: {e:#}"))?;
-    let kb = Path::new(out_dir).join(KEYBOARD_FILE);
-    std::fs::write(&kb, report.text(oneios_ioslog::health::TOP, true)).with_context(|| kb.display().to_string())?;
-    println!("--- ioslog keyboard {source}");
-    print!("{}", report.text(oneios_ioslog::health::TOP, false));
-    println!("{}: these lines, and under each kind its texts, every process and example lines", kb.display());
+    for (name, table, file) in [("keyboard", oneios_ioslog::keyboard::KEYBOARD, KEYBOARD_FILE), ("haptics", oneios_ioslog::haptics::HAPTICS, HAPTICS_FILE)] {
+        let report =
+            oneios_ioslog::health::read_with(table, &source, &Default::default(), "last", 3).map_err(|e| anyhow::anyhow!("ioslog {name}: {e:#}"))?;
+        let path = Path::new(out_dir).join(file);
+        std::fs::write(&path, report.text(oneios_ioslog::health::TOP, true)).with_context(|| path.display().to_string())?;
+        println!("--- ioslog {name} {source}");
+        print!("{}", report.text(oneios_ioslog::health::TOP, false));
+        println!("{}: these lines, and under each kind its texts, every process and example lines", path.display());
+    }
     Ok(())
 }
 

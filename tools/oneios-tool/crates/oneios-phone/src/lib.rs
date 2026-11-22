@@ -180,8 +180,9 @@ pub enum Command {
         ioslog: bool,
     },
     /// iOS's own log of one boot without copying the Data store: the runtime's oneios-tool reads the staged store on
-    /// the phone (`ioslog show`), only the gzipped text crosses adb, then `ioslog health` and `ioslog keyboard` here
-    /// (OUT_DIR/ioslog.txt, ioslog-health.txt, ioslog-keyboard.txt). Works beside an open session (its newest checkpoint)
+    /// the phone (`ioslog show`), only the gzipped text crosses adb, then `ioslog health`, `ioslog keyboard` and
+    /// `ioslog haptics` here (OUT_DIR/ioslog.txt, ioslog-health.txt, ioslog-keyboard.txt, ioslog-haptics.txt). Works beside an
+    /// open session (its newest checkpoint)
     PullLog {
         out_dir: String,
         /// The boot: last, or the start of a boot UUID (`ioslog boots`)
