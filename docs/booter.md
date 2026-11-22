@@ -184,6 +184,25 @@ A port of DarwinBoot to plain C with no firmware under it:
   `/options`, `/product` (copied from the identity tree, minus exclaves and the AGX-only feature
   sets; `artwork-scale-factor` is the UI scale), `/buttons`, `/bluetooth`, `/arm-io` with the GICv3, `wlan`, `uart0` and one node per virtio window
   under the names and `compatible` strings UniXNU's drivers match; `/chosen/xnuhost` for a hosted kernel.
+  **The cameras (2026-11-22, `xl_machine.cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
+  `camera-rear` = 1 when the camera helper lists a back camera (wide, ultra-wide or a telephoto) and `camera-front` = 1
+  when it lists the front one (u32, the iPhone18,2's values; no `compatible`, no `device_type`: no driver matches it),
+  an empty `/product/camera`, and without an identity tree `/product unique-model` = `V54AP` (an identity tree's own
+  value stays). What 24A446's libMobileGestalt reads them for: `rear-facing-camera` = isp `camera-rear`,
+  `front-facing-camera` = isp `camera-front`, `still-camera` (Camera.app's `SBAppTags`; SpringBoard shows the app
+  only with it) = either, `video-camera` = `/product/camera` is there, and `HWModelDescriptionForCamera` (also
+  `...ForAnalytics`, `...ForAudio`, `...ForPowerPerf`, `...ForAutomatedTesting`: the same answer) = `unique-model`,
+  which CMCapture takes less "AP" as the folder of its per-model tables (`CMCapture.framework/V54/`). xnuhost waits
+  for the helper's list before it builds the tree, asleep on the bridge's condition variable, at most 3 s (the phone:
+  170 ms after the helper's start); `camera: iOS is told of a rear camera and a front camera (3 cameras from the
+  helper)`. Without the camera device, or with an empty list, the tree is as before.
+  **`/chosen oneios-identity` (`xl_machine_identity`, 2026-11-22):** 8 bytes, FNV-1a 64 of what MobileGestalt can
+  read that stays the same from boot to boot: the root's own properties, the `/product`, `/arm-io`, `/buttons` and
+  `/bluetooth` subtrees, `/chosen`'s own properties and `/chosen/xnuhost`'s `display-*` ones; not `random-seed`,
+  `dram-base`, `dram-size`, the GPU and media pools, the memory map, xnuhost's vector (its ASLR) or `/defaults` (its
+  limits follow the RAM). xnuhost writes it on the finished tree (after a shipped tree's nodes). Hosted 0084 keeps
+  MobileGestalt's cache while it stays the same and removes it once when it changes ([userland.md](userland.md),
+  "MobileGestalt's cache follows the tree"). xnuhost logs it: `identity: <16 hex digits> (/chosen oneios-identity: ...)`.
 - `boot.c`: `boot_args` (1024-byte command line of Darwin 23+, or the 608-byte one), the sidecar checks
   (trust caches, packed RAM disk `DBRDISK1`, GPU addon, root policies) and the placement in DarwinBoot's
   order: kernel, `boot_args`, tree, RAM disk, trust caches, addon, policies; memory-map entries filled.
@@ -1534,7 +1553,7 @@ before this change.
 | Wi-Fi | `wifi: ...` (each step), guest `ONEIOS WIFI: 60 s: ...` | per event; 60 s | present | present |
 | audio | `audio: on: helper ...`, the helper's `oneios-audio: speaker open/running/closed ...` | per event | present | present |
 | haptics | `haptics: on: ...`; `haptics: counters: ...` at 16, 32, ... effects and at the stop | stop | partial: nothing during a session that ended by a kill | `haptics: 60 s: +N requests (+N vibrate, +N stop, +N impacts), +N played, +N failed` (60 s, when moved) |
-| camera | `camera: helper ...`, `camera: the helper has N cameras`; the helper's counters at its stop | once | start only | unchanged |
+| camera | `camera: helper ...`, `camera: the helper has N cameras`, `camera: iOS is told of ...` (the tree's camera nodes); the helper's counters at its stop | once | start only | unchanged |
 | video encoder | `encoder:` and the helper's lines when iOS uses it | per event | none in these logs (not used) | unchanged |
 | Bluetooth | `bluetooth: on: ...` | once | start only | unchanged |
 | battery | `battery: on: ... read every 3000 ms while iOS listens`; the host's battery in `thermal: 30 s` | once; 30 s | start only | unchanged |
