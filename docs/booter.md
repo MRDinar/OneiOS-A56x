@@ -1235,14 +1235,20 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   to 0.1.15; the direct path was written on 11-11, before the head existed, and merged on 11-20 without a phone run).
   Fixed and checked on the phone on 2026-11-22: the picture is correct, and the helper's 10 s line shows only the
   changed rows copied (24-43% of the rows while iOS moves, 15 of 99 frames unchanged on a still screen; before the
-  fix 100% of the rows of every frame, because the wrong pages kept changing). The helper reads the guest's pages only while
-  the frame is new: the guest's display driver completes a swap once its flush is posted
-  (`DroidVMVirtioGpuDisplay.cpp` `droidvm_virtio_complete_on_post`), and the compositor draws into that surface again
-  about three frames later. The helper hashes the frame, copies the changed tiles into its own snapshot at once
-  (`struct xhd_snapshot`, `runtime/display/src/xhd.h`), and only then waits for surfaceflinger's buffer and fills it
-  from the snapshot. Before 2026-11-22 it copied from the guest's pages after that wait (10-11 ms after the frame on
-  average, up to 34 ms): page swipes and widget redraws showed parts of the next frames (a glitch xnuhost's own
-  2.5 ms copy never had). Why not zero
+  fix 100% of the rows of every frame, because the wrong pages kept changing). Since 2026-11-22 the helper reads a
+  frame's pages once, as soon as `XHDS` comes: each tile into the cache, hashed there, and copied on into its own
+  snapshot of the picture only when it changed (`struct xhd_snapshot`, `runtime/display/src/xhd.h`). Then it waits
+  for surfaceflinger's buffer and fills it from the snapshot. `XHDS`'s fifth word is xnuhost's send time (the low 32
+  bits of `CLOCK_MONOTONIC` in us), and the helper's 10 s line says how long after it the read began. The guest does
+  not draw into a surface while the helper reads it: the guest's display driver completes the swap for the
+  compositor once the flush is posted (`DroidVMVirtioGpuDisplay.cpp` `droidvm_virtio_complete_on_post`), but it
+  lands that frame (waits for the flush's answer, held here until `done`) before it posts the next one, and the
+  compositor needs that next swap before it draws into the surface again. The glitch seen on UI changes on
+  2026-11-22 ("it glitches and updates") was Android's copy-back, not the read: the helper locked only the changed
+  rectangle, and `Surface::lock` copies back from the last buffer a region that loses changes once the queue has
+  three buffers or more (`runtime/display/README.md`, "The layer's buffers"). xnuhost's own copy never had it,
+  because the guest flushes its whole surface and every post was whole. Now the helper locks the whole buffer and
+  fills what that buffer lacks itself. Why not zero
   copies: surfaceflinger takes `AHardwareBuffer`s, and the NDK cannot wrap a udmabuf of guest pages as one (a
   gralloc handle would have to be forged), and the guest's surfaces cannot be made gralloc buffers either, since the
   guest allocates them in its own RAM. Droid-VM's host does one GPU blit instead, with a Vulkan dma-buf import that
