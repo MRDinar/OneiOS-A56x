@@ -47,6 +47,14 @@ harness = false
 name = "hal_binder"
 path = "tests/hal_binder.rs"
 harness = false
+
+# bridges-hw: bridgectl (static, as the other ctl tools), oneios-audio (dynamic: links the NDK's libaaudio)
+[[bin]]
+name = "bridgectl"
+path = "tools/bridgectl.rs"
+[[bin]]
+name = "oneios-audio"
+path = "audio/oneios_audio.rs"
 [[test]]
 name = "test_aidl_binder"
 path = "tests/test_aidl_binder.rs"

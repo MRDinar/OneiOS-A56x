@@ -159,17 +159,3 @@ fn cpu() {
     assert!(plan.n_e == 0 && plan.affinity(0) == 0xf);
     assert!(Topology::read("/nonexistent").is_none());
 }
-
-#[test]
-fn numbers() {
-    // strtoull(base 0) as the C read them: hex, octal, decimal, the first word.
-    assert_eq!(topology_number("0x00000000510f0010"), Some(0x510f0010));
-    assert_eq!(topology_number("  364800"), Some(364800));
-    assert_eq!(topology_number("010"), Some(8));
-    assert_eq!(topology_number("0"), Some(0));
-    assert_eq!(topology_number("x"), None);
-}
-
-fn topology_number(text: &str) -> Option<u64> {
-    super::topology::c_number_for_tests(text)
-}

@@ -9,6 +9,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use xh_core::fs::read_text; // a sysfs file's text, its trailing white space dropped
 
 pub const MAX_CPUS: usize = 16;
 pub const MAX_VCPUS: usize = 8;
@@ -85,54 +86,19 @@ pub struct Topology {
     pub n_e: u32,
 }
 
-/// A file's text, at most `size - 1` bytes, its trailing newlines and spaces dropped; None when absent or empty.
-fn read_text(path: &str, size: usize) -> Option<String> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(size as u64 - 1).read_to_end(&mut bytes).ok()?;
-    while bytes.last().is_some_and(|b| matches!(b, b'\n' | b' ')) {
-        bytes.pop();
-    }
-    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// C's strtoull(text, &end, base 0): leading blanks, then 0x hex, 0 octal or decimal digits; None when no digit.
-fn c_number(text: &str) -> Option<u64> {
-    let t = text.trim_start();
-    let t = t.strip_prefix('+').unwrap_or(t);
-    let (digits, radix) = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        Some(hex) if hex.starts_with(|c: char| c.is_ascii_hexdigit()) => (hex, 16),
-        _ if t.starts_with('0') => (t, 8),
-        _ => (t, 10),
-    };
-    let end = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
-    if end == 0 {
-        return None;
-    }
-    Some(u64::from_str_radix(&digits[..end], radix).unwrap_or(u64::MAX))
-}
-
 /// The leading decimal number of `text` (strtoul base 10), 0 when there is none.
 fn leading_decimal(text: &str) -> u64 {
-    let t = text.trim_start();
-    let end = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
-    t[..end].parse().unwrap_or(if end == 0 { 0 } else { u64::MAX })
+    xh_core::parse::leading_u64(text, 10).map_or(0, |(v, _)| v)
 }
 
+/// A number as C's strtoull(text, &end, 0) read it (0x hex, 0 octal, decimal).
 fn read_number(path: &str) -> Option<u64> {
-    c_number(&read_text(path, 64)?)
+    xh_core::parse::leading_u64(&read_text(path)?, 0).map(|(v, _)| v)
 }
 
 /// "64K", "2048K", "12M" or bytes.
 fn cache_bytes(text: &str) -> u32 {
-    let end = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
-    let v: u64 = text[..end].parse().unwrap_or(0);
-    let v = match text[end..].chars().next() {
-        Some('K') => v << 10,
-        Some('M') => v << 20,
-        _ => v,
-    };
-    u32::try_from(v).unwrap_or(0)
+    u32::try_from(xh_core::parse::cache_size(text)).unwrap_or(0)
 }
 
 /// The frequencies of a list "364800 460800 ..." (zeroes left out).
@@ -142,8 +108,8 @@ fn frequencies(text: &str) -> impl Iterator<Item = u32> + '_ {
 
 fn read_caches(dir: &str, c: &mut HostCpu) {
     for i in 0..6 {
-        let at = |name: &str, size| read_text(&format!("{dir}/cache/index{i}/{name}"), size);
-        let (Some(level), Some(kind), Some(size)) = (at("level", 16), at("type", 32), at("size", 32)) else { continue };
+        let at = |name: &str| read_text(format!("{dir}/cache/index{i}/{name}"));
+        let (Some(level), Some(kind), Some(size)) = (at("level"), at("type"), at("size")) else { continue };
         let bytes = cache_bytes(&size);
         match (level.as_bytes()[0], kind.as_bytes()[0]) {
             (b'1', b'D') => c.l1d_bytes = bytes,
@@ -158,7 +124,7 @@ fn read_caches(dir: &str, c: &mut HostCpu) {
 fn read_cpu(dir: &str) -> Option<HostCpu> {
     let mut c = HostCpu::default();
     let number = |rel: &str| read_number(&format!("{dir}/{rel}"));
-    let text = |rel: &str| read_text(&format!("{dir}/{rel}"), 1024);
+    let text = |rel: &str| read_text(format!("{dir}/{rel}"));
     let capacity = number("cpu_capacity");
     let max = number("cpufreq/cpuinfo_max_freq");
     if capacity.is_none() && max.is_none() && text("topology/core_id").is_none() {
@@ -224,7 +190,7 @@ impl Topology {
         cpu.truncate(ncpu);
         // related_cpus: the policy is the first CPU of the domain (C read it within the loop; the same).
         for (i, c) in cpu.iter_mut().enumerate().filter(|(_, c)| c.present) {
-            c.policy = read_text(&format!("{root}/devices/system/cpu/cpu{i}/cpufreq/related_cpus"), 1024)
+            c.policy = read_text(format!("{root}/devices/system/cpu/cpu{i}/cpufreq/related_cpus"))
                 .map_or(i as u32, |t| leading_decimal(&t) as u32);
         }
         let ranks = cpu.iter().filter(|c| c.present).map(HostCpu::rank);
@@ -555,25 +521,32 @@ impl CpuPlan {
         if index >= self.nvcpu() {
             return Err(einval());
         }
-        let attr = SchedAttr {
-            size: std::mem::size_of::<SchedAttr>() as u32,
-            sched_policy: 0,
-            sched_flags: SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
-            sched_nice: 0,
-            sched_priority: 0,
-            sched_runtime: 0,
-            sched_deadline: 0,
-            sched_period: 0,
-            sched_util_min: self.util_for(index, khz),
-            sched_util_max: 0,
-        };
-        // SAFETY: sched_setattr reads `attr.size` bytes of a valid, initialised struct sched_attr.
-        let rc = unsafe { libc::syscall(libc::SYS_sched_setattr, tid, &attr as *const SchedAttr, 0) };
-        if rc != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        set_uclamp_min(tid, self.util_for(index, khz))
     }
+}
+
+/// The utilisation clamp uclamp.min (0..1024) of Linux thread `tid` (0 = caller), its policy and nice kept
+/// (sched_setattr with KEEP_POLICY | KEEP_PARAMS, Linux 5.3): the governor's clock and the placement, never a policy
+/// change.
+pub fn set_uclamp_min(tid: i32, util: u32) -> io::Result<()> {
+    let attr = SchedAttr {
+        size: std::mem::size_of::<SchedAttr>() as u32,
+        sched_policy: 0,
+        sched_flags: SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+        sched_nice: 0,
+        sched_priority: 0,
+        sched_runtime: 0,
+        sched_deadline: 0,
+        sched_period: 0,
+        sched_util_min: util,
+        sched_util_max: 0,
+    };
+    // SAFETY: sched_setattr reads `attr.size` bytes of a valid, initialised struct sched_attr.
+    let rc = unsafe { libc::syscall(libc::SYS_sched_setattr, tid, &attr as *const SchedAttr, 0) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Sets Linux thread `tid`'s (0 = caller) affinity to the CPUs of `mask`.
@@ -677,11 +650,6 @@ impl Cpufreq {
     pub fn plan(&self) -> &CpuPlan {
         &self.plan
     }
-}
-
-#[cfg(test)]
-pub(crate) fn c_number_for_tests(text: &str) -> Option<u64> {
-    c_number(text)
 }
 
 /// The device on xnuhost's MMIO bus: `mmio::bus().add(base, nvcpu * CPUFREQ_WINDOW, "cpufreq", Arc::new(cpufreq))`.
