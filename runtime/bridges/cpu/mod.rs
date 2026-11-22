@@ -1,2 +1,12 @@
 // SPDX-License-Identifier: MIT
-//! cpu/: host topology, the vCPU plan, thread placement
+//! cpu/: the host's topology, the vCPU plan, thread placement and the virtual cpufreq device.
+
+pub mod topology; // cpu/topology.c
+
+pub use topology::{
+    set_affinity, CoreKind, CpuPlan, Cpufreq, HostCpu, TidOf, Topology, Vcpu, CPUFREQ_WINDOW, MAX_CPUS, MAX_FREQS,
+    MAX_VCPUS,
+};
+
+#[cfg(test)]
+mod test_cpu; // tests/test_bridges.c's test_cpu
