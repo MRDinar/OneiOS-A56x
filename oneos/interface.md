@@ -2,7 +2,7 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `0cd45ad`, 2026-11-22 (fork branch `bootui-progress`, not pushed yet: the boot screen's bar, section 4), on `43fc1b3`:
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `0cd45ad`, 2026-11-22 (fork `oneios`, pushed 2026-11-23: the boot screen's bar, section 4), on `43fc1b3`:
 upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, Make iOS image
 with `make-image` on a fresh phone, the pairing files of kb format 2 (no Python; `hello`'s `kb`), the shared debug key, a quick status (by the files' ids; the switch still hashes) and the setup steps on iOS 27's page, no change to session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
@@ -190,7 +190,8 @@ fraction never goes back within a boot, is 1.000 at step 12, and starts again wi
 `next`, the next step's name (empty at step 12 and after a panic; "Going back to One UI" once xnuhost ended).
 Both are written whole (a temporary file, then `mv`) and only when they change, at most once a second; the return
 removes them. The twelve steps, the log line that begins each and their measured lengths are in the fork's
-`docs/oneios.md`, "Boot screen"; the lines are listed in section 8 here.
+`docs/oneios.md`, "Boot screen"; the lines are listed in section 8 here. `oneios-tool phone status` prints both
+(`boot screen: step N of 12, P%, next: ...`).
 
 ## 5. What xnuhost must do for the switch
 

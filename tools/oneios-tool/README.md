@@ -1887,7 +1887,7 @@ gzip stream and broke twice (below, "The copy that goes on"); the copy in chunks
 on the phone**. `scripts/phone/stage.sh` stays until they have.
 
 ```sh
-oneios-tool phone status                      # root, the host phone, the installed app, the session, `oneios_root.sh status` (read only)
+oneios-tool phone status                      # root, the host phone, the installed app, the session, the boot screen's step (`control/bootui/progress`, `next`), `oneios_root.sh status` (read only)
 oneios-tool phone stage runtime DIR           # an unpacked runtime package, through oneios_root.sh begin/receive/finish
                                               #   (finish's ten fields: runtime.json's kernel build_id, sha256, xnu last,
                                               #   or `none` each; the fork's script since 53abb04, fixed here 2026-11-21)
