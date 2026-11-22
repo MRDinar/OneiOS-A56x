@@ -265,6 +265,122 @@ static void test_bands(void)
   CHECK(br_wifi_nl_bands(b, len - 8, ch, 0, 8) == 2 && br_wifi_nl_bands(b, 3, ch, 0, 8) == 0);   // band 1 cut: band 0 stays
 }
 
+// A flag attribute per interface type (SUPPORTED_IFTYPES, a limit's TYPES).
+static void iftype_flags(uint8_t *b, size_t *len, uint16_t type, uint32_t mask)
+{
+  const size_t at = nla(b, len, type, NULL, 0);
+  for (uint16_t t = 0; t < 13; t++) if (mask >> t & 1) nla(b, len, t, NULL, 0);
+  nla_end(b, *len, at);
+}
+
+static void test_p2p(void)   // wifictl p2p: the radio's peer-to-peer abilities from nl80211 (wifi/p2p.c)
+{
+  enum { STA = 2, AP = 3, MON = 6, P2PC = 8, P2PGO = 9, P2PDEV = 10, NANIF = 12 };
+  static br_wifi_caps c;
+  memset(&c, 0, sizeof c);
+  // The first message of a split wiphy dump: the radio, its types, two combinations, the action frames, the commands.
+  uint8_t b[2048];
+  size_t len = 0, at, e, l;
+  uint32_t v = 0;
+  nla(b, &len, 1, &v, 4);                                  // WIPHY 0
+  nla(b, &len, 2, "phy0", 5);                              // WIPHY_NAME
+  iftype_flags(b, &len, 32, 1u << STA | 1u << AP | 1u << MON | 1u << P2PC | 1u << P2PGO | 1u << P2PDEV);
+  at = nla(b, &len, 120, NULL, 0);                         // INTERFACE_COMBINATIONS
+  e = nla(b, &len, 1, NULL, 0);                            //   1: 2 interfaces on 1 channel: 1 station, 1 of {ap, p2p}
+  l = nla(b, &len, 1, NULL, 0);                            //     LIMITS
+  size_t one = nla(b, &len, 1, NULL, 0); v = 1; nla(b, &len, 1, &v, 4); iftype_flags(b, &len, 2, 1u << STA); nla_end(b, len, one);
+  one = nla(b, &len, 2, NULL, 0); v = 1; nla(b, &len, 1, &v, 4); iftype_flags(b, &len, 2, 1u << AP | 1u << P2PC | 1u << P2PGO); nla_end(b, len, one);
+  nla_end(b, len, l);
+  v = 2; nla(b, &len, 2, &v, 4); v = 1; nla(b, &len, 4, &v, 4);
+  nla_end(b, len, e);
+  e = nla(b, &len, 2, NULL, 0);                            //   2: the monitor alone (1 interface)
+  l = nla(b, &len, 1, NULL, 0);
+  one = nla(b, &len, 1, NULL, 0); v = 1; nla(b, &len, 1, &v, 4); iftype_flags(b, &len, 2, 1u << MON | 1u << STA); nla_end(b, len, one);
+  nla_end(b, len, l);
+  v = 1; nla(b, &len, 2, &v, 4); nla(b, &len, 4, &v, 4);
+  nla_end(b, len, e);
+  nla_end(b, len, at);
+  uint16_t fc;
+  at = nla(b, &len, 99, NULL, 0);                          // TX_FRAME_TYPES: the station sends action and probe requests
+  e = nla(b, &len, STA, NULL, 0); fc = 0x00d0; nla(b, &len, 101, &fc, 2); fc = 0x0040; nla(b, &len, 101, &fc, 2); nla_end(b, len, e);
+  e = nla(b, &len, AP, NULL, 0); fc = 0x0050; nla(b, &len, 101, &fc, 2); nla_end(b, len, e);   // the AP: probe responses only
+  nla_end(b, len, at);
+  at = nla(b, &len, 100, NULL, 0);                         // RX_FRAME_TYPES: the station registers for action frames
+  e = nla(b, &len, STA, NULL, 0); fc = 0x00d0; nla(b, &len, 101, &fc, 2); nla_end(b, len, e);
+  nla_end(b, len, at);
+  nla(b, &len, 108, NULL, 0);                              // OFFCHANNEL_TX_OK
+  v = 5000; nla(b, &len, 111, &v, 4);                      // MAX_REMAIN_ON_CHANNEL_DURATION
+  at = nla(b, &len, 50, NULL, 0);                          // SUPPORTED_COMMANDS: FRAME, REMAIN_ON_CHANNEL, VENDOR
+  v = 59; nla(b, &len, 1, &v, 4); v = 55; nla(b, &len, 2, &v, 4); v = 103; nla(b, &len, 3, &v, 4);
+  nla_end(b, len, at);
+  const uint32_t vendor[3][2] = { { 0x001374, 12 }, { 0x001374, 81 }, { 0x0000f0, 7 } };
+  at = nla(b, &len, 197, NULL, 0);                         // VENDOR_DATA
+  for (int i = 0; i < 3; i++) nla(b, &len, (uint16_t)(i + 1), vendor[i], 8);
+  nla_end(b, len, at);
+  br_wifi_caps_wiphy(&c, b, len);
+  CHECK(c.have_wiphy && c.wiphy == 0 && !strcmp(c.name, "phy0"));
+  CHECK(c.iftypes == (1u << STA | 1u << AP | 1u << MON | 1u << P2PC | 1u << P2PGO | 1u << P2PDEV));
+  CHECK(c.combination_count == 2 && c.combinations[0].max_interfaces == 2 && c.combinations[0].channels == 1 && c.combinations[0].limit_count == 2);
+  CHECK(c.combinations[0].limit_types[1] == (1u << AP | 1u << P2PC | 1u << P2PGO) && c.combinations[1].limit_max[0] == 1);
+  CHECK(c.action_tx == 1u << STA && c.action_rx == 1u << STA);
+  CHECK(c.offchannel_tx && c.max_roc_ms == 5000 && c.cmd_frame && c.cmd_remain_on_channel && c.cmd_vendor && !c.cmd_start_nan);
+  CHECK(c.command_count == 3 && c.commands[1].oui == 0x001374 && c.commands[1].subcmd == 81);
+  // Station and AP together (two limits); station and monitor never (only in the 1-interface combination); two
+  // stations never (one limit of 1).
+  CHECK(br_wifi_caps_combines(&c, STA, AP) && br_wifi_caps_combines(&c, AP, STA));
+  CHECK(!br_wifi_caps_combines(&c, STA, MON) && !br_wifi_caps_combines(&c, STA, STA));
+  // A later message of the split dump: vendor events, and the same command again (kept once).
+  len = 0;
+  const uint32_t ev[2] = { 0x001374, 33 };
+  at = nla(b, &len, 198, NULL, 0); nla(b, &len, 1, ev, 8); nla_end(b, len, at);
+  at = nla(b, &len, 197, NULL, 0); nla(b, &len, 1, vendor[0], 8); nla_end(b, len, at);
+  br_wifi_caps_wiphy(&c, b, len);
+  CHECK(c.event_count == 1 && c.events[0].subcmd == 33 && c.command_count == 3);
+  // Two GET_INTERFACE messages: wlan0 (a station on 5180 MHz) and a P2P device with no network device.
+  len = 0;
+  v = 44; nla(b, &len, 3, &v, 4); nla(b, &len, 4, "wlan0", 6); v = 0; nla(b, &len, 1, &v, 4); v = STA; nla(b, &len, 5, &v, 4);
+  nla(b, &len, 6, mac, 6); v = 5180; nla(b, &len, 38, &v, 4);
+  br_wifi_caps_iface(&c, b, len);
+  len = 0;
+  v = 0; nla(b, &len, 1, &v, 4); v = P2PDEV; nla(b, &len, 5, &v, 4);
+  br_wifi_caps_iface(&c, b, len);
+  CHECK(c.iface_count == 2 && c.ifaces[0].ifindex == 44 && !strcmp(c.ifaces[0].name, "wlan0") && c.ifaces[0].freq_mhz == 5180);
+  CHECK(c.ifaces[1].iftype == P2PDEV && !c.ifaces[1].name[0] && !strcmp(br_wifi_iftype_name(P2PDEV), "p2p-device"));
+  // The report: the facts, then the verdicts.
+  static char text[8192];
+  const size_t n = br_wifi_caps_report(&c, text, sizeof text);
+  CHECK(n == strlen(text));
+  CHECK(strstr(text, "radio: phy0 (wiphy 0)\n") != NULL);
+  CHECK(strstr(text, "combination 1: up to 2 interfaces on 1 channel(s): 1 of {station}; 1 of {access point, p2p-client, p2p-go}\n") != NULL);
+  CHECK(strstr(text, "action frames: sent by station; received by station\n") != NULL);
+  CHECK(strstr(text, "remain on channel: yes (up to 5000 ms)") != NULL);
+  CHECK(strstr(text, "  001374 Qualcomm: 12 81\n  0000f0 Samsung: 7\n") != NULL && strstr(text, "  events 001374 Qualcomm: 33\n") != NULL);
+  CHECK(strstr(text, "interface: wlan0 (index 44) station, wiphy 0, 02:11:22:33:44:55, 5180 MHz\n") != NULL);
+  CHECK(strstr(text, "interface: (no netdev) (index 0) p2p-device") != NULL);
+  CHECK(strstr(text, "p2p: monitor mode: yes (beside the station: no; active monitor, with ACKs: no;") != NULL);
+  CHECK(strstr(text, "on the station: send yes, receive yes, off channel too\n") != NULL);
+  CHECK(strstr(text, "p2p: Wi-Fi Aware (NAN) through nl80211: no") != NULL && strstr(text, "p2p: Wi-Fi Direct: yes") != NULL);
+  CHECK(strstr(text, "only the vendor's own AWDL can carry it") != NULL && !strstr(text, "Apple's OUI 00:17:f2 [I"));
+  // A short buffer: cut, never past its end, and the length it needed is still given.
+  char small[40];
+  CHECK(br_wifi_caps_report(&c, small, sizeof small) == n && strlen(small) == sizeof small - 1);
+  // Cut and broken input reads what came before the cut and nothing after it.
+  br_wifi_caps cut;
+  memset(&cut, 0, sizeof cut);
+  br_wifi_caps_wiphy(&cut, b, 3);
+  uint8_t bad[8] = { 2, 0, 1, 0, 0, 0, 0, 0 };              // an attribute shorter than its header
+  br_wifi_caps_wiphy(&cut, bad, sizeof bad);
+  br_wifi_caps_iface(&cut, bad, sizeof bad);
+  CHECK(!cut.have_wiphy && cut.iface_count == 0);
+  // A monitor beside the station, NAN, and a command under Apple's OUI change the verdicts.
+  c.combinations[1].max_interfaces = 2; c.combinations[1].limit_max[0] = 2;
+  c.iftypes |= 1u << NANIF; c.cmd_start_nan = true;
+  c.commands[c.command_count++] = (br_wifi_vendor_cmd){ 0x0017f2, 1 };
+  br_wifi_caps_report(&c, text, sizeof text);
+  CHECK(strstr(text, "beside the station: yes") != NULL && strstr(text, "(NAN) through nl80211: yes") != NULL);
+  CHECK(strstr(text, "Apple's OUI 00:17:f2 [I") != NULL && strstr(text, "a monitor interface beside the station is offered") != NULL);
+}
+
 static void test_groups_segments(void)   // the netlink groups, the cut of coalesced frames
 {
   // A netlink multicast group as the kernel writes it (the id, then the name) and the other way round; another
@@ -729,6 +845,7 @@ int main(void)
   test_frames();
   test_dhcp();
   test_bands();
+  test_p2p();
   test_groups_segments();
   test_station();
   test_sim();

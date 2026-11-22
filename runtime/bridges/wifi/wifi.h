@@ -2,6 +2,7 @@
 // xnuhost's Wi-Fi bridge (docs/hardware.md section 3, README.md here): the guest's en0 on the phone's wlan0.
 //   frames.c      which frames cross, and GRO frames cut back to the link's size
 //   station.c     the station the guest's driver talks to (drivers/net/oneios_wifi_proto.h), over a radio back end
+//   p2p.c         what the radio offers for a peer-to-peer link (AirDrop's AWDL), for `wifictl p2p`
 //   wlan.c        the back end on the phone: AF_PACKET on wlan0, nl80211 for scans and the link, wlan0's host state
 //                 kept and given back
 //   supplicant.c  joins: the vendor's wpa_supplicant through its AIDL service (aidl_parcel.c, aidl_binder.c)
@@ -65,6 +66,52 @@ bool br_wifi_nl_group(const uint8_t *attrs, size_t length, const char *name, uin
 // not disabled. Returns the new count. A split wiphy dump spreads the bands over several messages: call it for each.
 unsigned br_wifi_nl_bands(const uint8_t *bands, size_t length, struct ow_channel *out, unsigned count, unsigned max);
 
+// ---- p2p.c ----
+// What the radio offers for a peer-to-peer link (docs/hardware.md "AirDrop"), from nl80211's GET_WIPHY messages (a
+// split dump: br_wifi_caps_wiphy for each message's attributes) and GET_INTERFACE messages (br_wifi_caps_iface for
+// each). Interface types are bit masks: bit n is nl80211_iftype n.
+#define BR_WIFI_IFTYPES 13u          // NUM_NL80211_IFTYPES
+#define BR_WIFI_COMBINATIONS 8u
+#define BR_WIFI_COMB_LIMITS 6u
+#define BR_WIFI_VENDOR_CMDS 256u
+#define BR_WIFI_IFACES 16u
+typedef struct { uint32_t oui, subcmd; } br_wifi_vendor_cmd;
+typedef struct {
+  uint32_t max_interfaces, channels;
+  uint32_t limit_types[BR_WIFI_COMB_LIMITS], limit_max[BR_WIFI_COMB_LIMITS];
+  unsigned limit_count;
+} br_wifi_combination;
+typedef struct {
+  char name[16];
+  uint32_t ifindex, wiphy, iftype, freq_mhz;
+  uint8_t mac[6];
+} br_wifi_iface;
+typedef struct {
+  bool have_wiphy;
+  uint32_t wiphy;
+  char name[32];
+  uint32_t iftypes, software_iftypes;
+  br_wifi_combination combinations[BR_WIFI_COMBINATIONS];
+  unsigned combination_count;
+  uint32_t action_tx, action_rx;     // the interface types that may send / register for action frames
+  bool offchannel_tx, cmd_frame, cmd_remain_on_channel, cmd_start_nan, cmd_start_p2p_device, cmd_vendor;
+  uint32_t max_roc_ms, features;
+  uint8_t ext_features[16];
+  uint16_t ext_length;
+  br_wifi_vendor_cmd commands[BR_WIFI_VENDOR_CMDS], events[BR_WIFI_VENDOR_CMDS];
+  unsigned command_count, event_count;
+  br_wifi_iface ifaces[BR_WIFI_IFACES];
+  unsigned iface_count;
+} br_wifi_caps;
+void br_wifi_caps_wiphy(br_wifi_caps *c, const uint8_t *attrs, size_t length);
+void br_wifi_caps_iface(br_wifi_caps *c, const uint8_t *attrs, size_t length);
+// Interface types a and b can be up at the same time in one of the radio's combinations.
+bool br_wifi_caps_combines(const br_wifi_caps *c, uint32_t a, uint32_t b);
+const char *br_wifi_iftype_name(uint32_t type);
+// The report `wifictl p2p` prints: the capabilities, every interface, then one "p2p:" line per way to an AWDL link.
+// Returns the length it needed (as snprintf).
+size_t br_wifi_caps_report(const br_wifi_caps *c, char *text, size_t size);
+
 // ---- station.c ----
 // What the radio back end reports about the link.
 typedef struct {
@@ -111,5 +158,8 @@ size_t br_wifi_state_frame(br_wifi_station *s, uint8_t *out, size_t out_size);
 // One scan on the interface, for the tool: fn gets each network. The number of networks, or -errno.
 typedef void (*br_wlan_bss_fn)(void *ctx, const struct ow_bss *bss, const uint8_t *ies, size_t ie_length);
 int  br_wlan_scan_once(const char *ifname, unsigned wait_ms, br_wlan_bss_fn fn, void *ctx);
+// The interface's radio as p2p.c reads it (a split GET_WIPHY dump of its wiphy, a GET_INTERFACE dump of every
+// interface). Read only: nothing is set. 0, or -errno.
+int  br_wlan_caps(const char *ifname, br_wifi_caps *out);
 
 #endif

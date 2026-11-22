@@ -157,8 +157,12 @@ static void each_attr(const uint8_t *p, size_t len, attr_fn fn, void *ctx)
   }
 }
 
-// Reads replies to the last request until its end (DONE or an ACK/error); msg_fn gets each message's attributes.
-static int genl_replies(struct br_wlan *w, attr_fn fn, void *ctx)
+// Reads replies to the last request until its end (DONE or an ACK/error); fn gets each attribute of each message,
+// msg_fn (when given) each message's attributes as one buffer.
+typedef void (*msg_fn)(void *ctx, const uint8_t *attrs, size_t length);
+static int genl_replies_msgs(struct br_wlan *w, attr_fn fn, msg_fn whole, void *ctx);
+static int genl_replies(struct br_wlan *w, attr_fn fn, void *ctx) { return genl_replies_msgs(w, fn, NULL, ctx); }
+static int genl_replies_msgs(struct br_wlan *w, attr_fn fn, msg_fn whole, void *ctx)
 {
   static _Thread_local uint8_t buffer[65536];
   for (;;) {
@@ -175,6 +179,8 @@ static int genl_replies(struct br_wlan *w, attr_fn fn, void *ctx)
       }
       if (fn && n->nlmsg_len >= NLMSG_HDRLEN + GENL_HDRLEN)
         each_attr((const uint8_t *)n + NLMSG_HDRLEN + GENL_HDRLEN, n->nlmsg_len - NLMSG_HDRLEN - GENL_HDRLEN, fn, ctx);
+      if (whole && n->nlmsg_len >= NLMSG_HDRLEN + GENL_HDRLEN)
+        whole(ctx, (const uint8_t *)n + NLMSG_HDRLEN + GENL_HDRLEN, n->nlmsg_len - NLMSG_HDRLEN - GENL_HDRLEN);
       if (!(n->nlmsg_flags & NLM_F_MULTI)) return 0;
     }
   }
@@ -807,10 +813,34 @@ int br_wlan_scan_once(const char *ifname, unsigned wait_ms, br_wlan_bss_fn fn, v
   wlan_free(w);
   return rc;
 }
+
+// The radio's peer-to-peer abilities for `wifictl p2p` (p2p.c, docs/hardware.md "AirDrop"): read only.
+static void caps_wiphy_msg(void *ctx, const uint8_t *attrs, size_t length) { br_wifi_caps_wiphy(ctx, attrs, length); }
+static void caps_iface_msg(void *ctx, const uint8_t *attrs, size_t length) { br_wifi_caps_iface(ctx, attrs, length); }
+int br_wlan_caps(const char *ifname, br_wifi_caps *out)
+{
+  memset(out, 0, sizeof *out);
+  struct br_wlan *w = wlan_new(ifname);
+  if (!w) return -ENODEV;
+  uint8_t attrs[32];
+  size_t len = 0;
+  uint32_t index = (uint32_t)w->ifindex;
+  put_attr(attrs, &len, NL80211_ATTR_IFINDEX, &index, 4);
+  put_attr(attrs, &len, NL80211_ATTR_SPLIT_WIPHY_DUMP, NULL, 0);
+  int rc = genl_request(w, NL80211_CMD_GET_WIPHY, NLM_F_DUMP, attrs, len, w->family);
+  if (!rc) rc = genl_replies_msgs(w, NULL, caps_wiphy_msg, out);
+  if (!rc) {   // every interface of every radio, those with no network device too (a P2P device, NAN)
+    rc = genl_request(w, NL80211_CMD_GET_INTERFACE, NLM_F_DUMP, attrs, 0, w->family);
+    if (!rc) rc = genl_replies_msgs(w, NULL, caps_iface_msg, out);
+  }
+  wlan_free(w);
+  return rc;
+}
 #else
 br_net_open_fn br_wlan_prepare(const char *ifname, const char *session_dir, uint8_t mac_out[6]) { (void)ifname; (void)session_dir; (void)mac_out; return NULL; }
 int br_wlan_send(br_net *n, const uint8_t *frame, size_t length) { (void)n; (void)frame; (void)length; return -ENOSYS; }
 void br_wlan_close(void) {}
 int br_wlan_restore(const char *state_path) { (void)state_path; return -ENOSYS; }
 int br_wlan_scan_once(const char *ifname, unsigned wait_ms, br_wlan_bss_fn fn, void *ctx) { (void)ifname; (void)wait_ms; (void)fn; (void)ctx; return -ENOSYS; }
+int br_wlan_caps(const char *ifname, br_wifi_caps *out) { (void)ifname; memset(out, 0, sizeof *out); return -ENOSYS; }
 #endif
