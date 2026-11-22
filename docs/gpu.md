@@ -1152,8 +1152,12 @@ The steps are the kernel base's own scripts (`build-turnip-darwin.py`, `build-ad
 and the stubs), `codesign` is `oneios-tool ios codesign` (over `ios sign`), `strip` and `nm` are the linker's siblings; on macOS every
 other `xcrun` question, and any about another SDK (rustc's `--sdk macosx` for the crates' build scripts), goes to
 Xcode's `xcrun`, and `SDKROOT` is left unset so those build scripts link for the Mac. The staged copies differ from
-upstream in the lines `stage` prints: meson's build-machine compiler, ninja's job count, a longer limit for the Rust
-build, no `TurnipReplay.h` (it is recorded by a Mac-only host simulation; the plug-in includes it only when it
+upstream in the lines `stage` prints: meson's build-machine compiler, ninja's job count, `-D_DARWIN_C_SOURCE` in Mesa's
+cross `c_args`, `cpp_args` and `objc_args` (flex 2.6.10, on the build laptop since 2026-11, writes `#define
+_POSIX_C_SOURCE 1` into each scanner it makes, and Darwin's `dlfcn.h` then hides the `Dl_info` that `ir3_lexer.c` gets from
+`disk_cache.h`; macOS's flex 2.6.4 writes no such line, so the Mac never saw it; a file that sets no POSIX level of
+its own is at Darwin's full level already, so the define changes nothing for it), a longer limit for the Rust build,
+no `TurnipReplay.h` (it is recorded by a Mac-only host simulation; the plug-in includes it only when it
 exists, so the prefix-replay diagnostic is absent), and, only when the compiler knows the warning (clang 23 on the
 Linux PC, not Xcode 27.2's clang 21), `-Wno-error=unused-but-set-global`. Also not made:
 `build/prime-list.txt` (the image's `.metallib` paths for shader priming; the plug-in primes nothing without it).
