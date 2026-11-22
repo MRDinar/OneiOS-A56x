@@ -150,6 +150,7 @@ typedef struct {
                             // radio with two networks, for a boot with no phone; works with the bridges off)
   bool  bluetooth_given, haptics_given, wifi_given; // set here (xh_config_set): the command line wins over the image set's
   bool  pen_given, pen_rotate_given, pen_mirror_given;   // the same for pen=, pen-rotate=, pen-mirror=
+  bool  encoder_given;      // and for encoder=
   br_hw_settings hw;        // hw-backend=samsung|treble, hw-backend-<bridge>=..., hw-backend-fallback=0|1: which form of the
                             // phone's hardware each bridge uses (bridges/hw_backend.h; docs/hardware.md, "Hardware backends")
   // The host phone (bridges/host_device.h; docs/hardware.md, "The host device"): host-device=auto|none|NAME ("" unset: auto),

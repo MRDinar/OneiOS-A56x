@@ -2203,6 +2203,18 @@ static void test_config(const char *dir)
   CHECK(xh_config_args(&c, 11, pen2) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.pen, "off") && !strcmp(c.pen_rotate, "auto") && !c.pen_mirror);
   xh_config_defaults(&c);
   CHECK(xh_config_set(&c, "pen-mirror", "maybe") == -1 && !c.pen_mirror_given);                              // a bad value refused
+  // The image set's encoder= applies (until 2026-11-22 it was read, then dropped: encoder=auto in the phone's
+  // xnuhost.conf never gave the guest its encoder); the command line wins; a bad value is refused.
+  f = fopen(path, "w");
+  fprintf(f, "boot-args=-v debug=0x8\nencoder=auto\n%s\n", set_meminfo);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, img1) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.encoder, "auto"));
+  char *enc2[] = { "xnuhost", "--image", image, "--mode", "takeover", "--set", "encoder=off" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 7, enc2) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.encoder, "off"));
+  xh_config_defaults(&c);
+  CHECK(xh_config_set(&c, "encoder", "mediacodec") == -1 && !c.encoder_given && !strcmp(c.encoder, "off"));
   // The image set's own ram-giveback=0 holds the RAM fixed, at what fits (5376 MiB of MemAvailable 7 GiB)
   f = fopen(path, "w");
   fprintf(f, "boot-args=-v debug=0x8\nram-percent=80\nram-giveback=0\n%s\n", set_meminfo);
