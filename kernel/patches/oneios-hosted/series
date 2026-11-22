@@ -403,3 +403,11 @@
 # host thread). oneios-smp-complete=0 is the old way. `oneios-smp:` lines, then 0085's `oneios-edge:`. README.md, "0089".
 # Numbered 0089 (0088 is the CMCapture model folder). Built and prelinked; not yet booted under qemu or on the phone.
 0089-smp-scheduler-init-completed.patch
+# fix-camera-preview-stream (2026-11-23): a rebuilt capture plug-in reaches an existing Data store. The boot addon
+# (kernel.kc.gpuaddon, UniXNU's NGPUADD2 sidecar that native_gpu_addon_install writes into /private/var/ngpu) may now
+# carry camera/MediaCapture/H9ISP.mediacapture (oneios-tool ios addon --camera; staged with oneios-tool phone addon):
+# 0056 then shows /private/var/ngpu/camera/MediaCapture over /System/Library/MediaCapture instead of the seed's folder.
+# The files are counted by top folder, so 0031's Extensions union takes /private/var/ngpu/addons only when the addon
+# carries the Metal plug-in (before: any addon at all), and the seed's Metal plug-in stays with a camera-only addon.
+# One `oneios-camera-addon: boot addon:` line. README.md, "0090". Numbered 0090: 0089 was the last on main.
+0090-camera-plugin-boot-addon.patch
