@@ -2735,7 +2735,8 @@ A second fault was behind it: V54's front devices ("Front Ultra Wide Camera", "F
 `owner-hide-vmm=` (the kernel's per-process `kern.hv_vmm_present` switch, Droid-VM-UniXNU's patch, in our kernel
 since 2026-11-11) when the camera helper lists a camera; only cameracaptured is told it is not in a VM, bluetoothd
 and the rest keep the VM. `camera-vm=show` in `xnuhost.conf` turns it off (`docs/booter.md`). The plug-in's front
-stream is `PortTypeFrontSuperWide` and takes the formats of "Front Ultra Wide Camera" by name. Lines that prove it
+stream is `PortTypeFrontSuperWide` and takes the formats of "Front Ultra Wide Camera" by name (a new plug-in: it reaches
+the phone only with a new seed; the back camera needs only the new xnuhost). Lines that prove it
 on the phone: `userland/camera/README.md`, "What the next session's logs must show".
 
 ### The phone [F]

@@ -21,6 +21,15 @@ when `FigCaptureExternalCameraReplacesBuiltIn`, which is `FigCaptureIsRunningInV
 (`kern.hv_vmm_present`). Fix: xnuhost adds `cameracaptured` to `owner-hide-vmm=` (`camera-vm=show` in `xnuhost.conf`
 turns it off), so only cameracaptured sees no VM; and the front stream is `PortTypeFrontSuperWide` (V54's front
 devices look for that port) with the formats of "Front Ultra Wide Camera". Host-tested, not run on the phone.
+Tested on the build laptop: `runtime/host-tests.sh` (all nine parts pass), `runtime/build.sh` (the Android xnuhost),
+`userland/camera/build.sh` (arm64e, 4 KiB pages, CDHash `3927e183...`) and `tests/host.sh` (26 reader checks; the Mac
+part skipped on Linux).
+
+**What reaches the phone how:** the back camera needs only the new xnuhost (the runtime): the plug-in of the phone's
+Data store already gives a `PortTypeBack` stream, and only the VM check dropped it. The front port is in the plug-in,
+which lives in the Data store; a new plug-in reaches the phone only with a new seed (the Data store starts over), as the
+kernel's add-on writer (`kernel.kc.gpuaddon`) writes only under `/private/var/ngpu`. So the order is: xnuhost first
+(the back camera), the plug-in with the next new seed (the front camera, and whatever the next log asks for).
 
 ## Where the camera broke (iOS's own log, sessions of 2026-11-12)
 
@@ -134,10 +143,19 @@ refused the user client), `no answer for X` (a property to add).
 1. Run in iOS. Whether the 27 capture graph takes this device as it is, what it asks that is missing (the log
    lists it), and whether it needs more of HakiOS's replaced methods (stabilisation, noise reduction, the portrait
    prewarm): not known.
-2. The front camera: since 2026-11-23 the port `PortTypeFrontSuperWide` and "Front Ultra Wide Camera"'s formats (4896x4896
+2. The front camera (needs the new plug-in, so a new seed): since 2026-11-23 the port `PortTypeFrontSuperWide` and "Front Ultra Wide Camera"'s formats (4896x4896
    sensor formats of a square sensor; the phone's front camera gives 4:3 pictures up to 1920x1080, scaled). Not run.
 3. The device tree nodes for MobileGestalt (`/arm-io/isp` `camera-rear`, `camera-front`, `/product/camera`,
    `/product unique-model`): added 2026-11-22 (the Camera icon was not there without them: Camera.app's `SBAppTags`
    is `still-camera`). iOSPlus10 saw the app hang with the nodes and no frames on iOS 16; on 27 the source list needs
    `unique-model` first. Not run on the phone yet.
 4. Stills above 1920x1080; focus, exposure and zoom from the sensor; the torch; two cameras at once.
+5. The other cameras, mapped to the iPhone18,2's (V54's plist): the ultra-wide (the helper's `ultrawide`, camera 2) as
+   a `PortTypeBackSuperWide` stream with "Back Ultra Wide Camera"'s formats; a telephoto (the 5x `tele5`, a physical
+   camera behind logical camera 0) as `PortTypeBackTelephoto` with "Back Telephoto Camera"'s formats (V54's telephoto
+   is 4x; the 3x has no iPhone place and stays a zoom of the wide). The virtual devices (Back Dual Wide, Back Triple)
+   need `SupportedSynchronizedStreamsGroups` with two or three streams that run at once: the kernel's camera has one
+   client and one camera at a time, so that needs streams of more than one camera in `drivers/camera` and the helper.
+   With each stream, its `/product/camera` flag (`rear-cam-superwide-capability`, `rear-cam-telephoto-capability`).
+6. A way to put a new plug-in into the phone's Data store without a new seed (a kernel add-on path for
+   `/private/var/oneios/addons`, or an `oneios-tool phone` command that writes a file into `data.img`).
