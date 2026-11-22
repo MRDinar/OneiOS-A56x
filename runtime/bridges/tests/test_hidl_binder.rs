@@ -480,10 +480,10 @@ fn fake_hal(device: &str, mode: Mode, ready: i32) {
     // process is gone, so a new one can see EBUSY for a moment (seen on Linux 6.18 in a VM). Retry for up to 2 s.
     let mut rc = -1;
     // SAFETY: a mapping of our binder fd, kept for the process's life.
-    if fd >= 0
+    let mapped = fd >= 0
         && unsafe { libc::mmap(std::ptr::null_mut(), 1 << 20, libc::PROT_READ, libc::MAP_PRIVATE, fd, 0) }
-            != libc::MAP_FAILED
-    {
+            != libc::MAP_FAILED;
+    if mapped {
         for _ in 0..200 {
             // SAFETY: BINDER_SET_CONTEXT_MGR on our fd.
             rc = unsafe { libc::ioctl(fd, BINDER_SET_CONTEXT_MGR as _, 0) };

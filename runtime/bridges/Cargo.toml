@@ -47,3 +47,10 @@ harness = false
 name = "hal_binder"
 path = "tests/hal_binder.rs"
 harness = false
+[[test]]
+name = "test_aidl_binder"
+path = "tests/test_aidl_binder.rs"
+harness = false
+[[bin]]
+name = "wifictl"
+path = "tools/wifictl.rs"
