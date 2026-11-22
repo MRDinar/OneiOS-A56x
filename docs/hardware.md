@@ -128,6 +128,12 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
   unchanged; it compiles with our records) registers a performance-control callout that gives each thread group its
   preferred cluster (UI, above-UI and real-time classes on P) and writes the frequency a vCPU wants into a per-vCPU
   register window, `/arm-io/cpufreq` (Linux's virtual-cpufreq layout).
+- The Edge scheduler's own edges allow no move from E to P (`sched_edge_cpu_init_completed`: E -> P `no_spill`), and
+  without CLPC nothing changes them: until 2026-11-22 every thread outside those three classes stayed on the two E
+  vCPUs (0% idle on the phone) while the six P vCPUs were 85-99% idle. Hosted `0085` opens E -> P migration and steal
+  once all CPUs are up: weight 0 for fixed-priority to default, 64 for utility, 1000 for background (us of
+  scheduling latency); `oneios-edge-spill=0|1|2`, one `oneios-edge:` line (kernel/patches/oneios-hosted/README.md,
+  "0085").
 - `l2-cache-size`, `l3-cache-size` of a cpu node are read by XNU when present.
 
 ### The bridge (`runtime/bridges/cpu/topology.c`)
