@@ -672,6 +672,14 @@ impl Backend for StubBackend {
     }
 
     fn open(&self, codec: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
+        // The test of a helper whose open never comes back (tests/hung_helper.rs): MediaCodec's open hung so in the
+        // phone's helper on 2026-11-23. Only the helper's environment sets it.
+        if std::env::var_os("ONEIOS_ENCODER_STUB_HANG_OPEN").is_some() {
+            loop {
+                // SAFETY: pause takes no arguments; it returns only when a signal is caught.
+                unsafe { libc::pause() };
+            }
+        }
         if width == 0 || height == 0 || width > 16384 || height > 16384 {
             return None;
         }

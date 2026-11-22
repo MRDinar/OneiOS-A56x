@@ -71,8 +71,26 @@ fn host_device() {
     // Each known phone by its model (the phone gates' properties).
     let p = phone(&tmp, "s24u", "SM-S928B", "e3q", "pineapple", "SM8650", "QTI");
     assert_eq!(detect(&p, &empty), ("galaxy-s24-ultra", "matched by ro.product.model=SM-S928B".to_owned()));
-    let p = phone(&tmp, "s24u-us", "SM-S928U1", "e3q", "pineapple", "SM8650", "QTI");
-    assert_eq!(detect(&p, &empty).0, "galaxy-s24-ultra");
+    // Every S24 Ultra model number gets the home entry by its own model (host_device.rs's record): the US, Canadian
+    // (SM-S928W, with the US vendor partition that nothing here reads), Korean and Chinese ones.
+    for model in ["SM-S928U", "SM-S928U1", "SM-S928W", "SM-S928N", "SM-S9280"] {
+        let p = phone(&tmp, model, model, "e3q", "pineapple", "SM8650", "QTI");
+        assert_eq!(detect(&p, &empty), ("galaxy-s24-ultra", format!("matched by ro.product.model={model}")));
+    }
+    // The SM-S928W as its stock firmware reports it (the OneOS fork's public issue 128): the US bootloader and vendor
+    // model.
+    let p = tmp.put(
+        "s928w-stock.props",
+        "[ro.product.model]: [SM-S928W]\n[ro.product.vendor.model]: [SM-S928U]\n[ro.bootloader]: [S928USQU6EZIF]\n\
+         [ro.product.device]: [e3q]\n[ro.board.platform]: [pineapple]\n[ro.soc.model]: [SM8650]\n",
+    );
+    assert_eq!(detect(&p, &empty), ("galaxy-s24-ultra", "matched by ro.product.model=SM-S928W".to_owned()));
+    // The S26 Ultra by its codename and by its platform alone (docs/s26.md: m3q, canoe [F]), as a ROM that renames it.
+    let p = phone(&tmp, "s26u-rom", "Galaxy S26 Ultra", "m3q", "", "", "");
+    assert_eq!(detect(&p, &empty), ("galaxy-s26-ultra", "matched by ro.product.device=m3q".to_owned()));
+    let p = phone(&tmp, "s26u-board", "", "", "canoe", "", "");
+    let (got, why) = detect(&p, &empty);
+    assert!(got == "galaxy-s26-ultra" && why.contains("ro.board.platform=canoe"), "{got} {why}");
     for (name, model, device, platform, soc, maker, want) in [
         ("s25u", "SM-S938B", "pa3q", "sun", "SM8750", "QTI", "galaxy-s25-ultra"),
         ("s25", "SM-S931B", "pa1q", "sun", "SM8750", "QTI", "galaxy-s25"),

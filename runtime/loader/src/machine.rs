@@ -87,6 +87,10 @@ pub enum Mac {
 pub const CAMERA_REAR: u32 = 1;
 /// the front camera
 pub const CAMERA_FRONT: u32 = 2;
+/// The default /product unique-model with the cameras (`XL_CAMERA_MODEL`): in neither AVGestalt's nor
+/// CMCaptureGestalt's table of 41 iPhone models (so AVGestalt answers false, as with no name), and CMCapture's folder
+/// "OneiOS" is the hosted kernel's link to V54 (0088).
+pub const CAMERA_MODEL: &str = "OneiOSAP";
 
 // The board xnuhost emulates: where its windows are (physical addresses inside /arm-io).
 pub const BOARD_ARMIO_BASE: u64 = 0x1000;
@@ -192,10 +196,15 @@ pub struct Machine {
     pub display_hz: u32,
     /// The cameras iOS is told about (CAMERA_*; 0 = none), used only with an "oneios,camera" device: /arm-io/isp
     /// camera-rear and camera-front (MobileGestalt's rear-facing-camera, front-facing-camera and still-camera, which
-    /// SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and without an identity tree
-    /// /product unique-model "V54AP" (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model
-    /// tables from CMCapture.framework/V54). docs/hardware.md section 7.
+    /// SpringBoard shows Camera.app by), an empty /product/camera (video-camera), and /product unique-model
+    /// (MobileGestalt's HWModelDescriptionForCamera: CMCapture reads its per-model tables from
+    /// CMCapture.framework/<it less "AP">). docs/hardware.md section 7.
     pub cameras: u32,
+    /// /product unique-model with the cameras (xnuhost's camera-model=): None gives an identity tree's own, else
+    /// [`CAMERA_MODEL`]. A name that AVFCapture's AVGestalt knows ("V54AP") makes VirtualAudio build a webcam subport
+    /// it has no DSP chain for, and audio never starts (2026-11-23); [`CAMERA_MODEL`] is in no such table, and the
+    /// hosted kernel (0088) shows CMCapture.framework/OneiOS as a link to V54.
+    pub unique_model: Option<String>,
     /// NUL-separated list for /chosen text-fixups (None or empty: no property)
     pub text_fixups: Option<Vec<u8>>,
     /// xnuhost: where a hosted kernel finds the host (0 = not hosted, node omitted): the virtual address of the
@@ -259,6 +268,7 @@ impl Default for Machine {
             display_scale: 0,
             display_hz: 0,
             cameras: 0,
+            unique_model: None,
             text_fixups: None,
             host_vector: 0,
             host_io_base: 0,
@@ -722,12 +732,19 @@ impl Machine {
         // answer less "AP" as the folder of its per-model tables (CMCapture.framework/V54/AVCaptureSession.plist,
         // CameraSetup.plist, ...); without it the name was NULL and every built-in source failed (iOS's log,
         // 2026-11-22: Fig assert "modelSpecificAVCaptureSessionPlist" at FigCaptureSourceBackingsProvider.m:2316, err
-        // -12780, "Created 0 in-memory built-in backings"). The iPhone18,2's own value is "V54AP"; an identity tree's
-        // /product has it already.
+        // -12780, "Created 0 in-memory built-in backings").
+        // The name is not the iPhone18,2's own "V54AP" by default: AVFCapture's AVGestalt (in audiomxd too) finds V54 in
+        // its table of 41 iPhone models and answers its webcam key true, VirtualAudio's RoutingSettings_N71 then builds
+        // a webcam subport whose DSP list exists only with input processing on (here it is off), its precondition
+        // fails, and VirtualAudio never starts: no speaker, no volume, no haptics (iOS's log, v0.1.16, 2026-11-23: "Need
+        // valid DSPConfig for webcam recording", VA Init Status: 1). CAMERA_MODEL ("OneiOSAP") is in no such table, so
+        // AVGestalt answers as with no name, and the hosted kernel (0088) shows CMCapture.framework/OneiOS as a link to
+        // the sealed V54 folder. self.unique_model (xnuhost's camera-model=) wins; without it an identity tree's
+        // /product keeps its own.
         if cameras != 0 {
             product.add("camera");
-            if product.get("unique-model").is_none() {
-                product.put_str("unique-model", "V54AP");
+            if self.unique_model.is_some() || product.get("unique-model").is_none() {
+                product.put_str("unique-model", self.unique_model.as_deref().unwrap_or(CAMERA_MODEL));
             }
         }
     }

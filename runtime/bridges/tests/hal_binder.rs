@@ -133,8 +133,11 @@ fn test_battery(v: &Values, log: &Capture) {
             && s.current_ma == -400
             && s.design_mah == 4850));
         // The HAL's process dies: the read fails, iOS keeps the last level, one error line.
-        fake = None;
+        // The log is cleared before the HAL stops: the worker (50 ms) can read the dead HAL while the fake is stopped, and
+        // it says so once only (hal_failed), so a clear after it could wipe the one line (a full parallel host-tests.sh
+        // run of the C on the build laptop, 2026-11-23: the line printed, the check failed).
         log.clear();
+        fake = None;
         check!(b.query().is_err_and(|last| last.percent == 72));
         check!(log.has("battery: the health HAL's getHealthInfo failed"));
         b.close();
@@ -193,8 +196,11 @@ fn test_thermal(v: &Values, log: &Capture) {
         ms(300);
         let s = t.get();
         check!(s.raw.skin == 445 && s.raw.cpu == 700 && s.level == thermal::HEAVY);
-        fake = None;
+        // The log is cleared before the HAL stops: the worker (50 ms) can read the dead HAL while the fake is stopped,
+        // and it says so once only (hal_failed), so a clear after it could wipe the one line (a full parallel
+        // host-tests.sh run of the C on the build laptop, 2026-11-23: the line printed, the check failed).
         log.clear();
+        fake = None;
         for _ in 0..60 {
             // the next reading, within 3 s
             if log.has("getTemperatures failed") {

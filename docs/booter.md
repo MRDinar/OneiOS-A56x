@@ -212,8 +212,9 @@ A port of DarwinBoot with no firmware under it (C until 2026-11-23, now the crat
   **The cameras (2026-11-22, `Machine::cameras`, only with an `oneios,camera` device):** `/arm-io/isp` with
   `camera-rear` = 1 when the camera helper lists a back camera (wide, ultra-wide or a telephoto) and `camera-front` = 1
   when it lists the front one (u32, the iPhone18,2's values; no `compatible`, no `device_type`: no driver matches it),
-  an empty `/product/camera`, and `/product unique-model` = `xl_machine.unique_model` (xnuhost's `camera-model=`,
-  default `XL_CAMERA_MODEL` "OneiOSAP"; NULL: an identity tree's own value, else "OneiOSAP"; "V54AP" from 2026-11-22 to
+  an empty `/product/camera`, and `/product unique-model` = `Machine::unique_model` (xnuhost's `camera-model=`;
+  None: an identity tree's own value, else `machine::CAMERA_MODEL` "OneiOSAP"; the C's `xl_machine.unique_model` and
+  `XL_CAMERA_MODEL`; "V54AP" from 2026-11-22 to
   2026-11-23, which stopped all audio: [hardware.md](hardware.md) 7). What 24A446's libMobileGestalt reads them for: `rear-facing-camera` = isp `camera-rear`,
   `front-facing-camera` = isp `camera-front`, `still-camera` (Camera.app's `SBAppTags`; SpringBoard shows the app
   only with it) = either, `video-camera` = `/product/camera` is there, and `HWModelDescriptionForCamera` (also

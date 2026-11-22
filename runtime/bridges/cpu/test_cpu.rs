@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! The CPU bridge's host tests (C: tests/test_bridges.c, test_cpu): stand-in /sys/devices/system/cpu folders of an
-//! SM8650, an SM8750 and a host with one kind of core.
+//! SM8650, an SM8750, an SM8850 and a host with one kind of core.
 
 use super::*;
 use crate::hw::testdir::TempDir;
@@ -148,6 +148,40 @@ fn cpu() {
     assert!(plan.n_e == 1 && plan.n_p == 1);
     let plan = CpuPlan::make(&t, 1, false).unwrap();
     assert!(plan.n_e == 0 && plan.v[0].kind == P);
+
+    // The Galaxy S26 Ultra's SM8850 (docs/s26.md), as YMGPwcca/OneiOS read it on its SM-S948B (port-sm8850-s26): cpu0-5
+    // capacity 741, 384000..3628800 kHz; cpu6-7 capacity 1024, 768000..4742400 kHz; every MIDR 0x510f0021 (Qualcomm
+    // Oryon). [F] the values; the related_cpus lists [I] (the fork wrote the policy's first CPU only). The same Oryon
+    // rule as the S25: all P on the host, the two slowest lent as E vCPUs; nothing of the host's cpufreq is written.
+    for i in 0..8 {
+        let prime = i >= 6;
+        let put = |rel: &str, text: &str| tmp.put(&format!("sm8850/devices/system/cpu/cpu{i}/{rel}"), text);
+        put("cpu_capacity", if prime { "1024\n" } else { "741\n" });
+        put("cpufreq/cpuinfo_max_freq", if prime { "4742400\n" } else { "3628800\n" });
+        put("cpufreq/cpuinfo_min_freq", if prime { "768000\n" } else { "384000\n" });
+        put("cpufreq/related_cpus", if prime { "6 7\n" } else { "0 1 2 3 4 5\n" });
+        put("regs/identification/midr_el1", "0x510f0021\n");
+    }
+    let t = Topology::read(&tmp.at("sm8850")).unwrap();
+    assert!(t.ncpu() == 8 && t.n_e == 0 && t.n_p == 8);
+    assert!(
+        t.cpu[0].implementer == 0x51 && t.cpu[0].capacity == 741 && t.cpu[0].kind == P && t.cpu[6].capacity == 1024
+    );
+    let plan = CpuPlan::make(&t, 8, false).unwrap();
+    assert!(plan.n_e == 2 && plan.n_p == 6 && plan.v.len() == 8);
+    assert!(plan.v[0].kind == E && plan.v[1].kind == E && plan.v[2].kind == P && plan.v[7].kind == P);
+    assert!(
+        plan.affinity(0) == 0x30 && plan.affinity(1) == 0x30 && plan.affinity(2) == 0xcf && plan.affinity(7) == 0xcf
+    );
+    let hosts: Vec<u32> = plan.v.iter().map(|v| v.host_cpu).collect();
+    assert!(hosts[0] == 4 && hosts[1] == 5 && hosts[2] == 0 && hosts[7] == 7);
+    assert!(plan.v[0].max_khz == 3628800 && plan.v[7].max_khz == 4742400);
+    let plan = CpuPlan::make(&t, 8, true).unwrap();
+    let masks: Vec<u64> = (0..8).map(|i| plan.affinity(i)).collect();
+    assert!(masks[..5] == [0x10, 0x20, 0x40, 0x80, 0x01] && masks[7] == 0x08, "{masks:x?}");
+    let plan = CpuPlan::make(&t, 4, false).unwrap();
+    assert!(plan.n_e == 1 && plan.n_p == 3 && plan.v[0].kind == E);
+    assert!(plan.v[0].host_cpu == 5 && plan.affinity(0) == 0x20); // one lent core; the prime ones stay P
 
     // A host with one kind of core: all P.
     for i in 0..4 {

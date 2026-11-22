@@ -35,13 +35,14 @@ cargo build --release --target aarch64-linux-android -p oneencoder --bins   # th
 | `proto.rs` | the wire layout of the `droidvm,virtio-media` device: the commandq (OPEN/CLOSE/IOCTL/MMAP), the eventq (DQBUF/EVENT), and the V4L2 structs (`v4l2_buffer`, `v4l2_format`) as UniXNU-droidvm's `DroidVMVirtioMedia.c`/`DroidVMVTHost.cpp` read them (the C's `media_proto.h`; no C side any more: checked by `tests/encoder.rs`'s round trips) |
 | `media_device.rs` | xnuhost's stateful V4L2 **encoder** device on `xh_core::virtio` (`create`, `stats`): OUTPUT = tightly packed NV12, CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. Linked statically into xnuhost |
 | `backend.rs` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) as the `Backend` and `Session` traits (the C's `encoder.h`) |
-| `backend_helper.rs` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (`HelperBackend::new`; xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`link.rs`, the C's `encoder_link.h`), buffers coded AUs for `poll()`. **Never waits for the helper without a limit** (a vCPU calls it): the HELLO and each write 1 s, an open's reply 2.5 s; a helper that misses one is killed (`encoder: the helper (pid N) did not answer an open ... killed (1 of 2)`), the next open starts a new one, twice a session at most; xnuhost's stop kills it. Session ids are never reused. `ONEIOS_ENCODER_STUB_HANG_OPEN=1` in the helper's environment makes the stand-in's open hang (the test) |
+| `backend_helper.rs` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (`HelperBackend::new`; xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`link.rs`, the C's `encoder_link.h`), buffers coded AUs for `poll()`. **Never waits for the helper without a limit** (a vCPU calls it): the HELLO and each write 1 s, an open's reply `OPEN_MS` (2.5 s; `HelperBackend::with_open_ms` for another); a helper that misses one is killed (`encoder: the helper (pid N) did not answer an open in 2500 ms (state S, waiting in W): killed (1 of 2); the next open starts a new one`), the next open starts a new one, twice a session at most (then `encoder: the helper hung 2 times: no more helpers this session ...`, once); `backend_helper::stop()` (xnuhost's stop; `HelperBackend::stop` for one backend) kills it without waiting. Session ids are never reused. `ONEIOS_ENCODER_STUB_HANG_OPEN=1` in the helper's environment makes the stand-in's open hang (`tests/hung_helper.rs`) |
 | `helper.rs` → `bin/oneios-encoder.rs` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic |
 | `backend_ndk.rs` | the real backend: the NDK's `AMediaCodec` (`video/hevc` → Codec2 `c2.qti.hevc.encoder`, `video/avc`) behind a `Codec` trait, NV12 ByteBuffer input, Annex-B output. Still-image settings: one keyframe, constant quality. Both the `samsung` and `treble` hardware backends use this same path |
 | `backend_stub.rs` | the **stand-in encoder** (`StubBackend`) for a host with no MediaCodec (below). In the library too: xnuhost runs it in its own process on the PC |
 | `encctl.rs` → `bin/encctl.rs` → `encctl` | the phone test: the whole host path in one process (direct MediaCodec, no helper), encoding a test pattern as root; on a host the same path with the stand-in; and the in-process guest `Guest` the device test drives |
 | `tests/standin.rs`, `tests/standin_reader/`, `tests/decode.sh` | the stand-in's tests (below; the C's `test_standin.c`, `standin_reader.h`) |
 | `tests/encoder.rs` | the device's test (below; the C's `test_encoder.c`) |
+| `tests/hung_helper.rs` | a helper that hangs in its open: bounded, killed, a new one, none after two hangs, a stop not a hang (the C's `test_hung_helper` in `test_encoder.c`; a test binary of its own, since it sets the hang switch in its process's environment) |
 | `tests/headers.rs` | MediaCodec's numbers and `AMediaCodecBufferInfo`'s layout against the NDK's headers (a probe built with the NDK's clang, run under qemu-aarch64; skipped with a line without them) |
 
 ## The stand-in encoder (`backend_stub.rs`)
@@ -95,6 +96,12 @@ the guest's bound, CLOSE with no answer buffer, the format lists), replaying `Dr
 EOS), then five more sessions opened and closed one after another (more than the device has slots). Twice: through
 the **real helper process** built for the host with the stand-in, and with the stand-in in the device's own process
 (xnuhost's PC arrangement). The coded picture is read back and compared with the pattern.
+**The hung helper [F]:** the C's `test_hung_helper` (main, 2026-11-23, after the two v0.1.16 phone boots that froze on
+a helper that never answered an OPEN) and now `cargo test -p oneencoder --test hung_helper` (2026-11-23, 1.1 s): with
+the stand-in's open made to hang and a 300 ms limit, the open comes back in 300-1500 ms with no session and the line
+`... did not answer an open in 300 ms (state ...): killed (1 of 2) ...`; the next open starts a new helper that
+works; a stop is not counted as a hang; after the second hang every open fails at once (under 100 ms) and the
+"no more helpers" line is said once.
 **Not tested here:** the real guest transport against the device outside a boot (its MMIO accessors are arm64
 assembly); the PC boot runs its start-up check (OPEN, ENUM_FMT, CLOSE), and a session only when iOS encodes.
 
@@ -167,7 +174,7 @@ and counted, point 4 above).
 ## The Rust port (`oneencoder`, 2026-11-23; runtime/RUST.md)
 
 One Rust module per C file (the table above; the C is gone from the tree): the C's `br_encoder_create` is
-`media_device::create`, `br_encoder_backend_helper` is `HelperBackend::new`. The helper spawn and the byte views are
+`media_device::create`, `br_encoder_backend_helper` is `HelperBackend::new`, `br_encoder_helper_open_ms` is `HelperBackend::with_open_ms`, `br_encoder_helper_stop` is `backend_helper::stop()`. The helper spawn and the byte views are
 onecamera's. The commands are at the top of this file.
 
 - On a host `encctl` runs the whole path with the stand-in (`encctl hevc 512 512 FILE` gives a stream ffmpeg
@@ -177,3 +184,8 @@ onecamera's. The commands are at the top of this file.
   writes and the receive thread's state could stop both with the socket full both ways); its socket is close-on-exec
   (the C's leaked into later children, the helper too); the stand-in reuses one RBSP buffer per session; the
   device's worker holds the device weakly.
+- Changes from main's C of the hung helper (cce3151), on purpose: a session of a helper that was killed never writes
+  to the next helper (the C's feed and drain went to the new one's socket under an id it never opened) and its poll
+  gives nothing; an open or a write that fails on a helper the stop already killed does not count a hang, and a
+  reaped pid is never killed again; the stop that finds the state locked kills the helper by its pid alone (the C
+  read the state without the lock).

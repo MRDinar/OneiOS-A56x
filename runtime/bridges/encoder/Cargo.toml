@@ -36,6 +36,12 @@ path = "tests/standin.rs"
 name = "encoder"
 path = "tests/encoder.rs"
 
+# A helper that hangs in its open: killed within the limit, a new one, no more after two (the C's test_hung_helper).
+# A binary of its own: it sets the stand-in's hang switch in this process's environment, which its helpers inherit.
+[[test]]
+name = "hung_helper"
+path = "tests/hung_helper.rs"
+
 # MediaCodec's numbers and AMediaCodecBufferInfo's layout against the NDK's headers.
 [[test]]
 name = "headers"

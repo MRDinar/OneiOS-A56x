@@ -498,7 +498,7 @@ for, in order:
    answers its flush (`DroidVMVirtioGpuDisplay.cpp`), and xnuhost answers when the helper says `done`. Until this
    change the helper said it after `ANativeWindow_lock` (which waits for a free buffer, to the panel's vsync when the
    queue is full), the fill and the post, though the frame was in the helper's own snapshot before all three. The helper
-   now answers as soon as a changed frame is in its snapshot (`runtime/display/src/jni.c`; `runtime/display/README.md`,
+   now answers as soon as a changed frame is in its snapshot (`runtime/display/src/jni.rs`, the C's `jni.c` then; `runtime/display/README.md`,
    "Frames"). What it removes from the guest's path: the buffer wait (4.1 ms mean in the 2026-11-22 log) and the fill.
    What stays: the read of the guest's pages into the snapshot (5.5 ms then). Phone lines that prove it: xnuhost's
    `display: 10 s: ... (its answer: mean X ms ...)` against the 5.1-9.1 ms above, and the helper's `oneios-display:

@@ -80,6 +80,14 @@ const NONE: &[&str] = &[];
 static TABLE: [HostDevice; 5] = [
     // The home device. [F] SM-S928*, e3q, SM8650 (verify-host.sh, the OneOS fork's gate); platform pineapple [F] (the
     // stock device tree, qcom/pineapple-v2.dts, docs/hardware.md). No defaults: everything is today's.
+    // The model prefix takes every S24 Ultra model number (docs/hardware.md 7h, "The S24 Ultra's models"; the record
+    // profiles/host-galaxy-s24-ultra-sm8650.toml): SM-S928B (the owner's phone [F]), SM-S928U and SM-S928U1 (US),
+    // SM-S928W (Canada, CSC XAC), SM-S928N (Korea), SM-S9280 (China).
+    // The SM-S928W runs the US carrier model's bootloader and vendor partition under its own firmware (S928USQU6EZIF,
+    // ro.product.vendor.model=SM-S928U [F per the OneOS fork's public issue 128]): nothing here reads either, so it is
+    // matched by its own ro.product.model. e3q and SM8650 on the U, U1, W, N and 0 [I] (one hardware family; only the B
+    // has booted iOS). The Japanese ones (SC-52E, SCG26) are not SM-S928 and their codename is [U]: they
+    // get this entry by their SoC (SM8650, the SoC's entry), which has no defaults either.
     HostDevice {
         name: "galaxy-s24-ultra",
         label: "Galaxy S24 Ultra (SM-S928, SM8650)",
@@ -126,7 +134,8 @@ static TABLE: [HostDevice; 5] = [
         config: &["panel-fallback=1080x2340@120"],
         env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
     },
-    // docs/forks.md (the S26 row), the port-sm8850 commits. [F] SM-S948B, SM8850; codename and platform [U] (not matched).
+    // docs/s26.md, profiles/host-galaxy-s26-ultra-sm8850.toml, the port-sm8850 commits. [F] SM-S948B, m3q, SM8850, platform
+    // canoe (YMGPwcca/OneiOS: the fork's SM-S948B, S948BXXS4BZIG, measured 2026-11-16; port-sm8850-s26, 2026-11-23).
     // ONEIOS_BRIGHT_MAX=2300 [F]: the fork's phone with One UI in control, screen_brightness 255 (One UI's manual top)
     // wrote 2300 to panel0-backlight, whose max_brightness is 12750 (brightness's test_sm8850_manual_brightness_cap).
     // Without it the iOS slider's top writes 12750, 5.5 times One UI's manual top (HBM territory: heat and current).
@@ -137,9 +146,9 @@ static TABLE: [HostDevice; 5] = [
         name: "galaxy-s26-ultra",
         label: "Galaxy S26 Ultra (SM-S948, SM8850)",
         models: &["SM-S948"],
-        devices: NONE,
+        devices: &["m3q"],
         socs: &["SM8850"],
-        platforms: NONE,
+        platforms: &["canoe"],
         config: NONE,
         env: &["ONEIOS_BRIGHT_MAX=2300"],
     },

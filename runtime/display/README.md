@@ -107,7 +107,8 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   guest's flush; then it fills and posts a buffer from the snapshot. Until 2026-11-23 `done` went after the post, so
   the guest's next frame also waited for `ANativeWindow_lock` (a free buffer: to the panel's vsync when the queue is
   full, "buffer wait mean 4.1 ms" on the phone, 2026-11-22) and the fill; now it is drawn while the helper posts
-  (`docs/gpu.md` 2.5). xnuhost copies nothing then. A frame that only xnuhost's own pixels changed is answered after
+  (`docs/gpu.md` 2.5; `src/jni.rs`, ported from main's `jni.c` of 91aed58: the Android build only, no host test reaches
+  the run loop; not run on the phone). xnuhost copies nothing then. A frame that only xnuhost's own pixels changed is answered after
   its post, as before. The memfd stays for what xnuhost still draws itself
   (the boot console, 2D resources): it is put into the snapshot too. A frame that cannot be read (a slot reused, a
   segment outside RAM, no snapshot: half-float frames or no memory for it) is answered with the failure flag and

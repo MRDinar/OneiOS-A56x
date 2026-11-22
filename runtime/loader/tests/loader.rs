@@ -5,7 +5,7 @@
 use xh_core::bytes::le;
 use xnuloader::boot::{self, BootRequest};
 use xnuloader::fixture::{self, BASE};
-use xnuloader::machine::{self, Cluster, DeviceKind, Mac, Machine, CAMERA_FRONT, CAMERA_REAR};
+use xnuloader::machine::{self, Cluster, DeviceKind, Mac, Machine, CAMERA_FRONT, CAMERA_MODEL, CAMERA_REAR};
 use xnuloader::machine::{
     BOARD_CPUFREQ, BOARD_GIC_DIST, BOARD_GIC_REDIST, BOARD_VIRTIO, BOARD_VIRTIO_SIZE, BOARD_VIRTIO_SPI,
 };
@@ -269,7 +269,8 @@ fn machine_cameras_and_identity() {
     use DeviceKind::*;
     let t = machine_default().tree().unwrap();
     // the cameras: none without the camera device, whatever m.cameras says; with it /arm-io/isp camera-rear and
-    // camera-front (u32 1, no compatible), an empty /product/camera and /product unique-model V54AP
+    // camera-front (u32 1, no compatible), an empty /product/camera and /product unique-model CAMERA_MODEL ("OneiOSAP":
+    // in no AVGestalt table, so VirtualAudio builds no webcam subport); camera-model= gives another (V54AP: the iPhone's)
     assert!(t.find("arm-io/isp").is_none() && t.find("product/camera").is_none());
     assert!(t.find("product").unwrap().get("unique-model").is_none());
     let mut c = machine_default();
@@ -283,7 +284,7 @@ fn machine_cameras_and_identity() {
     assert!(isp.get("compatible").is_none() && isp.get("device_type").is_none());
     let cam = ct.find("product/camera").unwrap();
     assert!(cam.props.len() == 1 && cam.children.is_empty()); // only its name
-    assert_eq!(str_of(ct.find("product").unwrap(), "unique-model"), Some("V54AP"));
+    assert!(str_of(ct.find("product").unwrap(), "unique-model") == Some("OneiOSAP") && CAMERA_MODEL == "OneiOSAP");
     // the identity: another number with the cameras; set in /chosen; the same whatever changes per boot
     let with = machine::identity(&mut ct);
     let stored = ct.find("chosen").unwrap().get("oneios-identity").unwrap().u64();
@@ -309,6 +310,15 @@ fn machine_cameras_and_identity() {
     let isp = again.find("arm-io/isp").unwrap();
     assert!(isp.get("camera-rear").is_some() && isp.get("camera-front").is_none());
     assert_ne!(machine::identity_hash(&again), with);
+    // camera-model=V54AP (the name before 2026-11-23): that name, and another identity (MobileGestalt's cache is made
+    // again once when the setting changes, hosted 0084)
+    c.cameras = CAMERA_REAR | CAMERA_FRONT;
+    c.unique_model = Some("V54AP".into());
+    let again = c.tree().unwrap();
+    let q = again.find("product").unwrap().get("unique-model").unwrap();
+    assert!(q.str() == Some("V54AP") && q.value.len() == 6 && machine::identity_hash(&again) != with);
+    c.unique_model = None;
+    assert_eq!(machine::identity_hash(&c.tree().unwrap()), with); // back to the default
 }
 
 #[test]
@@ -344,7 +354,7 @@ fn machine_identity_tree() {
     assert!(pr.get("has-exclaves").is_none() && pr.get("product-name").is_some());
     assert_eq!(str_of(pr, "graphics-featureset-fallbacks"), Some("MTL1,2:GLES2,0"));
     assert!(t.find("product/audio").unwrap().get("acoustic-id").is_some());
-    // with an identity and cameras: the identity's own unique-model stays
+    // with an identity and cameras: the identity's own unique-model stays, unless camera-model= names one
     {
         let mut c = m.clone();
         c.board(4, &[Block, DataStore, Camera]);
@@ -355,6 +365,9 @@ fn machine_identity_tree() {
         assert_eq!(str_of(t.find("product").unwrap(), "unique-model"), Some("F1AP"));
         let isp = t.find("arm-io/isp").unwrap();
         assert!(isp.get("camera-front").is_some() && isp.get("camera-rear").is_none());
+        c.unique_model = Some(CAMERA_MODEL.into());
+        let t = c.tree().unwrap();
+        assert_eq!(str_of(t.find("product").unwrap(), "unique-model"), Some("OneiOSAP"));
     }
     donor.remove("product");
     m.identity = Some(donor);
