@@ -455,7 +455,10 @@ The script refuses:
 Notes on the build:
 - Unlike CI, the APK is built from the commit checked out in `app/`, not from the head of `oneios`. `git -C app
   pull` first if you want the branch head.
-- Tested on the Linux PC on 2026-11-22 with `--build-only` (results below this section once run).
+- Tested on the Linux PC (20 cores) on 2026-11-22 with `scripts/release/release.sh 0.1.14 --build-only` at `e1b55be`,
+  `app/` at `5ffc71c`. All three lanes passed in 240 s, with Gradle's and cargo's caches warm. The files: the runtime
+  package (12,938,612 bytes, 26 members, kernel in), `oneios-tool-0.1.14-android-arm64`, and
+  `OneOS-oneios-0.5.49-debug.apk` (no `.py`, signer `8b3be966…`, the key below). Not yet tried: a publish.
 
 ### The debug key
 
