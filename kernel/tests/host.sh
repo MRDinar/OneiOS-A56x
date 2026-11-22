@@ -59,6 +59,23 @@ if [ -x "$tool" ]; then
 else
   echo "skipped: patch series and profile, build record (no $tool: cargo build --release --manifest-path tools/oneios-tool/Cargo.toml)"
 fi
+# The codec archive's picture helpers (kernel/patches/oneios-hosted/codec/OneiOSCodecPicture.h, which the staged
+# DroidVMVTHost.cpp includes): the NV12 copy of a tile and the HEVC SPS's conformance-window crop, built for the host
+# with the sanitizers (without them where the compiler has no sanitizer runtime: a slim Linux container); warnings
+# are errors with clang, the kernel's compiler; then real encoders' streams cropped and decoded by ffmpeg (tests/crop.sh:
+# skipped without it).
+if command -v "${CC:-cc}" > /dev/null; then
+  t=$(mktemp -d)
+  werror=; "${CC:-cc}" --version 2>/dev/null | grep -q clang && werror=-Werror
+  picture=(-std=c11 -O1 -g -Wall -Wextra $werror kernel/patches/oneios-hosted/codec/tests/test_picture.c -o "$t/test_picture")
+  "${CC:-cc}" -fsanitize=address,undefined "${picture[@]}" 2> /dev/null || "${CC:-cc}" "${picture[@]}" || fail "codec picture: build"
+  "$t/test_picture" || fail "codec picture"
+  sh kernel/patches/oneios-hosted/codec/tests/crop.sh "$t/test_picture" "$t" || fail "codec picture: crop.sh"
+  rm -rf "$t"
+  ok "codec picture helpers: the tile copy and the SPS crop"
+else
+  echo "skipped: codec picture helpers (no ${CC:-cc})"
+fi
 # The arm64e kernel's compiler line (kernel/linux/clang-wrapper): the PAC ABI (signed calls, returns, the intrinsics)
 # and function-pointer type discrimination reach cc1 whatever the host clang implies for the triple by itself.
 # A clang that refuses the kernel's own driver flags (CI's Ubuntu clang: an older release) builds no kernel either, and

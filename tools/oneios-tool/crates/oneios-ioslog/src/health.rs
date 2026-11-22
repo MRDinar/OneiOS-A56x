@@ -128,7 +128,9 @@ pub const KINDS: &[Kind] = &[
         texts: &[("AddImage", r"CMPhotoCompressionSessionAddImage.*\berr ?=")],
         by: By::Logger,
         names: "errors",
-        who: &[r"\berr ?= ?(?P<who>[^\s,;)]+(?: \[-?\d+\])?)"],
+        // a name of up to three words before its number (`kCMBaseObjectError_UnsupportedOperation [-12782]`,
+        // `unknown error [-12900]`), else the one word (`-16993`)
+        who: &[r"\berr ?= ?(?P<who>[^\s,;)\[]+(?: [^\s,;)\[]+){0,2} \[-?\d+\]|[^\s,;)]+)"],
         over: 0.0,
     },
 ];

@@ -905,7 +905,7 @@ The kinds are one table, `KINDS` in `crates/oneios-ioslog/src/health.rs`:
 | `jetsam` | `memorystatus: killing_idle_process` (`idle exit`: a clean daemon ended while idle), `memorystatus: killing` (`kill`: every other reason) | the process the line names (`pid N [NAME]`, `process N [NAME]`) | |
 | `crashes` | the kernel's `NAME[PID] Corpse allowed N of 5` (`corpse`), `NAME[PID] Corpse failure, too many` (`too many corpses`) | the process the line names | |
 | `stuck-idle` | `timed out stuck process` (`memorystatus_perform_idle_demotion() timed out stuck process PID [NAME], moving to idle band`) | the process the line names | |
-| `encode-fail` | `CMPhotoCompressionSessionAddImage ... err =` | the process that logged the line | `errors:` what follows `err =` |
+| `encode-fail` | `CMPhotoCompressionSessionAddImage ... err =` | the process that logged the line | `errors:` what follows `err =`: a name of up to three words with its number (`kCMBaseObjectError_UnsupportedOperation [-12782]`, `unknown error [-12900]`), else one word (`-16993`). Until 2026-11-22 a name of more words was cut to its first (`unknown`) |
 
 **To add a kind, add a row** (name, what it means, the texts, `By::Logger` or `By::Named`, what the names are, the
 expressions that find a name, the "over" limit) and its lines to `tests/ioslog/health.txt` with their numbers in

@@ -1,4 +1,102 @@
 // A made-up source for the edit list "codec": every anchor once, between lines of its own.
 // (before anchor 0)
     memcpy(out + at, s->sps + 3, 12); at += 12;   // profile space/tier/idc, compatibility flags, constraint flags, level
+// (before anchor 1)
+        SurfaceView view;
+        bool fed;
+    } frames[64];
+// (before anchor 2)
+    bool describedToGuest = false;
+// (before anchor 3)
+        w.header(cc("Efds"), FlagHostRequest, s->uuid, request);
+// (before anchor 4)
+        w.header(cc("Eemt"), last ? FlagHostRequest : 0x10, s->uuid, last ? request : 0);
+        if (first) {
+            w.s64(cc(",frm"), f.frame);
+// (before anchor 5)
+    const SurfaceView view = f->view;
+    const int64_t frame = f->frame;
+    IOLockUnlock(s->lock);
+    Mapped &out = s->output[index];
+    const uint32_t w = s->width, h = s->height, need = w * h * 3 / 2;
+    IOMemoryDescriptor *memory = IOMemoryDescriptor::withAddressRange(view.base, view.size, kIODirectionInOut, s->client->task);
+    IOMemoryMap *map = memory && memory->prepare() == kIOReturnSuccess ? memory->createMappingInTask(kernel_task, 0, kIOMapAnywhere) : nullptr;
+    const uint8_t *surface = map ? reinterpret_cast<const uint8_t *>(map->getVirtualAddress()) : nullptr;
+    if (surface && need <= out.length) {
+        for (uint32_t y = 0; y < h && y < view.plane[0].height; ++y)
+            memcpy(out.bytes + uint64_t(y) * w, surface + view.plane[0].offset + y * view.plane[0].bytesPerRow, w);
+        for (uint32_t y = 0; y < h / 2 && y < view.plane[1].height; ++y)
+            memcpy(out.bytes + uint64_t(w) * h + uint64_t(y) * w, surface + view.plane[1].offset + y * view.plane[1].bytesPerRow, w);
+    } else {
+// (before anchor 6)
+#include "DroidVMVTWire.h"
+// (before anchor 7)
+// The oldest frame not yet fed, into a free OUTPUT buffer as tightly packed NV12 (the lock held, released for the copy).
+// (before anchor 8)
+// A coded CAPTURE buffer: its parameter sets kept, its picture handed over.
+// (before anchor 9)
+        if (set) {
+            if (n <= 256 && (n != *setSize || memcmp(set, nal, n))) {
+                memcpy(set, nal, n);
+                *setSize = n;
+                s->describedToGuest = false;
+            }
+            continue;
+        }
+// (before anchor 10)
+    h.type = cc("ecfr");
+// (before anchor 11)
+int startEncoder(Session *s, const uint8_t *m, uint32_t n) {
+    Param size;
+    if (!param(m, n, cc(",vdi"), size) || size.size < 8) return -12902;
+    const uint32_t width = be32(size.value), height = be32(size.value + 4);
+    if (!width || !height || (width & 1) || (height & 1)) return -12902;
+    teardown(s);
+    s->width = width;
+    s->height = height;
+// (before anchor 12)
+    f.type = TypeCaptureMplane;
+    f.width = width;
+    f.height = height;
+    f.pixelformat = hevcSession(s) ? cc("CVEH") : cc("462H");
+    f.num_planes = 1;
+    f.planes[0].sizeimage = width * height / 2 + 65536;
+// (before anchor 13)
+    f.type = TypeOutputMplane;
+    f.width = width;
+    f.height = height;
+    f.pixelformat = cc("21VN");   // V4L2_PIX_FMT_NV12
+    f.num_planes = 1;
+    f.planes[0].bytesperline = width;
+    f.planes[0].sizeimage = width * height * 3 / 2;
+// (before anchor 14)
+    encoderPixelBufferAttributes(s);
+    trace("encoder session %u %ux%u %c%c%c%c", s->v4l2, width, height, s->codec >> 24, s->codec >> 16, s->codec >> 8, s->codec);
+// (before anchor 15)
+// efrm: the frame's IOSurface looked up on the guest's thread, the copy left to the worker.
+// (before anchor 16)
+    SurfaceView view;
+    bool surface = false;
+    IOLockLock(s->surfaceLock);
+    for (unsigned i = 0; i < s->knownCount && !surface; ++i)
+        if (s->known[i].id == surfaces[0]) { view = s->known[i].view; surface = true; }
+    if (!surface) {
+        if (!s->surfaces) s->surfaces = openSurfaceClient(s->client->task);
+        if (!s->holder) s->holder = processSurfaceClient(s->client->pid);
+        surface = s->surfaces && s->holder && lookupSurface(s->surfaces, surfaces[0], view, s->holder);
+        if (surface && s->knownCount < 48) s->known[s->knownCount++] = {surfaces[0], view};
+    }
+    IOLockUnlock(s->surfaceLock);
+    if (!surface) { failed(97, int32_t(surfaces[0])); return -12902; }
+    IOLockLock(s->lock);
+    if (s->frameHead - s->frameTail >= 64) { IOLockUnlock(s->lock); failed(98, 0); return -12911; }
+    Session::Frame &f = s->frames[s->frameHead++ % 64];
+    f.frame = frame;
+// (before anchor 17)
+    case cc("esta"): replyStatus(c, h, s ? startEncoder(s, m, n) : -12903); break;
+// (before anchor 18)
+    case cc("ecfr"):
+        if (s && s->workerRunning) {
+            IOLockLock(s->lock);
+            s->finishWanted = true;
 // (the end)

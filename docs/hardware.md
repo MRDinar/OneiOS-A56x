@@ -2919,7 +2919,7 @@ All of these at once: `oneios-tool log pen xnuhost.log` (each stage's first line
 `N of a layout not known` above 0 with `0 stylus events given ...` means the event data is not the layout orient()
 knows: tilt and pressure then stay as the driver made them (pressure 0..1, no angles).
 
-## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; not on the phone)
+## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; on the phone 2026-11-22: no frame encoded, iOS 27's tile session added, not yet booted)
 
 The phone's hardware video encoder (Qualcomm's Codec2 `c2.qti.hevc.encoder` / `c2.qti.avc.encoder`) for iOS, so
 VideoToolbox encodes HEVC and H.264 and **CMPhoto writes HEIC**: chronod's widget snapshots, screenshots, the photo
@@ -2998,12 +2998,14 @@ the stand-in encoder (below).
 
 `oneios-tool kernel gen codec` builds `liboneioscodec.a` between the two kernel passes (`kernel/build-hosted.sh`,
 after `audio`): UniXNU-droidvm's `DroidVMVirtioMedia.c` and `DroidVMVTParavirt.cpp` unchanged, `DroidVMVTHost.cpp`
-with one edit, and `OneiOSCodec.c` (`oneios_codec_start`, which `oneios_drivers_start` calls; a weak default in
-`drivers/bridge/OneiOSBridge.c` stands for a kernel without the archive). The edit: the hvcC's profile, tier and
-level bytes were copied from the SPS with its emulation prevention bytes in them, which every HEVC SPS has there, so
-the hvcC carried `03` bytes as flags and level 0; they are taken without them. `OneiOSCodec.c` prints the start
-line, the device's own line, and every 30 s while a figure moves the counters of the three files and the session
-lines `DroidVMVTHost.cpp` keeps (`codec/README.md` has the lines and what each failed step means).
+with four edits (the hvcC's level, below; iOS 27's tile session, a small HEVC session coded larger and cropped, `jcap`:
+"On the phone, 2026-11-22" below), and `OneiOSCodec.c` (`oneios_codec_start`, which `oneios_drivers_start`
+calls; a weak default in `drivers/bridge/OneiOSBridge.c` stands for a kernel without the archive). The hvcC edit: its
+profile, tier and level bytes were copied from the SPS with its emulation prevention bytes in them, which every
+HEVC SPS has there, so the hvcC carried `03` bytes as flags and level 0; they are taken without them.
+`OneiOSCodec.c` prints the start line, the device's own line, and every 30 s while a figure moves the counters of
+the three files (with the last message type the host has no case for) and the session lines `DroidVMVTHost.cpp`
+keeps (`codec/README.md` has the lines and what each failed step means).
 
 Limits [F from the code]: a session's buffers come from its half of the 48 MiB pool, about 9 bytes a pixel, so a
 frame above about 2.7 megapixels gets no encoder; two sessions at a time; no decoder (iOS keeps its own).
@@ -3034,7 +3036,32 @@ frame above about 2.7 megapixels gets no encoder; two sessions at a time; no dec
   no phone session could have turned the encoder on. It applies now (`encoder_given`, `config.c`; host-tested).
 - **Not done:** a boot of this kernel. The phone is next (below).
 
-### On the phone (not run yet)
+### On the phone, 2026-11-22: iOS 27's tile session
+
+- **The fault [F]:** main 203a9e7's kernel (`out/kernel/codec-24A446`) with `encoder=auto`: the host encoder worked
+  (`encctl hevc`, `encctl h264 640 480` passed; `encoder: on: mediacodec-helper backend`; the device's line), and no
+  frame was encoded: `ONEIOS CODEC: counters: ... messages 469 (unknown 117) ...; sessions 116, frames in 0 out 0`,
+  3 sessions a second, each videocodecd `'+enc' 'ests' 'einv' '-enc'`. iOS's log: `ParavirtualizedVideoEncoder_
+  StartTileSession: ... failed with error -12900 for 84 x 84`, and chronod's 116 `CMPhotoCompressionSessionAddImage:
+  err = unknown error [-12900] (codec: 'hvc1')`: white widgets still.
+- **The cause [F, 24A446's VideoToolbox]:** iOS 27's CMPhoto writes HEIC through VideoToolbox's **tile encoder**
+  (`ests` StartTileSession, `epti`, `etil` EncodeTile, `ecti` CompleteTiles; the host's `TEsa`, `TEcd`, `TEem`).
+  UniXNU-droidvm's host was recorded against macOS's and has none of them: `ests` got the unknown type's -12900, and
+  VideoToolbox gave each session up. 24A446's own host and guest (both in its VideoToolbox) give each message's
+  parameters (`codec/README.md`, "The tile session", has the table).
+- **The fix [F host-tested]:** the staged `DroidVMVTHost.cpp` has the tile session (each tile copied from its part
+  of the surface and coded as a key frame, handed over by `TEcd`/`TEem`, `ecti` answered as `ecfr`); an HEVC session
+  below 96x96 (the 84x84 tiles: c2.qti codes nothing smaller) is coded at 96 and cropped back by its SPS's
+  conformance window (`codec/OneiOSCodecPicture.h`: x265's and VideoToolbox's 96x96 streams cropped to 84x84 decode
+  to the exact top-left of the picture in ffmpeg); `jcap` (the JPEG session's query) is answered -12908; the
+  counters line names the last unknown type. `oneios-tool ioslog health`'s `encode-fail` now names `unknown error
+  [-12900]` whole (it said `unknown`).
+- **Built [F]:** `HOSTED_OUT=codecfix kernel/build-hosted.sh`, `xnu.macho` `1325991f...`; `kernel/prelink/build.sh`:
+  `out/kernel/codecfix-24A446/kernel.kc` `852adb8be21b525d...` (96,845,824 bytes), audit 0 failures, `prelink
+  stubs-check` 666 good, 0 bad. Host tests: `cargo test` (golden, ioslog), `kernel/tests/host.sh` 8 of 8.
+- **Not done:** a phone boot of the new kernel (`codec/README.md`, "What a session on the phone must show").
+
+### On the phone (first run 2026-11-22, above)
 
 The runtime package carries `bin/oneios-encoder` and `bin/encctl` (built on the Linux PC or the Mac by
 `runtime/build.sh`). As root, One UI running, then a session:
@@ -3050,12 +3077,14 @@ adb shell su -c 'cd /data/local/tmp/oneios/runtime/bin && ./encctl h264 640 480'
 
 - `xnuhost.log`: `encoder: on: mediacodec-helper backend, media pool 48 MiB at ...`; `ONEIOS CODEC: 1 virtio-media
   device(s), 1 up; VideoToolbox paravirtualization registered (stage 2)`; `ONEIOS CODEC: device 0: oneios-encoder
-  ...`; `encoder: session N: HEVC WxH on mediacodec-helper`; `ONEIOS CODEC: counters:` with `sessions` and `frames
-  out` above 0 and `errors 0`.
-- `oneios-tool ioslog`: **no** `CMPhotoCompressionSessionAddImage ... (codec: 'hvc1')` /
-  `kCMBaseObjectError_UnsupportedOperation`; WidgetRenderer **without** `Content load failed`; `oneios-gpu-pixels:
-  WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`) [I: that iOS 27 saves one as HEIC].
-  `oneios-tool ioslog checks data.img` counts these failure lines in its `heic` row: 0 is the proof.
+  ...`; `encoder: session N: HEVC WxH on mediacodec-helper` (96x96 for chronod's 84x84 tiles); `ONEIOS CODEC:
+  counters:` with `sessions` growing slowly (not 3 a second), `frames in N out N` above 0, `errors 0`, `unknown` not
+  growing; the message lines `'ests'`, `'etil'`, `'ecti'`.
+- `oneios-tool phone pull-log DIR` (iOS's log): **no** `StartTileSession failed`; **no**
+  `CMPhotoCompressionSessionAddImage ... (codec: 'hvc1')` (`encode-fail 0` in `ioslog-health.txt`); WidgetRenderer **without**
+  `Content load failed`;
+  `oneios-gpu-pixels: WidgetRenderer_ ... drawn`; a screenshot saved as HEIC (`....ftypheic`) [I: that iOS 27 saves
+  one as HEIC]. `oneios-tool ioslog checks` counts these failure lines in its `heic` row: 0 is the proof.
 
 ## 7h. The host device (host-device, 2026-11-21)
 

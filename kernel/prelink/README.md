@@ -152,7 +152,9 @@ reviewed records are unchanged. Built on the Linux PC from `origin/main` `fb4ec8
 0081 and 0082, on the Mac (2026-11-22, `HOSTED_OUT=codec`, no reference kernel): `out/kernel/codec-24A446/kernel.kc`
 `5add18fab1cb64ce...` (96,845,824 bytes; `dyldrw-24A446`'s without the archive is 96,813,056), `audit: 2712 paired,
 92 functions on the stub, 9 data unpaired; 0 failures`, `prelink stubs-check` 666 good, 0 bad; again no pairing
-record was needed.
+record was needed. With iOS 27's tile session in the staged host (2026-11-22, `HOSTED_OUT=codecfix`):
+`out/kernel/codecfix-24A446/kernel.kc` `852adb8be21b525d...` (96,845,824 bytes), audit 2712 paired, 92 on the stub, 9
+data unpaired, 0 failures, `prelink stubs-check` 666 good, 0 bad; no pairing record needed.
 
 ## AMFI and launch constraints
 
