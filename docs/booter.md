@@ -1369,7 +1369,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
 
 - **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
   session proves it) or `pen=auto`; `pen-rotate=auto|0|90|180|270` (the digitizer's frame turned clockwise onto the
-  panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess); `pen-mirror=1` (then mirrored
+  panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess for such a device; the S24 Ultra's IC is portrait, so 0: Samsung's driver reports the IC's frame unturned, `docs/hardware.md` 7f); `pen-mirror=1` (then mirrored
   left to right). These three settings come from the command line, else from the image set's `xnuhost.conf` or its
   `overlay/userland/xnuhost.conf`; until 2026-11-22 the image set's were read and then dropped (`xh_config_finish` did
   not copy them), so the phone's `pen=auto` never turned the pen on and no session had a `pen:` line. With `pen=auto`,
@@ -1386,12 +1386,25 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   frame into one sample in those units (in range, tip, side button, eraser end; pressure only while the tip is down; a
   hover height never 0, half way for a device without `ABS_DISTANCE`; tilt by its resolution in units per radian, else
   as degrees within +-90, else its range's end as 90; at most +-89), sends only the fields that changed and nothing for
-  a frame like the last, and reads the state again after `SYN_DROPPED`. No `MSC_TIMESTAMP` on the pen's device (the
+  a frame like the last, and reads the state again after `SYN_DROPPED`. **Coalesced to the panel's rate** (spen-lag,
+  2026-11-22: the S Pen sent about 480 frames a second, each a HID report and a stylus event, and backboardd took 100 to
+  160 % of a CPU while drawing): an edge (in range or out, the tip down or up, the eraser end, the side button) goes at
+  once with the newest position; any other frame goes when 8.33 ms (`XH_PEN_PERIOD_NS`, 120 Hz) have passed since the
+  last send, by the frames' own kernel times (the read's time when a frame's is not within the last second); until then the newest is held and input.c's poll wakes for it when its
+  time comes (`xh_pen_due`, `xh_pen_tick`); the pressure sent is the most of the frames folded together while the tip
+  was down; a hovering frame within one guest pixel of the last one sent (`xh_pen_set_panel`, the guest's frame) is not
+  sent. No `MSC_TIMESTAMP` on the pen's device (the
   guest's scan-time code is the touch screen's). Log lines: `pen: /dev/input/eventN "NAME": read only, not grabbed; x
   A..B, y ..., pressure ..., distance ..., tilt x ... (res R); keys: ...; turned D degrees (why)`, or `pen: none found:
   why`; `pen: the guest's pen device is /arm-io/input-1 (the host's pen); oneios-pen=1`; `pen: the first event from
   NAME`; per time in range `pen: in range T ms: F frames (H hovering, C touching), S strokes, pressure up to P/4095,
-  tilt x a..b y c..d degrees, the side button pressed B times; U unchanged frames not sent`. The script's lines
+  height a..b/255 hovering, tilt x a..b y c..d degrees, the side button pressed B times; U unchanged frames not sent, C coalesced (at most one
+  frame per 8.3 ms but the edges), K hovering frames moved under a pixel; N sent`;
+  `; SW_PEN_INSERT V (Samsung: ...)` at the end of the device line and `pen: SW_PEN_INSERT V: the pen taken out of / put
+  back in its garage` at each change (Samsung's driver: 1 with the pen out); once, `pen: key N from the pen's IC, not a
+  pen key: its screen-off (AOP) mode ...` (the IC asleep; such keys are never passed on). With the host's pen xnuhost
+  sets `ONEIOS_PEN_IC=1` before the brightness bridge opens: the bridge then wakes and sleeps the pen's IC
+  (`/sys/class/sec/sec_epen/enabled`) with the touch IC (`runtime/bridges/brightness/README.md`). The script's lines
   (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.c`) go
   through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
   the side button. Host test: `test_pen` in `tests/test_xnuhost.c`.

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #ifdef __linux__
@@ -211,6 +212,32 @@ static unsigned touch_find(const char *dir, char nodes[TOUCH_MAX][200])
   return n;
 }
 
+// The S Pen's IC (spen, 2026-11-22): <dir>/sec_epen/enabled, the sec input class's power node of Samsung's Wacom driver
+// (drivers/input/sec_input/wacom: "sec,enable_sysinput_enabled" in the S24 Ultra's device tree, so `enabled` takes the
+// same "<display state>,<event>" as the touch IC's: 2,1 runs wacom_enable, 1,0 wacom_disable, which leaves the IC in its
+// garage/AOP survey mode, where it sends no coordinates). One UI's input HAL writes it at every panel power change, as
+// it does the touch IC's, so after the switch's blank it is asleep like the touch IC was (README.md, "The touch IC
+// follows the display"). Taken only with pen_ic (xnuhost gives the guest the host's pen). The folder is the driver's
+// class device name; when it has an input/ link, that must be the pen's ("sec_e-pen"). Appended after the touch ICs.
+static unsigned pen_find(const char *dir, char nodes[TOUCH_MAX][200], unsigned used)
+{
+  if (used >= TOUCH_MAX) return 0;
+  char path[200], name[40] = "";
+  snprintf(path, sizeof path, "%.120s/sec_epen/input/name", dir);
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd >= 0) {
+    ssize_t got = read(fd, name, sizeof name - 1);
+    close(fd);
+    if (got > 0) name[strcspn(name, "\r\n")] = 0;
+    if (got <= 0 || strcmp(name, "sec_e-pen")) return 0;
+  }
+  snprintf(path, sizeof path, "%.120s/sec_epen/enabled", dir);
+  struct stat st;
+  if (stat(path, &st) || !S_ISREG(st.st_mode) || access(path, W_OK)) return 0;
+  snprintf(nodes[used], 200, "%s", path);
+  return 1;
+}
+
 // What One UI's input HAL writes at a panel power change: "<display state>,<event>", state 2 on / 1 off, event 0
 // early then 1 late. On: only after the backlight is not 0. A write that fails is logged (the first three) and
 // nothing else changes.
@@ -403,6 +430,7 @@ br_bright *br_bright_open(const br_bright_options *options)
     o.als_millilux_per_count = env_u32("ONEIOS_ALS_SCALE", 0);
     o.start_percent = env_u32("ONEIOS_BRIGHT_START", 0);
     o.no_touch_off = env_u32("ONEIOS_TSP_OFF", 1) == 0;
+    o.pen_ic = env_u32("ONEIOS_PEN_IC", 0) == 1;
   }
   br_bright *b = calloc(1, sizeof *b);
   if (!b) return NULL;
@@ -449,14 +477,22 @@ br_bright *br_bright_open(const br_bright_options *options)
   // The touch IC, before the worker can run: One UI may have left it off, and nothing in a session wakes it.
   const char *touch_dir = o.touch_dir ? o.touch_dir : "/sys/class/sec";
   b->info.touch_nodes = treble ? 0 : touch_find(touch_dir, b->touch);
+  // The S Pen's IC beside them (pen_find): woken, slept and woken again with the touch IC, in the same writes.
+  b->info.pen_nodes = treble || !o.pen_ic ? 0 : pen_find(touch_dir, b->touch, b->info.touch_nodes);
   b->touch_sleep = !o.no_touch_off;
   if (treble) br_log(1, "brightness: touch: treble: no vendor-neutral power node for the touch IC: left alone (the panel driver's own)");
-  else if (b->info.touch_nodes) {
+  else if (b->info.touch_nodes || b->info.pen_nodes) {
     touch_power(b, true);
-    br_log(1, "brightness: touch: %u IC%s under %s (%s) woken; %s", b->info.touch_nodes, b->info.touch_nodes > 1 ? "s" : "", touch_dir, b->touch[0],
-           b->touch_sleep ? "asleep while iOS's display is off (its framebuffer's power request), woken at display on and at a power-key press; a brightness of 0 does not sleep it"
-                          : "kept awake when iOS's display is off (ONEIOS_TSP_OFF=0)");
+    if (b->info.touch_nodes)
+      br_log(1, "brightness: touch: %u IC%s under %s (%s) woken; %s", b->info.touch_nodes, b->info.touch_nodes > 1 ? "s" : "", touch_dir, b->touch[0],
+             b->touch_sleep ? "asleep while iOS's display is off (its framebuffer's power request), woken at display on and at a power-key press; a brightness of 0 does not sleep it"
+                            : "kept awake when iOS's display is off (ONEIOS_TSP_OFF=0)");
+    else br_log(1, "brightness: touch: no sec_touchscreen IC under %s: its power state is left alone", touch_dir);
   } else br_log(1, "brightness: touch: no sec_touchscreen IC under %s: its power state is left alone", touch_dir);
+  if (b->info.pen_nodes)
+    br_log(1, "brightness: pen: the S Pen's IC (%s) woken (2,0 then 2,1); it sleeps and wakes with the touch IC", b->touch[b->info.touch_nodes]);
+  else if (o.pen_ic && !treble)
+    br_log(1, "brightness: pen: no writable %s/sec_epen/enabled of sec_e-pen: the pen IC's power state is left alone (it may send nothing)", touch_dir);
   if (b->info.panel)
     br_log(1, "brightness: panel on: %s, %u..%u of %u (One UI left %u%s), the slider squared", b->info.node, b->info.floor, b->info.ceiling,
            b->info.max_brightness, b->info.saved, b->info.saved ? "" : ": iOS starts from the start level");
@@ -518,7 +554,7 @@ void br_bright_display(br_bright *b, bool on, const char *why)
 
 void br_bright_key(br_bright *b)
 {
-  if (!b || !b->info.touch_nodes) return;
+  if (!b || !(b->info.touch_nodes || b->info.pen_nodes)) return;
   pthread_mutex_lock(&b->lock);
   b->touch_request = TOUCH_WAKE;            // iOS turns the display on or off next; an off sleeps it again
   pthread_cond_signal(&b->wake);
@@ -553,7 +589,7 @@ void br_bright_close(br_bright *b)
     __atomic_store_n(&b->written, UINT32_MAX, __ATOMIC_RELAXED);
     panel_write(b, b->info.start);
   }
-  if (b->info.touch_nodes) touch_power(b, true);     // after the backlight; the return finds the IC awake
+  if (b->info.touch_nodes || b->info.pen_nodes) touch_power(b, true);     // after the backlight; the return finds the ICs awake
   if (b->als_running) pthread_join(b->als_thread, NULL);
   if (b->als_enabled_here) (void)write_text(b->als_enable, "0\n");
   if (b->als_fd >= 0) close(b->als_fd);

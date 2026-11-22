@@ -753,6 +753,8 @@ enum { XH_PEN_X, XH_PEN_Y, XH_PEN_PRESSURE, XH_PEN_DISTANCE, XH_PEN_TILT_X, XH_P
 #define XH_PEN_XY_MAX 32767
 #define XH_PEN_PRESSURE_MAX 4095
 #define XH_PEN_DISTANCE_MAX 255
+// At most one frame that is not an edge per this to the guest: the panel's 120 Hz (spen-lag, 2026-11-22).
+#define XH_PEN_PERIOD_NS 8333333
 // The host's pen device, as a lookup found it: its node (or what a backend names it), name, open descriptor (read only,
 // never grabbed; -1 for a scripted pen), axes, and which of the eraser end and the side button it has.
 typedef struct {
@@ -760,6 +762,8 @@ typedef struct {
   int  fd;
   xh_pen_axis axis[XH_PEN_AXES];
   bool rubber, stylus;
+  bool garage, pen_out;                     // garage: the device has SW_PEN_INSERT; pen_out: its value at the lookup
+                                            // (Samsung's driver reports 1 with the pen out of its garage)
 } xh_pen_device;
 // The lookup: 0 and *out filled (its descriptor open) when a pen is found; -1 and why not. One function, replaceable by
 // another hardware backend (xh_pen_lookup = its own) that finds the pen its own way; the default scans /dev/input by bits.
@@ -787,6 +791,8 @@ typedef struct {
   int64_t  since_ns;
   unsigned frames, hover, touching, strokes, presses, unchanged;
   int32_t  pressure_max, tilt_min[2], tilt_max[2];
+  int32_t  height_min, height_max;          // while hovering, in the guest's units (1..255)
+  unsigned coalesced, still, sent;          // frames held then replaced by a newer one; hovering frames within a pixel; sent
 } xh_pen_stats;
 typedef struct xh_pen_source {
   void   (*emit)(void *context, uint16_t type, uint16_t code, int32_t value);   // default: the guest's pen device's events
@@ -798,13 +804,26 @@ typedef struct xh_pen_source {
   int    (*read_state)(struct xh_pen_source *s, xh_pen_state *state);   // after SYN_DROPPED; 0 when read
   xh_pen_state  state;
   xh_pen_sample sent;                       // the last sample the guest was sent
+  xh_pen_sample prev;                       // the last frame of the device (sent or not)
+  int64_t  period_ns;                       // XH_PEN_PERIOD_NS (0: every frame)
+  int32_t  pixel_x, pixel_y;                // one panel pixel in the guest's units (xh_pen_set_panel)
+  bool     pending;                         // a frame is held: xh_pen_tick sends it at sent_ns + period_ns
+  xh_pen_sample held;
+  int32_t  held_pressure;                   // the most pressure of the frames folded since the last send
+  int64_t  sent_ns;
   unsigned drops, frames_sent;
   uint64_t events;
+  unsigned aop_keys;                        // KEY_WAKEUP_UNLOCK / KEY_HOMEPAGE from the pen's IC (its screen-off mode)
   xh_pen_stats stats;
 } xh_pen_source;
 void  xh_pen_source_init(xh_pen_source *s, xh_virtio *dev, const xh_pen_device *d, unsigned rotate, bool mirror);
 void  xh_pen_feed(xh_pen_source *s, const xh_input_ev *ev, unsigned n, int64_t now_ns);
 int   xh_pen_read_state(xh_pen_source *s, xh_pen_state *state);   // by ioctl on s->fd
+// The coalescing's clock: the time the held frame is due (0: none), and its send when due (input.c's thread, after poll).
+int64_t xh_pen_due(const xh_pen_source *s);
+void  xh_pen_tick(xh_pen_source *s, int64_t now_ns);
+// The guest's frame in pixels: a hovering frame that moves less than one is not sent (the default: 1440 x 3120).
+void  xh_pen_set_panel(xh_pen_source *s, unsigned width, unsigned height);
 // pen-rotate: "auto" (or "" ) from the digitizer's and the panel's aspect, else the number given; *why says which.
 unsigned xh_pen_rotation(const char *setting, const xh_pen_device *d, unsigned width, unsigned height, const char **why);
 // The guest's pen device: its name, keys and fixed ranges.

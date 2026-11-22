@@ -343,6 +343,56 @@ pub fn touch_wake(adb: &Adb) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- the S Pen's IC
+
+/// The S Pen's power node: Samsung's Wacom driver's `enabled` in the sec input class (docs/hardware.md 7f). It takes
+/// the same `<display state>,<event>` as the touch IC's; One UI's `1,0` leaves the IC in its screen-off survey mode,
+/// which sends no positions. The brightness bridge wakes it with the touch IC when xnuhost gives iOS the pen.
+pub const EPEN_ENABLED: &str = "/sys/class/sec/sec_epen/enabled";
+
+pub fn pen_read_script() -> String {
+    format!("cat {EPEN_ENABLED}\n")
+}
+
+/// The touch IC's wake, on the pen's node: `2,1` runs the driver's wacom_enable.
+pub fn pen_wake_script() -> String {
+    format!("echo 2,0 > {EPEN_ENABLED} && echo 2,1 > {EPEN_ENABLED}\n")
+}
+
+fn pen_read(adb: &Adb) -> Result<String> {
+    Ok(adb.root_ok(&pen_read_script(), &format!("reading {EPEN_ENABLED}"))?.trim().to_string())
+}
+
+fn pen_line(value: &str) -> String {
+    let means = match value {
+        "1" => "on",
+        "0" => "off: the pen's IC is in its screen-off mode and sends no positions (oneios-tool phone pen wake)",
+        _ => "neither 0 nor 1",
+    };
+    format!("pen: {EPEN_ENABLED} reads {value} ({means})")
+}
+
+/// `phone pen status`: read only.
+pub fn pen_status(adb: &Adb) -> Result<()> {
+    need_session(adb, "the S Pen's IC")?;
+    println!("{}", pen_line(&pen_read(adb)?));
+    Ok(())
+}
+
+/// `phone pen wake`: `2,0` then `2,1`, then the state read back.
+pub fn pen_wake(adb: &Adb) -> Result<()> {
+    need_session(adb, "the S Pen's IC")?;
+    let before = pen_read(adb)?;
+    adb.root_ok(&pen_wake_script(), &format!("writing 2,0 and 2,1 to {EPEN_ENABLED}"))?;
+    let after = pen_read(adb)?;
+    println!("pen: wrote 2,0 then 2,1 to {EPEN_ENABLED} (it read {before} before)");
+    println!("{}", pen_line(&after));
+    if after != "1" {
+        bail!("the pen's IC did not wake: {EPEN_ENABLED} reads {after}, not 1");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- the panel's level
 
 /// The level, the node's maximum and One UI's own value as the switch recorded it (`control/base/backlight`, which
@@ -451,11 +501,14 @@ mod tests {
             progress_script(0, 4242),
             touch_read_script(),
             touch_wake_script(),
+            pen_read_script(),
+            pen_wake_script(),
             backlight_read_script(),
             backlight_write_script(5350),
         ];
         let allowed = [
             "/sys/class/sec/tsp/enabled",
+            "/sys/class/sec/sec_epen/enabled",
             "/sys/class/backlight/panel0-backlight/brightness",
             "/sys/class/backlight/panel0-backlight/max_brightness",
             "/sys/fs/cgroup/oneios_session/cgroup.procs",
@@ -475,6 +528,8 @@ mod tests {
     fn the_touch_and_backlight_commands_are_the_phones() {
         assert_eq!(touch_wake_script(), "echo 2,0 > /sys/class/sec/tsp/enabled && echo 2,1 > /sys/class/sec/tsp/enabled\n");
         assert_eq!(touch_read_script(), "cat /sys/class/sec/tsp/enabled\n");
+        assert_eq!(pen_wake_script(), "echo 2,0 > /sys/class/sec/sec_epen/enabled && echo 2,1 > /sys/class/sec/sec_epen/enabled\n");
+        assert_eq!(pen_read_script(), "cat /sys/class/sec/sec_epen/enabled\n");
         assert_eq!(
             backlight_write_script(5350),
             "echo 5350 > /sys/class/backlight/panel0-backlight/brightness && cat /sys/class/backlight/panel0-backlight/brightness\n"

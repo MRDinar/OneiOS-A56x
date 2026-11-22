@@ -239,6 +239,65 @@ static void test_touch(void)
   o.start_percent = 0;
   put(panel, "brightness", "100\n");
   trace_is(trace);
+  // The S Pen's IC (ONEIOS_PEN_IC=1, xnuhost with the host's pen): sec_epen/enabled beside the touch IC, in the same
+  // writes, but only when its input/ link is the pen's (here it first says sec_touchscreen: not taken).
+  o.pen_ic = true;
+  b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) {
+    br_bright_info i;
+    br_bright_info_get(b, &i);
+    CHECK(i.touch_nodes == 1 && i.pen_nodes == 0 && trace_is("t:2,0 t:2,1") && get(sec, "sec_epen/enabled") == 0);
+    br_bright_close(b);
+    trace_is(trace);
+  }
+  char pen_input[400];
+  snprintf(pen_input, sizeof pen_input, "%s/sec_epen/input", sec);
+  put(pen_input, "name", "sec_e-pen\n");
+  b = br_bright_open(&o);
+  CHECK(b != NULL);
+  if (b) {
+    br_bright_info i;
+    br_bright_info_get(b, &i);
+    // Woken at the start with the touch IC; asleep with it at iOS's display off; woken at the on, at a power-key
+    // press and at the close. The touchpad's node is never written.
+    CHECK(i.touch_nodes == 1 && i.pen_nodes == 1 && trace_is("t:2,0 t:2,1 t:2,0 t:2,1"));
+    CHECK(get(sec, "sec_epen/enabled") == 2 && get(tsp, "enabled") == 2);
+    br_bright_display(b, false, "test"); usleep(80000);
+    CHECK(get(sec, "sec_epen/enabled") == 1 && get(tsp, "enabled") == 1);
+    br_bright_key(b); usleep(80000);
+    CHECK(get(sec, "sec_epen/enabled") == 2 && get(tsp, "enabled") == 2);
+    br_bright_display(b, true, "test"); usleep(80000);
+    br_bright_display(b, false, "test"); usleep(80000);
+    CHECK(get(sec, "sec_epen/enabled") == 1 && get(tsp, "enabled") == 1);
+    br_bright_close(b);
+    CHECK(get(sec, "sec_epen/enabled") == 2 && get(tsp, "enabled") == 2 && get(sec, "tsp_pad/enabled") == 0);
+    trace_is(trace);
+  }
+  // A pen IC without an input/ link: taken by its folder's name alone. Without pen_ic: never written.
+  char command_rm_pen[480];
+  snprintf(command_rm_pen, sizeof command_rm_pen, "rm -rf %s", pen_input);
+  CHECK(system(command_rm_pen) == 0);
+  put(sec, "sec_epen/enabled", "0,0\n");
+  b = br_bright_open(&o);
+  if (b) {
+    br_bright_info i;
+    br_bright_info_get(b, &i);
+    CHECK(i.pen_nodes == 1 && get(sec, "sec_epen/enabled") == 2);
+    br_bright_close(b);
+    trace_is(trace);
+  }
+  o.pen_ic = false;
+  put(sec, "sec_epen/enabled", "0,0\n");
+  b = br_bright_open(&o);
+  if (b) {
+    br_bright_info i;
+    br_bright_info_get(b, &i);
+    CHECK(i.pen_nodes == 0 && get(sec, "sec_epen/enabled") == 0);
+    br_bright_close(b);
+    CHECK(get(sec, "sec_epen/enabled") == 0);
+    trace_is(trace);
+  }
   // A phone without the node: no touch writes, the panel works.
   o.touch_dir = nosec;
   b = br_bright_open(&o);

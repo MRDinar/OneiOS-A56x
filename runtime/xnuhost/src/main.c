@@ -620,7 +620,10 @@ static int boot(void)
            pen.mirror ? ", mirrored" : "", *why ? "; " : "", why);
     } else if (config.input) LOGI("pen: none found: %s", why);
     if (pen.device.fd >= 0 || script_pen) {
-      pen.dev = xh_virtio_input_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev);
+      // The pen's IC sleeps with One UI's display (its `1,0` at the switch): the brightness bridge wakes it with the touch
+      // IC, and sleeps it with iOS's display, only for the host's pen (bridges/brightness/README.md).
+      if (pen.device.fd >= 0) setenv("ONEIOS_PEN_IC", "1", 1);
+      pen.dev =xh_virtio_input_create(XL_BOARD_VIRTIO + ndev * XL_BOARD_VIRTIO_SIZE, XL_BOARD_VIRTIO_SPI + ndev);
       if (!pen.dev) return -1;
       xh_pen_guest_device(pen.dev);
       kinds[ndev++] = XL_DEV_INPUT;
