@@ -9,6 +9,14 @@
 #   bench     the trap path's costs (docs/booter.md 2.6a): the test kernel's benchmarks, then xnuhost's "perf:" report
 #   parallel  N threads of one task, one per vCPU (docs/booter.md 2.6b): the speed-up for 1, 2, 4 and 8 threads
 #   rpc       the Mach RPC round trip (docs/booter.md 2.6d), once per interrupt path (RPC_MODES)
+#   ab        two binaries compared: the bench and rpc boots of XNUHOST and XNUHOST_B in turn, AB_ROUNDS rounds, all
+#             pinned to the same cores, then each BENCH line's mean over the rounds for both and B's difference in %.
+#             One run of each is not a comparison: a boot's numbers move 10-30% with the host cores it lands on (a
+#             hybrid PC's fast and slow cores) and the load; alternate rounds on the same cores move by about 3%.
+#               XNUHOST_B=FILE  the other binary (default the C one, build/android/xnuhost)
+#               AB_ROUNDS=N     rounds (default 4); logs in WORK/ab (A.N.txt, B.N.txt)
+#               PIN=CPUS        the host CPUs (taskset -c); for ab the default is one thread of each fastest core
+#                               (cpufreq's cpuinfo_max_freq within 10% of the top, the first of its siblings)
 # It builds, unless given: the static xnuhost (cargo, aarch64-linux-android, crt-static, target dir target/machine-static),
 # the test kernel (testkernel/build.sh) and its image (the loader crate's mkkernel: kernel.kc, os.img).
 #   XNUHOST=FILE   boot this binary instead (e.g. the C one: make -C runtime/xnuhost build/android/xnuhost)
@@ -26,8 +34,8 @@ work=${WORK:-$runtime/target/machine-check}
 mkdir -p "$work/testdata"
 [ $# -gt 0 ] || set -- check
 for what in "$@"; do
-  case $what in smoke|check|bench|parallel|rpc) ;; all) set -- smoke check bench parallel rpc; break ;;
-    *) echo "usage: check-arm64.sh [smoke|check|bench|parallel|rpc|all]..." >&2; exit 2 ;; esac
+  case $what in smoke|check|bench|parallel|rpc|ab) ;; all) set -- smoke check bench parallel rpc; break ;;
+    *) echo "usage: check-arm64.sh [smoke|check|bench|parallel|rpc|ab|all]..." >&2; exit 2 ;; esac
 done
 
 case "$(uname -s)/$(uname -m)" in
@@ -35,6 +43,29 @@ case "$(uname -s)/$(uname -m)" in
   *) run=${QEMU:-$(command -v qemu-aarch64 || true)}
      [ -n "$run" ] || { echo "check-arm64: qemu-aarch64 not installed: skipped"; exit 0; } ;;
 esac
+# One thread of each of the fastest cores: cpuinfo_max_freq within 10% of the top, the first CPU of its siblings.
+fast_cpus() {
+  top=0 n=0
+  while [ -d /sys/devices/system/cpu/cpu$n ]; do
+    f=$(cat /sys/devices/system/cpu/cpu$n/cpufreq/cpuinfo_max_freq 2>/dev/null || echo 0)
+    [ "$f" -gt "$top" ] && top=$f
+    n=$((n + 1))
+  done
+  list= n=0
+  while [ -d /sys/devices/system/cpu/cpu$n ]; do
+    d=/sys/devices/system/cpu/cpu$n
+    f=$(cat "$d/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo 0)
+    first=$(cut -d, -f1 "$d/topology/thread_siblings_list" 2>/dev/null | cut -d- -f1)
+    [ "$f" -ge $((top - top / 10)) ] && [ "${first:-$n}" = "$n" ] && list=$list${list:+,}$n
+    n=$((n + 1))
+  done
+  echo "$list"
+}
+for what in "$@"; do [ "$what" = ab ] && [ -z "${PIN:-}" ] && PIN=$(fast_cpus); done
+if [ -n "${PIN:-}" ]; then
+  command -v taskset > /dev/null || { echo "check-arm64: PIN needs taskset (util-linux)" >&2; exit 2; }
+  run="taskset -c $PIN${run:+ $run}"
+fi
 
 # ---- what is booted -----------------------------------------------------------------------------------------------
 static_build() {
@@ -88,5 +119,39 @@ for what in "$@"; do
         --boot-args "$(scaled testkernel-rpc "${RPC_SCALE:-}") testkernel-rpc-mode=$m" ${RPC_SET:-} > "$work/rpc-$m.log" 2>&1 || true
       grep -E 'RPC|BENCH|perf: [0-9.]+ s since|perf:   (up|down|queue|release)|emulated: insn|TESTKERNEL: (all|FAIL)' "$work/rpc-$m.log"
     done ;;
+  ab)
+    b=${XNUHOST_B:-$here/build/android/xnuhost}
+    [ -x "$b" ] || { echo "check-arm64 ab: no $b (XNUHOST_B=FILE, or make -C runtime/xnuhost build/android/xnuhost)" >&2; exit 2; }
+    echo "ab: A $XNUHOST"
+    echo "ab: B $b"
+    echo "ab: ${AB_ROUNDS:-4} rounds, each binary in turn, on host CPUs $PIN"
+    mkdir -p "$work/ab"
+    rm -f "$work/ab"/A.*.txt "$work/ab"/B.*.txt # only this run's rounds go into the means
+    i=1
+    while [ "$i" -le "${AB_ROUNDS:-4}" ]; do
+      for side in A B; do
+        bin=$XNUHOST; [ $side = B ] && bin=$b
+        echo "ab: round $i $side (load $(cut -d' ' -f1 /proc/loadavg))"
+        # PIN is set: the boots below run on the same cores
+        WORK=$work/ab/work XNUHOST=$bin IMAGE=$IMAGE PIN=$PIN sh "$0" bench rpc > "$work/ab/$side.$i.txt" 2>&1 || true
+      done
+      i=$((i + 1))
+    done
+    # Each BENCH line's mean (ns) over the rounds; the rpc lines are keyed by their mode ("RPC: mode N").
+    for side in A B; do
+      cat "$work/ab/$side".*.txt | awk -v side=$side '
+        /RPC: mode/ { mode = $0; sub(/.*RPC: mode /, "", mode); sub(/,.*/, "", mode) }
+        /BENCH/ && / mean / {
+          l = $0; sub(/.*BENCH +/, "", l); k = l; sub(/:.*/, "", k); if (l ~ /^(rpc|IPI)/) k = "rpc " mode ": " k
+          m = l; sub(/.* mean /, "", m); sub(/ ns.*/, "", m); print side "\t" k "\t" m }'
+    done | awk -F'\t' '
+      { if (!(($2) in seen)) { seen[$2] = 1; order[++n] = $2 } s[$1, $2] += $3; c[$1, $2]++ }
+      END {
+        printf "ab: %-74s %9s %9s %7s\n", "mean ns over the rounds", "A", "B", "B vs A"
+        for (i = 1; i <= n; i++) {
+          k = order[i]; a = c["A", k] ? s["A", k] / c["A", k] : 0; b = c["B", k] ? s["B", k] / c["B", k] : 0
+          printf "ab: %-74s %9.0f %9.0f %+6.1f%%\n", substr(k, 1, 74), a, b, a ? (b - a) * 100 / a : 0
+        }
+      }' ;;
   esac
 done

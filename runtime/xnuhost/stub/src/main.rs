@@ -97,11 +97,22 @@ macro_rules! sys {
     }};
 }
 
-/// A byte copy the compiler does not turn into a memcpy call.
+/// A copy the compiler does not turn into a memcpy call (the blob has none): by 8-byte words when both ends and the
+/// length allow it (every register block of a trap: x0-x30 and V0-V31 of the signal frame and the trap page, the esr),
+/// else by bytes. Each trap copies about 1.5 KiB in and out; byte by byte (stub.c's copy, the Rust port's first
+/// version) that was some 9000 instructions per trap, about 60% of the handler's (2026-11-23).
 ///
 /// # Safety
 /// `from` and `to` are valid for `n` bytes.
 unsafe fn copy(to: *mut u8, from: *const u8, n: usize) {
+    if (to as usize | from as usize | n) & 7 == 0 {
+        let (to, from) = (to as *mut u64, from as *const u64);
+        for i in 0..n / 8 {
+            // SAFETY: the caller's ranges, 8-byte aligned (checked above).
+            unsafe { write_volatile(to.add(i), read_volatile(from.add(i))) };
+        }
+        return;
+    }
     for i in 0..n {
         // SAFETY: the caller's ranges.
         unsafe { write_volatile(to.add(i), read_volatile(from.add(i))) };

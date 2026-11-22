@@ -829,6 +829,22 @@ here (p50 21.0 us); the lock-free count does not. On the phone (15:35 boot) the 
 round trips per 30 s (about 1.5 vCPUs); how many of them this queues depends on how many of those tasks were running
 then: not measured yet (the `perf:` line's `task_unmap N queued, M ordered`).
 
+**The stub's register copy, and the Rust xnuhost against the C** (2026-11-23, branch `rust-runtime`, the x86_64 laptop
+(i9-12900H), qemu-aarch64, the C test image `build/android/testimage`, `check-arm64.sh ab`: the two binaries in turn
+on the same six P cores, means over the rounds). The Rust port was reported 7% slower on the null call (10.96 against
+11.75 us); pinned and alternated it was not (6 rounds each, load 1-2.6): null call C 9.86, Rust 9.77 us; svc to the
+kernel 4.84 / 4.80; release to user code 4.95 / 4.90; page fault 14.5 / 14.8; every other line within the 3% that
+rounds of one binary move. Unpinned single runs move 10-30% with the cores qemu lands on (P or E) and the load, which
+is where the 7% came from. What both spent most of a half on was the stub: its handler copied x0-x30, V0-V31, fpsr,
+fpcr and the esr between the signal frame and the trap page **one volatile byte at a time** (`stub.c`'s `copy`, kept
+by the port so that no memcpy call appears in the blob), about 1.5 KiB per trap and some 9000 instructions. The
+Rust stub now copies by 8-byte words when both ends are aligned (all of these are): pinned, 6 rounds (load 6-12),
+null call C 9.95 us, Rust before 10.63, Rust after **6.48 us**; svc to the kernel 4.88 / 5.22 / **3.14**; release to
+user code 5.00 / 5.34 / **3.28**; xnuhost's `up` step 3.27 / 3.39 / **1.93** us; page fault 14.7 / 15.6 / **11.1**; timer
+interrupt 12.9 / 15.8 / **11.0**; rpc mode 2 (one vCPU) 19.5 / 18.3 / **12.2**. On the phone the same loop was about
+1500 bytes a trap at roughly a byte a cycle each way: not measured there yet (the `perf:` lines' `up` and `down`).
+The C stub (`stub/stub.c`, still what the C build ships) keeps the byte copy.
+
 **On the phone** (combined boot of 2026-11-12 12:30, kernel.kc 1e297354, runtime 0.1.10-dev; `cpu-pin=1`, vCPU *i*
 on CPU *i*; 30 s windows during the boot): 17,000-22,600 task traps a second, two to three faults for each system
 call. Each hand-off took 10-12 us at p50 (up and down alike), ten times the container's: the cores were slow then (the

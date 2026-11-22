@@ -442,13 +442,18 @@ after):
   `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips
   (`docs/booter.md` 2.6d has the numbers). On the phone: the same command line, as the parallel test's (2.6c step 2).
   Not part of `make test`.
-- The Rust xnuhost (branch `rust-runtime`, runtime/RUST.md): `runtime/xnuhost/check-arm64.sh [smoke|check|bench|parallel|rpc|all]`
+- The Rust xnuhost (branch `rust-runtime`, runtime/RUST.md): `runtime/xnuhost/check-arm64.sh [smoke|check|bench|parallel|rpc|ab|all]`
   does what the four targets above did. It builds the static xnuhost (`cargo build --release --target aarch64-linux-android
   -p xnuhost`, crt-static, `runtime/target/machine-static`), the test kernel (`testkernel/build.sh`) and its image (the
   loader crate's `mkkernel`), then runs `testkernel/check-arm64.sh` (check: the same three boots and greps) and the
   bench, parallel and rpc boots with the same settings (`BENCH_SET`, `PAR_CPUS`, `PAR_SET`, `RPC_MODES`, ...; logs in
   `runtime/target/machine-check`). `XNUHOST=FILE IMAGE=DIR` boot another binary and image, e.g. the C one, for numbers
-  on the same host and load. `smoke` needs no kernel: `examples/machine_smoke.rs` runs a few instructions of
+  on the same host and load. `ab` compares two binaries: the bench and rpc boots of `XNUHOST` (default the Rust one it
+  builds) and `XNUHOST_B` (default the C one, `build/android/xnuhost`) in turn, `AB_ROUNDS` rounds (default 4), all on
+  the same host CPUs (`PIN=CPUS`, `taskset -c`; default one thread of each fastest core), then a table of each BENCH
+  line's mean over the rounds for both and B's difference in % (logs in `WORK/ab`). Single runs are no comparison: on
+  the i9-12900H laptop a boot's numbers moved 10-30% with the cores it landed on (P or E) and the load, while
+  alternated rounds on the same P cores agree within about 3%. `PIN=CPUS` also pins any other mode. `smoke` needs no kernel: `examples/machine_smoke.rs` runs a few instructions of
   hand-written "kernel" on one vCPU through every seam (a trapped `mrs`, host calls, a UART store, an interrupt on a host
   call's return, a timer signal diverted through frame_resume; then the task layer: the factory, a task, a thread, a page of user code
   run to a system call, a fault filled by task_map and a brk) and prints `machine-smoke: passed` (passed under
