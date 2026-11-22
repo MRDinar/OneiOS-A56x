@@ -19,6 +19,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
     ("jetsam", "memory pressure kills", r"memorystatus: killing|JetsamEvent|jetsam"),
     ("watchdogs", "launchd's extension check-in timeout, 0x8BADF00D, failed graceful exits", r"Extension is hanging on launch|CHECK_IN_TIMEOUT|8BADF00D|Failed to terminate gracefully"),
     ("audio", "the HAL I/O thread's realtime policy, mixer timeouts, haptics", r"configure_thread_for_realtime|timed out after 3\.000s|IO Stopped Context|Haptics: unsupported"),
+    ("heic", "CMPhoto finds no HEVC encoder (the guest codec archive or encoder=auto missing): widget snapshots white, no HEIC", r"CMPhotoCompressionSessionAddImage|codec: 'hvc1'|Content load failed"),
 ];
 
 struct Hit {

@@ -172,7 +172,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "pen")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) { strcpy(c->pen, value); c->pen_given = true; } }
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) { strcpy(c->pen_rotate, value); c->pen_rotate_given = true; } }
   else if (!strcmp(key, "pen-mirror")) { if (flag(value, &c->pen_mirror)) return -1; c->pen_mirror_given = true; }
-  else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off"); if (ok) strcpy(c->encoder, value); }
+  else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) { strcpy(c->encoder, value); c->encoder_given = true; } }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) { strcpy(c->wifi, value); c->wifi_given = true; } }
@@ -418,6 +418,9 @@ int xh_config_finish(xh_config *c)
   if (!c->pen_given && from_image.pen_given) strcpy(c->pen, from_image.pen);
   if (!c->pen_rotate_given && from_image.pen_rotate_given) strcpy(c->pen_rotate, from_image.pen_rotate);
   if (!c->pen_mirror_given && from_image.pen_mirror_given) c->pen_mirror = from_image.pen_mirror;
+  // encoder= of the image set: the way a phone session turns the video encoder on (the OneOS app passes no --set
+  // encoder=). Until 2026-11-22 it was read and then dropped, so encoder=auto in xnuhost.conf did nothing.
+  if (!c->encoder_given && from_image.encoder_given) strcpy(c->encoder, from_image.encoder);
   // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
   // Never let an input-grabbing guest take control of Android outside a SHM bench.
   if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||

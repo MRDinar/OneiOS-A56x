@@ -115,8 +115,10 @@ typedef struct {
                             // xh_pen_lookup) or the script's pen as the guest's pen device /arm-io/input-1, and oneios-pen=1
   char  pen_rotate[8];      // pen-rotate=auto|0|90|180|270: the digitizer's frame turned clockwise onto the panel's
   bool  pen_mirror;         // pen-mirror=1: then mirrored left to right
-  char  encoder[8];         // encoder=off (default, until the guest codec archive + pmap patch land) | auto: the video
-                            // encoder bridge (runtime/bridges/encoder), /arm-io/virtio-media-0 with a media-host-pool
+  char  encoder[8];         // encoder=off (the default until a phone session proves it) | auto: the video encoder
+                            // bridge (runtime/bridges/encoder), /arm-io/virtio-media-0 with a media-host-pool: the
+                            // phone's MediaCodec through the oneios-encoder helper in a session (the bridges on), the
+                            // stand-in encoder inside xnuhost with the bridges off (a PC boot) | sim: the stand-in always
   bool  tasks;              // start the task factory
   int   task_uid;           // uid of iOS task processes, -1 = xnuhost's own
   int   log_level;
@@ -148,6 +150,7 @@ typedef struct {
                             // radio with two networks, for a boot with no phone; works with the bridges off)
   bool  bluetooth_given, haptics_given, wifi_given; // set here (xh_config_set): the command line wins over the image set's
   bool  pen_given, pen_rotate_given, pen_mirror_given;   // the same for pen=, pen-rotate=, pen-mirror=
+  bool  encoder_given;      // and for encoder=
   br_hw_settings hw;        // hw-backend=samsung|treble, hw-backend-<bridge>=..., hw-backend-fallback=0|1: which form of the
                             // phone's hardware each bridge uses (bridges/hw_backend.h; docs/hardware.md, "Hardware backends")
   // The host phone (bridges/host_device.h; docs/hardware.md, "The host device"): host-device=auto|none|NAME ("" unset: auto),

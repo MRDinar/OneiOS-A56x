@@ -44,7 +44,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2; [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
-| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
+| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
 | `--set panel-fallback=WxH[@HZ]` (or `panel-fallback=` in `xnuhost.conf`) | 1440x3120@120 | the mode assumed only where the panel cannot be read (no helper report in time, no DRM panel; a bench run): section 2.8 step 4. For a phone whose panel is not the S24 Ultra's: the Galaxy S25 and A56 are 1080x2340@120 (`docs/s25.md`, `docs/a56.md`). A read panel still wins |
@@ -1140,6 +1140,20 @@ effect is logged for the first 8, then at 16, 32, ...; `haptics: counters: ...` 
 ([hardware.md](hardware.md) section 5). With `haptics-native-impacts=1` (the table above; ported from the S26 Ultra fork's session opt-in, 2026-11-21) the
 start says `haptics: native impacts asked for (...)` and the bridge `haptics: native impacts enabled ...` once the HAL
 has the three presets; without them the bridge stays on VIB/STOP.
+The video encoder (`encoder=` in the image set's `xnuhost.conf` or its `overlay/userland/xnuhost.conf`, `--set
+encoder=...`, the command line wins; hevc-encoder and hevc-guest, 2026-11-15; until 2026-11-22 the image set's
+`encoder=` was read and then dropped, so only `--set` turned it on):
+`off`, the default until a phone session proves it, gives the guest no device; `auto` carves the 48 MiB media pool
+between the GPU pool and the boot framebuffer (both inside the 64 MiB the hosted kernel lets a task map), makes the
+`droidvm,virtio-media` device `/arm-io/virtio-media-0` with its `media-host-pool`, and adds `droidvm-vt-paravirt=1`
+to the guest's boot arguments, so the kernel's codec archive publishes iOS's paravirtualized VideoToolbox driver.
+With the bridges on (a session) the encoder is the phone's MediaCodec through `bin/oneios-encoder` (`encoder: on:
+mediacodec-helper backend, media pool 48 MiB at 0x... (2 session slots)`; `encoder: off: no bin/oneios-encoder in
+the runtime (the MediaCodec helper)` when the runtime has none). With the bridges off (a PC boot) it is the stand-in
+encoder inside xnuhost (`encoder: on: stand-in backend, ...`, then `encoder: the stand-in encoder (encoder=auto with
+the bridges off: no phone): no MediaCodec; every frame is coded as it is (I_PCM), no compression`); `sim` is the
+stand-in always, also in a session. `encoder: session N: HEVC WxH on <backend>` at each encoder session
+([hardware.md](hardware.md) section 7g, `runtime/bridges/encoder/README.md`).
 The network (`wifi=` in `xnuhost.conf`, `--set wifi=...`): `auto`, the default, makes the phone's wlan0 the guest's
 en0 (`br_wlan_prepare`, [hardware.md](hardware.md) section 3): the `net` window's virtio-net device carries wlan0's
 address in its configuration, its frames go to and from wlan0 by AF_PACKET, and the guest driver's station messages
