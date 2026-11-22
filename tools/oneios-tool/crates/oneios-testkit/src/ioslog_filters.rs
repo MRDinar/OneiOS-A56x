@@ -149,7 +149,8 @@ pub fn run(tool: &str, source: &str, reference: &str, work: &str) -> Result<i32>
     let out = format!("{work}/filter.csv");
     let show = |extra: &[String], to_file: bool| {
         let mut c = Command::new(tool);
-        c.args(["ioslog", "show", source]);
+        // the library's times, as in the reference CSV (`ioslog show --library-times`)
+        c.args(["ioslog", "show", source, "--library-times"]);
         if to_file {
             c.args(["-f", "csv", "-o", &out]);
         }

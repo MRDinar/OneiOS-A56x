@@ -769,7 +769,7 @@ mount the Data volume, copy `db/diagnostics/{Persist,Special,Signpost,HighVolume
 `.logarchive`, run `unifiedlog_iterator -m log-archive -i ARCHIVE -f csv -o OUT`.
 
 ```sh
-oneios-tool ioslog show SOURCE [-f text|csv|jsonl] [-o OUT] [filters] [--sort]
+oneios-tool ioslog show SOURCE [-f text|csv|jsonl] [-o OUT] [filters] [--sort] [--library-times]
 oneios-tool ioslog boots SOURCE                       # the boots: UUID, start, first and last entry, entries
 oneios-tool ioslog checks SOURCE [--boot last|all|UUID] [--examples N]
 oneios-tool ioslog health [SOURCE] [--boot last|all|UUID] [--top N] [--detail] [--examples N] [-o FILE] [--stage DIR]
@@ -816,8 +816,22 @@ oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual step
   archive and `encoder=auto`, not yet seen on the phone, 2026-11-22). **The patterns are the texts the project's
   notes quote; they were written without the phone's log at hand.** A count of 0 means the text is not in the log.
 - The guest's clock was about a day behind the host's in the 2026-11-12 sessions, so the log's dates are too.
+- **Times on the phone's counter (fixed 2026-11-22).** The decoder library turns a boot's ticks into nanoseconds only for
+  the timebase 125/3 (Apple's 24 MHz counter) and takes every other one as 1/1. The phone's counter runs at 19.2 MHz
+  (timebase 625/12, 52.08 ns a tick), so before the fix each time was 52 times too near the time record before it: the
+  2026-11-22 boot of 47.6 min read as 55 s, and the kernel's 10 s `oneios-cpu` lines were 0.19 s apart. Every command
+  (`show`, `boots`, `checks`, `health`, `keyboard`, the `--since`/`--until` filters) now scales each time from the
+  record the library placed it by (`Clock` in `src/lib.rs`; a boot of 125/3 or 1/1 is left as it is). Checked on that
+  session's store: backboardd's AttentionAwareness lines carry its own clock (seconds since boot), and three gaps of it
+  (121.75 s, 120.15 s, 217.14 s) are now the gaps of the entries' times to 1 ms; the `oneios-cpu` lines are 10.0 s
+  apart. One case is not undone exactly [I]: an entry the library placed from the boot's start (a chunk with no base
+  time) before the first record. `show --library-times` writes the library's own times, as `unifiedlog_iterator` does
+  (its CSV of that store, `--proc wifid`, is byte for byte the old tool's); `tests/ioslog/compare.sh` and `debug
+  ioslog-filters` use it. Test: `cargo test -p oneios-ioslog guest_clock` (the library's own resolver, a 19.2 MHz boot
+  with three records, a 125/3 and a 1/1 boot).
 - Reading iOS's log of a phone boot needs no copy of `data.img`: `oneios-tool phone pull-log DIR` runs `ioslog show` on
-  the phone and pulls only the gzipped text (and writes the health and keyboard reports). - Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
+  the phone and pulls only the gzipped text (and writes the health and keyboard reports).
+- Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
   `Info.plist` in the saved archive (Apple's `log show --archive` wants one; Mandiant's tool does not).
 
 ### health: the counts that tell lag and heat apart
@@ -986,8 +1000,8 @@ entries): `key-taps 72` (WebSheet 66: 12 downs and 54 ups; Spotlight 6), `hangs 
 the longest 52.21 s; Spotlight 30 with 76.9 s; SpringBoard 30), `asset-lock 94` (kbd 57; asset sets
 com.apple.linguisticdata 71), `asset-query 165` (kbd 112), `language-model 8`, `kb-screen 25` (Spotlight 21),
 `kb-placement 481` (WebSheet 231, SpringBoard 137, Spotlight 77), `text-input 90`. As in health, a count is a number of
-log lines. That session's log times ran slow against the wall (11 minutes of session in 55 s of log time): read orders
-and counts there, not gaps. Tests: `cargo test -p oneios-ioslog` (keyboard_tests.rs: lines written by hand in the
+log lines. That run's times ran 52 times too slow (the library's timebase, fixed 2026-11-22 above: the boot lasted
+47.6 min, not 55 s); the counts do not change. Tests: `cargo test -p oneios-ioslog` (keyboard_tests.rs: lines written by hand in the
 shapes of that session's lines, no Apple file).
 
 ### The comparison

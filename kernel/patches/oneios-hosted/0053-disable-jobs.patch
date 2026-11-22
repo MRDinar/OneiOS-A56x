@@ -16,15 +16,15 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +/*
 + * OneiOS hosted (0053): launchd jobs disabled in the Data store's disabled.plist before launchd, for a Data store made
 + * from a seed whose daemon policy did not disable them yet (the roottweak's daemons.toml does, in new seeds); the
-+ * counterpart of 0044. The list is oneios-disable-jobs=LABEL[,LABEL...] (default com.apple.accessibility.axassetsd;
-+ * "-" for none). An entry <false/> becomes <true/>, a missing one is added after the top <dict>, a missing file is
-+ * written with only these (root, 0644, as launchd wants it). One line per label:
-+ *   oneios-jobs: com.apple.accessibility.axassetsd: disabled in disabled.plist (it was not)    or: disabled there already
-+ * Why axassetsd: it enumerates the speech synthesis audio units (TextToSpeech's fetchExtensions for
-+ * com.apple.AudioUnit-Speech) at load and on each com.apple.coreaudio.components.changed and
-+ * LaunchServices.ApplicationsChanged. SiriAUSP, MacinTalkAUSP, MauiAUSP and KonaSynthesizer were started together and
-+ * each was killed 3-4 s later while still in dyld (EXC_CRASH, SIGKILL, code 0x9000000), every 8-10 s for about 50 s
-+ * (phone, 2026-11-12 14:12); the four corpses at a time filled the kernel's corpse limit, so a later crash had no report.
++ * counterpart of 0044. The list is oneios-disable-jobs=LABEL[,LABEL...] (default: the three below; "-" for none).
++ * An entry <false/> becomes <true/>, a missing one is added after the top <dict>, a missing file is written with
++ * only these (root, 0644, as launchd wants it). One line per label, e.g. `oneios-jobs: com.apple.aonsensed:
++ * disabled in disabled.plist (it was not)`, or `disabled there already`. Why (daemons.toml `loops` has the same):
++ * axassetsd enumerates the speech synthesis audio units at load and on each components or applications change; the
++ * four units were killed in dyld (SIGKILL) every 8-10 s and their corpses filled the corpse limit (2026-11-12).
++ * aonsensed (2026-11-22): no AON sensing here (wifid, locationd: "AONSense.isAvailable,false"); it exits 0 and
++ * launchd starts it again as the publisher of com.apple.proximity.launch, every 10-20 s. prngseedd: seputil
++ * --daemonize-reseed (a reseed from the SEP; there is none) is started again by its xpc activity about every 10 s.
 + */
 +static void
 +oneios_jobs_disable(void)
@@ -33,7 +33,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +	static const char empty[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 +	    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
 +	    "<plist version=\"1.0\">\n<dict>\n</dict>\n</plist>\n";
-+	char labels[256] = "com.apple.accessibility.axassetsd";
++	char labels[256] = "com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd";
 +	vfs_context_t ctx = vfs_context_current();
 +	(void)PE_parse_boot_argn("oneios-disable-jobs", labels, sizeof(labels));
 +	if (labels[0] == 0 || !strcmp(labels, "-")) {

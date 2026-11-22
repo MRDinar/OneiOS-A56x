@@ -457,6 +457,15 @@ Two loops of the boots of 2026-11-11/12 (`c2`, `diag`, `combo1` logs).
   (it was not)`, later boots `... disabled there already`. Cost: Accessibility's downloadable assets (more voices,
   Sound Recognition, Magnifier, Back Tap and image-caption models); the built-in voices stay. Settings' Spoken
   Content may still start the units when it lists voices. Built (HOSTED_OUT=crashes); the plist logic run on the Mac.
+- **0053's default list, 2026-11-22**: `com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd`
+  (the daemon policy's group `loops` has the same three; `docs/userland.md` 11). aonsensed: no AON sensing here (wifid
+  and locationd log `AONSense.isAvailable,false`); it exits 0 and launchd starts it again as the publisher of
+  `com.apple.proximity.launch`, every 10-20 s (21 starts in the session log of 2026-11-22 from 7790 s). prngseedd:
+  `seputil --daemonize-reseed` (no SEP) is started again by its xpc activity about every 10 s (16 starts). Only the
+  default string and the comment changed, line for line (the hunks' counts are the same; the changed hunk applies with
+  no fuzz to a tree with the series, checked on the Mac). Not built yet: the phone's Data store gets the two entries
+  at the first boot of a kernel built with it (console: `oneios-jobs: com.apple.aonsensed: disabled in disabled.plist
+  (it was not)`).
 - Checked in `c3` (kernel.kc 29bef797, with 0047 and 0048): `oneios-features: CoreLocation/CLAutoCohort: off
   (written)`; locationd ran as pid 59 for the whole session (570 s) with no exception; `SystemOS volume answered as
   authenticated` and SafariConfigurationSubscriber started.

@@ -158,8 +158,11 @@
 # sound timed out after 3 s (iOS's log of the 2026-11-12 sessions). After macOS-DroidVM's xnu-12377 patch 0039.
 0052-rt-computation-held.patch
 # crashes: launchd jobs disabled in the Data store's disabled.plist before launchd (oneios-disable-jobs=LABEL,...,
-# default com.apple.accessibility.axassetsd), 0044's counterpart: axassetsd enumerates the speech audio units, which
-# were killed in dyld in bursts of four (SIGKILL) and filled the corpse limit.
+# default com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd), 0044's counterpart: axassetsd
+# enumerates the speech audio units, which were killed in dyld in bursts of four (SIGKILL) and filled the corpse limit;
+# aonsensed (no AON sensing here) exits 0 and launchd starts it again every 10-20 s as the publisher of
+# com.apple.proximity.launch; prngseedd's seputil (no SEP) is started again by its xpc activity about every 10 s
+# (2026-11-22, docs/userland.md 11). Changed 2026-11-22: the default list only (one line of the patch, same hunks).
 0053-disable-jobs.patch
 # camera: the capture plug-in reaches cameracaptured. CMCapture 27 dlopen()s /System/Library/MediaCapture/H9ISP.mediacapture
 # when its probe finds AppleH9CamIn (drivers/camera/OneiOSCameraService.cpp); the Data seed's

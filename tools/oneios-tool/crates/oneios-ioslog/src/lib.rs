@@ -19,6 +19,8 @@ use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use macos_unifiedlogs::log_entry::LogEntry;
 use macos_unifiedlogs::logarchive::{load_timesync_data, visit_provider};
+use macos_unifiedlogs::timesync::RawTimesyncBoot;
+use macos_unifiedlogs::traits::{FileProvider, VisitOutcome};
 use oneios_image::apfs::Pick;
 use regex::Regex;
 use source::Source;
@@ -160,6 +162,10 @@ pub struct Show {
     /// Write the entries in time order (keeps the selected entries in memory)
     #[arg(long)]
     sort: bool,
+    /// The decoder library's own times, as unifiedlog_iterator writes them (tests/ioslog/compare.sh): for a counter
+    /// that is not 24 MHz (the phone's 19.2 MHz) they run 52 times too slow. Default: the guest's clock
+    #[arg(long)]
+    library_times: bool,
 }
 
 /// Run `oneios-tool ioslog ARGS...`; `args` are the arguments after the tool's name. Returns the exit status.
@@ -227,6 +233,68 @@ fn cmd_save(from: From, archive: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// The guest's clock for the entries' times. The library turns a boot's counter ticks into nanoseconds only for the
+/// timebase 125/3 (Apple's 24 MHz counter) and takes every other timebase as 1/1 (macos-unifiedlogs `timesync.rs`,
+/// `TimestampResolver::resolve`). The phone's counter runs at 19.2 MHz (iOS's timebase 625/12: 52.08 ns a tick),
+/// so each time came out 52 times too near the time record before it: the boot of 2026-11-22 14:59 had 7 minutes of
+/// entries and read as 55 s, and the kernel's 10 s `oneios-cpu` lines were 0.19 s apart. `Clock` undoes it for a
+/// boot whose timebase is more than 1 and is not 125/3: it finds the record the library took (the last record
+/// whose wall-clock time is not after the library's answer; the first, for an answer before every record) and
+/// scales the distance from it. [I] One case is not undone exactly: an entry the library placed from the boot's
+/// start (a chunk with no base time, before the first record) is placed from the first record.
+#[derive(Default)]
+pub(crate) struct Clock {
+    /// boot: (nanoseconds a tick, the wall-clock times of its records in their order)
+    boots: HashMap<Uuid, (f64, Vec<i64>)>,
+}
+
+impl Clock {
+    pub(crate) fn new(boots: &HashMap<Uuid, RawTimesyncBoot>) -> Clock {
+        let boots = boots
+            .iter()
+            .filter_map(|(uuid, boot)| {
+                let (numerator, denominator) = (boot.timebase_numerator, boot.timebase_denominator);
+                if numerator == 0 || denominator == 0 || (numerator, denominator) == (125, 3) || numerator <= denominator {
+                    return None;
+                }
+                let mut walls: Vec<i64> = boot.records.iter().map(|r| r.walltime).collect();
+                if walls.is_empty() {
+                    walls.push(boot.boot_time);
+                }
+                Some((*uuid, (f64::from(numerator) / f64::from(denominator), walls)))
+            })
+            .collect();
+        Clock { boots }
+    }
+
+    /// The time of an entry of `boot` that the library gave as `time` (nanoseconds since 1970).
+    pub(crate) fn time(&self, boot: &Uuid, time: f64) -> f64 {
+        let Some((tick, walls)) = self.boots.get(boot) else { return time };
+        let mut base = walls[0] as f64;
+        for wall in walls.iter().map(|w| *w as f64) {
+            if wall > time {
+                break;
+            }
+            base = wall;
+        }
+        base + (time - base) * tick
+    }
+}
+
+/// The library's visit of every entry, with the times on the guest's clock (`Clock`); `library_times` keeps the
+/// library's own (`show --library-times`: what `unifiedlog_iterator` writes, for tests/ioslog/compare.sh).
+pub(crate) fn visit<O: VisitOutcome>(
+    source: &impl FileProvider,
+    library_times: bool,
+    mut callback: impl for<'a, 'b> FnMut(LogEntry<'a, 'b>) -> O,
+) -> std::io::Result<()> {
+    let clock = if library_times { Clock::default() } else { Clock::new(&load_timesync_data(source)?) };
+    visit_provider(source, |mut entry| {
+        entry.time = clock.time(&entry.boot_uuid, entry.time);
+        callback(entry)
+    })
+}
+
 /// A UUID as the library's output has it: upper-case hex, no hyphens.
 pub(crate) fn uuid_text(uuid: Uuid) -> String {
     let mut buffer = Uuid::encode_buffer();
@@ -248,7 +316,7 @@ pub(crate) struct Boot {
 pub(crate) fn boots(source: &Source) -> Result<Vec<Boot>> {
     let starts: HashMap<Uuid, i64> = load_timesync_data(source)?.into_iter().map(|(uuid, boot)| (uuid, boot.boot_time)).collect();
     let mut found: HashMap<Uuid, Boot> = HashMap::new();
-    visit_provider(source, |entry| {
+    visit(source, false, |entry| {
         let boot = found.entry(entry.boot_uuid).or_insert_with(|| Boot {
             uuid: entry.boot_uuid,
             start: starts.get(&entry.boot_uuid).copied(),
@@ -508,7 +576,7 @@ fn cmd_show(show: Show) -> Result<()> {
     let mut kept: Vec<(f64, Vec<u8>)> = Vec::new();
     let mut failure: Option<anyhow::Error> = None;
     let (mut seen, mut written) = (0u64, 0u64);
-    visit_provider(&source, |entry| {
+    visit(&source, show.library_times, |entry| {
         seen += 1;
         // every 4,096 entries: the running request's stop (`oneios-tool serve`; nothing is asked of a command that
         // runs alone)

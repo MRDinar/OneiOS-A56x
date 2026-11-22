@@ -7,7 +7,6 @@
 
 use crate::{open, pick_boot, text_line, time_text, From};
 use anyhow::Result;
-use macos_unifiedlogs::logarchive::visit_provider;
 
 /// (name, what it means, the message pattern).
 const CHECKS: &[(&str, &str, &str)] = &[
@@ -36,7 +35,7 @@ pub(crate) fn run(from: From, boot: &str, examples: usize) -> Result<()> {
     let any = regex::RegexSet::new(CHECKS.iter().map(|(_, _, p)| *p))?;
     let mut hits: Vec<Hit> = CHECKS.iter().map(|_| Hit { count: 0, first: f64::MAX, last: f64::MIN, examples: Vec::new() }).collect();
     let (mut seen, mut first, mut last) = (0u64, f64::MAX, f64::MIN);
-    visit_provider(&source, |entry| {
+    crate::visit(&source, false, |entry| {
         if boot.is_some_and(|b| b != entry.boot_uuid) {
             return;
         }

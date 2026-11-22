@@ -23,6 +23,8 @@
 # and step 5 compares with unifiedlog_iterator on ioslog's own saved archive). ARCHIVE: any .logarchive, for
 # example one of Mandiant's test archives (BUILDING.md there) or the Mac's out/session-logs/*/ios3.logarchive.
 # Work files: WORK (default out/rustport-ioslog), several times the archive's size. KEEP=1 keeps them.
+# The CSV and JSONL comparisons run `ioslog show --library-times`: unifiedlog_iterator converts only a 24 MHz counter's
+# ticks (timebase 125/3), so for the phone's 19.2 MHz its times, and ioslog's default ones, differ (the guest's clock).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
@@ -48,13 +50,13 @@ reference() {  # reference ARCHIVE FORMAT OUT
 
 echo "== 1 archive"
 t=$( { time reference "$archive" csv "$work/ref.csv"; } 2>&1 ); echo "unifiedlog_iterator: $t s, $(wc -l < "$work/ref.csv") lines"
-t=$( { time "$tool" ioslog show "$archive" -f csv -o "$work/ours.csv" 2> "$work/ours.err"; } 2>&1 ); echo "ioslog show:         $t s, $(cat "$work/ours.err")"
+t=$( { time "$tool" ioslog show "$archive" --library-times -f csv -o "$work/ours.csv" 2> "$work/ours.err"; } 2>&1 ); echo "ioslog show:         $t s, $(cat "$work/ours.err")"
 same "csv of the archive" "$work/ours.csv" "$work/ref.csv"
 
 if [ -n "${JSONL:-}" ]; then
   echo "== 2 jsonl"
   reference "$archive" jsonl "$work/ref.jsonl"
-  "$tool" ioslog show "$archive" -f jsonl -o "$work/ours.jsonl" 2>/dev/null
+  "$tool" ioslog show "$archive" --library-times -f jsonl -o "$work/ours.jsonl" 2>/dev/null
   same "jsonl of the archive" "$work/ours.jsonl" "$work/ref.jsonl"
 fi
 
@@ -108,12 +110,12 @@ fi
 
 echo "== 5 show"
 reference "$manual" csv "$work/ref-image.csv"
-t=$( { time "$tool" ioslog show "$work/data.img" -f csv -o "$work/ours-image.csv" 2> "$work/ours-image.err"; } 2>&1 ); echo "ioslog show IMAGE: $t s, $(cat "$work/ours-image.err")"
+t=$( { time "$tool" ioslog show "$work/data.img" --library-times -f csv -o "$work/ours-image.csv" 2> "$work/ours-image.err"; } 2>&1 ); echo "ioslog show IMAGE: $t s, $(cat "$work/ours-image.err")"
 same "csv of the image" "$work/ours-image.csv" "$work/ref-image.csv"
 
 if [ $fuse = 1 ]; then
   echo "== 6 mounted"
-  "$tool" ioslog show "$work/mnt/root" -f csv -o "$work/ours-mounted.csv" 2>/dev/null
+  "$tool" ioslog show "$work/mnt/root" --library-times -f csv -o "$work/ours-mounted.csv" 2>/dev/null
   same "csv of the mounted volume" "$work/ours-mounted.csv" "$work/ref-image.csv"
 fi
 
