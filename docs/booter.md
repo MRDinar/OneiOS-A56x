@@ -1376,7 +1376,7 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   2026-11-22: the S Pen sent about 480 frames a second, each a HID report and a stylus event, and backboardd took 100 to
   160 % of a CPU while drawing): an edge (in range or out, the tip down or up, the eraser end, the side button) goes at
   once with the newest position; any other frame goes when 8.33 ms (`XH_PEN_PERIOD_NS`, 120 Hz) have passed since the
-  last send, by the frames' own kernel times; until then the newest is held and input.c's poll wakes for it when its
+  last send, by the frames' own kernel times (the read's time when a frame's is not within the last second); until then the newest is held and input.c's poll wakes for it when its
   time comes (`xh_pen_due`, `xh_pen_tick`); the pressure sent is the most of the frames folded together while the tip
   was down; a hovering frame within one guest pixel of the last one sent (`xh_pen_set_panel`, the guest's frame) is not
   sent. No `MSC_TIMESTAMP` on the pen's device (the

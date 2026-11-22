@@ -2855,7 +2855,7 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
   to a destination. Not shown on the PC: an app drawing them (the boot shows no UI to the script), UIKit's hover, and
   the stroke's width.
 - Host, 2026-11-22 (the Mac's arm64 Linux container of `runtime/host-tests.sh`, the xnuhost unit tests and the brightness
-  bridge's only: xnuhost 14227 checks 0 failed, brightness 126 checks 0 failures; the Android xnuhost builds with
+  bridge's only: xnuhost 14229 checks 0 failed; the whole `runtime/host-tests.sh` passed on f30188d, brightness 126 checks 0 failures; the Android xnuhost builds with
   `-Werror` on the Mac's NDK): `test_pen` with the S24 Ultra's
   `sec_e-pen` as the driver states and sends it (x 0..7314, y 0..15686, tilt -63..63, `KEY_HOMEPAGE` and
   `KEY_WAKEUP_UNLOCK` beside the pen's keys: rank 8; `pen-rotate=auto` 0 for the 1440 x 3120 panel; a hover frame in the
@@ -2863,7 +2863,7 @@ xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which al
   screen-off keys and the garage switch never passed on); the coalescing (an edge at once, hover moves held and the newest sent at its
   time by `xh_pen_tick`, a hover within a pixel not sent, touching frames folded with the most pressure, the tip up and
   the leave at once 1 ms apart, a batch read late spaced by its own times: 5 of 40 frames sent and the 41st held, no
-  period: every frame); `test_brightness`: the pen's node woken, slept and woken with
+  period: every frame, frame times on another clock: the read's time); `test_brightness`: the pen's node woken, slept and woken with
   the touch IC only with `pen_ic`, refused when its `input/name` is not `sec_e-pen`, taken by its folder without an
   `input/` link, never written without `pen_ic`. `oneios-tool`: `cargo test -p oneios-log --test synthetic`
   (`pen_report`), `cargo test -p oneios-phone` (`--pen`, `phone pen`'s scripts). The full `runtime/host-tests.sh` was

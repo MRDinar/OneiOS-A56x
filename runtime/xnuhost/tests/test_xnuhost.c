@@ -1623,6 +1623,20 @@ static void test_pen(void)
     pen_n = 0;
     xh_pen_feed(&all, late, 3 * 20, w + 200 * ms);                               // 20 frames: their events fit the capture
     CHECK(pen_syns() == 20 && !all.pending);
+    // Frame times on another clock (EVIOCSCLOCKID refused): the read's time is taken, so the held frame is still due on
+    // xh_pen_tick's clock.
+    xh_pen_source r;
+    xh_pen_source_init(&r, NULL, &sp, 0, false);
+    r.emit = pen_capture;
+    const int64_t other = 500000000000000000LL;
+    const xh_input_ev r0[] = { { other, 3, 0, 1000 }, { other, 1, 0x140, 1 }, { other, 0, 0, 0 } };
+    const xh_input_ev r1[] = { { other + 2 * ms, 3, 0, 1500 }, { other + 2 * ms, 0, 0, 0 } };
+    pen_n = 0;
+    xh_pen_feed(&r, r0, 3, w);
+    xh_pen_feed(&r, r1, 2, w + 2 * ms);
+    CHECK(pen_syns() == 1 && r.pending && xh_pen_due(&r) == w + 8333333);
+    xh_pen_tick(&r, w + 9 * ms);
+    CHECK(pen_syns() == 2 && !r.pending);
     xh_pen_set_panel(&all, 720, 1560);
     CHECK(all.pixel_x == 46 && all.pixel_y == 22);
   }

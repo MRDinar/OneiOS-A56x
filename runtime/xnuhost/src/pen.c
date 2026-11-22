@@ -309,8 +309,10 @@ void xh_pen_feed(xh_pen_source *s, const xh_input_ev *ev, unsigned n, int64_t no
       if (v->code != SYN_REPORT_) continue;
       xh_pen_sample sample;
       xh_pen_sample_of(&s->device, s->rotate, s->mirror, &s->state, &sample);
-      // The frame's own time (CLOCK_MONOTONIC, EVIOCSCLOCKID), so that a batch read late is spaced as it was made.
-      frame(s, &sample, v->time_ns > 0 ? v->time_ns : now_ns);
+      // The frame's own time (CLOCK_MONOTONIC, EVIOCSCLOCKID), so that a batch read late is spaced as it was made; the
+      // read's time when it is not within the last second (another clock: the held frame's due time is on xh_pen_tick's).
+      bool own = v->time_ns > 0 && v->time_ns <= now_ns && now_ns - v->time_ns < 1000000000;
+      frame(s, &sample, own ? v->time_ns : now_ns);
     } else if (v->type == EV_KEY_) {
       bool down = v->value != 0;
       switch (v->code) {
