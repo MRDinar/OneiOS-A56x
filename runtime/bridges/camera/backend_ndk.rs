@@ -49,7 +49,6 @@ pub const CAPTURE_FAILURE_REASON_FLUSHED: i32 = 0;
 // Tags meta.rs does not have (NdkCameraMetadataTags.h)
 pub const ACAMERA_SENSOR_TIMESTAMP: u32 = 0xe0010;
 pub const ACAMERA_CONTROL_ZOOM_RATIO: u32 = 0x1002f;
-pub const ACAMERA_INFO_SUPPORTED_BUFFER_MANAGEMENT_VERSION: u32 = crate::meta::CAM_TAG_BUFFER_MANAGEMENT;
 pub const AIMAGE_FORMAT_YUV_420_888: i32 = 0x23;
 pub const AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN: u64 = 3;
 
@@ -452,7 +451,7 @@ mod ffi {
 
     impl Characteristics for Meta {
         fn entry(&self, tag: u32) -> Option<Entry<'_>> {
-            if tag == ACAMERA_INFO_SUPPORTED_BUFFER_MANAGEMENT_VERSION {
+            if tag == crate::meta::CAM_TAG_BUFFER_MANAGEMENT {
                 return None;
             }
             let mut e = ConstEntry { tag: 0, ty: 0, count: 0, data: std::ptr::null() };

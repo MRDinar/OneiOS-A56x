@@ -274,3 +274,33 @@ system_server (also surfaceflinger, audioserver and netd: the screen goes dark; 
 - Exposure, focus, zoom and flash controls from iOS (the HAL's own auto modes run); the torch.
 - Two cameras at once (one stream; iOS's dual-camera modes).
 - The microphone for video is the audio bridge's.
+
+## The Rust port (`onecamera`, branch `rust-runtime`; runtime/RUST.md)
+
+One Rust module per C file, beside the C until the lead switches `runtime/build.sh` to cargo: `ring.rs`,
+`convert.rs`, `meta.rs`, `core.rs` (with the test back end), `helper.rs` (`bin/oneios-camera`), `link.rs`
+(`Camera::helper`, `list`, `start`, `stop`, `frame`, `close`: `br_camera_*`), `virtio_camera.rs` (`create`:
+`br_camera_create`, on xh-core's virtio transport), `camctl.rs` (`bin/camctl`), `backend_ndk.rs`, `backend_hal.rs`
+(+ `backend_hal/ffi.rs`), `android.rs`; `proto.rs` mirrors `drivers/camera/oneios_camera_proto.h` and
+`oneios_camera_abi.h`, `msg.rs` the socket's messages. Log lines are the C's, byte for byte.
+
+```sh
+cd runtime
+CARGO_TARGET_DIR=target/media cargo test -p onecamera     # 27 unit tests, the helper process and the device (2),
+                                                          # the headers against a C probe (2) and the NDK's (1)
+CARGO_TARGET_DIR=target/media cargo build --release --target aarch64-linux-android -p onecamera --bins
+```
+
+- The two programs are dynamic on Android: `build.rs` links libcamera2ndk, libmediandk, libbinder_ndk and
+  libnativewindow into the bins only (`rustc-link-arg-bins`); xnuhost links the library statically and needs none of
+  them (checked: a static aarch64 program over `link` and `virtio_camera` links and runs under qemu-aarch64). Both
+  programs, stripped, pass `runtime/package/elf-check.sh` (2026-11-23).
+- `tests/headers.rs` compiles a probe of the C headers with the host's `cc`, and one of the NDK's headers with the
+  NDK's clang (static, run under qemu-aarch64) for every NDK number the back ends use; each skips with a line when its
+  compiler (or qemu) is not there.
+- The HAL back end's parcel layouts are functions over a `Parcel` trait, tested on the host against a fake parcel; the
+  NDK back end's names and its `stopped at:` diagnosis are plain functions, tested too. The binder and camera calls
+  themselves have not run on the phone in Rust.
+- Changes from the C, on purpose: the helper sleeps in poll(2) until a message, a stream error (an eventfd) or a
+  signal (the C woke every 200 ms); the ring's seqlock has the reader's acquire fence; `Camera::close` is explicit
+  (the device holds the bridge); the HAL's stream lock is never held across a binder call.

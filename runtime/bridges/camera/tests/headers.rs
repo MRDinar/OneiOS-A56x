@@ -244,3 +244,77 @@ fn camera_abi() {
         &[field!(C, command), field!(C, bytes), field!(C, a), field!(C, b), field!(C, c), field!(C, d)],
     );
 }
+
+/// The NDK's numbers the Android back ends use (backend_ndk.rs, meta.rs: the C's static asserts), against the NDK's
+/// headers.
+#[test]
+fn ndk_numbers() {
+    use onecamera::backend_ndk::*;
+    use onecamera::meta::*;
+    let consts: &[(&str, i64)] = &[
+        ("ACAMERA_OK", ACAMERA_OK.into()),
+        ("ACAMERA_ERROR_UNKNOWN", ACAMERA_ERROR_UNKNOWN.into()),
+        ("ACAMERA_ERROR_INVALID_PARAMETER", ACAMERA_ERROR_INVALID_PARAMETER.into()),
+        ("ACAMERA_ERROR_CAMERA_DISCONNECTED", ACAMERA_ERROR_CAMERA_DISCONNECTED.into()),
+        ("ACAMERA_ERROR_NOT_ENOUGH_MEMORY", ACAMERA_ERROR_NOT_ENOUGH_MEMORY.into()),
+        ("ACAMERA_ERROR_METADATA_NOT_FOUND", ACAMERA_ERROR_METADATA_NOT_FOUND.into()),
+        ("ACAMERA_ERROR_CAMERA_DEVICE", ACAMERA_ERROR_CAMERA_DEVICE.into()),
+        ("ACAMERA_ERROR_CAMERA_SERVICE", ACAMERA_ERROR_CAMERA_SERVICE.into()),
+        ("ACAMERA_ERROR_SESSION_CLOSED", ACAMERA_ERROR_SESSION_CLOSED.into()),
+        ("ACAMERA_ERROR_INVALID_OPERATION", ACAMERA_ERROR_INVALID_OPERATION.into()),
+        ("ACAMERA_ERROR_STREAM_CONFIGURE_FAIL", ACAMERA_ERROR_STREAM_CONFIGURE_FAIL.into()),
+        ("ACAMERA_ERROR_CAMERA_IN_USE", ACAMERA_ERROR_CAMERA_IN_USE.into()),
+        ("ACAMERA_ERROR_MAX_CAMERA_IN_USE", ACAMERA_ERROR_MAX_CAMERA_IN_USE.into()),
+        ("ACAMERA_ERROR_CAMERA_DISABLED", ACAMERA_ERROR_CAMERA_DISABLED.into()),
+        ("ACAMERA_ERROR_PERMISSION_DENIED", ACAMERA_ERROR_PERMISSION_DENIED.into()),
+        ("ACAMERA_ERROR_UNSUPPORTED_OPERATION", ACAMERA_ERROR_UNSUPPORTED_OPERATION.into()),
+        ("ERROR_CAMERA_IN_USE", ERROR_CAMERA_IN_USE.into()),
+        ("ERROR_MAX_CAMERAS_IN_USE", ERROR_MAX_CAMERAS_IN_USE.into()),
+        ("ERROR_CAMERA_DISABLED", ERROR_CAMERA_DISABLED.into()),
+        ("ERROR_CAMERA_DEVICE", ERROR_CAMERA_DEVICE.into()),
+        ("ERROR_CAMERA_SERVICE", ERROR_CAMERA_SERVICE.into()),
+        ("TEMPLATE_PREVIEW", TEMPLATE_PREVIEW.into()),
+        ("CAPTURE_FAILURE_REASON_FLUSHED", CAPTURE_FAILURE_REASON_FLUSHED.into()),
+        ("ACAMERA_SENSOR_TIMESTAMP", ACAMERA_SENSOR_TIMESTAMP.into()),
+        ("ACAMERA_CONTROL_ZOOM_RATIO", ACAMERA_CONTROL_ZOOM_RATIO.into()),
+        ("AIMAGE_FORMAT_YUV_420_888", AIMAGE_FORMAT_YUV_420_888.into()),
+        ("AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN", AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN as i64),
+        // meta.rs reads the same numbers from the HAL's buffers (backend_ndk.c's _Static_assert)
+        ("ACAMERA_CONTROL_AE_TARGET_FPS_RANGE", CAM_TAG_AE_TARGET_FPS_RANGE.into()),
+        ("ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES", CAM_TAG_AE_AVAILABLE_FPS_RANGES.into()),
+        ("ACAMERA_LENS_FACING", CAM_TAG_LENS_FACING.into()),
+        ("ACAMERA_LENS_INFO_AVAILABLE_FOCAL_LENGTHS", CAM_TAG_FOCAL_LENGTHS.into()),
+        ("ACAMERA_REQUEST_AVAILABLE_CAPABILITIES", CAM_TAG_CAPABILITIES.into()),
+        ("ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS", CAM_TAG_STREAM_CONFIGURATIONS.into()),
+        ("ACAMERA_SENSOR_ORIENTATION", CAM_TAG_SENSOR_ORIENTATION.into()),
+        ("ACAMERA_SENSOR_INFO_PHYSICAL_SIZE", CAM_TAG_PHYSICAL_SIZE.into()),
+        ("ACAMERA_SENSOR_INFO_PIXEL_ARRAY_SIZE", CAM_TAG_PIXEL_ARRAY_SIZE.into()),
+        ("ACAMERA_REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA", CAPABILITY_LOGICAL_MULTI_CAMERA.into()),
+        ("ACAMERA_LENS_FACING_FRONT", OC_FACING_FRONT.into()),
+        ("ACAMERA_LENS_FACING_BACK", OC_FACING_BACK.into()),
+        ("ACAMERA_TYPE_BYTE", CAM_META_BYTE.into()),
+        ("ACAMERA_TYPE_INT32", CAM_META_INT32.into()),
+        ("ACAMERA_TYPE_FLOAT", CAM_META_FLOAT.into()),
+        ("ACAMERA_TYPE_INT64", CAM_META_INT64.into()),
+        ("ACAMERA_TYPE_DOUBLE", CAM_META_DOUBLE.into()),
+        ("ACAMERA_TYPE_RATIONAL", CAM_META_RATIONAL.into()),
+        // backend_hal.rs
+        ("FIRST_CALL_TRANSACTION", onecamera::backend_hal::FIRST_CALL_TRANSACTION.into()),
+    ];
+    let mut probe = Probe::ndk(&[
+        "camera/NdkCameraManager.h",
+        "camera/NdkCameraMetadataTags.h",
+        "media/NdkImageReader.h",
+        "android/hardware_buffer.h",
+        "android/binder_ibinder.h",
+    ]);
+    for (name, _) in consts {
+        probe.ask(name, &format!("(long long){name}"));
+    }
+    probe.ask("STATUS_UNKNOWN_TRANSACTION", "(long long)STATUS_UNKNOWN_TRANSACTION");
+    let Some(values) = probe.run() else { return };
+    for (name, v) in consts {
+        assert_eq!(values[*name] as i64, *v, "{name}");
+    }
+    assert_eq!(values["STATUS_UNKNOWN_TRANSACTION"] as i64, -i64::from(libc::EBADMSG));
+}

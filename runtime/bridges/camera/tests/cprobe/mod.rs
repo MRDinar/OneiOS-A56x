@@ -13,6 +13,8 @@ pub struct Probe {
     header: PathBuf,
     includes: Vec<PathBuf>,
     exprs: Vec<(String, String)>,
+    /// the NDK's headers (`#include <...>` lines), compiled for aarch64-linux-android30 and run under qemu-aarch64
+    ndk: Vec<String>,
 }
 
 impl Probe {
@@ -21,7 +23,14 @@ impl Probe {
             header: header.to_path_buf(),
             includes: includes.iter().map(|p| p.to_path_buf()).collect(),
             exprs: Vec::new(),
+            ndk: Vec::new(),
         }
+    }
+
+    /// A probe of the NDK's own headers (`camera/NdkCameraDevice.h` ...): built with the NDK's clang for API 30,
+    /// static, and run under qemu-aarch64. Skipped (said) without the NDK or qemu-aarch64.
+    pub fn ndk(headers: &[&str]) -> Probe {
+        Probe { ndk: headers.iter().map(|h| format!("#include <{h}>")).collect(), ..Probe::new(Path::new("NDK"), &[]) }
     }
 
     /// Asks for the value of the C expression `expr` under the key `key`.
@@ -42,7 +51,13 @@ impl Probe {
 
     /// The values, from the compiled probe; None (said on stderr) when there is no C compiler.
     pub fn run(&self) -> Option<BTreeMap<String, u64>> {
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        let ndk_cc = ndk_clang();
+        let cc =
+            if self.ndk.is_empty() { std::env::var("CC").unwrap_or_else(|_| "cc".into()) } else { ndk_cc.clone()? };
+        if !self.ndk.is_empty() && Command::new("qemu-aarch64").arg("--version").output().is_err() {
+            eprintln!("NDK header test skipped: no qemu-aarch64 to run the probe");
+            return None;
+        }
         if Command::new(&cc).arg("--version").output().is_err() {
             eprintln!("header test skipped: no C compiler ({cc}) to read {}", self.header.display());
             return None;
@@ -53,10 +68,9 @@ impl Probe {
             self.exprs.len() ^ self.header.as_os_str().len()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut c = format!(
-            "#include <stdio.h>\n#include <stddef.h>\n#include \"{}\"\nint main(void) {{\n",
-            self.header.display()
-        );
+        let includes =
+            if self.ndk.is_empty() { format!("#include \"{}\"", self.header.display()) } else { self.ndk.join("\n") };
+        let mut c = format!("#include <stdio.h>\n#include <stddef.h>\n{includes}\nint main(void) {{\n");
         for (key, expr) in &self.exprs {
             c += &format!("  printf(\"%s=%llu\\n\", \"{key}\", (unsigned long long)({expr}));\n");
         }
@@ -66,6 +80,9 @@ impl Probe {
         std::fs::write(&source, c).unwrap();
         let mut compile = Command::new(&cc);
         compile.arg("-std=gnu11").arg("-o").arg(&program).arg(&source);
+        if !self.ndk.is_empty() {
+            compile.arg("-static");
+        }
         for inc in &self.includes {
             compile.arg("-I").arg(inc);
         }
@@ -76,7 +93,12 @@ impl Probe {
             self.header.display(),
             String::from_utf8_lossy(&out.stderr)
         );
-        let out = Command::new(&program).output().expect("the probe runs");
+        let out = if self.ndk.is_empty() {
+            Command::new(&program).output()
+        } else {
+            Command::new("qemu-aarch64").arg(&program).output()
+        };
+        let out = out.expect("the probe runs");
         std::fs::remove_dir_all(&dir).unwrap();
         Some(
             String::from_utf8(out.stdout)
@@ -139,6 +161,21 @@ fn strip_block_comments(text: &str) -> String {
         rest = &rest[at + end + 2..];
     }
     out + rest
+}
+
+/// The NDK's clang for API 30 (as runtime/ndk-cc finds the NDK), None (said) when it is not there.
+fn ndk_clang() -> Option<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let ndk = std::env::var("NDK")
+        .or_else(|_| std::env::var("ANDROID_NDK_HOME"))
+        .unwrap_or_else(|_| format!("{home}/Android/Sdk/ndk/28.2.13676358"));
+    let cc = format!("{ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang");
+    if Path::new(&cc).exists() {
+        Some(cc)
+    } else {
+        eprintln!("NDK header test skipped: no NDK clang at {cc}");
+        None
+    }
 }
 
 /// Each `(name, rust value)` against the probe's value of the same name, and the header's every name among them.

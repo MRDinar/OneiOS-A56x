@@ -153,3 +153,29 @@ new entry). Until 2026-11-22 xnuhost read `encoder=` of the image set and then d
 **Guess [I]:** NV12 as `COLOR_FormatYUV420SemiPlanar` ByteBuffer input to `c2.qti.hevc.encoder`; the still-image CQ
 settings; that MediaCodec's unit for a frame at quality 90 fits width x height / 2 + 64 KiB (a larger one is dropped
 and counted, point 4 above).
+
+## The Rust port (`oneencoder`, branch `rust-runtime`; runtime/RUST.md)
+
+One Rust module per C file, beside the C until the lead switches `runtime/build.sh` to cargo: `media_device.rs`
+(`create`: `br_encoder_create`, `stats`), `backend.rs` (encoder.h's interface as the `Backend` and `Session`
+traits), `backend_helper.rs` (`HelperBackend::new`: `br_encoder_backend_helper`), `backend_stub.rs` (`StubBackend`),
+`backend_ndk.rs` (MediaCodec behind a `Codec` trait), `helper.rs` (`bin/oneios-encoder`), `encctl.rs` (`bin/encctl`,
+and the in-process guest `Guest` the device test drives too); `proto.rs` mirrors `media_proto.h`, `link.rs`
+`encoder_link.h`. The helper spawn and the byte views are onecamera's.
+
+```sh
+cd runtime
+CARGO_TARGET_DIR=target/media cargo test -p oneencoder    # the stand-in's 16 streams (and tests/decode.sh: ffmpeg
+                                                          # decodes all 16 to the picture given), the device through
+                                                          # the helper process and in-process, MediaCodec's session
+                                                          # logic against a fake codec, the headers (C and NDK)
+CARGO_TARGET_DIR=target/media cargo build --release --target aarch64-linux-android -p oneencoder --bins
+```
+
+- On a host `encctl` runs the whole path with the stand-in (`encctl hevc 512 512 FILE` gives a stream ffmpeg
+  decodes); on Android with MediaCodec, as before. Both programs are dynamic on Android (`build.rs` links libmediandk
+  into the bins only) and pass `runtime/package/elf-check.sh` (2026-11-23); not run on the phone yet.
+- Changes from the C, on purpose: the helper backend writes to the helper under a lock of its own (one lock for
+  writes and the receive thread's state could stop both with the socket full both ways); its socket is close-on-exec
+  (the C's leaked into later children, the helper too); the stand-in reuses one RBSP buffer per session; the
+  device's worker holds the device weakly.
