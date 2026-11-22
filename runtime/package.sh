@@ -75,8 +75,10 @@ if [ -x "$ROOT/runtime/build.sh" ]; then
 else
   echo "package: no runtime/build.sh yet: placeholder xnuhost"
   PLACEHOLDER=1
-  "$CC_aarch64_linux_android" -O2 -static -nostdlib -ffreestanding -fno-stack-protector \
-    -Wl,-e,_start -Wl,--build-id=none -Wl,-s -o "$STAGE/bin/xnuhost" "$ROOT/runtime/package/placeholder-xnuhost.c"
+  rustc --edition 2021 --target aarch64-linux-android -C opt-level=s -C panic=abort -C relocation-model=static \
+    -C linker="$CC_aarch64_linux_android" -C link-arg=-nostdlib -C link-arg=-static -C link-arg=-Wl,-e,_start \
+    -C link-arg=-Wl,--build-id=none -C strip=symbols -A linker_messages \
+    -o "$STAGE/bin/xnuhost" "$ROOT/runtime/package/placeholder-xnuhost.rs"
 fi
 # 1b. oneios-tool for the phone (tools/oneios-tool, Rust, aarch64-linux-android): bin/oneios-tool, which the OneOS
 # app runs as root from the staged runtime (`oneios_root.sh tool`, oneos/interface.md section 9), and the same file

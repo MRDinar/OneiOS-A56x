@@ -1,6 +1,6 @@
 [package]
 name = "oneios-package-tools"
-description = "The runtime package's small programs: the placeholder xnuhost, the ELF fault test"
+description = "The runtime's small standalone programs: the A56 GPU check (the placeholder xnuhost is built by runtime/package.sh with rustc alone)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +11,14 @@ autotests = false
 autoexamples = false
 autobenches = false
 
-[lib]
-path = "src/lib.rs"
 
 [dependencies]
 libc.workspace = true
 
 [lints]
 workspace = true
+
+# The Galaxy A56's GPU path alone (docs/a56.md; port of tools/test_a56_gpu.c)
+[[bin]]
+name = "test_a56_gpu"
+path = "src/bin/test_a56_gpu.rs"
