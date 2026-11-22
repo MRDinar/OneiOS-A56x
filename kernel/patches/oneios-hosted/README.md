@@ -1339,9 +1339,11 @@ the steal of an idle P CPU from E, the UI's P preference. An A/B without a rebui
 the default in two boots with the same screens.
 
 Tested (build laptop, 2026-11-23): `HOSTED_OUT=fps ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0089 and 0091 (no 0090 in this tree), `xnu.macho`
-sha256 `7a1c0ed7...`; the prelink: `kernel.kc` sha256 `ad4f70fa2543c64e5cac4bf8cd769f6b3e5770a5b5023c7745b0f0120eb5ff90`, audit 2711
+sha256 `9a9e0a3c...`; the prelink: `kernel.kc` sha256 `ca1606e5a804383c426cc486756622779398d999699f583164434eca746fe966`, audit 2711
 paired, 93 on the stub, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `0091:`
-line and the `oneios-edge-pullback` boot-arg are in the kernel. Not booted under qemu or on the phone yet. On the phone:
+line and the `oneios-edge-pullback` boot-arg are in the kernel. `git apply --check` in a tree of 0001-0089 with the camera
+helper's 0090 applied (`t3/camera-preview-stream-fix`, `0090-camera-plugin-boot-addon.patch`, only `bsd/kern/kern_exec.c`):
+0091 applies after it. Numbered 0091 for that 0090. Not booted under qemu or on the phone yet. On the phone:
 the `0091:` line (pull-backs not sent; preempt IPIs to busy CPUs), and xnuhost's `release:` and `kick` lines back near
 the boot before 0089 (about 15,000 moves and 950 kicks in 30 s) while `perf: cpuN:` still shows vCPU 2-7 busy.
 

@@ -413,5 +413,5 @@
 # P-preferring thread on E is still pulled to an idle P CPU. oneios-edge-pullback=1 is XNU's way. One `oneios-perf:
 # 0091:` line per perf period: the pull-backs not made and made, and the scheduler's IPIs by reason to idle and busy
 # CPUs. Numbered 0091: 0090 is the camera helper's boot addon (t3/camera-preview-stream-fix); the two touch no file in common.
-# Built and prelinked as 0090 (kernel.kc ad4f70fa); not booted yet. README.md, "0091".
+# Applies after the camera 0090 (git apply --check). Built and prelinked (kernel.kc ca1606e5); not booted yet. README.md, "0091".
 0091-edge-no-pullback-ipi-counts.patch
