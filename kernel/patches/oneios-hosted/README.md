@@ -1255,8 +1255,12 @@ What it costs: `__DATA_CONST` of the shared cache is writable copy-on-write in e
 made it read-only; a stray write changes only that process's copy of one page. TPRO, which protects it on an iPhone, is
 not on this host in any case. dyld's `__TPRO_CONST` protects (12 calls per process start, 3 small ranges) stay.
 
-Tested: the patch applies and the kernel builds (`HOSTED_OUT=dyldrw`, below). Not booted yet (no PC; the phone is the
-parent's). On the phone, these lines prove it: `oneios-dyld-flags: commpage dyld flags 0x200000` and `oneios-dyld-flags:
+Tested (Mac, 2026-11-22): `HOSTED_OUT=dyldrw kernel/build-hosted.sh` applied the series with 0082 and built
+`xnu.macho` in 366 s (`_hosted_dyld_flags_init` with its `LOCKDOWN` startup entry and the `oneios-dyld-rw-data-const`
+tunable are in it); `kernel/prelink/build.sh` gave `out/kernel/dyldrw-24A446/kernel.kc` (96,813,056 bytes, sha256
+`17729490...`; audit 2,712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad); `kernel/tests/host.sh` 7 of 7.
+Both copies of dyld (`/usr/lib/dyld` and the cache's at `0x180482000`) have the same `makeWriteable` bytes. Not booted
+yet (no PC; the phone test is the next step). On the phone, these lines prove it: `oneios-dyld-flags: commpage dyld flags 0x200000` and `oneios-dyld-flags:
 launchd set kern.dyld_flags 0x...` with bit 0x200000 set and no `, 0x200000 added again`; no `triggered unnest of range ... of DYLD shared
 region` line at all (the lowest writable mapping is now `__DATA_CONST`'s start, and nothing below it is unnested);
 `oneios-srprot:` lines only for the three `__TPRO_CONST` ranges (`0x24000` and `0x4000` long), none with prot 0x13
