@@ -20,3 +20,11 @@ xh-core.workspace = true
 
 [lints]
 workspace = true
+
+# bridges-power: brightness, battery, thermal
+[[bin]]
+name = "brightctl"
+path = "brightness/brightctl.rs"
+[[test]]
+name = "brightness_inspect"
+path = "brightness/test_inspect.rs"
