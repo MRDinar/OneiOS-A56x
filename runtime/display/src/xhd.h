@@ -86,6 +86,20 @@ void xhd_direct_close(struct xhd_direct *d);
 int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride, uint32_t dst_width, uint32_t dst_height, int swap,
                     const struct xhd_rect *only, struct xhd_rect *done);
 
+// The helper's own copy of the guest's frame (B,G,R,X as the guest wrote it), taken right after the frame is hashed and
+// before the layer's buffer is waited for. The guest's display driver completes a swap once its flush is posted
+// (DroidVMVirtioGpuDisplay.cpp droidvm_virtio_complete_on_post) and the compositor draws into that surface again
+// about three frames later, so the guest's pages may be read only for a few ms after the frame comes: the hash, then
+// this copy, never the wait for surfaceflinger's buffer (up to 30 ms on the phone). The layer's buffer is then filled
+// from the snapshot. `full`: every pixel is the newest frame's (the first take copies the whole frame, later ones only
+// what changed).
+struct xhd_snapshot { uint8_t *pixels; size_t stride; uint32_t width, height; int full; };
+int  xhd_snapshot_init(struct xhd_snapshot *s, uint32_t width, uint32_t height);   // 0 or -ENOMEM
+void xhd_snapshot_free(struct xhd_snapshot *s);
+// Copies `changed` (the whole frame while the snapshot is not full, or with changed NULL) from the pending direct frame.
+// 0, or -errno as xhd_copy_direct (the snapshot is then not full).
+int  xhd_snapshot_take(struct xhd_snapshot *s, const struct xhd_direct *d, const struct xhd_rect *changed);
+
 // What changed: the guest flushes its whole surface every frame (its swap carries no dirty region), so the helper finds
 // the damage itself. Each row is cut into XHD_TILES tiles; a tile's hash is of its pixels' B,G,R bytes (not X) as a
 // stream, so the same picture in another surface (the compositor rotates three, scattered differently over RAM) hashes

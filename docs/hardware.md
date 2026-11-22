@@ -2741,6 +2741,9 @@ capabilities 0x...)` and `haptics: effect N played on the vibrator HAL`.
 The S24 Ultra's S Pen (a Wacom EMR digitizer under the panel; writing needs no battery and no Bluetooth link) as an
 Apple Pencil in iOS: hover, contact, pressure, tilt, the side button. **Off by default** until a phone session shows it:
 xnuhost `pen=auto` (`--set pen=auto`, or `pen=auto` in `xnuhost.conf`), which also gives the guest `oneios-pen=1`.
+The phone's image has had `pen=auto` in `overlay/userland/xnuhost.conf` since 2026-11-16, but xnuhost dropped the image
+set's `pen=`, `pen-rotate=` and `pen-mirror=` until 2026-11-22 (`config.c`; test in `tests/test_xnuhost.c`), so the pen
+had never run on the phone before that fix.
 
 ### The phone
 

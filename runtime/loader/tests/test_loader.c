@@ -272,6 +272,21 @@ static void test_machine(void)
         !xl_adt_get(xl_adt_find(r1, "chosen/memory-map"), "RAMDisk1"));   // no ramdisk: no node either
   xl_adt_free(r1);
   machine_default(&m);
+  // no identity tree (the phone's image set has none): /product still has the artwork answers CoreUI asks
+  // MobileGestalt for (2026-11-22: without them every app probed loose image files on each redraw), as V54's
+  {
+    const xl_adt_node *pr = xl_adt_find(t, "product");
+    uint32_t word = 0;
+    CHECK(pr && !strcmp((const char *)xl_adt_get(pr, "artwork-device-idiom")->value, "phone"));
+    p = xl_adt_get(pr, "artwork-device-subtype");
+    CHECK(p && p->length == 4 && (memcpy(&word, p->value, 4), word) == 2868);
+    CHECK(!strcmp((const char *)xl_adt_get(pr, "artwork-display-gamut")->value, "sRGB"));            // the display's
+    CHECK(!strcmp((const char *)xl_adt_get(pr, "artwork-dynamic-displaymode")->value, "0"));
+    CHECK(!strcmp((const char *)xl_adt_get(pr, "graphics-featureset-class")->value, "APPLE10"));
+    p = xl_adt_get(pr, "graphics-featureset-fallbacks");
+    CHECK(p && !strcmp((const char *)p->value, "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0"));  // no APPLE2
+    CHECK(!strcmp((const char *)xl_adt_get(pr, "model")->value, "oneios,xnuhost"));
+  }
   p = xl_adt_get(xl_adt_find(t, "chosen/xnuhost"), "vector");
   uint64_t v64;
   memcpy(&v64, p->value, 8);

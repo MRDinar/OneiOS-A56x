@@ -330,6 +330,22 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
     if (acoustic) xl_adt_set(audio, "acoustic-id", acoustic->value, acoustic->length);
   } else {
     xl_adt_set_str(product, "product-name", "OneiOS guest");
+    // No identity tree (the phone's image set has none): the iPhone18,2 answers that CoreUI asks MobileGestalt for
+    // (kMGArtworkDeviceIdiom, kMGArtworkDisplayGamut, kMGArtworkGraphicsFeatureSetClass, the subtype). Without them
+    // every app logged `CUICatalog: couldn't get 'kMGArtworkDeviceIdiom' from MGCopyAnswer got '{ArtworkDeviceScaleFactor
+    // = 3}'`, its asset catalogs chose no image, and UIKit probed loose files for each image on every redraw
+    // (_UIImageCollectImagePathsForPath: about 6000 faccessat a second in Spotlight, Notes and WebSheet, 105% of a core,
+    // keys waiting for the main thread; the phone, 2026-11-22). The values are 24A446's V54 device tree's /product,
+    // with this host's choices: the gamut is the display's (sRGB unless display_gamut says so: the helper tags the
+    // frames sRGB), and the GPU fallbacks lose APPLE2 and MTL2,2 as with an identity (set_featuresets).
+    xl_adt_set_str(product, "artwork-device-idiom", "phone");
+    xl_adt_set_u32(product, "artwork-device-subtype", 2868);
+    xl_adt_set_str(product, "artwork-display-gamut", m->display_gamut ? m->display_gamut : "sRGB");
+    xl_adt_set_str(product, "artwork-dynamic-displaymode", "0");
+    xl_adt_set_str(product, "graphics-featureset-class", "APPLE10");
+    static char fallbacks[] = "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0";
+    xl_adt_prop listed = { .name = "graphics-featureset-fallbacks", .length = sizeof fallbacks, .value = (uint8_t *)fallbacks };
+    set_featuresets(product, &listed);
   }
   // The artwork scale follows the UI scale (the identity tree's is the iPhone panel's 3). The artwork subtype
   // stays the identity's (2868 for iPhone18,2): it names a set of assets, and no set exists for another height.

@@ -272,6 +272,35 @@ int xhd_copy_direct(const struct xhd_direct *d, uint8_t *dst, size_t dst_stride,
   return 0;
 }
 
+// ---- the snapshot ------------------------------------------------------------------------------
+int xhd_snapshot_init(struct xhd_snapshot *s, uint32_t width, uint32_t height)
+{
+  memset(s, 0, sizeof *s);
+  s->stride = (size_t)width * 4;
+  s->pixels = width && height ? malloc(s->stride * height) : NULL;
+  if (!s->pixels) return -ENOMEM;
+  s->width = width; s->height = height;
+  return 0;
+}
+
+void xhd_snapshot_free(struct xhd_snapshot *s)
+{
+  free(s->pixels);
+  memset(s, 0, sizeof *s);
+}
+
+int xhd_snapshot_take(struct xhd_snapshot *s, const struct xhd_direct *d, const struct xhd_rect *changed)
+{
+  struct xhd_rect whole = { 0, 0, s->width, s->height }, r = s->full && changed ? *changed : whole, done;
+  if (!s->pixels) return -ENOMEM;
+  if (!r.w || !r.h) return 0;                          // nothing changed: the snapshot is the frame already
+  int e = xhd_copy_direct(d, s->pixels, s->stride, s->width, s->height, 0, &r, &done);
+  if (e) { s->full = 0; return e; }
+  // Whole only when the guest's frame covers the snapshot: a smaller frame leaves the rest unknown.
+  if (!s->full) s->full = done.x == 0 && done.y == 0 && done.w == s->width && done.h == s->height;
+  return 0;
+}
+
 // ---- damage -----------------------------------------------------------------------------------
 // Four lanes by pixel index (`at`, the pixel's place in the stream), each a multiply-add over the pixel's B,G,R: a
 // function of the bytes and their order alone, however the stream is cut into pieces.

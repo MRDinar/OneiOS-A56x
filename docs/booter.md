@@ -42,7 +42,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--image DIR` | required | the image set (`docs/image-format.md`) |
 | `--kernel FILE` | `DIR/kernel.kc`, else `DIR/kernel.macho` | the kernel collection: `MH_FILESET`, or an `MH_EXECUTE` kernel |
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks |
-| `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
+| `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2; [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
 | `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
@@ -1217,7 +1217,14 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   to 0.1.15; the direct path was written on 11-11, before the head existed, and merged on 11-20 without a phone run).
   Fixed and checked on the phone on 2026-11-22: the picture is correct, and the helper's 10 s line shows only the
   changed rows copied (24-43% of the rows while iOS moves, 15 of 99 frames unchanged on a still screen; before the
-  fix 100% of the rows of every frame, because the wrong pages kept changing). Why not zero
+  fix 100% of the rows of every frame, because the wrong pages kept changing). The helper reads the guest's pages only while
+  the frame is new: the guest's display driver completes a swap once its flush is posted
+  (`DroidVMVirtioGpuDisplay.cpp` `droidvm_virtio_complete_on_post`), and the compositor draws into that surface again
+  about three frames later. The helper hashes the frame, copies the changed tiles into its own snapshot at once
+  (`struct xhd_snapshot`, `runtime/display/src/xhd.h`), and only then waits for surfaceflinger's buffer and fills it
+  from the snapshot. Before 2026-11-22 it copied from the guest's pages after that wait (10-11 ms after the frame on
+  average, up to 34 ms): page swipes and widget redraws showed parts of the next frames (a glitch xnuhost's own
+  2.5 ms copy never had). Why not zero
   copies: surfaceflinger takes `AHardwareBuffer`s, and the NDK cannot wrap a udmabuf of guest pages as one (a
   gralloc handle would have to be forged), and the guest's surfaces cannot be made gralloc buffers either, since the
   guest allocates them in its own RAM. Droid-VM's host does one GPU blit instead, with a Vulkan dma-buf import that
@@ -1359,7 +1366,10 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
 - **The pen** (`src/pen.c`, spen 2026-11-15; `docs/hardware.md` 7f). Settings: **`pen=off`** (the default until a phone
   session proves it) or `pen=auto`; `pen-rotate=auto|0|90|180|270` (the digitizer's frame turned clockwise onto the
   panel's; auto: 0 when the digitizer and the panel are both portrait, else 90, a guess); `pen-mirror=1` (then mirrored
-  left to right). With `pen=auto`, xnuhost (with `input` on) calls `xh_pen_lookup`: the default, `xh_pen_lookup_evdev`,
+  left to right). These three settings come from the command line, else from the image set's `xnuhost.conf` or its
+  `overlay/userland/xnuhost.conf`; until 2026-11-22 the image set's were read and then dropped (`xh_config_finish` did
+  not copy them), so the phone's `pen=auto` never turned the pen on and no session had a `pen:` line. With `pen=auto`,
+  xnuhost (with `input` on) calls `xh_pen_lookup`: the default, `xh_pen_lookup_evdev`,
   opens each `/dev/input/event0..63` read only and takes the best device with `BTN_TOOL_PEN`, `ABS_X/Y` and
   `ABS_PRESSURE` (more for `ABS_TILT_X`, `BTN_STYLUS`, `ABS_DISTANCE` and a name with "pen" in it, such as Samsung's
   `sec_e-pen`); never one with a side key or multitouch positions; never grabbed. Another hardware backend replaces the

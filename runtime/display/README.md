@@ -89,8 +89,11 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   cannot be copied (a slot reused, a segment outside RAM, a half-float buffer) is answered with the failure flag and
   xnuhost copies the frames itself from then on. Only the changed tiles are copied and posted (the guest flushes its
   whole surface every frame, so the helper hashes tiles of the frame against what the layer shows; an unchanged frame
-  is answered at once and nothing is posted). Protocol: `docs/booter.md` 2.8. Every 10 s the log has `10 s: N frames
-  (M from guest RAM), F/s; buffer wait mean ... ms; copy mean ... ms, max ... ms; this process P% of a core`, and
+  is answered at once and nothing is posted; the changed tiles go into the helper's snapshot at once, and the layer's
+  buffer is filled from it: "The snapshot" below). Protocol: `docs/booter.md` 2.8. Every 10 s the log has `10 s: N
+  frames from xnuhost, U unchanged (nothing posted), P posted (M from guest RAM, R% of the rows copied); hash mean ...
+  ms; guest pages read for mean ... ms, max ... ms (hash and snapshot); buffer wait mean ... ms; copy mean ... ms,
+  max ... ms; this process P% of a core`, and
   once `frames come straight from guest RAM now`. Pacing is the buffer queue's: the next buffer is handed out when
   surfaceflinger has taken the last, so the loop runs at the panel's vsync and every flush that came meanwhile is
   one post.
@@ -238,6 +241,16 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   to in the layer mean 10.4-11.5 ms, 0 not answered within 100 ms. A sign of wrong offsets: 100% of the rows
   copied in every frame on a still screen. Whether answering the flush after the post slows the guest's swaps is
   not measured yet.
+- **The snapshot (2026-11-22).** The guest does not wait for the helper: its display driver completes a swap once
+  the flush is posted (`droidvm_virtio_complete_on_post`), and the compositor draws into that surface again about
+  three frames later. That first phone run copied from the guest's pages only after surfaceflinger handed out a
+  buffer (hash 5.4 ms, buffer wait mean 4.3 ms, so 10-11 ms after the frame on average and up to 34 ms), and page
+  swipes and widget redraws showed parts of later frames. Now the changed tiles go into the helper's own copy of the
+  frame (`struct xhd_snapshot`, 18 MB at 1440x3120, made at the first direct frame) right after the hash, and the
+  layer's buffer is filled from it after the wait. The 10 s line says how long the guest's pages were read:
+  `guest pages read for mean X ms, max Y ms (hash and snapshot)` (`; NO snapshot: ...` when its memory was refused:
+  then the old order). Tests: `test_display.c` (the first take copies the whole frame, later ones only what changed,
+  a change outside `changed` stays out, a failed take makes the next one whole again).
 - The native-mode request (`setDesiredDisplayModeSpecs` by reflection) is unproven like the rest; a refusal is
   logged and the frame is scaled. At 1440x3120 a full-frame copy is 18 MB, 2.2 GB/s at 120 Hz when every frame
   is all damage.

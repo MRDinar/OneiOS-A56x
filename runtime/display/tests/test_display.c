@@ -242,6 +242,35 @@ static void test_direct(void)
   CHECK(xhd_copy_direct(&d, dst, DS, W, H, 1, NULL, &done) == 0);
   CHECK(dst[85 * DS + 4] == want[85 * DS + 6] && dst[85 * DS + 6] == want[85 * DS + 4] && dst[85 * DS + 7] == 0xff);   // swapped
   CHECK(xhd_copy_direct(&d, dst, DS, 4, 3, 0, NULL, &done) == 0 && done.w == 3 && done.h == 3);                // clipped to the buffer
+  // The snapshot: the first take copies the whole frame, later ones only `changed`; after a take the guest's pages may
+  // change and the snapshot keeps the frame as it was when taken.
+  {
+    struct xhd_snapshot s;
+    CHECK(xhd_snapshot_init(&s, W, H) == 0 && !s.full && s.stride == W * 4);
+    struct xhd_rect small = { 2, 10, 3, 4 };
+    CHECK(xhd_snapshot_take(&s, &d, &small) == 0 && s.full);                     // not full yet: whole, whatever `changed` says
+    int same = 1;
+    for (uint32_t y = 0; y < H; y++) for (uint32_t x = 0; x < W * 4; x++) {
+      uint64_t at = (uint64_t)y * STRIDE + x;
+      if (s.pixels[y * s.stride + x] != rp[(at < 0x1000 ? 0x8000 : 0x2000 - 0x1000) + at]) same = 0;
+    }
+    CHECK(same);
+    uint8_t before = s.pixels[50 * s.stride + 0], inside = s.pixels[11 * s.stride + 2 * 4];
+    rp[0x8000 + 50 * STRIDE] ^= 0xff;                                                              // row 50, pixel 0 (in the first page)
+    rp[0x8000 + 11 * STRIDE + 2 * 4] ^= 0xff;                                                           // row 11, pixel 2
+    CHECK(xhd_snapshot_take(&s, &d, &small) == 0);
+    CHECK(s.pixels[50 * s.stride + 0] == before);                               // outside `changed`: the snapshot's
+    CHECK(s.pixels[11 * s.stride + 2 * 4] == (uint8_t)(inside ^ 0xff));          // inside: the guest's new byte
+    struct xhd_rect none = { 0, 0, 0, 0 };
+    CHECK(xhd_snapshot_take(&s, &d, &none) == 0 && s.full);                     // nothing changed: nothing read
+    slot->seq = 11;
+    CHECK(xhd_snapshot_take(&s, &d, &small) == -ESTALE && !s.full);              // a failed take: whole again next time
+    slot->seq = 7;
+    rp[0x8000 + 11 * STRIDE + 2 * 4] ^= 0xff;
+    rp[0x8000 + 50 * STRIDE] ^= 0xff;
+    xhd_snapshot_free(&s);
+    CHECK(!s.pixels);
+  }
   slot->nsegs = 1;
   CHECK(xhd_copy_direct(&d, dst, DS, W, H, 0, NULL, &done) == -EINVAL);                                         // rows past the segments
   slot->nsegs = 2; segs[1].offset = RAM - 0x800;

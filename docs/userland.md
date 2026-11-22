@@ -163,7 +163,7 @@ owner's IPSW (`out/kernel-inputs/24A446/devicetree.bin`, read locally, never com
 | Metal clients | `*` on 27 | the named list (`WidgetRenderer_Default`, `*Poster*`, `iconservicesagent`, `SBRendererService`); backboardd always has it |
 | Addon visible-check | `AGXMetalG17G.bundle` | the iPhone's AGX bundle name [U] |
 | Dynamic Island, always-on | - | follow the identity (`island-notch-location`, `oled-display` are in `/product`) [U] |
-| `/product` as the guest gets it | - | [F, 2026-11-13] not the profile's `[adt.product]` and not the IPSW tree's: xnuhost copies `/product` only from `<image>/identity.adt`, which no script writes (none in the PC's set; a `kernel.kc.adt` sidecar could carry one, none does), so the guest has `product-name`, `artwork-scale-factor` and `model` only (no `artwork-device-idiom`, `artwork-display-gamut`, `oled-display`, `island-notch-location`, ...). The profile says `artwork-display-gamut "sRGB"`, xnuhost's machine tree `P3` when an identity is given. `--set identity=out/kernel-inputs/24A446/devicetree.bin` is the A/B test (`kernel/patches/oneios-hosted/display/README.md`, "Colour, depth and the panel") |
+| `/product` as the guest gets it | - | [F, 2026-11-13] not the profile's `[adt.product]` and not the IPSW tree's: xnuhost copies `/product` only from `<image>/identity.adt`, which no script writes (none in the PC's set; a `kernel.kc.adt` sidecar could carry one, none does), so the guest has `product-name`, `artwork-scale-factor` and `model` only (until 2026-11-22; since then the loader's no-identity branch also writes 24A446 V54's `artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2, and `artwork-display-gamut` sRGB: "The artwork answers" below) (no `artwork-device-idiom`, `artwork-display-gamut`, `oled-display`, `island-notch-location`, ...). The profile says `artwork-display-gamut "sRGB"`, xnuhost's machine tree `P3` when an identity is given. `--set identity=out/kernel-inputs/24A446/devicetree.bin` is the A/B test (`kernel/patches/oneios-hosted/display/README.md`, "Colour, depth and the panel") |
 
 ### 5.1 The screen: native resolution, 120 Hz, UI scale 3 or 2
 
@@ -216,6 +216,32 @@ not been rebuilt.
   MobileGestalt answer is written for it; [U] whether anything consults one.
 - `ArtworkDeviceSubType` stays 2868 and `artwork-device-idiom` phone: the subtype names the Pro Max's set of
   artwork and its layout metrics, and nothing in an iPhone's OS image is made for a 3120 subtype [I].
+
+**The artwork answers (fix-artwork-traits, 2026-11-22).** CoreUI picks each image of an asset catalog (`Assets.car`) by
+the device's artwork traits, which it asks MobileGestalt for (`ArtworkTraits`: `ArtworkDeviceIdiom`,
+`ArtworkDeviceSubType`, `ArtworkDisplayGamut`, `ArtworkGraphicsFeatureSetClass`, `ArtworkDeviceScaleFactor`), and
+MobileGestalt reads them from `/product`. Without an identity tree the guest's `/product` had only `product-name`,
+`artwork-scale-factor` and `model`, so the answer was `{ArtworkDeviceScaleFactor = 3}`:
+
+- [F] iOS's log (the 2026-11-22 20:28 session): `CUICatalog: couldn't get 'kMGArtworkDeviceIdiom' from MGCopyAnswer got
+  '{ArtworkDeviceScaleFactor = 3;}'` (and the same for `kMGArtworkDisplayGamut`, `kMGArtworkGraphicsFeatureSetClass`),
+  117 lines, from SpringBoard, iconservicesagent, Preferences and the apps.
+- **Not the cause of the `faccessat` storm** (checked on the phone): Spotlight's 171000-179000 `faccessat` calls each 30 s
+  (105% of a core; MobileNotes 74000; WebSheet about 6000 a second), which the stack samples put in UIKit's
+  `__UIImageCollectImagePathsForPath`, went on with this fix on a fresh Data store (172846 in one 30 s period), while
+  the CoreUI lines went from 117 to 0. The storm, and the keyboard that waits for Spotlight's busy main thread, are
+  still open (the next boot names the files with `oneios-sysfail-enoent=1`).
+
+The loader (`runtime/loader/src/machine.c`, `xl_machine_tree`) now writes, without an identity, the values of 24A446's
+V54 device tree (`out/kernel-inputs/24A446/devicetree.bin`, read with `xnuloader-inspect adt`): `artwork-device-idiom`
+"phone", `artwork-device-subtype` 2868, `artwork-dynamic-displaymode` "0", `graphics-featureset-class` "APPLE10",
+`graphics-featureset-fallbacks` "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0" (APPLE2
+taken out, as with an identity), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
+frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). **A Data store that already booted keeps
+MobileGestalt's cache** (`containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`,
+`CacheVersion` 24A446): the phone's held `ArtworkTraits = {ArtworkDeviceScaleFactor = 3}` (key `oPeik/9e8lQWMszEjbPzng`),
+and MobileGestalt rebuilds its cache only for another build. A new Data seed carries no cache (the root tweaks remove
+it); an older store needs its cache removed once.
 
 **Layout risks. None of this has been seen: no frame of SpringBoard's has been rendered at any size.**
 

@@ -2123,6 +2123,18 @@ static void test_config(const char *dir)
   xh_config_defaults(&c);
   CHECK(xh_config_args(&c, 11, img2) == 0 && xh_config_finish(&c) == 0 && c.bridges == 1 && !strcmp(c.wifi, "auto") &&
         !strcmp(c.bluetooth, "sim") && !strcmp(c.haptics, "off"));                                                 // the command line wins, auto too
+  // The image set's pen=, pen-rotate=, pen-mirror= apply too (until 2026-11-22 they were read, then dropped: the phone's
+  // pen=auto never turned the pen on); the command line wins.
+  f = fopen(path, "w");
+  fprintf(f, "boot-args=-v debug=0x8\npen=auto\npen-rotate=90\npen-mirror=1\n%s\n", set_meminfo);
+  fclose(f);
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, img1) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.pen, "auto") && !strcmp(c.pen_rotate, "90") && c.pen_mirror);
+  char *pen2[] = { "xnuhost", "--image", image, "--mode", "takeover", "--set", "pen=off", "--set", "pen-rotate=auto", "--set", "pen-mirror=0" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 11, pen2) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.pen, "off") && !strcmp(c.pen_rotate, "auto") && !c.pen_mirror);
+  xh_config_defaults(&c);
+  CHECK(xh_config_set(&c, "pen-mirror", "maybe") == -1 && !c.pen_mirror_given);                              // a bad value refused
   // The image set's own ram-giveback=0 holds the RAM fixed, at what fits (5376 MiB of MemAvailable 7 GiB)
   f = fopen(path, "w");
   fprintf(f, "boot-args=-v debug=0x8\nram-percent=80\nram-giveback=0\n%s\n", set_meminfo);
