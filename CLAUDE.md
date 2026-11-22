@@ -64,9 +64,13 @@ not; mark guesses as guesses.
 
 ## The build host and long jobs
 
-- The build host is the Mac (`/Users/akshaycm/Documents/GitRepos/OneiOS`): Xcode, the NDK, Rust. Linux-only host
-  tests run in Apple's `container` from `runtime/host-tests.sh` (the narrow parts: `container run ... make -C
-  runtime/<part> test`). Older docs say "the Linux PC": that machine is gone.
+- **Every build and test runs on the build laptop (owner's rule, 2026-11-23):** `ssh akshay@100.76.16.53` (Linux, 20
+  cores; checkout `/home/akshay/Documents/GitHub/OneiOS` with `secrets/oneios-debug.keystore` and `inputs/`). Push the
+  work to a branch, `git pull` there, run long jobs in tmux that end with `tmux wait-for -S NAME`, and wait with
+  `ssh ... 'tmux wait-for NAME'` in a background task. Releases are made there (`scripts/release/release.sh`).
+- The Mac (`/Users/akshaycm/Documents/GitRepos/OneiOS`) edits, commits and pushes, and drives the phone (adb,
+  `oneios-tool phone`); copy back only what the phone needs. Its own build path (Xcode, the NDK, Apple's `container`
+  for `runtime/host-tests.sh`) still works, but do not run builds or tests there.
 - Builds: `runtime/build.sh STAGE` (runtime), `kernel/build-hosted.sh` with your own `HOSTED_OUT=<name>` (never the
   default tree), then the prelink (`kernel/prelink/README.md`). `scripts/bg.sh NAME CMD` runs a job in tmux if it must
   outlive the session.
