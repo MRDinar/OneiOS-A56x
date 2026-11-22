@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "drm2kgsl-sys"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -59,6 +66,7 @@ dependencies = [
 name = "xnuhost"
 version = "0.1.0"
 dependencies = [
+ "drm2kgsl-sys",
  "libc",
  "onebridges",
  "onecamera",

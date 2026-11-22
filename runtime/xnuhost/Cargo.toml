@@ -11,6 +11,8 @@ autotests = false
 autoexamples = false
 autobenches = false
 
+build = "build.rs"
+
 [lib]
 path = "src/lib.rs"
 
@@ -23,6 +25,7 @@ onebridges.workspace = true
 onecamera.workspace = true
 oneencoder.workspace = true
 oneios-display.workspace = true
+drm2kgsl-sys.workspace = true
 
 [lints]
 workspace = true
@@ -30,3 +33,8 @@ workspace = true
 [[bin]]
 name = "xnuhost"
 path = "src/main.rs"
+
+# gpuctl: the GPU path alone, for a check on the phone (docs/gpu.md)
+[[bin]]
+name = "gpuctl"
+path = "tools/gpuctl.rs"
