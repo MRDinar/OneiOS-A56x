@@ -273,6 +273,16 @@ xl_adt_node *xl_machine_tree(const xl_machine *m, const char **error)
   // The vnode limit XNU sizes from memory, (bytes / 64 KiB) + 1024: without it the BCM2837
   // configuration clips it to 1024 and the vnode jetsam kills every idle process.
   xl_adt_set_u32(defaults, "kern.maxvnodes", (uint32_t)(m->dram_size / 0x10000 + 1024));
+  // The I/O throttle an iPhone18,2 has (XNU throttle_init_throttle_window/_period read these before any disk opens).
+  // The hosted disks answer DKIOCISSOLIDSTATE 0 (`spec_open : ... isssd is (0)`), so XNU took its rotating-disk
+  // table: a utility (tier 2) I/O slept 85 ms and a background (tier 3) I/O 200 ms, within 500 ms of any foreground
+  // I/O on the same disk, while the iPhone's NAND gets the SSD table (5, 15, 25 ms) and its DeviceTree /defaults
+  // (24A446) sets kern.io_throttle_period_tier3 20 and kern.io_throttle_window_tier3 100. These are the iPhone's
+  // effective values, whatever the disk answers; the tier 1 and tier 2 windows (25, 100 ms) are XNU's on both.
+  xl_adt_set_u32(defaults, "kern.io_throttle_period_tier1", 5);
+  xl_adt_set_u32(defaults, "kern.io_throttle_period_tier2", 15);
+  xl_adt_set_u32(defaults, "kern.io_throttle_period_tier3", 20);
+  xl_adt_set_u32(defaults, "kern.io_throttle_window_tier3", 100);
   // ram-view= (xnuhost): the per-process memory limits an iPhone18,2 has, from its own device tree (24A446's
   // DeviceTree /defaults: kern.max_task_pmem 3376, kern.entitled_max_task_pmem 6144, kern.entitled_dev_max_task_pmem
   // 6656 MB, for its 12 GiB), scaled by the view. XNU reads them in task_init (max_task_footprint) and

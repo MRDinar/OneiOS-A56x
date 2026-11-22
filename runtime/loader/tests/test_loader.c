@@ -187,6 +187,20 @@ static void test_machine(void)
     CHECK(q && !strcmp((const char *)q->value, "V54") && !xl_adt_get(t, "target-type"));
     xl_adt_free(bt);
   }
+  // the iPhone18,2's I/O throttle (SSD periods, its /defaults tier 3 period and window), whatever the disks answer
+  {
+    const xl_adt_node *d = xl_adt_find(t, "defaults");
+    const char *const names[4] = { "kern.io_throttle_period_tier1", "kern.io_throttle_period_tier2",
+                                   "kern.io_throttle_period_tier3", "kern.io_throttle_window_tier3" };
+    const uint32_t want[4] = { 5, 15, 20, 100 };
+    for (int i = 0; i < 4; i++) {
+      const xl_adt_prop *q = d ? xl_adt_get(d, names[i]) : NULL;
+      uint32_t ms = 0;
+      if (q && q->length == 4) memcpy(&ms, q->value, 4);
+      CHECK(ms == want[i]);
+    }
+    CHECK(d && !xl_adt_get(d, "kern.io_throttle_window_tier1") && !xl_adt_get(d, "kern.io_throttle_window_tier2"));
+  }
   // no ram-view: the iPhone18,2's default task limit, no entitled raise
   {
     const xl_adt_prop *q = xl_adt_get(xl_adt_find(t, "defaults"), "kern.max_task_pmem");

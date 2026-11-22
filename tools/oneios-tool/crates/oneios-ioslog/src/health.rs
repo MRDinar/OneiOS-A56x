@@ -18,7 +18,6 @@
 use crate::{base_name, open_source, pick_boot, text_line, time_text, uuid_text, How};
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDateTime;
-use macos_unifiedlogs::logarchive::visit_provider;
 use regex::{Regex, RegexSet};
 use std::collections::HashMap;
 use std::io::{BufRead, Read};
@@ -539,7 +538,7 @@ pub fn read_with(table: &'static [Kind], source: &str, how: &How, boot: &str, ex
     }
     let log = open_source(source, how)?;
     let boot = pick_boot(&log, boot)?;
-    visit_provider(&log, |entry| {
+    crate::visit(&log, false, |entry| {
         if boot.is_some_and(|b| b != entry.boot_uuid) {
             return;
         }

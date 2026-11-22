@@ -1123,7 +1123,8 @@ iOS's own log of a session, from a copy of the Data store (replaces the mount-an
 
 ```sh
 oneios-tool ioslog boots data.img                                   # which boots the log holds
-oneios-tool ioslog show data.img --boot last --proc backboardd      # text; -f csv|jsonl -o FILE for a file
+oneios-tool ioslog show data.img --boot last --proc backboardd      # text; -f csv|jsonl -o FILE for a file; times on the
+                                                                    #   guest's clock (--library-times: the decoder's, 52x slow at 19.2 MHz)
 oneios-tool ioslog checks data.img                                  # counts of the known problems' lines, last boot
 oneios-tool ioslog health data.img [--detail] [-o FILE]             # the last boot's hangs, watchdog kills, XPC timeouts, jetsam
                                                                     #   kills, crashes, stuck idle demotions, encode failures:

@@ -26,6 +26,9 @@ and by `phone pull-data --ioslog`). Left open there:
   not on a session's store (they are on the Mac). The command and the owner's numbers to check it against are in
   the README. The places where a watchdog or XPC timeout line names its extension or service, the jetsam line's
   forms are guesses until that run (`KINDS` in `crates/oneios-ioslog/src/health.rs`);
+- **the decoder's times** (2026-11-22): macos-unifiedlogs converts only the 125/3 timebase; `ioslog` corrects other
+  timebases itself (README "ioslog", `Clock`). Left: the case of an entry placed from the boot's start before the
+  first time record, and a fix sent to the library itself (then `Clock` and `--library-times` can go);
 - **`collect` without `--pull-data`**: it needs the store's copy or `ioslog.txt` in the folder. Running the
   Android build's `oneios-tool ioslog health` on the phone from `collect` (no copy of 32 GiB) waits for that
   build to be staged with the runtime; `health` without SOURCE is the phone's own form, **not run on the phone**.

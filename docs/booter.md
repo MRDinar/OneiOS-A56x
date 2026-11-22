@@ -177,7 +177,10 @@ A port of DarwinBoot to plain C with no firmware under it:
 - `adt.c`: Apple device tree in memory: build, parse, edit, flatten.
 - `machine.c`: the tree of xnuhost's board, a port of UniXNU-droidvm's `make-droidvm-adt.py`: `/chosen` (256
   seed bytes, CHRP NVRAM proxy, dram, security properties, root matching, MAC addresses), `/cpus`, `/psci`,
-  `/defaults`, `/options`, `/product` (copied from the identity tree, minus exclaves and the AGX-only feature
+  `/defaults` (with the iPhone18,2's I/O throttle since 2026-11-22: `kern.io_throttle_period_tier1` 5,
+  `_tier2` 15, `_tier3` 20 and `kern.io_throttle_window_tier3` 100 ms; the hosted disks answer DKIOCISSOLIDSTATE 0, so
+  XNU had used its rotating-disk table, 40/85/200 ms periods in 25/100/500 ms windows, `docs/userland.md` 11),
+  `/options`, `/product` (copied from the identity tree, minus exclaves and the AGX-only feature
   sets; `artwork-scale-factor` is the UI scale), `/buttons`, `/bluetooth`, `/arm-io` with the GICv3, `wlan`, `uart0` and one node per virtio window
   under the names and `compatible` strings UniXNU's drivers match; `/chosen/xnuhost` for a hosted kernel.
 - `boot.c`: `boot_args` (1024-byte command line of Darwin 23+, or the 608-byte one), the sidecar checks

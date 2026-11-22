@@ -2474,8 +2474,8 @@ SpringBoard about 70 %. Two new lines say where the heat goes at the next boot, 
   `com.apple.hybridsearchd` are already disabled (`userland/config/daemons.toml` base). iOS runs its indexing as
   maintenance work, and plugged-in time is when its scheduler runs such work [Apple's documented behaviour for
   background tasks, not read in this build]. The least-risk test, no seed: one boot with
-  `oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.searchd,com.apple.spotlight.IndexAgent` (hosted
-  0053; keep axassetsd, the default, in the list). It writes the Data store's `disabled.plist`, so it stays for later
+  `oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.searchd,com.apple.spotlight.IndexAgent`
+  (hosted 0053; keep the default list, axassetsd, aonsensed and prngseedd since 2026-11-22, in it). It writes the Data store's `disabled.plist`, so it stays for later
   boots until `oneios-enable-jobs=com.apple.analyticsd,com.apple.searchd,com.apple.spotlight.IndexAgent` (0044) turns
   them on again. Cost while off: search finds nothing new (apps, settings, mail, notes are not indexed). Not run.
 
