@@ -72,6 +72,28 @@ static double elapsed(const struct timespec *t0) { struct timespec t; clock_gett
 static int16_t mark_value(int k) { return (int16_t)(3001 + 7 * k); }
 
 aaudio_result_t AAudio_setMMapPolicy(int32_t policy) { if (mmap_policy_rc == AAUDIO_OK) mmap_policy_set = policy; return mmap_policy_rc; }
+
+// The audio policy's media index on the speaker (fix-audio-volume): libaudioclient's AudioSystem, found by the
+// helper under its mangled names (-rdynamic). Only the Android 16 form of the set (with `muted`), as on the phone.
+static int fake_media_index = 7, fake_media_sets, fake_media_bad;
+int32_t fake_get_index(const host_attributes *a, int *index, uint32_t device) __asm__(HOST_GET_INDEX);
+int32_t fake_get_max(const host_attributes *a, int *index) __asm__(HOST_GET_MAX);
+int32_t fake_set_index(const host_attributes *a, int index, bool muted, uint32_t device) __asm__(HOST_SET_INDEX_MUTED);
+static bool fake_media(const host_attributes *a) { return a->usage == HOST_USAGE_MEDIA && a->content_type == HOST_CONTENT_MUSIC; }
+int32_t fake_get_index(const host_attributes *a, int *index, uint32_t device)
+{
+  if (!fake_media(a) || device != HOST_DEVICE_OUT_SPEAKER) { fake_media_bad++; return -22; }
+  *index = fake_media_index;
+  return 0;
+}
+int32_t fake_get_max(const host_attributes *a, int *index) { if (!fake_media(a)) { fake_media_bad++; return -22; } *index = 15; return 0; }
+int32_t fake_set_index(const host_attributes *a, int index, bool muted, uint32_t device)
+{
+  if (!fake_media(a) || device != HOST_DEVICE_OUT_SPEAKER || muted || index < 0 || index > 15) { fake_media_bad++; return -22; }
+  fake_media_index = index;
+  fake_media_sets++;
+  return 0;
+}
 bool AAudioStream_isMMapUsed(AAudioStream *s) { return s->mmap || fake_mmap_used; }
 
 // The server: once filled to the buffer size and after the stall, a pull every pull period on its own clock. An
@@ -462,6 +484,8 @@ int main(void)
   helper_up("0");
   int opens_before = out_opens;
   dac_ppm = 0; speaker_case(0);
+  // The host's media index on the speaker went to its maximum at the first open (and stays there for the run).
+  CHECK(fake_media_index == 15 && fake_media_sets == 1 && fake_media_bad == 0);
   CHECK(mmap_policy_set == 2 && last_out->perf == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY && out_opens == opens_before + 1);
   CHECK(out_path == PATH_LEGACY && !continuous && target_ms == 20);
   dac_ppm = 2000; speaker_case(-2000);                    // the server 2000 ppm fast: the guest is slow against it
@@ -485,7 +509,27 @@ int main(void)
   CHECK(frames == periods * 240);
   CHECK(first == 100);
   CHECK(last_in->perf == AAUDIO_PERFORMANCE_MODE_NONE);   // the microphone stays NONE
+  CHECK(fake_media_sets == 1);                            // one set a run, not one per stream
   helper_down();
+  CHECK(fake_media_index == 7 && fake_media_sets == 2 && fake_media_bad == 0);   // put back as the helper ended
+  // ONEIOS_AUDIO_HOST_VOLUME=keep: the index is not touched.
+  setenv("ONEIOS_AUDIO_HOST_VOLUME", "keep", 1);
+  helper_up("0");
+  send_header(AU_START, true, 2, 48000);
+  play(0.2, 0);
+  send_header(AU_STOP, true, 0, 0);
+  helper_down();
+  CHECK(fake_media_index == 7 && fake_media_sets == 2);
+  unsetenv("ONEIOS_AUDIO_HOST_VOLUME");
+  // Already at the maximum: nothing set, nothing put back.
+  fake_media_index = 15;
+  helper_up("0");
+  send_header(AU_START, true, 2, 48000);
+  play(0.2, 0);
+  send_header(AU_STOP, true, 0, 0);
+  helper_down();
+  CHECK(fake_media_index == 15 && fake_media_sets == 2);
+  fake_media_index = 7;
 
   // 2. Linger: a START soon after a STOP takes the open stream (no new open, no stall); the stream closes after
   // the silence.
@@ -669,6 +713,7 @@ int main(void)
   send_header(AU_STOP, true, 0, 0);
   helper_down();
   setenv("ONEIOS_AUDIO_SYSTEM_SERVER", "1", 1);
+  int media_sets = fake_media_sets;                      // beside One UI the host's media index is not touched
   opens = out_opens;
   helper_up("0");
   host_late_max = 0;
@@ -682,6 +727,7 @@ int main(void)
   if (host_on_time("no underrun on MMAP shared")) CHECK(shared_underruns == 0 && last_out->dac_underflows == 0);
   send_header(AU_STOP, true, 0, 0);
   helper_down();
+  CHECK(fake_media_sets == media_sets && fake_media_index == 7);
   setenv("ONEIOS_AUDIO_SYSTEM_SERVER", "0", 1);
 
   // 10. The probe (xnuhost before the boot): the speaker opened in silence, its latency answered (below the read

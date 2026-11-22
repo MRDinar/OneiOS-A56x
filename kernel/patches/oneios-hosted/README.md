@@ -1229,6 +1229,44 @@ unchanged M (no host map); perf hints H`. Built and booted on the PC (qemu-aarch
 2.6c); not run on the phone. On the phone: the 0075 line, the fill time per fill against before, `kernel maps` in the
 pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys ...` lines.
 
+## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
+
+The fault: no haptic is felt. With 0078 audiomxd's haptic server starts and plays, and the Actuator device runs I/O,
+but every period is silence (`ONEIOS HAPTIC: counters: ... 61920 periods (309600 ms), 0 with samples, 0 loud`;
+audiomxd's `RTAID [ ... node=Actuator-Output ... ] -- [ rms:[-120.000000], peaks:[-240.000000] ]`). VirtualAudio
+makes the Actuator's virtual stream with the DSP chain `d42_actuator_general` and finds no strips file for it:
+`RoutingSettings_Aspen.cpp:700 Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general`. The chain turns
+the haptic synth's 2-channel stream into the actuator's one channel; the iPhone's is
+`/Library/Audio/Tunings/AID8022/VAD/actuator_general.{austrip,dspg}` (in 2 -> AUHapticsProtection -> 1 ->
+AUVolumeForHaptics -> out; AID8022 is the V54's `/product/audio acoustic-id`). `docs/hardware.md` section 5, "The
+Actuator played silence".
+
+What the patch changes (`bsd/kern/kern_exec.c`, `XNU_HOSTED`, in 0078's step before launchd):
+`oneios_audio_tunings_folder()` makes `/private/var/oneios/addons/AudioTunings/oneios,xnuhost` a folder of links
+instead of 0078's one link to the board (an existing link there is removed first; entries already there are kept):
+- `Haptics -> ../V54/Haptics` (`../NAME/Haptics` with `oneios-audio-tunings=NAME`): the preset, as 0078;
+- `VAD/d42_actuator_general.austrip -> ../../AID8022/VAD/actuator_general.austrip` and the same for `.dspg`
+  (`oneios-audio-tunings-vad=0`: not made).
+The links resolve in 0078's read-only union over `/Library/Audio/Tunings` to the sealed folders; nothing of Apple's is
+copied. After the mount the step looks the strip up through `/Library/Audio/Tunings`. One line (replaces 0078's):
+`oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost/Haptics ->
+V54/Haptics, oneios,xnuhost/VAD/d42_actuator_general -> AID8022/VAD/actuator_general (N entries made), the Actuator's
+strip visible; stage 5, status 0 (...)`; an error: `oneios-audio-tunings: oneios,xnuhost's folder: error N (0078's
+link, if there, kept)`. The first boot of a store with 0078's link says 5 entries made (the folder, Haptics, VAD and
+the two strip links), later boots 0.
+
+Numbered 0086 (0085 is the Edge spill patch): 0084 is the camera helper's MobileGestalt cache patch, which adds a function after 0078's; the two
+apply in either order (checked with `patch --dry-run` on the 0083 tree, both orders).
+
+Tested (Mac, 2026-11-23): `HOSTED_OUT=audio kernel/build-hosted.sh` applied the series with 0086 (962 s, `xnu.macho`
+sha256 `dbf9fc9f...`, no warning in the new code); `KERNEL=out/kernel/current-hosted-audio/xnu.macho
+OUT=out/kernel/audio-24A446 kernel/prelink/build.sh`: `kernel.kc` 96,845,824 bytes, sha256 `a50202ea0aa3a71c...`,
+audit 2712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not on the phone. The
+lines that prove it on the phone: the `oneios-audio-tunings:` line above with `the Actuator's strip visible`; in iOS's
+log no `Cannot find strips file oneios,xnuhost/VAD/d42_actuator_general`, RTAID's `node=Actuator-Output` above -120 dB
+while a haptic plays; `ONEIOS HAPTIC: counters: ... N with samples ... N requests to the motor` and xnuhost's
+`haptics: 60 s: ... +N played` with N > 0.
+
 ## 0085-edge-e-to-p-spill.patch (fix-launch-control-center-fitness, 2026-11-22)
 
 The owner's report (main `23561aa`, kernel 0082 + 0083 + codec): "we are close to 120 Hz but these laggy parts need
@@ -1293,6 +1331,7 @@ cpuN:` lines with vCPU 2-7 busy whenever vCPU 0-1 are (not 85-99% idle beside tw
 during an app launch and Control Center with a frame interval near the GPU time (not 43-82 ms); `oneios-tool ioslog
 health` with SpringBoard's hangs and chronod's watchdog kills far under 90 (214.9 s) and 126; `thermal:` lines for the
 cost.
+
 ## 0083-dictation-status-navd.patch (fix-spotlight-keyboard, 2026-11-22)
 
 The owner's reports: in Spotlight the keyboard never comes up; in Notes one character comes, then a long lag; on the
@@ -1654,7 +1693,9 @@ existing Data store gets it at its next boot. `oneios-audio-tunings=0`: nothing 
 `oneios-audio-tunings=NAME`: the link points at `NAME`. One line:
 `oneios-audio-tunings: /private/var/oneios/addons/AudioTunings over /Library/Audio/Tunings: oneios,xnuhost -> V54 (link
 made 0), stage 5, status 0 (stage 5 status 0: ...)`; stage 1 status N: the folder could not be looked up, stage 2: the
-mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found.
+mount refused (N), stage 3/4: mounted, but the V54 folder or the preset through the link not found. Since 0086
+(2026-11-22) `oneios,xnuhost` is a folder of links (`Haptics` and the Actuator's VAD strip) and the line says so:
+"0086" above.
 
 ## 0084-mobilegestalt-cache-identity.patch (enable-camera-app, 2026-11-22)
 
