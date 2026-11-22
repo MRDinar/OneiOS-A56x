@@ -133,7 +133,8 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
   vCPUs (0% idle on the phone) while the six P vCPUs were 85-99% idle. Hosted `0085` opens E -> P migration and steal
   once all CPUs are up: weight 0 for fixed-priority to default, 64 for utility, 1000 for background (us of
   scheduling latency); `oneios-edge-spill=0|1|2`, one `oneios-edge:` line (kernel/patches/oneios-hosted/README.md,
-  "0085").
+  "0085"). It runs at the end of the scheduler's completion step (`sched_cpu_init_completed`), which on this board
+  nothing called until hosted `0089` (2026-11-23: the last `ml_processor_register` starts it; `oneios-smp:` lines).
 - `l2-cache-size`, `l3-cache-size` of a cpu node are read by XNU when present.
 
 ### The bridge (`runtime/bridges/cpu/topology.c`)

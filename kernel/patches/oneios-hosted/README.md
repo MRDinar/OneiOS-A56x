@@ -1231,21 +1231,59 @@ pmap line, and xnuhost's `perf:   queue:` and `thermal: 30 s: host CPU ... sys .
 
 ## 0089-smp-scheduler-init-completed.patch (fix-hosted-smp-scheduler-init, 2026-11-23)
 
-The scheduler's completion step, `ml_cpu_init_completed`, never ran on this board: its only arm64 caller is
-AppleARMSMP (`iokit/Kernel/arm/AppleARMSMP.cpp`, under `USE_APPLEARMSMP`), which the hosted board (BCM2837's board
-config) does not build, and UniXNU's ArmCpu calls it only with `armcpu-edge=1`. So `sched_cpu_init_completed` never
-ran: no Edge default edges or per-pset limits, no realtime spill rules, `pcs_init_completed` false all session, and
-0085 (called at its end) did nothing: the phone boot of 2026-11-23 02:16 printed no `oneios-edge:` line, and the two E
-vCPUs were 0% idle while the six P vCPUs were 50-98% idle.
+The fault: 0085's E -> P spill did nothing on the phone. From `oneios_board_late_start` it printed `oneios-edge: not all
+CPUs are up yet: the edges stay XNU's`, long after all 8 vCPUs had entered the kernel; moved to the end of
+`sched_cpu_init_completed` (main `6376994`), it printed nothing at all (the boot of 2026-11-23 02:16).
 
-What the patch changes (`osfmk/arm64/hosted/hosted_smp.c`, `osfmk/arm64/machine_routines.c`, `osfmk/kern/processor.c`,
-`XNU_HOSTED`): `ml_processor_register` counts the boots, and the last of the topology's CPUs starts a kernel thread that
-calls `ml_cpu_init_completed` once (a later call, ArmCpu's with `armcpu-edge=1`, is one log line);
-`cpu_boot_timeout_secs` is 10 s (a vCPU is a host thread). `oneios-smp-complete=0` is the old way. Lines:
-`oneios-smp: all N CPUs booted: ml_cpu_init_completed ...`, then 0085's `oneios-edge: E -> P migration and steal allowed`.
+Cause: `sched_cpu_init_completed` never ran. XNU calls it through `ml_cpu_init_completed` once every CPU has been
+registered (`ml_processor_register`) and booted (`processor_boot`). Its only arm64 caller is AppleARMSMP
+(`iokit/Kernel/arm/AppleARMSMP.cpp`, all under `USE_APPLEARMSMP`), which this board (BCM2837's board config) does not
+build. Here UniXNU's ArmCpu registers each vCPU, and `ml_processor_register` boots it itself (its `!USE_APPLEARMSMP`
+branch). ArmCpu calls `ml_cpu_init_completed` only with its boot-arg `armcpu-edge=1`, which nothing sets (its
+`processor_start` call is a no-op in this XNU, `processor_start_from_kext`). Apple's AppleARMPlatform imports the
+function too, but its CPU driver does not run here. So `pcs_init_completed` stayed false all session, and the whole
+completion step never ran: the Edge scheduler's default edges and each pset's `max_parallel_cores` and
+`max_parallel_clusters` (`sched_edge_cpu_init_completed`), the realtime spill rules (`rt_init_completed`), the wait for
+every CPU (`check_all_cpus_are_done_starting`), the `sched_update_powered_cores` thread, and 0085 at its end.
 
-Tested (2026-11-23): written by the fix-hosted-smp-scheduler-init helper; built and prelinked on the build laptop by the
-lead (below, when done). Not booted under qemu (the owner asked for a combined phone test boot first) or on the phone yet.
+What the patch changes (`XNU_HOSTED`):
+
+- `osfmk/arm64/machine_routines.c` `ml_processor_register`: after its `processor_boot`, `hosted_cpu_booted(processor)`
+  (`osfmk/arm64/hosted/hosted_smp.c`) counts the boots. The last of `ml_get_topology_info()->num_cpus` starts a kernel
+  thread (`oneios_cpu_init_completed`, `MAXPRI_KERNEL`) that calls `ml_cpu_init_completed`, as AppleARMSMP does after
+  its `processor_boot` loop. A thread, not the caller: the caller is ArmCpu's start, which after `ml_processor_register`
+  still sets the IOCPU's number and state, and the step waits for every vCPU to reach `processor_up`. It is not
+  called when `machine_info.logical_cpu_max` differs from that count (`sched_cpu_init_completed` asserts that every one
+  of `logical_cpu_max` CPUs is online), and not with `oneios-smp-complete=0` (the old way).
+- `ml_cpu_init_completed`: exactly once. `hosted_cpu_init_completed_first` lets the first call through; a later one
+  (ArmCpu's, with `armcpu-edge=1`) is one log line instead of the scheduler's `sched_cpu_init_completed called twice`
+  panic.
+- `osfmk/kern/processor.c`: `cpu_boot_timeout_secs` 10 s instead of 1. The completion step now waits for each vCPU
+  (`processor_wait_for_start`) and panics on a timeout, as on an iPhone; a vCPU is a host thread that xnuhost makes at
+  PSCI CPU_ON and One UI's scheduler runs beside its own load (under qemu-user, an emulated one). The boot-arg still
+  sets it.
+
+The assertions of the step hold here: all 8 processors are booted before it (the count), each is in
+`pcs_effective.pcs_online_cores` once it ran `processor_up` (the wait comes before the asserts), `ml_cpu_can_exit` is
+false for every CPU without `USE_APPLEARMSMP` (so `pcs_required_online_system` is all of them: no vCPU is ever powered
+down), and no `processor_boot` comes after (`processor.c` asserts `!sched_is_cpu_init_completed()` there).
+`sched_edge_config_verify` is advisory on this board (UniXNU's patch). What else changes once `pcs_init_completed` is
+true: `sched_override_available_cores_for_sleep` no longer panics ("Attempting to sleep before all CPUS are
+registered"), and the recommended cores are masked with the (full) powerdown-recommended set.
+
+Lines: `oneios-smp: all 8 CPUs booted (the last cpu N): ml_cpu_init_completed (the scheduler's completion step) on
+its own thread`, then 0085's `oneios-edge: E -> P migration and steal allowed on ...`, then `oneios-smp: the
+scheduler's completion step done in M ms (every CPU running; pcs_init_completed 1)`. M is the margin against the
+10 s timeout. A second call: `oneios-smp: ml_cpu_init_completed called again ...`.
+
+Not folded into 0085: it is its own cause (the completion step), and it changes more than the spill (the Edge
+defaults, the realtime rules, the powered-cores thread, the sleep path); 0085 stays the spill alone.
+
+Tested (build laptop, 2026-11-23): written by the fix-hosted-smp-scheduler-init helper as 0088, renumbered 0089 (0088 is the
+CMCapture model folder). `HOSTED_OUT=combo3 ONEIOS_CRYPTO=original kernel/build-hosted.sh` with 0084-0089: 174 patches, `xnu.macho`
+sha256 `ae21dcbf...`, releasable; the prelink: `kernel.kc` sha256 `988c2a7b...`, audit 2711 paired, 93 on the stub, 0
+failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8; the `oneios-smp:` strings are in the kernel.
+Not booted under qemu (the owner asked for the combined phone boot first); staged on the phone 2026-11-23 for that boot.
 
 ## 0086-audio-tunings-actuator-chain.patch (fix-audio-volume-haptics, 2026-11-22)
 
@@ -1315,7 +1353,8 @@ What the patch changes (`osfmk/arm64/hosted/hosted_smp.c` `hosted_sched_edge_spi
 of `sched_cpu_init_completed` in `osfmk/kern/sched_prim.c`, `XNU_HOSTED`): once all CPUs are up
 (`sched_is_cpu_init_completed`; until 2026-11-23 the call was in `oneios_board_late_start`, which on the phone ran before
 that point: the boot of 2026-11-23 logged `oneios-edge: not all CPUs are up yet: the edges stay XNU's`, so the edges
-were never opened), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
+were never opened; and on this board `sched_cpu_init_completed` itself ran only since 0089, so the 02:16 boot with
+the call there printed nothing), `sched_edge_matrix_set` opens the E -> P edges: migration and steal allowed for the
 fixed-priority, foreground, user-initiated and default buckets at weight 0, utility at 64 and background at 1000. The
 weight is compared with the clusters' load, their average scheduling latency in us (0 with an idle CPU): a thread goes
 to P when P has an idle CPU or waits less, background only when E's threads wait a millisecond longer (RunningBoard

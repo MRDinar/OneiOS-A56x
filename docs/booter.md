@@ -952,7 +952,9 @@ The E cluster is DroidVMCpufreq's preferred cluster of every class but UI, above
 let nothing move from E to P: until hosted `0085` (2026-11-22) the `perf: cpuN:` lines showed vCPU 0-1 0% idle and
 vCPU 2-7 85-99% idle in every period, the X4 (vCPU 7) the most idle. `0085` opens the E -> P edges (migration and steal;
 weight 0 to default, 64 utility, 1000 background, us of scheduling latency): on the phone the same lines should show
-vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line.
+vCPU 2-7 busy while vCPU 0-1 are, and the kernel's `oneios-edge:` line. It needs hosted `0089` (2026-11-23): on this board
+nothing called `ml_cpu_init_completed`, so the scheduler's completion step (and 0085 at its end) never ran; 0089 calls it
+once the last vCPU is booted (`oneios-smp:` lines).
 
 **The cpuset.** A thread in Android's `background` or `system-background` cpuset may use only the A520s, whatever
 `sched_setaffinity` asks: cpu-pin cannot work there. xnuhost logs its cpuset and allowed CPUs at start. From the fork's
