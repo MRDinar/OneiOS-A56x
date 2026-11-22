@@ -13,8 +13,8 @@ new file mode 100644
 + * 1024 pages when the free queue holds that much above keep, and gives a batch back as its runs: sorted by page
 + * number, neighbours joined.
 + *
-+ * The same file is osfmk/arm64/hosted/free_report_runs.h in the kernel (0066 adds it); runtime/xnuhost's host tests
-+ * check that the two are the same and test these functions (tests/test_xnuhost.c, "free report").
++ * The same file is osfmk/arm64/hosted/free_report_runs.h in the kernel (0066 adds it); the runtime's host tests
++ * check that the two are the same (abi/tests/headers.rs) and test their Rust twin (abi/src/free_report.rs).
 + */
 +#ifndef XNUHOST_FREE_REPORT_RUNS_H
 +#define XNUHOST_FREE_REPORT_RUNS_H

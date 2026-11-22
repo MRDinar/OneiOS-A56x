@@ -738,7 +738,7 @@ fn test_protocol() {
     assert_eq!(recv_hello(a.as_fd(), 100).err(), Some(err(libc::ECONNRESET)));
 }
 
-/// The table's layout is xnuhost's too (display.c's struct direct_slot, _Static_assert 64 bytes).
+/// The table's layout is xnuhost's too (its display.rs writes this Slot; 64 bytes, as the C's struct direct_slot).
 #[test]
 fn test_slot_layout() {
     let s = Slot { seq: 1, offset: 2, stride: 3, width: 4, height: 5, nsegs: 6, x: 7, y: 8, w: 9, h: 10, format: 11 };

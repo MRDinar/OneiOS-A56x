@@ -1,4 +1,4 @@
-# Typing on the keyboard, for a PC boot (xnuhost --input-script FILE --no-input; format: src/input_script.c): unlock,
+# Typing on the keyboard, for a PC boot (xnuhost --input-script FILE --no-input; format: src/input_script.rs): unlock,
 # Home, Spotlight's search field (a swipe down on the Home Screen raises the keyboard), then 40 key taps, 0.5 s apart,
 # along the three letter rows, again and again. Each key tap is a keyboard click and, where the system has haptics,
 # a Core Haptics transient (audiomxd's com.apple.audio.hapticd; docs/hardware.md 5, "Core Haptics' server").

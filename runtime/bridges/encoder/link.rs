@@ -2,7 +2,7 @@
 //! The link between xnuhost's end of the video encoder (the static process: [`crate::media_device`] and
 //! [`crate::backend_helper`]) and the oneios-encoder helper process ([`crate::helper`], which runs the NDK's
 //! MediaCodec -- a shared library, so it cannot be in the static xnuhost, exactly as the camera and audio helpers are
-//! separate processes). A length-framed message protocol over a UNIX stream socket (encoder_link.h, mirrored; NV12
+//! separate processes). A length-framed message protocol over a UNIX stream socket (the C's encoder_link.h; NV12
 //! frames and coded bitstream are copied through it: widget-snapshot stills are small).
 use crate::pod::Pod;
 use std::io::{self, Read, Write};

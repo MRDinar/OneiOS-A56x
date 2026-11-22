@@ -31,7 +31,7 @@ pub struct BufferInfo {
     pub flags: u32,
 }
 
-/// What a session needs of a MediaCodec encoder (the AMediaCodec calls backend_ndk.c makes).
+/// What a session needs of a MediaCodec encoder (the AMediaCodec calls backend_ndk.c made).
 pub trait Codec: Send {
     /// An input buffer's index, or < 0 (after `timeout_us`).
     fn dequeue_input(&mut self, timeout_us: i64) -> isize;

@@ -17,7 +17,7 @@ pub fn spawn<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 'stat
     Builder::new().name(short(name)).spawn(f)
 }
 
-/// [`spawn`] with a stack of `stack` bytes (virtio_blk.c's flush thread: 64 KiB).
+/// [`spawn`] with a stack of `stack` bytes (virtio_blk.rs's flush thread: 64 KiB).
 pub fn spawn_with_stack<T: Send + 'static>(
     name: &str,
     stack: usize,
@@ -26,7 +26,7 @@ pub fn spawn_with_stack<T: Send + 'static>(
     Builder::new().name(short(name)).stack_size(stack).spawn(f)
 }
 
-/// Names the calling thread (prctl PR_SET_NAME, as task.c's "xnuhost-tasks").
+/// Names the calling thread (prctl PR_SET_NAME, as task.rs's "xnuhost-tasks").
 pub fn set_name(name: &str) {
     let Ok(c) = std::ffi::CString::new(short(name)) else { return };
     // SAFETY: a valid NUL-terminated name of at most 15 bytes; PR_SET_NAME copies it.

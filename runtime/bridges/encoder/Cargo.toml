@@ -26,12 +26,12 @@ path = "bin/oneios-encoder.rs"
 name = "encctl"
 path = "bin/encctl.rs"
 
-# The stand-in encoder alone, its streams through ffmpeg when there is one (test_standin.c, tests/decode.sh).
+# The stand-in encoder alone, its streams through ffmpeg when there is one (tests/decode.sh; the C's test_standin.c).
 [[test]]
 name = "standin"
 path = "tests/standin.rs"
 
-# The virtio-media device over xh-core's transport, through the helper process and in-process (test_encoder.c).
+# The virtio-media device over xh-core's transport, through the helper process and in-process (the C's test_encoder.c).
 [[test]]
 name = "encoder"
 path = "tests/encoder.rs"

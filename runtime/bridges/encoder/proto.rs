@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! The wire layout of xnuhost's "droidvm,virtio-media" device (media_proto.h, mirrored; tests/headers.rs checks it
-//! against the header): a stateful V4L2 video encoder over virtio-mmio, as UniXNU-droidvm's guest transport
-//! DroidVMVirtioMedia.c drives it and DroidVMVTHost.cpp's session logic expects. It stands in for crosvm's
-//! --virtio-media device: the guest kernel's transport is unchanged, so the device must answer the same commands and
-//! events.
+//! The wire layout of xnuhost's "droidvm,virtio-media" device (the C's media_proto.h; both ends are Rust now,
+//! checked by tests/encoder.rs's round trips): a stateful V4L2 video encoder over virtio-mmio, as UniXNU-droidvm's
+//! guest transport DroidVMVirtioMedia.c drives it and DroidVMVTHost.cpp's session logic expects. It stands in for
+//! crosvm's --virtio-media device: the guest kernel's transport is unchanged, so the device must answer the same
+//! commands and events.
 //!
 //! Two queues:
 //! - commandq (0, driver -> device): OPEN -> session id; CLOSE; IOCTL(session, the _IOC_NR of a VIDIOC_*) with the

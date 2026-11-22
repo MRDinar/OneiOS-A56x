@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! iOS tasks and threads through the host calls: the trap kinds, the deferred maps and unmaps (task.c), the unmap
+//! iOS tasks and threads through the host calls: the trap kinds, the deferred maps and unmaps (task.rs), the unmap
 //! race of two vCPUs, the JIT's aliased pages.
 
 use crate::{
@@ -77,7 +77,7 @@ pub(crate) fn worker_loop(cpu: *mut XhCpu) -> ! {
 
 static LOAD_ST: Racy<XhUserState> = Racy::new(zeroed_state());
 
-/// The deferred unmaps (task.c, task.unmaps_out) with a loading thread: `ldr x0, [x1]; brk` at code_va + 32. The
+/// The deferred unmaps (task.rs, task.unmaps_out) with a loading thread: `ldr x0, [x1]; brk` at code_va + 32. The
 /// trap kind (-1 if the run failed), and x0 into `value`.
 fn load_once(cpu: *mut XhCpu, thread: u64, code_va: u64, va: u64, trap: &mut XhTrap, value: Option<&mut u64>) -> i64 {
     let ls = state_at(LOAD_ST.get(), code_va + 32);
@@ -627,7 +627,7 @@ pub(crate) fn test_tasks() {
             && read64(kva(data_pa)) == st.x[0],
         "a map given before the run is in place when the thread runs",
     );
-    // task_unmap while no thread of the task runs waits in the queue (task.c): it must be in force when the thread
+    // task_unmap while no thread of the task runs waits in the queue (task.rs): it must be in force when the thread
     // runs.
     check(host!(task_unmap(c, task, other_va, 0x4000)) == 0, "an unmap while the task's thread is stopped");
     st.pc = code_va + 16;

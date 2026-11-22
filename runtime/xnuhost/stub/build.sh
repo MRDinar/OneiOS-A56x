@@ -3,7 +3,7 @@
 # writes the flat blob to OUT (a file, or OUT/stub.bin when OUT is a directory), as the C Makefile's stub.bin rule did:
 # linked at 0 by stub.ld, refused when it would need relocating or data (.got, .data, .bss), when a code path could
 # panic (a panic's location is a stored pointer), when its entry is not at offset 0, or when it is larger than
-# XS_TEXT_MAX (64 KiB, what task.c copies). xnuhost's build.rs calls it.
+# XS_TEXT_MAX (64 KiB, what task.rs copies). xnuhost's build.rs calls it.
 #   NDK=...          the NDK whose llvm-objcopy and llvm-readelf it uses (else $ANDROID_NDK_HOME, else the SDK's
 #                    ndk/28.2.13676358), found as runtime/ndk-cc finds it
 #   STUB_TARGET_DIR  cargo's target directory (default: this folder's target/; never the caller's, whose lock a build

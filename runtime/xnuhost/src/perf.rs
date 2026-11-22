@@ -205,7 +205,7 @@ pub enum Count {
     /// counter ticks spent inside thread_run (the iOS thread's turn) and cpu_idle
     TicksUser,
     TicksIdle,
-    /// task_map/task_unmap calls joined to the queue's last entry (stub_abi.h xs_queue_join)
+    /// task_map/task_unmap calls joined to the queue's last entry (xnuhost-abi's stub.rs, xs_queue_join)
     OpsJoined,
     /// sched_setattr calls that gave an iOS thread its vCPU's uclamp.min (task.rs)
     UclampSets,

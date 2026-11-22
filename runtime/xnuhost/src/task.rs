@@ -681,7 +681,7 @@ mod machine {
         cfg.trap_fd = trap_fd;
         cfg.kick_signal = kick_signal() as u32;
         cfg.uid = c.task_uid.map_or(-1, |u| u as i32);
-        // The hand-off (stub_abi.h): how long each side spins before it sleeps. Measured with the bench of
+        // The hand-off (xnuhost-abi's stub.rs): how long each side spins before it sleeps. Measured with the bench of
         // xnuhost/check-arm64.sh (docs/booter.md 2.6a): the defaults are what that measurement chose.
         let hz = cpu::counter_hz();
         SPIN_HOST.store(u64::from(c.spin_host.unwrap_or(SPIN_HOST_US)) * hz / 1_000_000, Relaxed);
@@ -1143,7 +1143,7 @@ mod machine {
     /// munmap of one page in the task (30-50 us there with the task's mmap_lock taken for writing), and many come in
     /// runs: the pmap flushes a range one page at a time (madvise, the pageout's reference clearing), and a fault that
     /// changes an entry is an unmap of the page and, at the return, the map of the same page again. XsOp::queue_join
-    /// (stub_abi.h xs_queue_join) is the rule, unit-tested in xnuhost-abi. qlock held. Returns the entry as it was
+    /// (xnuhost-abi's stub.rs, xs_queue_join) is the rule, unit-tested in xnuhost-abi. qlock held. Returns the entry as it was
     /// before when `op` went into it (for a take-back).
     fn queue_join(t: &Task, q: &mut Queue, op: &XsOp) -> Option<XsOp> {
         let n = t.npending.load(Relaxed) as usize;
@@ -1584,7 +1584,7 @@ mod machine {
         let released = cpu::counter();
         p.count(Count::PrepTicks, released - entered); // placement, uclamp, the queue: host work before the hand-off
         th.released_at.store(released, Relaxed);
-        // stub_abi.h: store, then wake only a sleeper.
+        // xnuhost-abi's stub.rs: store, then wake only a sleeper.
         word!(tp, to_task).store(1, Release);
         std::sync::atomic::fence(SeqCst);
         if word!(tp, task_sleeping).load(Relaxed) != 0 {

@@ -154,7 +154,7 @@ fn counter() -> u64 {
     v
 }
 
-/// stub_abi.h, the hand-off: store the word, then wake the other side only if it said it sleeps.
+/// xnuhost-abi's stub.rs, the hand-off: store the word, then wake the other side only if it said it sleeps.
 fn post(w: &AtomicU32, sleeping: &AtomicU32) {
     w.store(1, Ordering::Release);
     fence(Ordering::SeqCst);
@@ -339,7 +339,7 @@ unsafe extern "C" fn xs_handler(signo: i32, info: *mut KSiginfo, uc: *mut KUcont
         } else if signo == SIGTRAP {
             (*trap).kind = XH_TRAP_BRK;
             (*trap).far = pc;
-            // Linux's SIGTRAP carries no syndrome of its own: its esr_context is the task's last fault's (cpu.c says
+            // Linux's SIGTRAP carries no syndrome of its own: its esr_context is the task's last fault's (cpu.rs says
             // why), which the kernel would report as that fault. The instruction gives the kernel the brk's immediate.
             (*trap).esr = 0;
             (*trap).insn = insn_at(pc);
@@ -368,7 +368,7 @@ unsafe extern "C" fn xs_handler(signo: i32, info: *mut KSiginfo, uc: *mut KUcont
         }
 
         // Maps, and unmaps given while none of the task's threads ran, that the kernel gave for this task since its
-        // last order (task.c, map-defer): carried out here, in their order, before the thread runs again, while
+        // last order (task.rs, map-defer): carried out here, in their order, before the thread runs again, while
         // xnuhost holds the task's order lock; then to_host is woken for them.
         let nops = (*tp).nops;
         if nops != 0 {

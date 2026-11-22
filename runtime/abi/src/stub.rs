@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! `stub_abi.h`: what xnuhost and the stub inside every iOS task process share: the layout of the stub's region of
-//! the task's address space and the pages both sides read and write. Checked against the C header by
-//! `tests/headers.rs`.
+//! What xnuhost and the stub inside every iOS task process share (the C's `stub_abi.h`): the layout of the stub's
+//! region of the task's address space and the pages both sides read and write. Both sides are Rust and use this
+//! module, so there is no header to check it against: the asserts below check that the pages fit, its tests the
+//! syndromes and the deferred queue's joins.
 
 use crate::hostcall::{XhTrap, XhUserState, XH_PROT_EXEC, XH_PROT_READ, XH_PROT_WRITE};
 
@@ -132,7 +133,7 @@ pub const XS_OPS_MAX: usize = 320;
 pub const XS_MAP_POPULATE: u32 = 0x8000;
 
 impl XsOp {
-    /// `xs_queue_join`: the deferred queue (task.c, map-defer) joins `op` to `self`, the entry before it, where one
+    /// `xs_queue_join`: the deferred queue (task.rs, map-defer) joins `op` to `self`, the entry before it, where one
     /// host call does what the two did, in the same order (host-overhead, 2026-11-15). Returns true and rewrites
     /// `self` when they join:
     /// - map + map: the next page of the same file range with the same protection: one longer map; the same range

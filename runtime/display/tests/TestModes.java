@@ -20,7 +20,7 @@ public final class TestModes {
         check(OneiOSDisplay.pick(ids, w, h, hz, 9) == null, "no active mode");
         p = OneiOSDisplay.pick(new int[]{4}, new int[]{1080}, new int[]{2340}, new int[]{60}, 4);
         check(p != null && p[3] == 1080 && p[4] == 2340 && p[5] == 60 && p[6] == 4, "one mode is its own native");
-        // the layer's buffers for the hello's formats, and --dataspace's names (src/xhd.h has the same values)
+        // the layer's buffers for the hello's formats, and --dataspace's names (src/xhd/mod.rs has the same values)
         check(OneiOSDisplay.bufferFormat(1, 5) == 5 && OneiOSDisplay.bufferFormat(1, 2) == 2, "8-bit frames: B,G,R,A, or R,G,B,X when asked");
         check(OneiOSDisplay.bufferFormat(2, 2) == 22 && OneiOSDisplay.bufferFormat(2, 5) == 22, "half-float frames: RGBA_FP16 whatever --format says");
         check(OneiOSDisplay.bufferFormat(3, 5) == 0, "an unknown frame format: no buffer");

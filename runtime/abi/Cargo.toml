@@ -1,6 +1,6 @@
 [package]
 name = "xnuhost-abi"
-description = "The ABI xnuhost shares with the hosted kernel and the task stub (hostcall.h, stub_abi.h, free_report*.h); no_std"
+description = "The ABI xnuhost shares with the hosted kernel and the task stub (hostcall.h, free_report*.h, the stub's region); no_std"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
