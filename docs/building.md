@@ -628,6 +628,10 @@ $T phone backlight status          # the panel's level, max_brightness, and One 
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
 $T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
+$T phone pull-log DIR               # iOS's log only, in seconds and beside an open session: the runtime's oneios-tool
+                                   #   reads the staged store on the phone (ioslog show), only the gzipped text crosses
+                                   #   adb (11 MB for 615713 entries, 9.4 s on 2026-11-22), then DIR/ioslog.txt,
+                                   #   ioslog-health.txt and ioslog-keyboard.txt here. Use it instead of pull-data for logs
 $T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots, checks and health
                                    #   (the health report: ioslog-health.txt beside OUT, its lines printed). In chunks
                                    #   (--chunk 256 MiB), each checked against the phone's sha256 and tried again when its

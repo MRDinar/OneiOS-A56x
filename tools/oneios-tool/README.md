@@ -816,7 +816,8 @@ oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual step
   archive and `encoder=auto`, not yet seen on the phone, 2026-11-22). **The patterns are the texts the project's
   notes quote; they were written without the phone's log at hand.** A count of 0 means the text is not in the log.
 - The guest's clock was about a day behind the host's in the 2026-11-12 sessions, so the log's dates are too.
-- Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
+- Reading iOS's log of a phone boot needs no copy of `data.img`: `oneios-tool phone pull-log DIR` runs `ioslog show` on
+  the phone and pulls only the gzipped text (and writes the health and keyboard reports). - Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
   `Info.plist` in the saved archive (Apple's `log show --archive` wants one; Mandiant's tool does not).
 
 ### health: the counts that tell lag and heat apart
@@ -1897,6 +1898,11 @@ oneios-tool phone pen wake                    # 2,0 then 2,1 to that node, then 
 oneios-tool phone backlight status            # the panel's level, max_brightness, One UI's own value (read only)
 oneios-tool phone backlight set N             # 1..max_brightness (12750); the return writes One UI's own value back
 oneios-tool phone cpu [--trace S] [--out F]   # cores, domains, top and capped clocks, cpusets, xnuhost's threads and uclamps (read only)
+oneios-tool phone pull-log DIR [--boot last|UUID] [--keep]   # iOS's log only: ioslog show runs on the phone (the runtime's
+                                              #   oneios-tool on the staged store; an open session is fine, its newest
+                                              #   checkpoint is read), only the gzipped text crosses adb; then DIR/ioslog.txt,
+                                              #   ioslog-health.txt, ioslog-keyboard.txt. 2026-11-22: 615713 entries, 11 MB over
+                                              #   adb, 9.4 s (pull-data: 0.8-2.8 GB, about 7.5 min, the session ended first)
 oneios-tool phone pull-data OUT [--ioslog]    # data/data.img in chunks, each checked against the phone's sha256, zero runs as holes;
                                               #   run again after a stop and it goes on (OUT.part, OUT.part.progress)
                                               #   [--chunk MIB] [--retries 5] [--backoff 2] [--stall 120] [--verify chunk|end] [--restart]

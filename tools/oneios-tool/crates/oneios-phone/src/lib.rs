@@ -14,6 +14,7 @@ pub mod local;
 pub mod log;
 pub mod phone;
 pub mod pull;
+pub mod pulllog;
 pub mod session;
 pub mod sparse;
 
@@ -145,6 +146,18 @@ pub enum Command {
         /// Then `ioslog boots`, `ioslog checks` and `ioslog health` on the copy (the health report: ioslog-health.txt beside OUT)
         #[arg(long)]
         ioslog: bool,
+    },
+    /// iOS's own log of one boot without copying the Data store: the runtime's oneios-tool reads the staged store on
+    /// the phone (`ioslog show`), only the gzipped text crosses adb, then `ioslog health` and `ioslog keyboard` here
+    /// (OUT_DIR/ioslog.txt, ioslog-health.txt, ioslog-keyboard.txt). Works beside an open session (its newest checkpoint)
+    PullLog {
+        out_dir: String,
+        /// The boot: last, or the start of a boot UUID (`ioslog boots`)
+        #[arg(long, default_value = "last")]
+        boot: String,
+        /// Keep the gzipped text on the phone (STAGE/logs/pull-log.txt.gz)
+        #[arg(long)]
+        keep: bool,
     },
     /// stdin to OUT with zero runs as holes (no phone needed)
     SparseWrite {
@@ -279,6 +292,7 @@ pub fn main(cli: Cli) -> i32 {
             phone::image_check(&adb).map(|n| println!("image: manifest.json and the {n} files it lists agree"))
         }),
         Command::Manifest { dir, out, stage } => Adb::connect(serial).and_then(|adb| phone::manifest_cmd(&adb, &dir, out.as_deref(), stage)),
+        Command::PullLog { out_dir, boot, keep } => Adb::connect(serial).and_then(|adb| pulllog::pull_log(&adb, &out_dir, &boot, keep)),
         Command::PullData { out, chunk, retries, backoff, stall, verify, restart, ioslog } => Adb::connect(serial).and_then(|adb| {
             // Ctrl-C ends the chunk that is being copied and says how to go on; the chunks done stay
             log::catch_stop();
