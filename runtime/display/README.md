@@ -30,6 +30,37 @@ or the SDK the NDK is in). No `android.jar`: the Java source reaches the framewo
 | `src/displayctl.c` | `displayctl`: the phone test; stands in for xnuhost with a moving pattern |
 | `tests/test_display.c` | the host tests |
 
+### The Rust port (`rust-runtime`, crate `oneios-display`, `runtime/RUST.md`)
+
+The same helper in Rust, 1:1 in behaviour (every log line, default and protocol layout). `runtime/build.sh` still
+builds the C with `make` until the lead switches it; the Rust files have not run on the phone yet.
+
+| C | Rust |
+|---|---|
+| `src/xhd.c`, `xhd.h` | `src/xhd/`: `mod.rs` (formats, dataspaces, `Rect`, `fit`, `copy`, `hold_first`), `protocol.rs` (`Message`/`Kind`, `check_hello`, `connect`, `send_panel`, `recv_hello` -> `Frame`, `drain`/`drain_direct`, `send_done`; xnuhost's side: `listen`, `send_hello`, `send_flush`, `memfd`), `direct.rs` (`Direct`, `Slot`, `Seg`, `copy_direct`), `snapshot.rs` (`Snapshot`, `hash_tile`), `buffers.rs` (`Buffers`) |
+| `src/frame_perf.c`, `.h` | `src/frame_perf.rs` |
+| `src/jni.c` | `src/jni.rs` (feature `jni`, Android only: the cdylib's `Java_OneiOSDisplay_n*` exports) |
+| `src/launcher.c` | `src/bin/launcher.rs` (bin `oneios-display`) |
+| `src/displayctl.c` | `src/bin/displayctl.rs` |
+| `tests/test_display.c` | `src/xhd/tests.rs` (13 tests) and `tests/displayctl.rs` (no harness: the binary is also the stand-in helper) |
+| `tests/test_frame_perf.c` | `frame_perf.rs`'s test |
+| `make test`'s `TestModes` | `tests/java_modes.rs` (javac and java; skipped without them) |
+| `pixels.h` (the parts used) | `src/pixels.rs`, until xh-core's `pixels` lands (then a re-export) |
+
+```sh
+cd runtime
+CARGO_TARGET_DIR=target/display cargo test -p oneios-display   # host: 14 unit tests, 22 displayctl checks, TestModes
+display/build-android.sh OUT     # OUT/bin/{oneios-display,displayctl,liboneios-display.so}, OUT/lib/oneios-display.dex
+package/elf-check.sh OUT         # the .so: NEEDED libandroid, libnativewindow, libdl, libm, libc; 0 failures
+```
+
+`build-android.sh` runs `cargo rustc --release --target aarch64-linux-android -p oneios-display --lib --features jni
+--crate-type cdylib -- -C link-arg=-Wl,-soname,liboneios-display.so -C link-arg=-Wl,-z,defs` (copied to
+`liboneios-display.so`), `cargo build --release --target aarch64-linux-android -p oneios-display --bins` with
+`+crt-static` in `target/display-static`, and javac + d8 for the dex as the Makefile does. Changes from the C: a
+direct slot whose row offsets would wrap a 64-bit sum is refused (EINVAL) where the C let them wrap; a pixel split
+across two guest pages is swapped whole by `copy_direct` (the C swapped whole pixels of each piece only).
+
 ## How the layer is made, and why
 
 By a dex that `app_process` runs, on the framework's hidden `SurfaceControl` classes: a `SurfaceControl.Builder`
