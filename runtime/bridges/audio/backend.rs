@@ -11,7 +11,7 @@ use super::proto::{
 };
 use crate::proto::Wire;
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 use xh_core::sys::{errno, strerror};
 
@@ -74,16 +74,13 @@ struct Packet {
 impl AudioHelper {
     /// Starts the helper at `path` (`path 3`, its end of the pair as descriptor 3). None: the reason is logged.
     pub fn spawn(path: &str) -> Option<AudioHelper> {
-        let mut pair = [0; 2];
-        // SAFETY: a valid array of two descriptors for socketpair to fill.
-        if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) }
-            != 0
-        {
-            crate::br_error!("audio: off: socketpair: {}", strerror(errno()));
-            return None;
-        }
-        // SAFETY: socketpair gave two descriptors that nothing else owns.
-        let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1])) };
+        let (mine, theirs) = match xh_core::fd::socket_pair(libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC) {
+            Ok(pair) => pair,
+            Err(e) => {
+                crate::br_error!("audio: off: socketpair: {}", xh_core::sys::error_text(&e));
+                return None;
+            }
+        };
         let rc = match spawn_with_fd3(path, &theirs) {
             Ok(pid) => {
                 drop(theirs);

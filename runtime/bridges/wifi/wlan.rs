@@ -26,10 +26,11 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use xh_core::bytes::ne;
+use xh_core::thread::lock;
 
 // ---- netlink and nl80211's numbers (linux/netlink.h, genetlink.h, nl80211.h; a test checks them) ----
 const NETLINK_GENERIC: i32 = 16;
@@ -479,10 +480,6 @@ struct Wlan {
     control_dropped: AtomicU64,
     dhcp_said: AtomicU32,   // iOS's DHCP messages logged since the last join (the first of them)
     dhcp_others: AtomicU32, // other stations' DHCP messages seen since the last join (the first is logged)
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Wlan {

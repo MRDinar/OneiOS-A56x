@@ -2,7 +2,6 @@
 //! Starting a helper process with its end of a socket as descriptor 3 (the camera's and the encoder's helpers), with
 //! posix_spawn as the C did: xnuhost holds gigabytes of locked guest RAM, and a fork would copy its page tables.
 use std::ffi::{c_char, c_int, CString};
-use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd};
 
 extern "C" {
@@ -47,18 +46,6 @@ pub fn spawn_with_fd3(path: &str, args: &[&str], fd: BorrowedFd<'_>) -> Result<l
         return Err(rc);
     }
     Ok(pid)
-}
-
-/// A connected pair of `kind` sockets (SOCK_SEQPACKET, SOCK_STREAM), close-on-exec.
-pub fn socket_pair(kind: c_int) -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    use std::os::fd::FromRawFd;
-    let mut pair = [0 as c_int; 2];
-    // SAFETY: a two-int array for the result.
-    if unsafe { libc::socketpair(libc::AF_UNIX, kind | libc::SOCK_CLOEXEC, 0, pair.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: two fresh descriptors that nothing else owns.
-    Ok(unsafe { (std::os::fd::OwnedFd::from_raw_fd(pair[0]), std::os::fd::OwnedFd::from_raw_fd(pair[1])) })
 }
 
 /// Reaps `pid` if it has ended, without waiting (`waitpid(pid, NULL, WNOHANG)`).

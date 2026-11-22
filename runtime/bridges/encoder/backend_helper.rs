@@ -9,7 +9,7 @@
 //! full both ways.
 use crate::backend::{Backend, Polled, Session};
 use crate::link::*;
-use onecamera::spawn::{reap_nowait, socket_pair, spawn_with_fd3};
+use onecamera::spawn::{reap_nowait, spawn_with_fd3};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::os::fd::{AsFd, OwnedFd};
@@ -95,8 +95,8 @@ impl Shared {
         if st.started {
             return if st.gone { Err(libc::EPIPE) } else { Ok(()) };
         }
-        let (ours, theirs): (OwnedFd, OwnedFd) =
-            socket_pair(libc::SOCK_STREAM).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        let (ours, theirs): (OwnedFd, OwnedFd) = xh_core::fd::socket_pair(libc::SOCK_STREAM | libc::SOCK_CLOEXEC)
+            .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
         let pid = spawn_with_fd3(&self.path, &["3"], theirs.as_fd());
         drop(theirs);
         st.pid = pid?;

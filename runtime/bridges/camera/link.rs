@@ -6,7 +6,7 @@ use crate::msg::{self, Kind, Msg};
 use crate::pod::Pod;
 use crate::proto::{OcCamera, OcFrame, OC_MAX_CAMERAS};
 use crate::ring::{ReadError, RingReader, CAM_RING_VERSION};
-use crate::spawn::{reap_nowait, socket_pair, spawn_with_fd3};
+use crate::spawn::{reap_nowait, spawn_with_fd3};
 use crate::util::strerror;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -142,7 +142,7 @@ impl Camera {
     /// Starts the helper at `path` with `backend` (None = auto; `br_camera_helper`). Returns at once: the helper's
     /// camera list arrives later. None (with a log line) when it cannot be started.
     pub fn helper(path: &str, backend: Option<&str>) -> Option<Camera> {
-        let (ours, theirs) = match socket_pair(libc::SOCK_SEQPACKET) {
+        let (ours, theirs) = match xh_core::fd::socket_pair(libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC) {
             Ok(pair) => pair,
             Err(e) => {
                 loge!("camera: off: socketpair: {}", xh_core::sys::error_text(&e));

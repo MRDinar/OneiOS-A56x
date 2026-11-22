@@ -3,7 +3,7 @@
 //! socketpair.
 
 use super::*;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,11 +45,7 @@ pub(crate) fn dhcp_option(reply: &[u8], want: u8) -> Option<&[u8]> {
 }
 
 fn socketpair(kind: i32) -> (OwnedFd, OwnedFd) {
-    let mut fds = [0; 2];
-    // SAFETY: a valid array of two descriptors.
-    assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, kind | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) }, 0);
-    // SAFETY: two new descriptors nothing else owns.
-    unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    xh_core::fd::socket_pair(kind | libc::SOCK_CLOEXEC).unwrap()
 }
 
 #[test]

@@ -117,11 +117,7 @@ pub fn accept(listener: BorrowedFd<'_>) -> Result<OwnedFd> {
 
 /// A connected pair of SOCK_SEQPACKET sockets (the tests' xnuhost and helper).
 pub fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0 as RawFd; 2];
-    // SAFETY: socketpair writes two descriptors into the array.
-    check(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) })?;
-    // SAFETY: two new descriptors nobody else owns.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    Ok(xh_core::fd::socket_pair(libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC)?)
 }
 
 /// The most descriptors one message brings that are kept; any more are closed.

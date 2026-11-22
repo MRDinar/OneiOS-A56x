@@ -26,7 +26,7 @@ use super::proto::{
 };
 use crate::hw::testdir::env_lock;
 use crate::proto::Wire;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -468,12 +468,7 @@ struct Run {
 }
 
 fn pair() -> (OwnedFd, OwnedFd) {
-    let mut fds = [0; 2];
-    // SAFETY: a valid array of two descriptors.
-    let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) };
-    assert_eq!(rc, 0);
-    // SAFETY: two new descriptors nothing else owns.
-    unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    xh_core::fd::socket_pair(libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC).unwrap()
 }
 
 fn send(fd: RawFd, bytes: &[u8]) {

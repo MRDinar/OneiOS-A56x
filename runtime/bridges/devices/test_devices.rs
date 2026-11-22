@@ -12,7 +12,7 @@ use crate::hw::testdir::{env_lock, TempDir};
 use crate::net::{Net, NetBackend, NetConfig, RxFn};
 use crate::proto::actuator::{oa_period, OaState, OA_IMPACT, OA_NONE, OA_STOP, OA_VIB};
 use crate::proto::*;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -481,11 +481,7 @@ fn net_device() {
     let open: crate::net::NetOpen = {
         let wire = Arc::clone(&wire);
         Box::new(move |c, rx| {
-            let mut fds = [0; 2];
-            // SAFETY: a valid array of two descriptors.
-            assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr()) }, 0);
-            // SAFETY: two new descriptors nothing else owns.
-            let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+            let (mine, theirs) = xh_core::fd::socket_pair(libc::SOCK_DGRAM).unwrap();
             *wire.lock().unwrap() = Some((theirs, Arc::clone(&rx)));
             Net::open_fd(c, mine, rx).ok().map(|n| Box::new(n) as Box<dyn NetBackend>)
         })

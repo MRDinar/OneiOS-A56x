@@ -6,9 +6,10 @@ use super::{read_raw, Raw, Sample, Units, MAX_SUPPLIES, POLL_MS};
 use crate::hal::{self, HealthInfo};
 use crate::hw::{self, Backend, Bridge};
 use crate::{br_error, br_info};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use xh_core::thread::lock;
 
 /// The listener; runs on the worker thread, without the bridge's locks, for each change.
 pub type Listener = Arc<dyn Fn(&Sample) + Send + Sync>;
@@ -101,10 +102,6 @@ struct Shared {
     default_mah: u32,
     state: Mutex<State>,
     wake: Condvar,
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Shared {

@@ -12,6 +12,13 @@ fn short(name: &str) -> String {
     crate::text::truncate(name, NAME_MAX).to_owned()
 }
 
+/// Locks `m`, taking it over when a thread panicked holding it: the bridges' and devices' state stays usable
+/// (each writer leaves it whole), and a panic in one worker must not take the session's stop down with it.
+#[inline]
+pub fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Starts `f` on a thread named `name` (cut to [`NAME_MAX`] bytes).
 pub fn spawn<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 'static) -> io::Result<JoinHandle<T>> {
     Builder::new().name(short(name)).spawn(f)

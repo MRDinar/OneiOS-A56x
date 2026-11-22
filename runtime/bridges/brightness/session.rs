@@ -10,9 +10,10 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use xh_core::thread::lock;
 use xh_core::{evdev, parse};
 
 const STEP: Duration = Duration::from_millis(16);
@@ -169,10 +170,6 @@ struct Panel {
     /// iOS's display off puts the IC to sleep.
     touch_sleep: bool,
     trace: Option<TraceFn>,
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Panel {

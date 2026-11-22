@@ -15,7 +15,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use xh_core::thread::lock;
 
 use xh_core::bytes::le;
 use xh_core::pixels::{self, BGRX8, LIT_LEVEL, LIT_STEP, RGBA16F, VIRTIO_GPU_FORMAT_RGBA16F};
@@ -442,10 +443,6 @@ pub struct Gpu {
 
 /// The board's virtio-gpu device.
 pub type GpuDev = Arc<Virtio<Gpu>>;
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 static HALF_SAID: AtomicU32 = AtomicU32::new(0);
 

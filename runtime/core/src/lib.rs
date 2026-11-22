@@ -11,9 +11,9 @@
 //! - [`pixels`]: the display protocol's pixel formats and conversions (pixels.h).
 //! - Helpers several crates need: [`bytes`] (numbers in byte buffers, per byte order), [`fs`] (small sysfs and /proc
 //!   files, meminfo-style values), [`parse`] (numbers and sizes as strtoull, strtol, atoi and xh_parse_size),
-//!   [`text`] (C's fixed-size cuts, C strings in buffers), [`thread`] (named threads), [`fd`] (O_NONBLOCK,
-//!   FD_CLOEXEC, EINTR, memfds, SCM_RIGHTS), [`sys`] (errno, its texts, [`sys::Errno`], the page size), [`ioctl`]
-//!   (the numbers and the call), [`time`] (the monotonic clock).
+//!   [`text`] (C's fixed-size cuts, C strings in buffers), [`thread`] (named threads, a lock that outlives a
+//!   panic), [`fd`] (O_NONBLOCK, FD_CLOEXEC, EINTR, memfds, socket pairs, SCM_RIGHTS), [`sys`] (errno, its texts,
+//!   [`sys::Errno`], the page size), [`ioctl`] (the numbers and the call), [`time`] (the monotonic clock).
 //! - [`evdev`]: Linux's input devices: the event codes, input_event, the EVIOC* ioctls (xnuhost's input path, the
 //!   haptics and brightness bridges, bridgectl).
 pub mod bytes;

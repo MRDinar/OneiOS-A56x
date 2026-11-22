@@ -55,6 +55,18 @@ pub fn memfd(name: &CStr, flags: libc::c_uint) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
+/// A connected pair of AF_UNIX sockets of `kind` (SOCK_SEQPACKET, SOCK_STREAM, SOCK_DGRAM, with the caller's
+/// SOCK_CLOEXEC or not): a helper process's channel, a test's two ends.
+pub fn socket_pair(kind: libc::c_int) -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0 as RawFd; 2];
+    // SAFETY: socketpair writes two descriptors into the array.
+    if unsafe { libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: two new descriptors nobody else owns.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
 /// F_ADD_SEALS F_SEAL_SHRINK: the file can no longer shrink (udmabuf takes no memfd without it). The memfd must have
 /// been made with MFD_ALLOW_SEALING.
 pub fn seal_shrink(fd: BorrowedFd<'_>) -> io::Result<()> {
@@ -192,13 +204,7 @@ mod tests {
     use std::os::fd::AsFd;
 
     fn pair() -> (OwnedFd, OwnedFd) {
-        let mut fds = [0 as RawFd; 2];
-        // SAFETY: socketpair writes two descriptors into the array.
-        let rc =
-            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) };
-        assert_eq!(rc, 0);
-        // SAFETY: two new descriptors nobody else owns.
-        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+        socket_pair(libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC).unwrap()
     }
 
     #[test]
