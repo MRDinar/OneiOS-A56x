@@ -347,6 +347,13 @@
 # On the phone 2026-11-22: the keyboard works; Spotlight 30 key taps, hangs 3.8 s in all (86.4 s without it).
 # README.md, "0083".
 0083-dictation-status-navd.patch
+# fix-ios-bluetooth-power (2026-11-23): Bluetooth stayed off in every session: in a VM 24A446's bluetoothd powers on only with
+# transport-encoding 10, and 10 alone gives it its own simulated controller (BTVC). The Bluetooth driver (drivers/bluetooth)
+# sets the nub's transport-encoding to 10 when the host serves a controller; here, at each exec of /usr/sbin/bluetoothd,
+# its environment gets the driver's BT_HCI_TRANSPORT=H4:POSIX, which bluetoothd takes over the number for its HCI
+# transport: H4 over /dev/btwake and com.apple.uart.sk.bluetooth, the phone's controller. One `oneios-bt:` line per exec;
+# oneios-bt-hci=0 is the old way. README.md, "0084"; docs/hardware.md 4.
+0084-bluetoothd-hci-transport.patch
 # fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,
 # 0004-README.md) OneiOSHostedDisk accepts xnuhost's VIRTIO_BLK_F_LATE_FLUSH (bit 23, OneiOS's own) and waits for a
 # flush asleep (IOSleep(1) between looks, 60 s before a reset): the Data store's fdatasync runs on xnuhost's flush

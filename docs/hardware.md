@@ -21,8 +21,8 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | CPU | `droidvm-amp.patch` + `DroidVMCpufreq.c` (UniXNU-droidvm, unchanged) | `runtime/bridges/cpu`: topology, vCPU plan, thread placement, the cpufreq device | host built and tested; kernel side waits for release-kernel (series, archive) and booter (device tree, placement calls) |
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `virtio_gpu.c` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
-| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11 (before: off, `bluetooth=virtual`); HAL client tested on the PC against a fake HAL on a real binder driver, not yet on the phone |
-| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths; it does not yet dump Google's Wonder wiphy | does not work: Bluetooth is off in sessions (sharingd needs it: the toggle cannot switch), and iOS has no `awdl0`. The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. Not run on the phone (section 4a) |
+| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0084); host-tested and built, not yet booted |
+| AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): the radio's peer-to-peer paths; it does not yet dump Google's Wonder wiphy | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. Not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path not yet run: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078 (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.c`, `audio/aaudio_helper.c` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run (section 6) |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (its device object not written) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; iOS shows no camera yet; one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
@@ -1212,14 +1212,105 @@ addresses are the binary's, unslid):
   `ios:` line. As in every PC boot so far nothing asked bluetoothd to power on (no `Beginning asynchronous power init`),
   so neither a power-on nor the phone's exit(1) can be seen on the PC; a power on would run BTVC, not the stand-in
   controller.
-- **What would reach the controller [U, not tried]:** a chip for transport 1 outside the VM without changing the binary:
-  `BT_CHIP=ACI BT` in bluetoothd's environment (chip 2000) with the VM hidden, or transport 9 (chip 3000, whose transport
-  is Apple's PCIe Skywalk protocol, not H4). Each needs the VM hidden from bluetoothd and a PC boot that reads the
-  chip's first commands (`ONEIOS BT: bluetoothd: command 0x....`); UniXNU instead patches the binary, which this project
-  does not.
-- **The next phone session:** take `bt-transport-override=10` out of `xnuhost.conf` (and keep `owner-hide-vmm` without
-  bluetoothd). Read the 3233fed session's `--grep` above for the exit's reason, and the 9f6dc38 session's
-  `oneios-tool ioslog show data.img --proc bluetoothd --grep "Unknown platform|getChip|SIGSEGV"` for the null chip.
+- **What would reach the controller (2026-11-15) [superseded 2026-11-23]:** a chip for transport 1 outside the VM
+  (`BT_CHIP=ACI BT` with the VM hidden, or transport 9). Not needed: the next section keeps the VM and transport 10 for
+  the power init and moves only the HCI transport, by bluetoothd's own `BT_HCI_TRANSPORT`.
+- **The next phone session (2026-11-15):** take `bt-transport-override=10` out of `xnuhost.conf` (done; the
+  2026-11-22 sessions have none) and keep `owner-hide-vmm` without bluetoothd.
+
+### Bluetooth powers on: transport 10 for the power init, `BT_HCI_TRANSPORT` for the HCI (fix-ios-bluetooth-power, 2026-11-23)
+
+The owner's request (2026-11-22): Bluetooth must work in iOS sessions; it is also the first thing AirDrop needs
+(section 4a). **Fixed in our code; host-tested and built, not yet booted on the phone.**
+
+**What the sessions of 2026-11-22 show [F]** (iOS's logs `out/session-logs/2026-11-22/s8-ioslog/ioslog.txt` and
+`s9b-ioslog/ioslog.txt`, xnuhost's `kbd-debug/xnuhost-s9.log`):
+
+- The host side works. xnuhost: `bluetooth: on: the phone's controller through its HAL 1.1, address
+  a4:a4:90:4a:53:2f` (the HAL is the HIDL 1.1 one of section 4, so the A56 fork's AIDL client is not needed on this
+  phone). Guest: `ONEIOS BRIDGE: on: ... channels 0x77 (... 4 Bluetooth)`, `ONEIOS BT: on: ...`, `ONEIOS BT:
+  transport up 300 ms after the start: control com.apple.uart.sk.bluetooth ...`.
+- bluetoothd never opens it. bluetoothd[75]: `DeviceTree transport = 0x00000001`, `HCI Transport is set to H4`,
+  `Beginning asynchronous power init`, `Bluetooth is running inside a Virtual Machine, so skipping chip
+  initialization`, then 11 times `Power state changed. PowerState:3 managerState:2` (34 times in s9b) and
+  `GetControllerInfo: BlSt PoweredOff, ... Chip APPLE_VIRTUAL, ... HCIT UART`, `fStackStarted:0`. Its 0062 lines end
+  at `kern.hv_vmm_present -> 1` and `transport-encoding -> found`: no `kernel control "com.apple.uart.sk.bluetooth"`
+  lookup, no `ONEIOS BT: ios:`, `sk:` or `dev:` line. sharingd: `AirDrop not ready: wifi=..., bluetooth=...`.
+- That is the failure the section above explains: in a VM the chip initialisation returns `transport == 10`, so with
+  H4 (1) power init sets PowerState 3 before any transport is opened.
+
+**The way out, read in 24A446's `/usr/sbin/bluetoothd` [F]** (`oneios-tool image apfs-copy out/image/24A446/os.img
+/usr/sbin/bluetoothd`, `llvm-objdump -d`, `ipsw macho dump` and `ipsw class-dump --re`; unslid addresses):
+
+- The transport number (0x100c1ce28, read through 0x1000aa348) is compared with 10 in two places only: the chip
+  initialisation of power init (0x1006294b8) and the HCI transport choice (0x10036f9ac, a switch: 1 H4, 2 H4DS, 3
+  H4BC, ..., 10 virtual). Its other readers test 3, 6, 7, 8 or 9, or report it (`setHciTransportType:`, the
+  controller info's `HCIT`).
+- The HCI transport choice (0x10036f8ac) first calls `getenv("BT_HCI_TRANSPORT")`. When it is set, it is split at
+  `:` (`strtok`): the first name is looked up in the transport table (0x100ba7c28: `USB`, `H4DS`, `H4BC`, `H4`, `H5`,
+  `APPLEBT`, `VIRT`, `PCIE`, `PCIESW`, `PCIESUN`, `APPLEPCIE`), the second in the driver table (0x100ba7c90: `USB`,
+  `POSIX`, `APPLEBT`, `VIRT`, `PCIE`, `PCIESW`, `PCIESUN`, `APPLEPCIE`; with no second name the first is looked up
+  there), a third is kept as the driver's device path (`strdup`). The number is not read on that path.
+  `H4:POSIX` gives exactly the pair the device tree's 1 gives (transport `H4` 0x100c1c460, driver `POSIX`
+  0x100c1c360, no device path): the driver that opens `/dev/btwake` and the kernel control
+  `com.apple.uart.sk.bluetooth`. A name it does not know logs `FATAL ERROR - HCI Transport %s could not be matched`.
+- bluetoothd reads four environment variables: `BT_HCI_TRANSPORT`, `BT_CHIP`, `BT_BAUDRATE`, `BT_DEVICE_ADDRESS`
+  (and `HOME`). Its launchd job (in the sealed root's `System/Library/xpc/launchd.plist`) sets only
+  `OS_ACTIVITY_ENABLE_DYNAMIC`, so the variable has to come from the kernel.
+- So bluetoothd keeps chip `APPLE_VIRTUAL` (the VM) and transport number 10 (power init passes), and talks H4 to our
+  transport. What `APPLE_VIRTUAL` sends after that was written against BTVC, bluetoothd's own virtual controller
+  (`-[BTVCHciManager handleHciCommand:params:length:]` 0x100467418): BTVC handles the standard commands one by one,
+  0xfc06 (Write BD_ADDR) and three Apple vendor commands (0xfeb0, 0xfeff, 0xffc7: filter accept list, LE IRK, its
+  test), and answers **every other command, vendor commands included, with Command Complete, status 0, no return
+  parameters** (`handleHciCmdDefault:` 0x1004676f4 -> `_sendHciCommandCompleteEvent:status:params:length:` with 0, 0,
+  0). Vendor commands never reach the phone's Qualcomm controller (`oneios_bt_h4.c`), so in this mode the kernel answers
+  them as BTVC does.
+
+**The fix (kernel only; xnuhost still publishes 1, the loader is unchanged):**
+
+- `drivers/bluetooth/oneios_bt.c` (`hci_env`), when the host serves a controller: the nub's `transport-encoding` 1 ->
+  10 (`OneiOSBluetooth.cpp` `oneios_bt_adt_transport`), `oneios_bluetoothd_env` = `BT_HCI_TRANSPORT=H4:POSIX`
+  (`oneios_bt_env.h`, which checks a value against bluetoothd's two tables), and every new client's answers in the
+  BTVC mode (`obt_shim.vsc_empty`: each vendor command Command Complete, status 0, no parameters). One line:
+  `ONEIOS BT: bluetoothd: transport-encoding 1 -> 10 (its power init in a VM) and BT_HCI_TRANSPORT=H4:POSIX at its
+  start (...)`.
+- `kernel/patches/oneios-hosted/0084-bluetoothd-hci-transport.patch` (`kern_exec.c`): at each exec of
+  `/usr/sbin/bluetoothd` the variable is added to its environment, unless its environment names `BT_HCI_TRANSPORT`
+  already (then that one is kept and said). One line per exec: `oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX`.
+- Boot argument `oneios-bt-hci`: `0` is the old way (transport-encoding as published, no variable, the iOS 16 answer
+  table); `TRANSPORT:DRIVER[:/dev/...]` tries another pair of bluetoothd's (for example `H4BC:POSIX`); a value it would
+  not match is replaced by the default and said so.
+- xnuhost: `bt-transport-override=N` with N other than 10 now gets the error line (power init fails), 10 an
+  information line (it is what the driver gives already).
+- Kept as they were: the HAL bridge, the Skywalk pipe, `/defaults/vmm-present`, `owner-hide-vmm` without
+  bluetoothd. A kernel with 0084 and an older runtime work together (xnuhost's tree is not changed); a kernel without
+  0084 is the state before.
+
+**Tested:** `drivers/tests/host.sh` (new `bluetooth/test_bt_env.c`: the variable for each boot-argument value, the
+names bluetoothd would refuse, the longest value; the vendor answers in both modes); the kernel build and prelink
+(`kernel/patches/oneios-hosted/README.md`, "0084": `out/kernel/bt-24A446/kernel.kc`, sha256 `68b6317f2bc96f56...`, audit 0
+failures, stubs-check 666 good); `runtime/host-tests.sh` (xnuhost's warning). Not booted on the phone or the PC yet.
+
+**What is not known [U]:** how far bluetoothd's stack gets on the real controller after power on. The first boot's
+`ONEIOS BT: bluetoothd: command 0x....` lines (the first 40 of a client, `answered here` for the vendor ones) and
+iOS's log say where it stops; `Bluetooth error - restarting { ... reason=%d ... }` would be a fatal error of the
+stack (for example `Filter Accept List add error`, `BT VSC init failed`).
+
+**The phone check** (stage `kernel.kc` and `kernel.kc.hashes`; nothing else changes):
+
+1. `xnuhost.log`, in this order: `ONEIOS BT: on: ...`, `ONEIOS BT: bluetoothd: transport-encoding 1 -> 10 ... and
+   BT_HCI_TRANSPORT=H4:POSIX ...`, `oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX`, `oneios-iokit:
+   bluetoothd[N] kernel control "com.apple.uart.sk.bluetooth" -> id N`, `ONEIOS BT: ios: client Skywalk pipe
+   connected`, xnuhost `bluetooth: HAL 1.1 found, initialising` and `bluetooth: HAL initialisation complete`,
+   `ONEIOS BT: bluetoothd: command 0x0c03` (Reset), and with a scan `bluetooth: the controller hears devices: N
+   report(s)`.
+2. `oneios-tool phone pull-log DIR`, then `oneios-tool ioslog show DIR/... --proc bluetoothd --grep
+   "Searching for|HCI Transport|power|Power|StackManager|core stack|BlSt|restarting|FATAL"`: `Searching for transport:
+   "H4"`, `Searching for driver: "POSIX"`, no `PowerState:3`, `Starting up StackManager`, `Starting bluetooth core
+   stack`, `GetControllerInfo: BlSt PoweredOn`, `fStackStarted:1`; a BLE scan (`LeDeviceManager` scan lines, devices
+   found).
+3. Settings > Bluetooth shows on and lists devices nearby; Control Center's AirDrop toggle switches (sharingd's `AirDrop
+   not ready` no longer for Bluetooth; AirDrop itself still needs `awdl0`, section 4a).
 
 ### Missing, unknown
 
@@ -1254,8 +1345,8 @@ addresses are the binary's, unslid):
 ## 4a. AirDrop (airdrop, 2026-11-22; corrected by quick-share-airdrop, 2026-11-23)
 
 The owner's request (2026-11-22): AirDrop does not work in iOS, and its Control Center toggle does not switch; "check
-how Android works with AirDrop and port it over". **Result: AirDrop cannot work in a session yet. Bluetooth is off in
-sessions, so the toggle cannot switch, and the guest has no `awdl0`. The radio path exists on this phone: One UI's own
+how Android works with AirDrop and port it over". **Result: AirDrop cannot work in a session yet. Bluetooth was off in
+sessions, so the toggle could not switch (fixed 2026-11-23, not yet booted: section 4), and the guest has no `awdl0`. The radio path exists on this phone: One UI's own
 Wi-Fi driver has Google's "Wonder" raw 802.11 path, and its source is open.** What was built: `wifictl p2p`, a lasting
 read-only report of the radio's peer-to-peer paths (below).
 
@@ -1371,7 +1462,8 @@ and `kbd-debug/xnuhost-s8.log`.
    `Chip APPLE_VIRTUAL`, `BlSt PoweredOff` (section 4: on the VM path an unchanged bluetoothd powers on only its own
    simulated controller). **This is why the toggle does not switch** [I: the cause from the code above and this
    fact; no sharingd line of the tap was persisted in the log]. BLE is also AirDrop's discovery (the type 0x05
-   advertisement), so Bluetooth power is the first thing AirDrop needs, before any Wi-Fi work.
+   advertisement), so Bluetooth power is the first thing AirDrop needs, before any Wi-Fi work. **Fixed 2026-11-23, not
+   yet booted** (section 4, "Bluetooth powers on": transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX`).
 3. **No `awdl0` [F]**: wifip2pd (AWDL's daemon since iOS 15) asks the guest's en0 once, at +163 s:
    `gets 97: -> 102` (`APPLE80211_IOC_VIRTUAL_IF_PARENT`, EOPNOTSUPP) and `sets 389: -> 102`
    (`APPLE80211_IOC_USERSPACE_P2P_OPTIONS`); then `gets 19` POWER, `9` BSSID, `51` COUNTRY_CODE, `sets 566`
@@ -1394,7 +1486,7 @@ reuse it in the guest's path. OWL's engine is open.
 
 | Step | What | Feasible? |
 |---|---|---|
-| 1 | **Bluetooth powered in iOS** (section 4): bluetoothd on the phone's controller. AirDrop's discovery (BLE) and sharingd's "ready" need it. | Open: the VM path's power init (section 4 "What would reach the controller") |
+| 1 | **Bluetooth powered in iOS** (section 4): bluetoothd on the phone's controller. AirDrop's discovery (BLE) and sharingd's "ready" need it. | Fixed 2026-11-23 in the kernel (section 4, "Bluetooth powers on"); not yet booted: the phone check there |
 | 2 | **The radio, from the host** (`runtime/bridges/wifi`, root, beside One UI): find the Wonder wiphy (the one with vendor commands under `00:1a:11`); add a monitor interface on it (`NL80211_CMD_NEW_INTERFACE`) and bring it up (Wonder's `start` -> qcacld's `init` -> `wondertap0`); send `SET_REGULATORY` (4), `SET_FREQUENCY` (1: 2437 or 5745 MHz, 20 MHz), `GET_IF_MAC_ADDR` (5), `SET_FIXED_TX_RATE` (3); then send and receive radiotap frames with `AF_PACKET` on the monitor interface. On the way back: interface down, then delete it (Wonder's `stop` -> the provider's `deinit`). | Yes by the source [I: not run on our phone]. Limits: one channel (no hopping in 1.4.1/1.5); a 5 GHz station on the other channel means MCC; `init` refuses while a connection is in progress; One UI's Quick Share must not hold Wonder at the same time |
 | 3 | **The AWDL engine**: OWL (C, GPL-3.0) in the host bridge on that interface: sync, election, availability windows, action frames, data frames. Map wifip2pd's `AWDL_*` requests (service parameters, peers, keys) onto it, and convert Bonjour on `awdl0` to AWDL's service TLVs and back [I: houji's `libxos.so` does this conversion]. | Plausible; the largest work. OWL's GPL-3.0 must fit the runtime's licence [U] |
 | 4 | **Guest `awdl0`**: `VIRTUAL_IF_CREATE` (94) and the `AWDL_*` requests in `OneiOSWifi.cpp`, a second `IO80211Interface` whose Ethernet frames go to the host's engine over virtio-net (a new message type in `oneios_wifi_proto.h`). | After steps 2 and 3 |

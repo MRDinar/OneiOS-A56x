@@ -1305,6 +1305,35 @@ store's boot without 0083 (21:28): key taps in Spotlight 30 (0 before); Spotligh
 (103-107% all the time before). Still in the log, for later: `Keyboard screen not found for window (null)` 21 times at
 Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s).
 
+## 0084-bluetoothd-hci-transport.patch (fix-ios-bluetooth-power, 2026-11-23)
+
+The owner's request: Bluetooth must work in iOS sessions (and AirDrop needs it first). In every session bluetoothd
+logged `Bluetooth is running inside a Virtual Machine, so skipping chip initialization` and `PowerState:3`, and never
+opened our transport, though xnuhost had the phone's HAL 1.1 and the guest's driver was on
+(`out/session-logs/2026-11-22/s8-ioslog`, `s9b-ioslog`, `kbd-debug/xnuhost-s9.log`).
+
+Cause, in 24A446's `/usr/sbin/bluetoothd` (docs/hardware.md 4, "Bluetooth powers on", has the addresses): in a VM its
+power init passes only with transport number 10, and the same number picks the HCI transport, where 10 is BTVC, a
+simulated controller in its own process. But the HCI transport choice takes `BT_HCI_TRANSPORT=TRANSPORT:DRIVER` from
+the environment first and then does not read the number. Its launchd job is on the sealed root.
+
+The patch (`bsd/kern/kern_exec.c`, `exec_extract_strings`): `char oneios_bluetoothd_env[64]`, filled by the Bluetooth
+driver (`drivers/bluetooth/oneios_bt.c`, `hci_env`: `BT_HCI_TRANSPORT=H4:POSIX` when the host serves a controller;
+the driver also sets the nub's `transport-encoding` to 10 and answers vendor commands as BTVC does). After the
+environment of an exec is copied in, when the saved path is `/usr/sbin/bluetoothd` and the environment has no
+`BT_HCI_TRANSPORT=`, the string is added (one more string and pointer slot, counted against `NCARGS` as the others).
+Lines: `oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX (docs/hardware.md 4)` per exec, or `oneios-bt:
+bluetoothd's environment names it already, kept: ...`. Off: Bluetooth off, `oneios_bt=0` or `oneios-bt-hci=0` leave the
+string empty, and nothing is added. Cost: one `strcmp` per exec.
+
+Tested (Mac, 2026-11-23): `HOSTED_OUT=bt kernel/build-hosted.sh` applied the series with 0084 and built `xnu.macho` in
+153 s (25,642,560 bytes, sha256 `be81a8a2...`; the `oneios-bt:` and `ONEIOS BT: bluetoothd: transport-encoding ...`
+strings are in it; no warning in the new lines). `KERNEL=out/kernel/current-hosted-bt/xnu.macho
+OUT=out/kernel/bt-24A446 kernel/prelink/build.sh` gave `kernel.kc` 96,862,208 bytes, sha256 `68b6317f2bc96f56...`,
+audit 2,712 paired, 0 failures; `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8;
+`drivers/tests/host.sh` with the new `bluetooth/test_bt_env.c`. Not booted yet. The phone check: docs/hardware.md 4,
+"Bluetooth powers on".
+
 ## 0082-dyld-rw-data-const.patch (fix-dyld-cache-unnesting, 2026-11-22)
 
 The owner's report: app labels show late on every boot, and apps open and close slowly. In every session log each

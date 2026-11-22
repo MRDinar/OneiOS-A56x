@@ -262,7 +262,8 @@ int  xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window);
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);
 // The transport the boot arguments' bt-transport-override gives 24A446's bluetoothd, read the way bluetoothd reads it,
-// or -1 when they give none. xnuhost warns for 10: the virtual transport is bluetoothd's own simulated controller.
+// or -1 when they give none. xnuhost warns for any value but 10: in a VM bluetoothd powers on only with 10 (the guest's
+// driver gives it 10 and the kernel BT_HCI_TRANSPORT=H4:POSIX, docs/hardware.md 4).
 int xh_boot_args_bt_transport(const char *args);
 // Appends the text fixups a UI scale needs on this build's dyld shared cache to a NUL-separated list
 // (/chosen text-fixups). Returns the list's new length; unknown builds and a scale of 2 add nothing.
