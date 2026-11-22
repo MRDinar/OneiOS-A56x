@@ -344,6 +344,7 @@
 # Before launchd the file is written with an empty dictionary when missing (prefs.toml group "dictation" does it for
 # new seeds); oneios-dictation-status=0 is the old way. Also com.apple.navd joins 0044's default oneios-enable-jobs:
 # GeneralMapsWidget reconnected to it with no back-off (~28000 times, 54-103% CPU, geod and launchd beside it).
+# On the phone 2026-11-22: the keyboard works; Spotlight 30 key taps, hangs 3.8 s in all (86.4 s without it).
 # README.md, "0083".
 0083-dictation-status-navd.patch
 # fix-widget-kill-loop (2026-11-15): no numbered patch, no XNU source changed: in the storage archive (storage/,

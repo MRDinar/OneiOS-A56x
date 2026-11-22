@@ -1296,6 +1296,15 @@ Spotlight, `oneios-cpu` without Preferences or Spotlight near 100% and without G
 probes once per keyboard (12 lines), not hundreds of times; in iOS's log no `timed out with 1 assertions remaining,
 disconnecting` for Spotlight, key taps in Spotlight, and Spotlight and Settings hangs under a second or two.
 
+**On the phone (2026-11-22 23:37, this `kernel.kc` `7593e99e...`, the fresh Data store of 21:28, no network, the
+clean `xnuhost.conf`): the keyboard works** (the owner: "finally keyboard is working"). `xnuhost.log`:
+`oneios-jobs: com.apple.navd: enabled in disabled.plist (it was disabled)` and `oneios-dictation: Offline Dictation
+Status: {} (written, mobile 0600)`. iOS's log (`oneios-tool phone pull-log`, `ioslog keyboard`), against the same
+store's boot without 0083 (21:28): key taps in Spotlight 30 (0 before); Spotlight hangs 9, 3.8 s in all, the longest
+0.50 s (27, 86.4 s, the longest 13.78 s before); `oneios-cpu` Spotlight 72% and 55% while typing, then off the list
+(103-107% all the time before). Still in the log, for later: `Keyboard screen not found for window (null)` 21 times at
+Spotlight's launch, and SpringBoard 10 hangs (44.4 s in all, the longest 12.36 s).
+
 ## 0082-dyld-rw-data-const.patch (fix-dyld-cache-unnesting, 2026-11-22)
 
 The owner's report: app labels show late on every boot, and apps open and close slowly. In every session log each
