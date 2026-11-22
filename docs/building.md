@@ -636,6 +636,9 @@ $T phone backlight status          # the panel's level, max_brightness, and One 
 $T phone backlight set 5350        # 1..12750; the return writes One UI's own value back
 $T phone cpu                       # each CPU's core, domain, clocks and governor; the cpusets; xnuhost's and iOS's threads (read only)
 $T phone cpu --trace 30 --out cpu.pftrace   # also a 30 s Perfetto trace (sched, freq, idle), copied here
+$T phone procs                     # every process with its CPU share and RAM (read only, with or without a session):
+                                   #   what of One UI still runs beside iOS and what it costs (docs/plan-ios-first-session.md)
+$T phone procs --seconds 30 --raw > procs.raw; $T phone procs --from procs.raw --sort mem   # keep a capture; its report by RAM
 $T phone pull-log DIR               # iOS's log only, in seconds and beside an open session: the runtime's oneios-tool
                                    #   reads the staged store on the phone (ioslog show), only the gzipped text crosses
                                    #   adb (11 MB for 615713 entries, 9.4 s on 2026-11-22), then DIR/ioslog.txt,
@@ -1099,7 +1102,8 @@ the drivers' build, the fixup of the linked kernel, the series check and the KDK
 Apple-file check, manifest and archive) and `debug` (the tests' helpers). `image aea-decrypt` (2026-11-21) decrypts the IPSW's AEA images
 (the key from Apple's key service, every byte authenticated), on the PC and, as `serve`'s `aea`, on the phone. Since the third Linux round also `phone` (the adb
 workflow of section 6: status, stage, sums, switch, return, log, the Data store's copy, and in a session the display
-helper's restart, the touch IC's wake and the panel's level), `app` (the fork's app of
+helper's restart, the touch IC's wake and the panel's level; since 2026-11-23 `phone procs`, the process list with CPU
+and RAM), `app` (the fork's app of
 section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
 `image tweaks` (the root tweaks and the image build's userland hook: the port of `userland/roottweak` and
 `userland/image-hook`, `apply`, `hook`, `daemons`, `cdhash`, `boot-check`; compared with the Python by

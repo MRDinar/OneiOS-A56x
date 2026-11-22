@@ -1336,7 +1336,10 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   `/product artwork-device-subtype` stays the identity's (2868). The Data seed's `identity.expect` holds the
   scale the image was built with; a `--set scale=` that differs from the image's makes `oneios-mg` report it.
 - **`drm`.** Direct KMS: DRM master on `/dev/dri/card0`, a dumb buffer, `SETCRTC`, `DIRTYFB` per flush. For a
-  session in which surfaceflinger and the composer are stopped. Written against the kernel's UAPI, never run.
+  session in which surfaceflinger and the composer are stopped. Written against the kernel's UAPI, never run. What it
+  still needs before it can replace the surfaceflinger path (the master, a probe of Qualcomm's driver, atomic
+  commits, two buffers and flips, the mode, panel power, a boot picture, the fork's part and the way back):
+  [plan-ios-first-session.md](plan-ios-first-session.md) section 2.1.
 - **`none`.** Frame in memory only.
 - **Input** is read from evdev directly and not grabbed, so the switch's Volume Up + Volume Down watcher
   keeps working beside it. The guest's side is `kernel/patches/oneios-hosted/hid` (`docs/hardware.md` 7b).

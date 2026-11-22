@@ -13,6 +13,7 @@ pub mod host;
 pub mod local;
 pub mod log;
 pub mod phone;
+pub mod procs;
 pub mod pull;
 pub mod pulllog;
 pub mod session;
@@ -90,6 +91,29 @@ pub enum Command {
         /// Where the trace goes (default oneios-cpu.pftrace)
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
+    },
+    /// Every process with its CPU share and RAM, read only, with or without a session: the session's own processes,
+    /// the fork's watchers, the kernel's threads, and each Android or vendor process that still runs beside iOS (its
+    /// init service, and which bridge needs it). docs/plan-ios-first-session.md
+    Procs {
+        /// Seconds between the two CPU readings (0: one reading, no CPU figures)
+        #[arg(long, value_name = "SECONDS", default_value_t = 5, value_parser = clap::value_parser!(u64).range(0..=600))]
+        seconds: u64,
+        /// The order of the Android and vendor processes
+        #[arg(long, value_enum, default_value = "cpu")]
+        sort: procs::Sort,
+        /// Only the first N Android and vendor processes (0: all)
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        top: usize,
+        /// List every kernel thread, not only the busy ones
+        #[arg(long)]
+        kernel: bool,
+        /// Print what the phone gave, as it came (keep it: --from reads it again)
+        #[arg(long)]
+        raw: bool,
+        /// Read FILE (the output of --raw) and not a phone
+        #[arg(long, value_name = "FILE")]
+        from: Option<String>,
     },
     /// Only during a session: the panel's level (/sys/class/backlight/panel0-backlight/brightness)
     Backlight {
@@ -283,6 +307,14 @@ pub fn main(cli: Cli) -> i32 {
         Command::Pen { command: TouchCommand::Status } => Adb::connect(serial).and_then(|adb| session::pen_status(&adb)),
         Command::Pen { command: TouchCommand::Wake } => Adb::connect(serial).and_then(|adb| session::pen_wake(&adb)),
         Command::Cpu { trace, out } => Adb::connect(serial).and_then(|adb| cpu::cpu(&adb, trace, out.as_deref())),
+        Command::Procs { seconds, sort, top, kernel, raw, from } => {
+            let o = procs::Options { seconds, sort, top, kernel, raw, from };
+            if o.from.is_some() {
+                procs::procs(None, &o)
+            } else {
+                Adb::connect(serial).and_then(|adb| procs::procs(Some(&adb), &o))
+            }
+        }
         Command::Backlight { command: BacklightCommand::Status } => Adb::connect(serial).and_then(|adb| session::backlight_status(&adb)),
         Command::Backlight { command: BacklightCommand::Set { level } } => Adb::connect(serial).and_then(|adb| session::backlight_set(&adb, level)),
         Command::Stage { kind, dir } => Adb::connect(serial).and_then(|adb| phone::stage(&adb, &kind, &dir)),
