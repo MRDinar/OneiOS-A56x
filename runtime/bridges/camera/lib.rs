@@ -33,3 +33,8 @@ pub mod camctl;
 pub mod helper;
 pub mod link;
 pub mod virtio_camera;
+
+#[cfg(target_os = "android")]
+pub mod android;
+pub mod backend_hal;
+pub mod backend_ndk;
