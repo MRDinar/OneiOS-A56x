@@ -200,6 +200,10 @@ fn build_renderer(manifest: &Path, out: &Path, virgl: &Path, tc: &Toolchain, obj
         compile(virgl.join(s), false);
     }
     compile(manifest.join("glue/oneios_glue.c"), true);
+    if tc.host {
+        // msm_kgsl.h's layout, for the test that checks xnuhost's stand-in for KGSL mirrors it
+        compile(manifest.join("glue/oneios_kgsl_layout.c"), false);
+    }
     for (name, mut child) in jobs {
         let status = child.wait().unwrap();
         assert!(status.success(), "drm2kgsl: compiling {name}.c failed ({status})");

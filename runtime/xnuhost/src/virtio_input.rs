@@ -284,3 +284,6 @@ impl EventSink for Virtio<Input> {
         backlog(self)
     }
 }
+
+#[cfg(test)]
+mod tests;

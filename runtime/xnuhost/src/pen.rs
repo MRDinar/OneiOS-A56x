@@ -818,3 +818,6 @@ pub fn lookup() -> Result<(Device, String), String> {
     let f: LookupFn = unsafe { std::mem::transmute::<usize, LookupFn>(p) };
     f()
 }
+
+#[cfg(test)]
+mod tests;

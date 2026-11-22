@@ -71,6 +71,15 @@ pub trait EventSink {
     }
 }
 
+impl<T: EventSink + ?Sized> EventSink for &T {
+    fn event(&self, kind: u16, code: u16, value: i32) {
+        (**self).event(kind, code, value)
+    }
+    fn backlog(&self) -> u32 {
+        (**self).backlog()
+    }
+}
+
 impl<T: EventSink + ?Sized> EventSink for std::sync::Arc<T> {
     fn event(&self, kind: u16, code: u16, value: i32) {
         (**self).event(kind, code, value)
@@ -188,6 +197,12 @@ pub fn frame_shown() {
     if down != 0 && now >= down && DOWN_NS.compare_exchange(down, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
         DOWN_FRAME_NS.store(now - down, Ordering::Release);
     }
+}
+
+/// The guest's last frame shown (CLOCK_MONOTONIC ns, 0: none yet): the display's tests.
+#[cfg(test)]
+pub(crate) fn last_shown_ns() -> i64 {
+    LAST_SHOWN_NS.load(Ordering::Acquire)
 }
 
 static POWER_KEY: AtomicUsize = AtomicUsize::new(0);
@@ -894,3 +909,6 @@ pub fn stop() {
         let _ = r.thread.join();
     }
 }
+
+#[cfg(test)]
+mod tests;

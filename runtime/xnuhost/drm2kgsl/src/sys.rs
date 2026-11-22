@@ -56,3 +56,26 @@ pub unsafe fn ioctl(fd: RawFd, request: c_ulong, arg: *mut c_void) -> c_int {
     let r = unsafe { libc::ioctl(fd, request as _, arg) };
     r
 }
+
+#[cfg(all(not(target_os = "android"), drm2kgsl))]
+extern "C" {
+    fn oneios_kgsl_layout(out: *mut *const u64) -> usize;
+}
+
+/// Host builds: msm_kgsl.h's sizes, offsets and constants in glue/oneios_kgsl_layout.c's order, for the test that checks
+/// a mirror of them (xnuhost's stand-in for KGSL). Empty without the renderer.
+#[cfg(not(target_os = "android"))]
+pub fn kgsl_layout() -> &'static [u64] {
+    #[cfg(drm2kgsl)]
+    {
+        let mut p = std::ptr::null();
+        // SAFETY: the C gives a pointer to its static array and the array's length.
+        let n = unsafe { oneios_kgsl_layout(&mut p) };
+        // SAFETY: as above; the array is static.
+        unsafe { std::slice::from_raw_parts(p, n) }
+    }
+    #[cfg(not(drm2kgsl))]
+    {
+        &[]
+    }
+}

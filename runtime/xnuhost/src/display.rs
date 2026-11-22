@@ -1134,3 +1134,6 @@ pub fn close() {
         kms::call::<u8>(drm.fd.as_raw_fd(), kms::DROP_MASTER, std::ptr::null_mut());
     }
 }
+
+#[cfg(test)]
+mod tests;

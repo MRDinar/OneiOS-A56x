@@ -400,3 +400,6 @@ pub fn stop() {
         let _ = r.thread.join();
     }
 }
+
+#[cfg(test)]
+mod tests;

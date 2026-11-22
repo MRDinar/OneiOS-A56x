@@ -1175,9 +1175,9 @@ impl Gpu {
                     return RESP_ERR_INVALID_PARAMETER;
                 }
                 let d = self.board.frame();
-                if let Some(d) = d.filter(|d| {
-                    id == c.scanout_resource && c.res[i].dbpp == pixels::bpp(self.display_format()) && d.bpp != 0
-                }) {
+                if let Some(d) =
+                    d.filter(|_| id == c.scanout_resource && c.res[i].dbpp == pixels::bpp(self.display_format()))
+                {
                     let (w, hgt) = rect.clip(d.width, d.height);
                     let r = &c.res[i];
                     let bpp = r.dbpp as usize;
@@ -1638,3 +1638,6 @@ pub fn idle(dev: &GpuDev) {
 pub fn fast_waiting(dev: &GpuDev) -> u32 {
     lock(&dev.device().lanes).fast_waiting
 }
+
+#[cfg(test)]
+mod tests;

@@ -1046,3 +1046,6 @@ pub fn open(
         chunked: Mutex::new(HashMap::new()),
     }))
 }
+
+#[cfg(test)]
+mod tests;
