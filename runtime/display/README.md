@@ -230,8 +230,14 @@ extended sRGB: components below 0 and above 1), white at 1.0, white at 2.0. What
   in `java/OneiOSDisplay.java`, and each has a fallback or a logged failure.
 - The copy is not zero-copy: one CPU copy a frame remains (`docs/booter.md` 2.8 says why). The helper maps all of
   guest RAM read-only for it; the pages it touches count in its resident size as well as xnuhost's.
-- Direct frames have not run on the phone: the buffer-wait and copy times, and whether answering the flush after
-  the post slows the guest's swaps, are unmeasured there.
+- Direct frames ran on the phone on 2026-11-22 (S24 Ultra, runtime 0.1.15 with the offset fix, `docs/booter.md`
+  2.8). Before that fix, xnuhost gave the helper the window's address instead of the address of the RAM memfd's
+  offset 0, so every page was read 16 KiB too low and the screen showed flickering stripes of other memory. With
+  the fix the picture is correct. The helper's 10 s lines: 24-43% of the rows copied while iOS moves, hash mean
+  5.3-5.9 ms, buffer wait mean 4.3 ms, copy mean 0.5-1.0 ms (max 7.0 ms), 9-23% of a core; xnuhost's line: posted
+  to in the layer mean 10.4-11.5 ms, 0 not answered within 100 ms. A sign of wrong offsets: 100% of the rows
+  copied in every frame on a still screen. Whether answering the flush after the post slows the guest's swaps is
+  not measured yet.
 - The native-mode request (`setDesiredDisplayModeSpecs` by reflection) is unproven like the rest; a refusal is
   logged and the frame is scaled. At 1440x3120 a full-frame copy is 18 MB, 2.2 GB/s at 120 Hz when every frame
   is all damage.

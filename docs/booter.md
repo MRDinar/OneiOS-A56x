@@ -1208,7 +1208,16 @@ The `blk.c` flush counts and times count every `fdatasync`, whichever side (vCPU
   for that helper. 2D resources, a scanout outside RAM or of another format, and a helper without the flag use the
   memfd copy as before. `display-direct=0` (command line or `xnuhost.conf`) turns direct frames off for xnuhost.
   Every 10 s with frames the log has `display: 10 s: N frames copied by the helper from guest RAM (posted to in
-  the layer: mean X ms, max Y ms), T not answered within 100 ms, C flushes of xnuhost's own copy`. Why not zero
+  the layer: mean X ms, max Y ms), T not answered within 100 ms, C flushes of xnuhost's own copy`. The segments'
+  offsets are offsets in the RAM memfd, counted from the file's offset 0: `main.c` gives `xh_display_set_ram` the
+  address of offset 0 (`g_mem.fd_phys`) and the file's length up to the window's end (`g_mem.head + g_mem.size`).
+  The window starts `g_mem.head` bytes into the file (16 KiB on the phone, fix-ram-hugepages), so it is not
+  `g_mem.phys`. Until 2026-11-22 `main.c` passed `g_mem.phys`: the helper read every page of a frame 16 KiB too
+  low, from another guest page, and the screen showed narrow stripes of other memory that flickered (runtime 0.1.13
+  to 0.1.15; the direct path was written on 11-11, before the head existed, and merged on 11-20 without a phone run).
+  Fixed and checked on the phone on 2026-11-22: the picture is correct, and the helper's 10 s line shows only the
+  changed rows copied (24-43% of the rows while iOS moves, 15 of 99 frames unchanged on a still screen; before the
+  fix 100% of the rows of every frame, because the wrong pages kept changing). Why not zero
   copies: surfaceflinger takes `AHardwareBuffer`s, and the NDK cannot wrap a udmabuf of guest pages as one (a
   gralloc handle would have to be forged), and the guest's surfaces cannot be made gralloc buffers either, since the
   guest allocates them in its own RAM. Droid-VM's host does one GPU blit instead, with a Vulkan dma-buf import that
