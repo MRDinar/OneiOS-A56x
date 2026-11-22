@@ -897,6 +897,18 @@ static int boot(void)
     LOGI("camera: iOS is told of %s%s%s (%d cameras from the helper)", machine.cameras & XL_CAMERA_REAR ? "a rear camera" : "",
          (machine.cameras & XL_CAMERA_REAR) && (machine.cameras & XL_CAMERA_FRONT) ? " and " : "",
          machine.cameras & XL_CAMERA_FRONT ? "a front camera" : machine.cameras ? "" : "no camera", count);
+    // 24A446's CMCapture in a VM (FigCaptureIsRunningInVirtualization: kern.hv_vmm_present) takes the "external camera
+    // replaces built-in" path: -[BWFigCaptureDevice initWithFigCaptureDevice:deviceID:] drops every Back, BackTelephoto
+    // and BackSuperWide stream, so no back source opens and the Camera app stays black (the phone, 2026-11-23: "unable to
+    // find a stream with port type PortTypeBack", err -12780). The kernel's per-process owner-hide-vmm tells only
+    // cameracaptured (every caller of the check is in it) that it is not in one; bluetoothd and the others keep the VM.
+    if (machine.cameras) {
+      int added = strcmp(config.camera_vm, "hide") ? 0 : xh_boot_args_hide_vmm_add(config.boot_args, sizeof config.boot_args, "cameracaptured");
+      if (added < 0) LOGE("camera: no room in the boot arguments for owner-hide-vmm=cameracaptured: CMCapture drops the back cameras in a VM");
+      else if (!strcmp(config.camera_vm, "hide"))
+        LOGI("camera: cameracaptured is not told of the VM (owner-hide-vmm%s): CMCapture keeps the back cameras only outside one", added ? " gets it" : " has it");
+      else LOGI("camera: camera-vm=show: cameracaptured sees the VM, and CMCapture drops the back cameras");
+    }
   }
   machine.display_width = fb_width;
   machine.display_height = fb_height;

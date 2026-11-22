@@ -2714,6 +2714,30 @@ MobileGestalt's cache once when the tree changes (until 0084 the kernel removed 
 those were NULL before and are "V54AP" now, with the cameras only. [U] who reads them (a search of the shared cache
 for their importers stopped at its 10 minute limit); audio's tunings are found by HWModelStr (`oneios,xnuhost`, 0078).
 
+**The 2026-11-23 session (runtime 0.1.16, hosted to 0087; `out/session-logs/2026-11-23/boot-0.1.16`): the Camera
+icon shows and the app opens, the preview is black; CMCapture dropped the back stream because it runs in a VM.**
+The nodes and `unique-model` worked: CMCapture read `V54/AVCaptureSession.plist` and made the device with both
+streams. Then `-[BWFigCaptureStream initWithFigCaptureStream:...]` for `Back` was followed at once by `-[BWFigCaptureStream
+dealloc]` for `Back`, and every source lookup failed: `unable to find a stream with port type PortTypeBack` (and
+`PortTypeFrontSuperWide` for the front devices), `Fig assert: "err == 0 " at bail (BWFigCaptureDeviceVendor.m:1362)
+- (err=-12780)`, `Failed to open streams for device Back Camera, this device will be disabled` (and the same for each
+device of the plist). So no stream was asked for (`virtio: 60 s: ... camera#0 q0 +1`) and no frame came.
+**Cause** [F, read in the 24A446 shared cache]: `-[BWFigCaptureDevice initWithFigCaptureDevice:deviceID:]` (0x1b041bc50)
+takes the "external camera replaces built-in" path when `FigCaptureExternalCameraReplacesBuiltIn` is true, and that
+is `FigCaptureIsRunningInVirtualization`: `sysctlbyname("kern.hv_vmm_present")` not 0. On that path it removes every
+stream whose port is Back, BackTelephoto or BackSuperWide and keeps the front one. Our guest is a VM to iOS
+(`/defaults vmm-present` = 1; bluetoothd needs it, section 4). Every caller of the two checks is in cameracaptured
+(`_createDevice`, the vendor's init, `_copyStreamsForUnderlyingSourceAttributes`, `captureSourceServer_handleCopySourcesMessage`,
+`csu_createVideoCaptureSourceInfoForCaptureDeviceFromModelSpecificPlist`, `CMIOExtensionFigCaptureStreamCreate`).
+A second fault was behind it: V54's front devices ("Front Ultra Wide Camera", "Front Camera") want a
+`PortTypeFrontSuperWide` stream, and ours was `PortTypeFront`.
+**Fix (2026-11-23, host-tested, not run on the phone):** xnuhost adds `cameracaptured` to the boot arguments'
+`owner-hide-vmm=` (the kernel's per-process `kern.hv_vmm_present` switch, Droid-VM-UniXNU's patch, in our kernel
+since 2026-11-11) when the camera helper lists a camera; only cameracaptured is told it is not in a VM, bluetoothd
+and the rest keep the VM. `camera-vm=show` in `xnuhost.conf` turns it off (`docs/booter.md`). The plug-in's front
+stream is `PortTypeFrontSuperWide` and takes the formats of "Front Ultra Wide Camera" by name. Lines that prove it
+on the phone: `userland/camera/README.md`, "What the next session's logs must show".
+
 ### The phone [F]
 
 - Sensors (module files in
@@ -2777,7 +2801,7 @@ with no error.
 | xnuhost: the helper's socket and ring, the `oneios,camera` virtio device (`/arm-io/camera`, `XL_DEV_CAMERA`) | `runtime/bridges/camera` (`libonecamera.a`), `runtime/xnuhost/src/main.c` | linked into xnuhost; the device tested on xnuhost's transport against a guest of plain memory |
 | Kernel: the transport and `/dev/oneios-camera` (the `NCFRAME1` layout of iOSPlus10's and HakiOS's node, NV12); `AppleH9CamIn` and its user client (the same session) | `drivers/camera` | compiles with the kernel's records, in the `HOSTED_OUT=cam` kernel; 37 host checks of the pure parts; on the phone (2026-11-12) the transport came up with 3 cameras; the service not run |
 | Kernel: the plug-in's folder over `/System/Library/MediaCapture` | `kernel/patches/oneios-hosted/0056-camera-plugin-mount.patch` | on the phone (2026-11-22): mounted, `stage 5, status 0` |
-| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); placed in the seed by the image hook (a new seed) |
+| Plug-in `H9ISP.mediacapture`: `H9ISPCaptureDeviceCreate`, a FigCaptureDevice with the back and front streams, formats from the device's own `AVCaptureSession.plist`, frames scaled into the graph's pools | `userland/camera` | built with Xcode (arm64e, `macho-check.py` PASS); on the Mac macOS's own `BWFigCaptureDeviceVendor` makes a device with it and a frame reaches an output's handler (35 checks); in iOS (the phone, 2026-11-22): cameracaptured loads it and it makes the device with both streams, then CMCapture made no source (no model name, fixed above); 2026-11-23: the back stream dropped in a VM and the front port wrong (fixed above, not run); placed in the seed by the image hook (a new seed) |
 
 - **Route on the host** [F AOSP android15-release for the reason, I for Samsung's build]: the provider HAL directly
   when system_server is gone, Camera2 NDK through cameraserver while One UI runs (`auto`). cameraserver refuses every
@@ -2824,10 +2848,10 @@ identity; the identity's own `unique-model` kept; the identity hash; 193 checks)
 
 ### Missing, unknown
 
-- **The first session with the nodes and 0084** (the phone check: `userland/camera/README.md`, "What the next
-  session's logs must show"): whether CMCapture builds its sources from V54's plist with this device, whether the
-  27 capture graph takes the device as it is, and which properties it asks for that are not answered. The camera
-  permission prompt is after that.
+- **The first session with cameracaptured outside the VM** (the phone check: `userland/camera/README.md`, "What the
+  next session's logs must show"): whether CMCapture now builds the Back Camera source, whether the 27 capture graph
+  takes the device as it is, and which properties it asks for that are not answered. (The 2026-11-23 session showed
+  that the plist and the nodes are right: the source list stopped only at the dropped back stream.)
 - [U] on the phone: the capture again with the fix, the telephotos, the diagnostic run if no frame arrives
   (`runtime/bridges/camera/README.md`, "On the phone" and "When no frame arrives"), and "In a
   session" (the HAL back end with system_server stopped; whether Samsung's HAL takes a plain YCbCr_420_888 stream

@@ -10,7 +10,17 @@ Back Camera (17 formats)`, `stream 1 Front Camera (8 formats)`, `Created FigCapt
 cameracaptured`; then CMCapture made no source: `Fig assert: "modelSpecificAVCaptureSessionPlist"`, err -12780,
 `Created 0 in-memory built-in backings`. Its per-model folder comes from MobileGestalt's `HWModelDescriptionForCamera`
 (`/product unique-model`), which the guest's tree did not have; the loader writes it now with the camera nodes
-(`docs/hardware.md` 7, "The camera nodes"), and hosted 0084 removes MobileGestalt's cache once when the tree changes. Not run yet.
+(`docs/hardware.md` 7, "The camera nodes"), and hosted 0084 removes MobileGestalt's cache once when the tree changes.
+
+**2026-11-23 (runtime 0.1.16, `out/session-logs/2026-11-23/boot-0.1.16`):** the nodes worked (the Camera icon, the
+app opens, V54's plist read), and the preview was black: CMCapture freed the Back stream right after its
+`BWFigCaptureStream` init (`initializing`, then `dealloc` for `Back`), then `unable to find a stream with port type
+PortTypeBack`, err -12780, and every device of the plist `will be disabled`. Cause [F, 24A446 cache]:
+`-[BWFigCaptureDevice initWithFigCaptureDevice:deviceID:]` drops every Back, BackTelephoto and BackSuperWide stream
+when `FigCaptureExternalCameraReplacesBuiltIn`, which is `FigCaptureIsRunningInVirtualization`
+(`kern.hv_vmm_present`). Fix: xnuhost adds `cameracaptured` to `owner-hide-vmm=` (`camera-vm=show` in `xnuhost.conf`
+turns it off), so only cameracaptured sees no VM; and the front stream is `PortTypeFrontSuperWide` (V54's front
+devices look for that port) with the formats of "Front Ultra Wide Camera". Host-tested, not run on the phone.
 
 ## Where the camera broke (iOS's own log, sessions of 2026-11-12)
 
@@ -102,12 +112,18 @@ Since the camera nodes (2026-11-22), `xnuhost.log` also has `camera: iOS is told
 `oneios-mg-cache: identity ... (marker none): cache removed (0), marker written (0)` on the first boot of an existing
 Data store (`(marker the same): cache kept` after it).
 
+Since 2026-11-23 `xnuhost.log` also has `camera: cameracaptured is not told of the VM (owner-hide-vmm gets it): ...`,
+`owner-hide-vmm=cameracaptured` in the `placed: ... boot-args` line, and (hosted 0062) `oneios-iokit: cameracaptured[N]
+sysctl kern.hv_vmm_present -> 0 (the virtual machine hidden by owner-hide-vmm)`.
+
 iOS's log (and `xnuhost.log` too if the sandbox lets `cameracaptured` write the console): `Camera driver AppleH9CamIn
 is active` in place of "not started in time"; `ONEIOS CAMERA: ios: cameracaptured[..]: loaded`; `the device made:
 stream 0 Back Camera (17 formats)`; no "Cannot create device without create function"; no `Fig assert:
 "modelSpecificAVCaptureSessionPlist"` and a non-zero `cs_getBackingsForBuiltInCameras: Created N in-memory built-in
 backings`. MobileGestalt logs no answers: its `still-camera` shows as the Camera icon on the home screen (and, with
-`phone pull-data`, in the rebuilt cache). When the Camera app opens:
+`phone pull-data`, in the rebuilt cache). After the device: two `BWFigCaptureStream ... initializing` lines (`Back` and the front one) with no
+`dealloc` right after the first, no `unable to find a stream with port type PortTypeBack` and no `Failed to open
+streams for device Back Camera`. When the Camera app opens:
 `device: streams asked for`, `the graph starts the stream`, `the first frame`, `PrimaryScaler: the first picture
 given`. Lines that say where it stops: `error '...' trying to load dylib` (the mount or the trust list),
 `stage 1 status 2` (no plug-in in this Data store), `the kernel's camera: Operation not permitted` (the sandbox
@@ -118,8 +134,8 @@ refused the user client), `no answer for X` (a property to add).
 1. Run in iOS. Whether the 27 capture graph takes this device as it is, what it asks that is missing (the log
    lists it), and whether it needs more of HakiOS's replaced methods (stabilisation, noise reduction, the portrait
    prewarm): not known.
-2. The front camera's plist entry: the iPhone 17 Pro's front device is "Front Ultra Wide Camera" with 4896x4896
-   formats; the front stream takes the first "Front..." entry that has formats, and the port `PortTypeFront`. Not checked.
+2. The front camera: since 2026-11-23 the port `PortTypeFrontSuperWide` and "Front Ultra Wide Camera"'s formats (4896x4896
+   sensor formats of a square sensor; the phone's front camera gives 4:3 pictures up to 1920x1080, scaled). Not run.
 3. The device tree nodes for MobileGestalt (`/arm-io/isp` `camera-rear`, `camera-front`, `/product/camera`,
    `/product unique-model`): added 2026-11-22 (the Camera icon was not there without them: Camera.app's `SBAppTags`
    is `still-camera`). iOSPlus10 saw the app hang with the nodes and no frames on iOS 16; on 27 the source list needs

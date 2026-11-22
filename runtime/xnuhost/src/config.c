@@ -49,6 +49,7 @@ void xh_config_defaults(xh_config *c)
   strcpy(c->pen, "off");
   strcpy(c->pen_rotate, "auto");
   strcpy(c->encoder, "off");
+  strcpy(c->camera_vm, "hide");
   strcpy(c->wifi, "auto");
   br_hw_settings_init(&c->hw);            // every bridge samsung unless hw-backend says otherwise
 }
@@ -174,6 +175,7 @@ int xh_config_set(xh_config *c, const char *key, const char *value)
   else if (!strcmp(key, "pen-rotate")) { ok = !strcmp(value, "auto") || !strcmp(value, "0") || !strcmp(value, "90") || !strcmp(value, "180") || !strcmp(value, "270"); if (ok) { strcpy(c->pen_rotate, value); c->pen_rotate_given = true; } }
   else if (!strcmp(key, "pen-mirror")) { if (flag(value, &c->pen_mirror)) return -1; c->pen_mirror_given = true; }
   else if (!strcmp(key, "encoder")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "sim"); if (ok) { strcpy(c->encoder, value); c->encoder_given = true; } }
+  else if (!strcmp(key, "camera-vm")) { ok = !strcmp(value, "hide") || !strcmp(value, "show"); if (ok) { strcpy(c->camera_vm, value); c->camera_vm_given = true; } }
   else if (!strcmp(key, "bridges")) { bool on; if (flag(value, &on)) return -1; c->bridges = on; }
   else if (!strcmp(key, "clusters")) { ok = strlen(value) <= XH_MAX_CPUS && strspn(value, "EP") == strlen(value); if (ok) strcpy(c->clusters, value); }
   else if (!strcmp(key, "wifi")) { ok = !strcmp(value, "auto") || !strcmp(value, "off") || !strcmp(value, "tap") || !strcmp(value, "sim"); if (ok) { strcpy(c->wifi, value); c->wifi_given = true; } }
@@ -458,6 +460,7 @@ int xh_config_finish(xh_config *c)
   // encoder= of the image set: the way a phone session turns the video encoder on (the OneOS app passes no --set
   // encoder=). Until 2026-11-22 it was read and then dropped, so encoder=auto in xnuhost.conf did nothing.
   if (!c->encoder_given && from_image.encoder_given) strcpy(c->encoder, from_image.encoder);
+  if (!c->camera_vm_given && from_image.camera_vm_given) strcpy(c->camera_vm, from_image.camera_vm);
   // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
   // Never let an input-grabbing guest take control of Android outside a SHM bench.
   if (c->touch_exclusive && (strcmp(c->mode, "bench") || strcmp(c->display, "shm") ||
@@ -800,6 +803,35 @@ bool xh_boot_args_hides_vmm_from(const char *args, const char *name)
     }
   }
   return false;
+}
+
+int xh_boot_args_hide_vmm_add(char *args, size_t size, const char *name)
+{
+  static const char key[] = "owner-hide-vmm=";
+  size_t used = strlen(args), n = strlen(name);
+  const char *word = NULL;
+  for (const char *p = args; !word && (p = strstr(p, key)); p++)
+    if (p == args || p[-1] == ' ') word = p;           // the kernel's PE_parse_boot_arg_str takes the first: so do we
+  if (word) {
+    char first[256];
+    size_t length = strcspn(word, " ");
+    if (length >= sizeof first) return -1;
+    memcpy(first, word, length);
+    first[length] = 0;
+    if (xh_boot_args_hides_vmm_from(first, name)) return 0;
+  } else {
+    if (used + (used ? 1 : 0) + sizeof key - 1 + n + 1 > size || n > 127) return -1;
+    snprintf(args + used, size - used, "%s%s%s", used ? " " : "", key, name);
+    return 1;
+  }
+  char *end = (char *)word + sizeof key - 1;
+  size_t list = strcspn(end, " ");
+  if (used + 1 + n + 1 > size || list + 1 + n > 127) return -1;
+  memmove(end + list + 1 + n, end + list, used - (size_t)(end + list - args) + 1);
+  end[list] = ',';
+  memcpy(end + list + 1, name, n);
+  if (!list) memmove(end, end + 1, strlen(end + 1) + 1);   // "owner-hide-vmm=" with an empty list: no leading comma
+  return 1;
 }
 
 // bluetoothd's own reading of its boot argument (24A446 /usr/sbin/bluetoothd at 0x100309098): every space-separated

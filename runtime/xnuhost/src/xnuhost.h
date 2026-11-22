@@ -154,6 +154,11 @@ typedef struct {
   bool  bluetooth_given, haptics_given, wifi_given; // set here (xh_config_set): the command line wins over the image set's
   bool  pen_given, pen_rotate_given, pen_mirror_given;   // the same for pen=, pen-rotate=, pen-mirror=
   bool  encoder_given;      // and for encoder=
+  char  camera_vm[8];      // camera-vm=hide (the default) | show: whether cameracaptured is told it runs in a VM. hide adds
+                            // cameracaptured to the boot arguments' owner-hide-vmm= when the camera helper lists a camera:
+                            // 24A446's CMCapture drops every back stream in a VM (FigCaptureIsRunningInVirtualization,
+                            // kern.hv_vmm_present; docs/hardware.md 7). show: the VM path as before 2026-11-23
+  bool  camera_vm_given;    // set here: the command line wins over the image set's
   br_hw_settings hw;        // hw-backend=samsung|treble, hw-backend-<bridge>=..., hw-backend-fallback=0|1: which form of the
                             // phone's hardware each bridge uses (bridges/hw_backend.h; docs/hardware.md, "Hardware backends")
   // The host phone (bridges/host_device.h; docs/hardware.md, "The host device"): host-device=auto|none|NAME ("" unset: auto),
@@ -261,6 +266,9 @@ int  xh_view_boot_args(char *args, size_t size, uint64_t view, uint64_t window);
 // True when the boot arguments' owner-hide-vmm=NAME[,NAME...] (the kernel's per-process vmm-present switch) names
 // `name`. xnuhost warns for bluetoothd: 24A446's bluetoothd crashes in a loop with the virtual machine hidden.
 bool xh_boot_args_hides_vmm_from(const char *args, const char *name);
+// Adds `name` to the boot arguments' owner-hide-vmm= list (the word is made when there is none). 1: added, 0: the list
+// names it already, -1: no room (the arguments, or the kernel's 127 characters for the list: bsd/kern/hvg_sysctl.c).
+int  xh_boot_args_hide_vmm_add(char *args, size_t size, const char *name);
 // The transport the boot arguments' bt-transport-override gives 24A446's bluetoothd, read the way bluetoothd reads it,
 // or -1 when they give none. xnuhost warns for any value but 10: in a VM bluetoothd powers on only with 10 (the guest's
 // driver gives it 10 and the kernel BT_HCI_TRANSPORT=H4:POSIX, docs/hardware.md 4).

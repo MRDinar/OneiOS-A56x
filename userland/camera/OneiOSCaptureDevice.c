@@ -111,14 +111,17 @@ find_functions(void)
 	device_class_id = dlsym(RTLD_DEFAULT, "FigCaptureDeviceGetClassID");
 	stream_class_id = dlsym(RTLD_DEFAULT, "FigCaptureStreamGetClassID");
 	port_back = symbol_string("kFigCapturePortType_BackFacingCamera");
-	port_front = symbol_string("kFigCapturePortType_FrontFacingCamera");
+	/* The iPhone 17 Pro's front camera is a super-wide one: V54's AVCaptureSession.plist builds "Front Camera" and "Front Ultra
+	 * Wide Camera" from a PortTypeFrontSuperWide stream (iOS's log, 2026-11-23: "unable to find a stream with port type
+	 * PortTypeFrontSuperWide" with our PortTypeFront stream there). */
+	port_front = symbol_string("kFigCapturePortType_FrontFacingSuperWideCamera");
 	md_attachment = symbol_string("kFigCaptureSampleBufferAttachmentKey_MetadataDictionary");
 	md_port = symbol_string("kFigCaptureStreamMetadata_PortType");
 	if (port_back == NULL) {
 		port_back = CFSTR("PortTypeBack");
 	}
 	if (port_front == NULL) {
-		port_front = CFSTR("PortTypeFront");
+		port_front = CFSTR("PortTypeFrontSuperWide");
 	}
 	oneios_camera_say("CoreMedia: CMDerivedObjectCreate %s, FigCaptureDeviceGetClassID %s, FigCaptureStreamGetClassID %s, "
 	    "metadata key %s", derived_create ? "found" : "MISSING", device_class_id ? "found" : "MISSING",
@@ -285,10 +288,10 @@ struct camera {
 	double focal_length, f_number, pixel_size;
 };
 
-/* The back wide camera and the front camera, named as the iPhone's are in its plist. */
+/* The back wide camera and the front camera, named as V54's plist names the devices whose stream formats they take. */
 static const struct camera known[MAX_STREAMS] = {
 	{ ONEIOS_CAMERA_WIDE, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 6.3, 1.7, 1.0 },
-	{ ONEIOS_CAMERA_FRONT, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 3.3, 2.2, 1.0 },
+	{ ONEIOS_CAMERA_FRONT, "Front Ultra Wide Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 3.3, 2.2, 1.0 },
 };
 
 #ifndef ONEIOS_CAMERA_SESSION_PLIST

@@ -2424,6 +2424,34 @@ static void test_config(const char *dir)
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=audiomxd,com.apple.WebKit.GPU bluetoothd=1", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("owner-hide-vmm=bluetoothd2 xowner-hide-vmm=bluetoothd", "bluetoothd"));
   CHECK(!xh_boot_args_hides_vmm_from("", "bluetoothd"));
+  // cameracaptured added to the first owner-hide-vmm= word (the one the kernel reads), or a new word; never twice
+  {
+    char a[96] = "-v wdt=-1";
+    CHECK(xh_boot_args_hide_vmm_add(a, sizeof a, "cameracaptured") == 1 && !strcmp(a, "-v wdt=-1 owner-hide-vmm=cameracaptured"));
+    CHECK(xh_boot_args_hide_vmm_add(a, sizeof a, "cameracaptured") == 0 && !strcmp(a, "-v wdt=-1 owner-hide-vmm=cameracaptured"));
+    char b[96] = "-v owner-hide-vmm=audiomxd,com.apple.WebKit.GPU wdt=-1";
+    CHECK(xh_boot_args_hide_vmm_add(b, sizeof b, "cameracaptured") == 1 &&
+          !strcmp(b, "-v owner-hide-vmm=audiomxd,com.apple.WebKit.GPU,cameracaptured wdt=-1"));
+    CHECK(xh_boot_args_hides_vmm_from(b, "cameracaptured") && xh_boot_args_hides_vmm_from(b, "audiomxd"));
+    char c2[96] = "owner-hide-vmm=";
+    CHECK(xh_boot_args_hide_vmm_add(c2, sizeof c2, "cameracaptured") == 1 && !strcmp(c2, "owner-hide-vmm=cameracaptured"));
+    char d[96] = "owner-hide-vmm=audiomxd x owner-hide-vmm=cameracaptured";     // only the first word counts
+    CHECK(xh_boot_args_hide_vmm_add(d, sizeof d, "cameracaptured") == 1 &&
+          !strcmp(d, "owner-hide-vmm=audiomxd,cameracaptured x owner-hide-vmm=cameracaptured"));
+    char e[24] = "-v wdt=-1";                                                     // no room: unchanged
+    CHECK(xh_boot_args_hide_vmm_add(e, sizeof e, "cameracaptured") == -1 && !strcmp(e, "-v wdt=-1"));
+    char g[200] = "owner-hide-vmm=";                                              // the kernel's 127 characters
+    for (int i = 0; i < 12; i++) strcat(g, i ? ",procname" : "procname1");
+    CHECK(strlen(g) - 15 == 108 && xh_boot_args_hide_vmm_add(g, sizeof g, "cameracaptured") == 1);
+    CHECK(xh_boot_args_hide_vmm_add(g, sizeof g, "anotherprocess") == -1);
+  }
+  char *argv4v[] = { "xnuhost", "--image", image, "--set", "camera-vm=show" };
+  xh_config_defaults(&c);
+  CHECK(!strcmp(c.camera_vm, "hide"));
+  CHECK(xh_config_args(&c, 5, argv4v) == 0 && xh_config_finish(&c) == 0 && !strcmp(c.camera_vm, "show"));
+  char *argv4w[] = { "xnuhost", "--image", image, "--set", "camera-vm=maybe" };
+  xh_config_defaults(&c);
+  CHECK(xh_config_args(&c, 5, argv4w) != 0);
   // bt-transport-override read as bluetoothd reads it: any word that contains the name, the value after its '=',
   // under 13, the last word wins
   CHECK(xh_boot_args_bt_transport("-v bt-transport-override=10 wdt=-1") == 10);
