@@ -4,6 +4,9 @@ The owner paused the work on 2026-11-13 at about 15:00 IST. This file is the han
 the Mac (Xcode, the phone on its USB, the phone sessions) and a Linux PC (CachyOS, x86_64, 4 CPUs: the kernel, the
 runtime, `oneios-tool`, PC boots under qemu-aarch64). Read this with `README.md` "Status", `docs/agents.md` and the
 docs each item names. **Proven** = ran on the phone; **built** = compiled and host-tested, not run on the phone.
+The runtime this file names (its `.c` files, `make -C runtime/...` and `make test`) is the C tree: since 2026-11-23 the
+runtime is Rust ([runtime/RUST.md](../runtime/RUST.md)), each C file one module of the same name, and its commands are
+in [building.md](building.md) section 4.
 
 ## 2026-11-16, phone fix: #60 is merged and iOS 27 reaches the first real frame again
 

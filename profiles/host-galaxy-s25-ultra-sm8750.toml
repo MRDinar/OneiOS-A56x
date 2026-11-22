@@ -1,6 +1,6 @@
 # Host profile for OneiOS on Galaxy S25 Ultra (Snapdragon). Not Apple's IPSW profile.
 # A record for the port docs; no code reads it. What xnuhost does differently on this phone comes from its row in
-# runtime/bridges/hw/host_device.c (galaxy-s25-ultra, the source of truth: docs/hardware.md 7h). The guest image stays
+# runtime/bridges/hw/host_device.rs (galaxy-s25-ultra, the source of truth: docs/hardware.md 7h). The guest image stays
 # profiles/ios-27.0.1-iPhone18,2.toml.
 #
 # [F] values below were measured on a phone by two forks: denis0001-dev/OneiOS-S25-Ultra (gpuctl, 2026-11-15) and
@@ -27,7 +27,7 @@ root = "KernelSU LKM loaded by an exploit on a locked bootloader: gone after any
 [cpu]
 # Snapdragon 8 Elite: 8x Oryon. [F] bridgectl cpu: cpu0-5 capacity 765 (384000..3532800 kHz, MIDR 0x514f0014),
 # cpu6-7 capacity 1024 (1017600..4473600 kHz, MIDR 0x513f0014); PAC (paca pacg), BTI. The CPU bridge's Oryon rule
-# (runtime/bridges/cpu/topology.c) plans 6 E + 2 P vCPUs, as on the S26 Ultra.
+# (runtime/bridges/cpu/topology.rs) plans 6 E + 2 P vCPUs, as on the S26 Ultra.
 nvcpu_default = 8
 note = "Cache sysfs has level/type but no size (caches print 0; nothing passes them to the guest)."
 
@@ -39,7 +39,7 @@ chip_id = "0x44050000"  # [F] gpuctl
 gpu_id = 6850           # [F]
 gmem_kib = 12288        # [F]
 gpu_va = "0x4000000000 + 192 GiB"   # [F] the 256 GiB VBO rung starves imports; drm2kgsl takes a smaller one
-udmabuf = "64 MiB, 1024 runs"       # [F]; ENOMEM under fragmentation on this 6.6 kernel: gpu3d.c halves the size
+udmabuf = "64 MiB, 1024 runs"       # [F]; ENOMEM under fragmentation on this 6.6 kernel: gpu3d.rs halves the size
 freq_mhz = "160..832 (msm-adreno-tz)"
 status = "sessions with the 3D GPU in YumikoHayamato/OneiOS (sessions 4-7): stable, GPU time 2.6-4.2 ms a frame"
 
@@ -66,7 +66,7 @@ als = "als_rear (event7)"
 battery = "power_supply/battery, max77775 fuel gauge, 5000 mAh (samsung backend works)"
 backlight = "panel0-backlight, max_brightness 12750; One UI's manual top not measured here (the S26 Ultra's: 2300)"
 thermal = "first passive trip 105 C, hot 125 C (the median of 25 SoC zones); no cpu-hw-trip-* zones"
-bluetooth = "AIDL IBluetoothHci/default only (hwservicemanager stopped, no HIDL): runtime/bridges/bt/hci_hidl.c does not speak it"
+bluetooth = "AIDL IBluetoothHci/default only (hwservicemanager stopped, no HIDL): runtime/bridges/bt/hci_hidl.rs does not speak it"
 hals = "health, thermal, vibrator, lights, sensors, wifi supplicant (AIDL), bluetooth (AIDL), audio core, camera internal/0"
 
 [switch]
