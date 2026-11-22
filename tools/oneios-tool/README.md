@@ -811,8 +811,10 @@ oneios-tool ioslog save SOURCE NAME.logarchive        # the copy the manual step
   touch paths (`MAX_PATH_COUNT`), UISensor modes (`digitizerEnabled`, `pocketTouchesExpected`), backlight
   (`VMBLControl`, `No container for handle Display`), crashes and "Too many corpses", launch constraint violations,
   jetsam kills, watchdogs (`Extension is hanging on launch`, `0x8BADF00D`), audio (`configure_thread_for_realtime`,
-  `timed out after 3.000s`). **The patterns are the texts the project's notes quote; they were written without the
-  phone's log at hand.** A count of 0 means the text is not in the log.
+  `timed out after 3.000s`), heic (`CMPhotoCompressionSessionAddImage`, `codec: 'hvc1'`, `Content load failed`: CMPhoto
+  has no HEVC encoder, chronod's widget snapshots are white; expected 0 with the codec
+  archive and `encoder=auto`, not yet seen on the phone, 2026-11-22). **The patterns are the texts the project's
+  notes quote; they were written without the phone's log at hand.** A count of 0 means the text is not in the log.
 - The guest's clock was about a day behind the host's in the 2026-11-12 sessions, so the log's dates are too.
 - Copying `data.img` from the phone is `oneios-tool phone pull-data OUT [--ioslog]` ("phone" below). Not there: an
   `Info.plist` in the saved archive (Apple's `log show --archive` wants one; Mandiant's tool does not).
@@ -1768,7 +1770,7 @@ prints the boot's stages with their time after the boot's start and their line (
 kernel, BSD root, launchd loaded and its first line, the first virtio driver up, SpringBoard and backboardd first
 seen, backboardd's framebuffer, the first swap, the guest's first frame, guest ready, the first gesture, the end),
 then one row per part (start, memory, disks, virtio, tasks, cpu, perf, thermal, display, gpu, input, brightness,
-haptics, battery, bluetooth, wifi, audio, camera, encoder, usb, return, and iOS's own report lines: launchd, memory,
+haptics, battery, bluetooth, wifi, audio, camera, encoder (with the guest's `ONEIOS CODEC:` lines), usb, return, and iOS's own report lines: launchd, memory,
 cpu, gpu, display, hid, wifi, iokit): how many lines it wrote, the problems among them (`xnuhost E` lines, and lines
 with a word such as `failed`, `dropped`, `none returned`, `died on its own` that is not a zero count), its last line
 and its first problem. Then the crashes and kills (panics, `sheng-exc` exceptions, the tasks' fatal traps, tasks

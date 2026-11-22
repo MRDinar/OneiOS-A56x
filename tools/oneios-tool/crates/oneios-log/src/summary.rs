@@ -73,7 +73,7 @@ pub const PARTS: &[Part] = &[
     Part { name: "wifi", host: &["wifi:"], guest: &[], raw: &[] },
     Part { name: "audio", host: &["audio:"], guest: &[], raw: &["oneios-audio:"] },
     Part { name: "camera", host: &["camera:"], guest: &[], raw: &["oneios-camera:"] },
-    Part { name: "encoder", host: &["encoder:"], guest: &[], raw: &["oneios-encoder:"] },
+    Part { name: "encoder", host: &["encoder:"], guest: &["ONEIOS CODEC:"], raw: &["oneios-encoder:"] },
     Part { name: "usb", host: &["usb:"], guest: &[], raw: &[] },
     Part { name: "return", host: &["stopping:", "return:", "exit ", "the guest asked for a restart", "the guest restarted"], guest: &[], raw: &[] },
     Part { name: "ios launchd", host: &[], guest: &["com.apple.xpc.launchd|"], raw: &[] },
