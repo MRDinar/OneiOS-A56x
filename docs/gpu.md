@@ -629,6 +629,12 @@ for, in order:
    loses precision), and a clear of the modified bit that write-protects the host page instead of unmapping it, so
    reads after the madvise do not fault. The modified bit must stay exact: a clean internal page with no compressor
    copy is freed by the pageout, so a write that leaves no fault would lose data.
+   **Hosted 0101 (fix/unmap-fanout, 2026-11-24) does part of (b).** The clear still unmaps (the referenced bit stays
+   exact), but the touch after it no longer takes the full fault: the fill path sees an entry that waits for its
+   reference or modified fault, takes it there (`arm_fast_fault`) and maps the page at once (`oneios-fill-fast-fault`), and
+   setting the bit again unmaps nothing (`oneios-upgrade-flush`). Its `oneios-perf:   0101:` lines count both (`fast fills`,
+   `kept mapped`) and the flushes by cause (`refmod` is this one). Not done: the write-protect instead of the unmap for a
+   clear of the modified bit alone. Not run on the phone yet.
 5. **The host's CPU time.** With 0085 and 0089 all eight vCPUs carry iOS's work, so the display helper and xnuhost's
    GPU threads share the cores with it; at 711% and a 95 C SoC the phone also slows its clocks. Hosted `0091` and
    xnuhost's direct kick (`docs/booter.md` 2.6a, "The kick") remove the host work of the thread moves and of the

@@ -2243,3 +2243,78 @@ ONEIOS_CRYPTO=original`, 184 patches, 367 s): `xnu.macho` `7ecd6622`, releasable
 the lines of 0098 and 0100 are in it (`strings`). **Not booted** (no phone boot yet; no qemu boot: the owner's rule of
 2026-11-24). Watch in the first boot: `oneios-kill` lines naming the posters' killer and reason (FrontBoard's scene
 watchdog, RunningBoard's, or launchd's), which decides the next fix.
+## 0101-unmap-fanout.patch (fix/unmap-fanout, 2026-11-24)
+
+**Why.** The phone, 2026-11-24 01:17-01:22 (kernel.kc `e79886d9`, xnuhost `35f74348`, takeover mode;
+`out/session-logs/2026-11-24-mac-gpumem/live.log`), ran at 620-724% host CPU (sys 243-387%) at 94-96 C. Per 30 s:
+`pmap: user maps 843359-970500, unmaps 11139390-12352829`, and in the 0045 line `unmaps: 492823-983077 for a task's
+own flushes, 10316293-11860063 from 37017-42548 shared-region or commpage flushes`. So the unmaps were 12-13 times the
+maps, and 90% of them came from about 1,400 shared-region flushes a second, each sent to the 240-290 tasks whose 32 MiB
+block bit (0045) was set. Nearly every task has filled a page in libsystem's blocks, and almost none had the flushed
+page. Each order took the task's TLB word and queued a `task_unmap` in xnuhost (`task_unmap 11647376 queued`). In the
+same periods `VM_pageout_scan` used 14.7-18.1 s of CPU per 30 s and 408,000-550,000 faults went to vm_fault's path
+(45-49 s of CPU). What issues them, read from the code: the pageout's reference clear (`arm_force_fast_fault`, an
+unmap: the page then waits for its access-flag fault), then at the next touch `arm_fast_fault` -> `arm_clear_fast_fault`,
+which sets the bit back on every mapping of the page and flushed each one again (for the shared region, again to every
+task of the block), and which ran on the exception path (sleh's `handle_user_abort`, the return, the refill).
+
+**The change, three parts, each behind a boot-arg (docs/switches.md):**
+
+1. `oneios-nested-exact=1` (0: 0045's block bits only). A task that fills a page of the shared region first gets a
+   bitmap of that page's 32 MiB block (1 KiB, 8192 bits; `hosted_nested_prepare`, in thread context before the fill's
+   locks; a table of 511 pointers per task). The fill sets the page's bit under the task's TLB word, as 0045 set the
+   block bit. A shared-region flush sends `task_unmap` only to a task with a bit set in its range and clears those bits
+   after the unmap (`hosted_nested_forget`, also on a task's own flushes). A block with no bitmap (the allocation
+   failed) keeps 0045's rule. The bitmaps go with the task.
+2. `oneios-upgrade-flush=0` (1: the flush as before). An entry changed to the same page with no less access needs no
+   host unmap: the host maps no more than the old entry allowed (every change that takes access away flushes), so an
+   access the host refuses faults and is filled from the new entry. `arm_clear_fast_fault` (the reference or modified
+   fault taken) and `pmap_enter_pte` (the same page entered again with write added or wired) keep the tasks' host
+   mappings (`hosted_upgrade_only`). The kernel pmap keeps its flush (it maps its entries again at once).
+3. `oneios-fill-fast-fault=1` (0: the exception path as before). When a user fault's fill fails only because the entry
+   waits for its reference fault (no access flag) or modified fault (read-only, was writable), the trap path calls
+   `arm_fast_fault` itself and fills the page at once (`hosted_user_fill_trap`). On an iPhone this is the cheap
+   access-flag fault.
+
+The modified bit stays exact (docs/gpu.md 2.5 item 4): a clear of it still takes write away in the host (an unmap).
+The referenced bit stays exact too: its clear still unmaps the page in every task that has it, now only those.
+
+**Lines (lasting).** Each `oneios-perf` period, two lines under 240 characters:
+
+```text
+oneios-perf:   0101: flushes/task unmaps: remove F/U, protect F/U, page_protect F/U, refmod F/U
+oneios-perf:   0101: upgrade F/U, enter F/U, tables F/U, other F/U; kept mapped K; fast fills N (not M); nested exact=1: B KiB
+```
+
+F is the user, shared-region and commpage flushes by cause (`hosted_flush_why`, set at each flush site of pmap.c:
+`remove` pmap_remove, `protect` pmap_protect, `page_protect` pmap_page_protect, `refmod` the reference/modified clears,
+`upgrade` arm_clear_fast_fault, `enter` pmap_enter replacing an entry, `tables` table frees, nest and unnest), U the
+task unmaps they gave. `kept mapped`: entries changed with no unmap (part 2). `fast fills`: faults filled on the fill
+path (part 3); `not`: the fast fault ran but the fill still failed (the access needs vm_fault). `B KiB`: the bitmaps and
+tables alive (part 1's memory). Cost: two loads and a store per flush, the counts per vCPU.
+
+**Tested.** `git apply --check` after 0100 on the patched tree; built release-style (`HOSTED_OUT=unmap
+ONEIOS_CRYPTO=original`) and prelinked (the build is in docs/switches.md "Tests"). `kernel/tests/host.sh`. Two qemu
+boots of the first build (then numbered 0098, the same code) ran side by side for about 23 minutes each, with the same
+binaries: one with all four switches of this change off (`oneios-nested-exact=0 oneios-upgrade-flush=1
+oneios-fill-fast-fault=0`, xnuhost `timer-coalesce=0`), one at the defaults. They were stopped there by the owner's rule
+of 2026-11-24 (no qemu boots to check a change), so they are not a full boot test, but both reached launchd and
+SpringBoard with no panic. Summed over the same span (logs `out/session-logs/2026-11-24-pc-unmap/`):
+
+| | switches off | defaults |
+|---|---|---|
+| user maps / unmaps | 2,725,593 / 1,180,885 | 2,745,122 / 598,940 |
+| `upgrade` flushes / task unmaps | 492,909 / 492,909 | 0 / 0 (485,134 kept mapped) |
+| `page_protect` flushes / task unmaps | 1,129 / 33,141 | 1,182 / 3,947 |
+| shared-region flushes / task unmaps (0045 line) | 1,338 / 35,586 | 1,342 / 3,455 |
+| faults filled on the fill path / to vm_fault's path | 1,487,701 / 1,235,340 | 1,970,826 / 772,566 (436,286 fast fills, 17 not) |
+| xnuhost `timer_set` / `timer_settime` | 4,433,745 / 4,207,380 | 4,455,773 / 2,950,554 (1,271,656 kept, 338,051 re-armed) |
+| bitmaps | - | 25,383 KiB at the end |
+
+qemu-user makes few shared-region flushes (the pageout hardly runs in 4 GiB); the phone made 30 times as many, so
+part 1 is measured there. Part 1's memory is the cost to watch: 25 MiB of bitmaps under qemu (about 80 blocks per task
+[from the totals]); on the phone with 300-400 tasks perhaps 30-50 MiB [guess]. `oneios-nested-exact=0` frees it.
+**Not booted on the phone.** Watch in its first boot: the 0045 line's `from N shared-region ... flushes` unmaps near N
+times a few, not times 250; `pmap: ... unmaps` near the maps; `0101: ... fast fills` near the old `to vm_fault` count
+and `to vm_fault (us)` a fraction of 45-49 s; `refmod` the largest cause left; `nested exact=1: B KiB` against the
+wired count.

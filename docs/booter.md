@@ -830,6 +830,15 @@ it is `runtime/abi/src/stub.rs`, shared by the stub and xnuhost.
   interrupts masked (the return path of a host call belongs to the vCPU the call started on).
 - The timer is CNTVCT_EL0 (the kernel and iOS tasks read it directly; `/cpus` timebase = CNTFRQ_EL0) with a
   per-CPU POSIX timer (`SIGEV_THREAD_ID`) for the deadline; its line is INTID 27, a level, as ArmCpu takes it.
+- **The host timer is armed only when the deadline comes earlier** (`timer-coalesce=1`, the default since
+  fix/unmap-fanout, 2026-11-24; `cpu.rs` `timer_set`, `timer_signal`). XNU sets a new deadline at nearly every dispatch
+  (the next thread's quantum), each one later than the last: on the phone (2026-11-24 01:17) 497,376 sets per 30 s,
+  495,092 of them a `timer_settime`. A deadline later than the one the host timer is armed for (`timer_host_at`), or a
+  cancel, leaves the host timer as it is. When it fires before the deadline (or after a cancel), the signal arms it for
+  the deadline and raises nothing: one `timer_settime` per early signal, no interrupt, and the line still rises exactly
+  at the deadline (`timer_due`). An earlier deadline arms the host timer at once, as before. `perf: ... timer_set N (M to
+  the host timer, K kept it; R early signals armed it again)`. `timer-coalesce=0`: every new deadline and cancel is a
+  `timer_settime` and every signal raises the line (before).
 - The controller is a GICv3 model (`src/gic.rs`): distributor and redistributor frames by trapped MMIO, the CPU
   interface by trapped `ICC_*` registers, or the `irq_ack/irq_take/irq_eoi/irq_enable/ipi` host calls (the hosted
   kernel uses `ipi`, `irq_take` and `irq_eoi` for IPIs and the timer since hosted 0081; ArmCpu's trapped registers for
