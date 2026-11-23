@@ -463,7 +463,8 @@ fn wonder_session() {
         logged("wonder: wondermon0 removed (NL80211_CMD_DEL_INTERFACE): ok\n")
             && logged("wonder: wlan0: the same link as before\n")
     );
-    assert!(!logs.starts_with("E ") && !logged("\nE "));
+    // no error line of its own (the capture holds the lines of every thread meanwhile: another test's error too)
+    assert!(!logs.starts_with("E wonder:") && !logged("\nE wonder:"));
     if std::env::var_os("ONEIOS_TEST_SHOW").is_some() {
         print!("---- wifictl wonder --seconds 30 --freq 5745 on the stand-in nl80211\n{logs}");
     }

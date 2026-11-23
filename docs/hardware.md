@@ -419,9 +419,10 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 | File | What |
 |---|---|
 | `frames.rs` | which frames cross (above), and the cut of a coalesced TCP frame |
-| `traffic.rs` | the counts of frames and bytes each way, the drops and why, and the `wifi: 60 s:` line (section "After the join") |
-| `station.rs` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages |
-| `wlan.rs` | the back end on the phone: the AF_PACKET socket (a 4 MiB receive buffer), nl80211 (low-priority scans while joined), wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
+| `traffic.rs` | the counts of frames and bytes each way, the drops and why, the waits for the send buffer, and the `wifi: 60 s:` line (section "After the join") |
+| `uplink.rs` | the guest's frames that find the AF_PACKET socket's send buffer full: they wait in order for `POLLOUT`, 20 ms at most (section "The uplink's full send buffer") |
+| `station.rs` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages; while joined, a scan soon after the last one is answered from its networks |
+| `wlan.rs` | the back end on the phone: the AF_PACKET socket (a 4 MiB receive buffer, a 1 MiB send buffer; both doubled by the kernel), nl80211 (low-priority scans while joined), wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
 | `sim.rs` | a made-up radio (`wifi=sim`) |
 | `p2p.rs`, `wonder.rs` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
 | `supplicant.rs` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
@@ -435,7 +436,7 @@ run and read in the log; no frame goes anywhere (unit-tested; not yet run in a b
 on: wlan0 (..) is the guest's en0`, `wifi: the vendor's supplicant is the bridge's`, `wifi: the guest's driver is up`,
 `wifi: join: network N in the supplicant, WPA2 (passphrase): selected`, `wifi: supplicant: <state>`, `wifi: join done`
 or `join failed (status S, code C)`, `wifi: link down (reason R)`, `wifi: 60 s: to iOS ...` (the traffic line, section "After
-the join" below), `wifi: scans while joined: flags 0x...`, `wifi: closed (...)`, `wifi: wlan0 given back`.
+the join" below), `wifi: scans while joined: flags 0x...`, `wifi: wlan0's AF_PACKET socket: receive buffer N KiB, send buffer N KiB (...)`, `wifi: closed (...)`, `wifi: wlan0 given back`.
 
 Old (only with `wifi=tap`): `runtime/bridges/net/net.rs` (tap `oneios0`, DHCP answered in the bridge: 192.168.77.2/24)
 and `runtime/bridges/net/oneios-net.sh` (NAT). The script's `ip rule del priority 16000` would delete netd's own rule
@@ -547,7 +548,8 @@ Changed (runtime and the Wi-Fi archive of the hosted kernel):
    while joined (scan flags 0x1)`. The drops to iOS: `the guest's ring full` (the wait below ran out), `too long`
    (longer than the link and not TCP), `receive errors` (with `last errno N`); from iOS: `refused` (not a frame the
    radio may send), `send failed` (with the errno: `ENOBUFS`/`EAGAIN` is wlan0's queue full). The stop's `wifi:
-   closed (...)` line has the same totals with bytes.
+   closed (...)` line has the same totals with bytes. Since the 19:40 session an `EAGAIN` waits instead and the line
+   counts the waits (section "The uplink's full send buffer" below).
 2. **The receive ring waits instead of dropping** (`devices/virtio_net.rs`): a data frame that finds no buffer waits
    for the guest's kick of the receive queue (a condition variable, not a poll) up to 20 ms, a frame of the station's
    own type up to 50 ms (it polled every millisecond before). The bridge's receive thread blocks meanwhile and the
@@ -559,7 +561,8 @@ Changed (runtime and the Wi-Fi archive of the hosted kernel):
    low span (0x101), low priority (0x1) when the driver refuses that (cfg80211 answers a flag the wiphy does not offer
    with `EOPNOTSUPP`, an older kernel `EINVAL`), none after that; the flags the driver took are kept for the next
    scan and logged once: `wifi: scans while joined: flags 0x1 (...)`. A low-priority scan is one the driver may pause
-   or cut short for the link's traffic. [U: which of the two this phone's driver takes.]
+   or cut short for the link's traffic. The phone's driver takes neither (19:40 session: `flags 0x0`): such scans are
+   answered from the cache since (section "The uplink's full send buffer" below).
 5. **The signal** (`kernel/patches/oneios-hosted/net/OneiOSWifi.cpp`, net/README.md "The signal"): the driver posts
    RSSI_CHANGED (39) with the 592-byte link quality record at the join and whenever the host's 2 s state moves the
    RSSI by 3 dB or more, or the transmit rate by a quarter. The record's layout is the one 24A446's CoreWiFi reads
@@ -579,6 +582,71 @@ could not be read (`phone pull-log` wrote 20 bytes: an empty text), so DNS, the 
 retransmits are not seen. The guest's transport (UniXNU-droidvm's `DroidVMVirtioNet.c`) passes only broadcast and
 frames to its own address: multicast is dropped there (its comment says so), so iOS gets no IPv6 router
 advertisement and no mDNS; IPv4 is not affected. [I: not a cause of the slow pages.]
+
+### The uplink's full send buffer, and scans while joined from the cache (2026-11-23 19:40)
+
+The session of 2026-11-23 19:40-19:44 (the Wi-Fi fix cbf97ea; `out/session-logs/2026-11-23-mac-wifi/xnuhost.log`)
+joined, got its lease, posted `RSSI_CHANGED` at the join and on each change (`signal records 4`, then 8), and moved
+`to iOS 421751 frames (605.3 MiB ...)` in a minute. Three faults were left in its lines:
+
+- **The uplink dropped frames**: `from iOS: 70 send failed, last errno 11`, then 1624 (88416.6), then 112. Errno 11
+  is `EAGAIN`: the AF_PACKET socket's send buffer was full (the frames wlan0's driver has not sent yet count against
+  it; the default, `wmem_default`, is about 200 KiB, about 100 frames [I: 1-2 KiB of the kernel's memory each, an ACK
+  too]), and the bridge dropped the frame at once. Most were TCP ACKs and requests: downloads stalled and sent again.
+- **`13 receive errors, last errno 22`** in the first minute (`EINVAL`). The kernel could not write a
+  `virtio_net_hdr` for a coalesced frame, and the frame is lost: One UI's 6.1 kernel writes one only for TCP
+  (`virtio_net_hdr_from_skb`; UDP_L4 came in Linux 6.2). GRO is off on wlan0 and no TCP frame came coalesced in that
+  session (`0 cut from coalesced` in every line), so these are UDP frames that the driver itself joined [I:
+  Qualcomm's FISA, the driver's own UDP aggregation, which ethtool's GRO switch does not turn off; iOS's QUIC]. Not
+  fixed: the frame is gone before the bridge sees it, and AF_PACKET on 6.1 cannot say a UDP frame's segment size.
+  They are counted, and few (13 in 4 minutes).
+- **Scans while joined**: `wifi: scans while joined: flags 0x0`: this phone's driver takes neither low-priority
+  flag, so each of wifid's scans (about every 35 s while joined) takes the radio off the network's channel for about
+  5 s.
+
+Changed (runtime only):
+
+1. **A frame that finds the send buffer full waits** (`wifi/uplink.rs`). It goes on a list, in order; the guest's
+   next frames wait behind it, so the radio still sends them in the guest's order. The frames thread watches the
+   socket's `POLLOUT` while any frame waits (an eventfd wakes it for the first one; poll(2), not a loop) and sends
+   them then. A frame that waited 20 ms (the receive ring's bound for a data frame) is dropped; 256 frames wait at
+   most. The guest's vCPU never waits on the socket: it sends, or puts the frame on the list; its next frame first
+   sends the waiting ones as far as the socket takes them (the frames thread may be in the receive ring's wait for
+   the guest's buffers; while the buffer stays full this costs the one refused send a frame cost before).
+2. **A larger send buffer**: 1 MiB asked with `SO_SNDBUFFORCE` (as root; `SO_SNDBUF`, capped by `wmem_max`,
+   otherwise); the kernel doubles it. The start logs what the kernel gave (expected: `wifi: wlan0's AF_PACKET
+   socket: receive buffer 8192 KiB, send buffer 2048 KiB (4096 KiB and 1024 KiB asked; the kernel doubles them)`).
+3. **The traffic line counts the waits**: `...; from iOS: none; ring full and waited 9 (longest wait that got a buffer
+   1500 us); send buffer full and waited 12 (9 sent, longest wait that sent 850 us)`; its drops from iOS add `N
+   dropped after a 20 ms wait` and `N dropped with 256 waiting`, and `send failed` is now another error (`ENOBUFS`:
+   the interface's queue full). The stop's `wifi: closed (...)` line has the totals.
+4. **Scans while joined from the cache**: while joined, a scan iOS asks within 120 s of the end of the last good
+   scan is answered from that scan's networks (`station.rs`, `Radio::joined_scan_reuse`; only the phone's radio
+   reuses, the stand-in `wifi=sim` scans each time): the radio stays on its channel. A real driver answers a scan
+   soon after the last one from its cache. Chosen over a scan of the current channel only: that scan still costs the
+   driver a dwell, and its result would lose every network of the other channels from the list iOS shows; with the
+   cache the list stays whole and at most 2 minutes old, and one scan of every channel comes about every 140 s
+   instead of every 35 s. The answer does not make the kept networks younger; a failed scan is not kept. The traffic
+   line: `; 4 scans while joined (3 answered from the last scan's networks, 1 on the radio with scan flags 0x0)`.
+5. **The frames thread reads a socket error** (`POLLERR` without `POLLIN`, for example `ENETDOWN` when wlan0 went
+   down) as a receive error: before, poll answered at once again and again until a frame came.
+
+Host tests (`cargo test -p onebridges`, in `runtime/host-tests.sh`): `wifi::uplink` `eagain_then_pollout` (held in
+order, sent on POLLOUT, the counts and the longest wait), `eagain_to_the_bound` (dropped at 20 ms, the list full,
+ENOBUFS while flushing), `the_next_frame_sends_the_held_ones_first` (room before POLLOUT: the held frames go with
+the guest's next one, in order; one past its bound is dropped, not sent late), `a_real_socket` (a datagram socket
+pair with the smallest send buffer: a real `EAGAIN`, then poll's `POLLOUT` once the peer reads, then the held
+frames in order); `wifi::station` `cached_answer_rules` and
+`a_scan_while_joined_from_the_cache`; `wifi::traffic` `the_line`. `wifi::wonder` `wonder_session` now looks only
+for its own error lines (`E wonder:`): the log capture holds every thread's lines, and another test's error line (the
+station test logs `join failed`) made it fail once on the build laptop.
+
+Proof lines on the phone (expected, not yet seen): `wifi: wlan0's AF_PACKET socket: ... send buffer 2048 KiB`; in
+the `wifi: 60 s:` lines during a download, `send failed` near 0, `send buffer full and waited N (M sent, ...)` with
+M close to N, few or no `dropped after a 20 ms wait`; `N scans while joined (M answered from the last scan's
+networks, ...)` with most of them answered. Not tested on the phone: whether 2 MiB is enough for this driver, how
+long a wait for `POLLOUT` takes on it (the line's longest wait says), and whether wifid accepts an answer this quick
+while joined (the guest's driver already answers within 8 s of a scan from its own copy, `reused` in its line).
 
 ### en0 late: two minutes before iOS turns Wi-Fi on (fix-wifi-late, 2026-11-13)
 

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! The Wi-Fi bridge's back end on the phone (docs/hardware.md section 3): the guest's en0 on wlan0.
-//!   frames   AF_PACKET on wlan0 (all types, our own sends not read back, coalesced frames cut by frames::segment)
-//!   scans    nl80211 (generic netlink) on wlan0, as wificond does: TRIGGER_SCAN, then GET_SCAN on NEW_SCAN_RESULTS
+//!   frames   AF_PACKET on wlan0 (all types, our own sends not read back, coalesced frames cut by frames::segment;
+//!            a frame of the guest's that finds the send buffer full waits in uplink for POLLOUT, 20 ms at most)
+//!   scans    nl80211 (generic netlink) on wlan0, as wificond does: TRIGGER_SCAN, then GET_SCAN on NEW_SCAN_RESULTS;
+//!            while joined, within 120 s of the last scan, the station answers from its networks (JOINED_SCAN_REUSE_S)
 //!   link     nl80211 GET_STATION and GET_INTERFACE while joined: signal, rate, channel
 //!   joins    the vendor's wpa_supplicant through its AIDL service (supplicant)
 //!   host     wlan0's state as One UI left it, kept in a file and given back ([`restore`]): GRO, IPv6 off, and its
@@ -18,6 +20,7 @@ use super::proto::*;
 use super::station::{Bss, Link, Radio, Station};
 use super::supplicant::{Event, Supplicant};
 use super::traffic::{self, Counts, Traffic};
+use super::uplink::{self, Sent, Uplink};
 use super::wonder::WonderOps;
 use super::{CONTROL_TYPE, FRAME};
 use crate::hal::binder::{last_errno, strerror};
@@ -120,6 +123,17 @@ const TRAFFIC_REPORT_S: u64 = 60; // the `wifi: 60 s:` line
 /// (devices::virtio_net waits for the guest's buffers). The default (rmem_default, about 200 KiB) holds about 80
 /// coalesced-and-cut frames; 4 MiB holds a TCP window of a fast link.
 const PACKET_RCVBUF: i32 = 4 << 20;
+/// Its send buffer: the guest's frames that wlan0's driver has not sent yet count against it (each about 1-2 KiB
+/// of the kernel's memory, a TCP ACK too: an estimate), and a send past it is EAGAIN. The default (wmem_default,
+/// about 200 KiB) held about 100 of them: the phone's session of 2026-11-23 19:40 had 1624 such sends a minute while
+/// a download ran. 1 MiB asked (the kernel doubles it) holds about 1000; a frame that still finds it full waits
+/// (wifi::uplink).
+const PACKET_SNDBUF: i32 = 1 << 20;
+/// Scans iOS asks while joined are answered from the last scan's networks for this long after it (station.rs,
+/// [`Radio::joined_scan_reuse`]): wifid asks one about every 35 s while joined, and each takes the radio off the
+/// network's channel for about 5 s on this phone, whose driver takes neither low-priority flag (2026-11-23 19:40:
+/// `scans while joined: flags 0x0`). 120 s: one scan of every channel in about 140 s instead of one in 35.
+const JOINED_SCAN_REUSE_S: u64 = 120;
 
 fn socket(domain: i32, kind: i32, protocol: i32) -> Result<OwnedFd, i32> {
     // SAFETY: a new socket, owned below.
@@ -495,6 +509,8 @@ struct Wlan {
     events: OwnedFd,    // nl80211 scan events: the events thread's
     packet: OwnedFd,    // AF_PACKET
     wake: (OwnedFd, OwnedFd),
+    kick: OwnedFd, // an eventfd: a frame of the guest's waits for the send buffer (the frames thread watches POLLOUT)
+    uplink: Uplink, // the guest's frames that wait for the send buffer
     running: AtomicBool,
     state_path: Option<String>,
     station: Station,
@@ -701,9 +717,11 @@ impl Wlan {
             return;
         }
         c.traffic_at = Some(now + Duration::from_secs(TRAFFIC_REPORT_S));
+        self.traffic.joined_cached.store(self.station.cached_scans(), Ordering::Relaxed);
         let counts = self.traffic.read();
         let ring = crate::devices::virtio_net::take_ring_waits();
-        if let Some(line) = traffic::line(TRAFFIC_REPORT_S, &c.traffic_last, &counts, ring) {
+        let sent_longest = self.traffic.tx_wait_longest_us.swap(0, Ordering::Relaxed);
+        if let Some(line) = traffic::line(TRAFFIC_REPORT_S, &c.traffic_last, &counts, ring, sent_longest) {
             br_info!("{line}");
         }
         c.traffic_last = counts;
@@ -754,59 +772,107 @@ impl Wlan {
         br_info!("wifi: DHCP: {line}");
     }
 
+    /// wlan0's frames to the guest, and the guest's frames that wait for the socket's send buffer (wifi::uplink):
+    /// while any waits, the poll also watches POLLOUT and ends at the oldest one's bound.
     fn frames_loop(&self) {
         let mut buffer = vec![0u8; VNET_HDR + 65536];
         while self.running.load(Ordering::Acquire) {
-            let Ok(r) = poll(&[self.packet.as_raw_fd(), self.wake.0.as_raw_fd()], -1) else { break };
-            if r[1] != 0 {
-                break;
-            }
-            if r[0] & libc::POLLIN == 0 {
-                continue;
-            }
-            let got = match recv(self.packet.as_raw_fd(), &mut buffer, libc::MSG_DONTWAIT) {
-                Ok(n) if n >= VNET_HDR + 14 => n,
-                Ok(_) => continue,
-                Err(rc) if rc == -libc::EAGAIN || rc == -libc::EINTR => continue,
-                Err(rc) => {
-                    // e.g. EINVAL: the kernel could not describe a coalesced frame in a virtio_net_hdr (its GSO
-                    // type is not TCP), and the frame is lost; counted for the 60 s line
-                    Traffic::add(&self.traffic.rx_errors, 1);
-                    self.traffic.rx_last_errno.store(-rc, Ordering::Relaxed);
+            let deadline = self.uplink.deadline();
+            let out = if deadline.is_some() { libc::POLLOUT } else { 0 };
+            let mut fds = [
+                libc::pollfd { fd: self.packet.as_raw_fd(), events: libc::POLLIN | out, revents: 0 },
+                libc::pollfd { fd: self.wake.0.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: self.kick.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            ];
+            // SAFETY: our pollfds.
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, uplink::poll_ms(Instant::now(), deadline)) };
+            if n < 0 {
+                if last_errno() == -libc::EINTR {
                     continue;
                 }
-            };
-            let (flags, gso_type, gso_size) = (buffer[0], buffer[1], u16::from_ne_bytes([buffer[4], buffer[5]]));
-            let frame = &buffer[VNET_HDR..got];
-            if !frames::to_guest(frame, &self.mac) {
-                continue;
+                break;
             }
-            self.say_dhcp(frame, false);
-            // A frame the receive path coalesced (GRO was on, or came back on) has no checksum of its own any more.
-            let coalesced = gso_type != VIRTIO_NET_HDR_GSO_NONE || flags & VIRTIO_NET_HDR_F_NEEDS_CSUM != 0;
-            let mss = if gso_type != VIRTIO_NET_HDR_GSO_NONE { gso_size } else { 1448 };
-            let (mut taken, mut bytes, mut full) = (0u64, 0u64, 0u64);
-            let n = frames::segment(frame, mss, coalesced, |f| {
-                if self.deliver(f) {
-                    taken += 1;
-                    bytes += f.len() as u64;
-                } else {
-                    full += 1;
+            if fds[1].revents != 0 {
+                break;
+            }
+            if fds[2].revents & libc::POLLIN != 0 {
+                let mut v = [0u8; 8];
+                // SAFETY: our eventfd and an 8-byte buffer (its count, reset by the read).
+                let _ = unsafe { libc::read(self.kick.as_raw_fd(), v.as_mut_ptr().cast(), 8) };
+            }
+            if let Some(d) = deadline {
+                let now = Instant::now();
+                if fds[0].revents & libc::POLLOUT != 0 || now >= d {
+                    self.uplink.flush(now, VNET_HDR, &self.traffic, |p| self.packet_send(p));
                 }
-            });
-            let t = &self.traffic;
-            if n == 0 {
-                Traffic::add(&t.rx_too_long, 1);
-            } else if n > 1 {
-                Traffic::add(&t.rx_cut, 1);
             }
-            Traffic::add(&t.rx_frames, taken);
-            Traffic::add(&t.rx_bytes, bytes);
-            Traffic::add(&t.rx_ring_full, full);
+            // POLLERR too: a recv takes the socket's error (ENETDOWN when wlan0 went down), or poll would answer at
+            // once again and again
+            if fds[0].revents & (libc::POLLIN | libc::POLLERR) != 0 {
+                self.receive(&mut buffer);
+            }
         }
     }
 
-    /// A frame of the guest's (the virtio-net device's send). Errors are positive errnos (NetBackend's).
+    /// One frame of wlan0's for the guest (cut when the kernel coalesced it).
+    fn receive(&self, buffer: &mut [u8]) {
+        let got = match recv(self.packet.as_raw_fd(), buffer, libc::MSG_DONTWAIT) {
+            Ok(n) if n >= VNET_HDR + 14 => n,
+            Ok(_) => return,
+            Err(rc) if rc == -libc::EAGAIN || rc == -libc::EINTR => return,
+            Err(rc) => {
+                // EINVAL: the kernel could not describe a coalesced frame in a virtio_net_hdr and the frame is lost:
+                // One UI's 6.1 kernel writes one only for TCP (virtio_net_hdr_from_skb; UDP_L4 came in 6.2), and
+                // GRO is off on wlan0 (no TCP frame came coalesced in the session of 2026-11-23 19:40: `0 cut`), so
+                // these are UDP frames the driver itself joined [I: Qualcomm's FISA, the driver's own UDP
+                // aggregation, which ethtool's GRO switch does not turn off; QUIC]. Counted for the 60 s line.
+                Traffic::add(&self.traffic.rx_errors, 1);
+                self.traffic.rx_last_errno.store(-rc, Ordering::Relaxed);
+                return;
+            }
+        };
+        let (flags, gso_type, gso_size) = (buffer[0], buffer[1], u16::from_ne_bytes([buffer[4], buffer[5]]));
+        let frame = &buffer[VNET_HDR..got];
+        if !frames::to_guest(frame, &self.mac) {
+            return;
+        }
+        self.say_dhcp(frame, false);
+        // A frame the receive path coalesced (GRO was on, or came back on) has no checksum of its own any more.
+        let coalesced = gso_type != VIRTIO_NET_HDR_GSO_NONE || flags & VIRTIO_NET_HDR_F_NEEDS_CSUM != 0;
+        let mss = if gso_type != VIRTIO_NET_HDR_GSO_NONE { gso_size } else { 1448 };
+        let (mut taken, mut bytes, mut full) = (0u64, 0u64, 0u64);
+        let n = frames::segment(frame, mss, coalesced, |f| {
+            if self.deliver(f) {
+                taken += 1;
+                bytes += f.len() as u64;
+            } else {
+                full += 1;
+            }
+        });
+        let t = &self.traffic;
+        if n == 0 {
+            Traffic::add(&t.rx_too_long, 1);
+        } else if n > 1 {
+            Traffic::add(&t.rx_cut, 1);
+        }
+        Traffic::add(&t.rx_frames, taken);
+        Traffic::add(&t.rx_bytes, bytes);
+        Traffic::add(&t.rx_ring_full, full);
+    }
+
+    /// One packet (the virtio_net_hdr and the frame) on the AF_PACKET socket, never waiting. Errors are positive
+    /// errnos (EAGAIN: the send buffer is full).
+    fn packet_send(&self, packet: &[u8]) -> Result<(), i32> {
+        // SAFETY: our socket and buffer.
+        if unsafe { libc::send(self.packet.as_raw_fd(), packet.as_ptr().cast(), packet.len(), libc::MSG_DONTWAIT) } < 0
+        {
+            return Err(-last_errno());
+        }
+        Ok(())
+    }
+
+    /// A frame of the guest's (the virtio-net device's send, on a vCPU). Errors are positive errnos (NetBackend's).
+    /// A frame that finds the send buffer full waits in [`Wlan::uplink`] (Ok): the vCPU does not wait.
     fn send(&self, frame: &[u8]) -> Result<(), i32> {
         if frames::ethertype(frame) == CONTROL_TYPE {
             if frame.len() > 256 {
@@ -815,24 +881,23 @@ impl Wlan {
             self.post(Ct::Guest(frame.to_vec()));
             return Ok(());
         }
-        let t = &self.traffic;
         if !frames::to_radio(frame, &self.mac) {
-            Traffic::add(&t.tx_refused, 1);
+            Traffic::add(&self.traffic.tx_refused, 1);
             return Err(libc::EINVAL);
         }
         self.say_dhcp(frame, true);
         let mut packet = [0u8; VNET_HDR + FRAME];
         packet[VNET_HDR..VNET_HDR + frame.len()].copy_from_slice(frame);
-        let n = VNET_HDR + frame.len();
-        // SAFETY: our socket and buffer.
-        if unsafe { libc::send(self.packet.as_raw_fd(), packet.as_ptr().cast(), n, libc::MSG_DONTWAIT) } < 0 {
-            let rc = -last_errno();
-            Traffic::add(&t.tx_failed, 1);
-            t.tx_last_errno.store(rc, Ordering::Relaxed);
-            return Err(rc);
+        let packet = &packet[..VNET_HDR + frame.len()];
+        match self.uplink.send(packet, VNET_HDR, Instant::now(), &self.traffic, |p| self.packet_send(p))? {
+            Sent::Now | Sent::Held { first: false } => {}
+            Sent::Held { first: true } => {
+                // the frames thread starts to watch POLLOUT
+                let one = 1u64.to_ne_bytes();
+                // SAFETY: our eventfd and its 8-byte count.
+                let _ = unsafe { libc::write(self.kick.as_raw_fd(), one.as_ptr().cast(), 8) };
+            }
         }
-        Traffic::add(&t.tx_frames, 1);
-        Traffic::add(&t.tx_bytes, frame.len() as u64);
         Ok(())
     }
 }
@@ -936,6 +1001,11 @@ impl Radio for WlanRadio {
             l.rssi_dbm = -60; // no station entry yet: a middling signal, not "none"
         }
         Ok(l)
+    }
+
+    /// While joined, a scan within JOINED_SCAN_REUSE_S of the last one is answered from its networks.
+    fn joined_scan_reuse(&self) -> Option<Duration> {
+        Some(Duration::from_secs(JOINED_SCAN_REUSE_S))
     }
 
     /// The channels wlan0's radio may use: a split wiphy dump for wlan0 (NL80211_ATTR_SPLIT_WIPHY_DUMP, which newer
@@ -1070,15 +1140,38 @@ fn packet_open(ifname: &str, ifindex: u32) -> Result<OwnedFd, i32> {
         }
     }
     bind_packet(&fd, ifindex)?;
-    // A deep receive buffer (PACKET_RCVBUF): SO_RCVBUFFORCE as root, past rmem_max; SO_RCVBUF (capped) otherwise.
-    for opt in [libc::SO_RCVBUFFORCE, libc::SO_RCVBUF] {
-        // SAFETY: an int option of our socket.
-        if unsafe { libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, opt, (&PACKET_RCVBUF as *const i32).cast(), 4) }
-            == 0
-        {
-            break;
+    // Deep buffers (PACKET_RCVBUF, PACKET_SNDBUF): SO_RCVBUFFORCE and SO_SNDBUFFORCE as root, past rmem_max and
+    // wmem_max; SO_RCVBUF and SO_SNDBUF (capped) otherwise. What the kernel gave is logged.
+    for (opts, size) in [
+        ([libc::SO_RCVBUFFORCE, libc::SO_RCVBUF], PACKET_RCVBUF),
+        ([libc::SO_SNDBUFFORCE, libc::SO_SNDBUF], PACKET_SNDBUF),
+    ] {
+        for opt in opts {
+            // SAFETY: an int option of our socket.
+            if unsafe { libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, opt, (&size as *const i32).cast(), 4) } == 0
+            {
+                break;
+            }
         }
     }
+    let kib = |opt| {
+        let (mut v, mut n) = (0i32, 4u32);
+        // SAFETY: an int option of our socket and its length.
+        let rc =
+            unsafe { libc::getsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, opt, (&mut v as *mut i32).cast(), &mut n) };
+        if rc == 0 {
+            v / 1024
+        } else {
+            0
+        }
+    };
+    br_info!(
+        "wifi: {ifname}'s AF_PACKET socket: receive buffer {} KiB, send buffer {} KiB ({} KiB and {} KiB asked; the kernel doubles them)",
+        kib(libc::SO_RCVBUF),
+        kib(libc::SO_SNDBUF),
+        PACKET_RCVBUF / 1024,
+        PACKET_SNDBUF / 1024
+    );
     // Every multicast group: iOS's IPv6 neighbour discovery (its solicited-node group) and mDNS are groups Linux has
     // not joined on wlan0, and the driver passes up only the groups of the interface's list. The membership is the
     // socket's: it ends when the socket closes, also after a kill.
@@ -1154,6 +1247,13 @@ pub fn prepare(ifname: &str, session_dir: Option<&str>) -> Option<(NetOpen, [u8;
         .inspect_err(|rc| br_error!("wifi: off: AF_PACKET on {ifname}: {}", strerror(*rc)))
         .ok()?;
     let wake = pipe().ok()?;
+    // SAFETY: a new eventfd, owned below.
+    let kick = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if kick < 0 {
+        return None;
+    }
+    // SAFETY: our new fd.
+    let kick = unsafe { OwnedFd::from_raw_fd(kick) };
     let state_path = session_dir.filter(|d| !d.is_empty()).map(|d| format!("{d}/wifi.state"));
     host_take(&ifname, state_path.as_deref());
     let wlan = Arc::new_cyclic(|me: &Weak<Wlan>| {
@@ -1176,6 +1276,8 @@ pub fn prepare(ifname: &str, session_dir: Option<&str>) -> Option<(NetOpen, [u8;
             events,
             packet,
             wake,
+            kick,
+            uplink: Uplink::default(),
             running: AtomicBool::new(false),
             state_path,
             rx: OnceLock::new(),
@@ -1242,7 +1344,7 @@ pub fn close() {
     }
     let t = w.traffic.read();
     br_info!(
-        "wifi: closed ({} frames to the guest ({} bytes), {} from it ({} bytes), {} cut from coalesced frames; dropped: {} with the guest's ring full, {} too long, {} receive errors; {} of the guest's refused, {} sends failed)",
+        "wifi: closed ({} frames to the guest ({} bytes), {} from it ({} bytes), {} cut from coalesced frames; dropped: {} with the guest's ring full, {} too long, {} receive errors; {} of the guest's refused, {} sends failed; {} waited for the send buffer: {} sent, {} dropped after the wait, {} dropped with the waiting list full)",
         t.rx_frames,
         t.rx_bytes,
         t.tx_frames,
@@ -1252,7 +1354,11 @@ pub fn close() {
         t.rx_too_long,
         t.rx_errors,
         t.tx_refused,
-        t.tx_failed
+        t.tx_failed,
+        t.tx_waited,
+        t.tx_wait_sent,
+        t.tx_wait_dropped,
+        t.tx_held_full
     );
     // the Wlan stays while the device holds its backend: a vCPU may still be inside send (the process ends next)
 }

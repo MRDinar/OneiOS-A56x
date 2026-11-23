@@ -7,7 +7,9 @@
 use super::proto::*;
 use crate::proto::wire::Wire;
 use crate::{br_error, br_info, br_log};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 /// The networks of the last scan kept (also the join's source of what a network offers).
 const SCAN_KEEP: usize = 64;
@@ -48,6 +50,12 @@ pub trait Radio: Send + Sync {
         let _ = max;
         None
     }
+    /// While joined, how long after a scan its networks answer the next scan instead of the radio (None: never; each
+    /// scan is the radio's). A scan of every channel takes a joined radio off the network's channel channel by
+    /// channel: a real driver answers a scan soon after the last one from its cache.
+    fn joined_scan_reuse(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// Each frame for the guest (the station's messages, as frames of the control type).
@@ -62,6 +70,7 @@ struct Inner {
     current: Bss,
     last_reason: u32,
     country: [u8; 2],
+    last_scan: Option<(Instant, Vec<Bss>)>, // the last good scan of the radio's: when it ended, its networks
 }
 
 pub struct Station {
@@ -69,13 +78,20 @@ pub struct Station {
     mac: [u8; 6],
     to_guest: GuestFn,
     inner: Mutex<Inner>,
+    cached: AtomicU64, // scans answered from the last scan's networks
 }
 
 impl Station {
     /// `country`: the regulatory country, "00" when unknown (a scan's strongest Country element sets it).
     pub fn new(radio: Box<dyn Radio>, mac: [u8; 6], country: Option<[u8; 2]>, to_guest: GuestFn) -> Station {
         let country = country.filter(|c| c[0] != 0).unwrap_or(*b"00");
-        Station { radio, mac, to_guest, inner: Mutex::new(Inner { country, ..Default::default() }) }
+        Station {
+            radio,
+            mac,
+            to_guest,
+            inner: Mutex::new(Inner { country, ..Default::default() }),
+            cached: AtomicU64::new(0),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -174,11 +190,26 @@ impl Station {
         }
     }
 
+    /// The radio's scan ended (`error`: 0, or a negative errno).
     pub fn scan_done(&self, error: i32) {
+        self.finish_scan(error, false);
+    }
+
+    /// Scans answered from the last scan's networks so far (the 60 s line).
+    pub fn cached_scans(&self) -> u64 {
+        self.cached.load(Ordering::Relaxed)
+    }
+
+    /// A scan's end: the radio's (a good one's networks are kept for [`Radio::joined_scan_reuse`]) or a cached
+    /// answer's (`cached`: the kept networks and their time stay).
+    fn finish_scan(&self, error: i32, cached: bool) {
         let (done, changed) = {
             let mut i = self.lock();
             let done = OwScanDone { count: i.scan.len() as u32, error };
             i.scanning = false;
+            if error == 0 && !cached && !i.scan.is_empty() {
+                i.last_scan = Some((Instant::now(), i.scan.clone()));
+            }
             let country = scan_country(&i.scan).filter(|c| *c != i.country);
             if let Some(c) = country {
                 i.country = c;
@@ -246,16 +277,27 @@ impl Station {
                 }
             }
             OW_SCAN => {
-                let start = {
+                let reuse = self.radio.joined_scan_reuse();
+                let (start, cached) = {
                     let mut i = self.lock();
                     let start = !i.scanning;
+                    let mut cached = None;
                     if start {
                         i.scanning = true;
                         i.scan.clear();
+                        cached =
+                            cached_answer(i.joined, i.last_scan.as_ref(), reuse, Instant::now()).map(<[Bss]>::to_vec);
                     }
-                    start
+                    (start, cached)
                 };
-                if start && self.radio.scan(self).is_err() {
+                if let Some(networks) = cached {
+                    // while joined, soon after the last scan: its networks, and the radio stays on its channel
+                    self.cached.fetch_add(1, Ordering::Relaxed);
+                    for b in &networks {
+                        self.scan_add(&b.bss, &b.ies);
+                    }
+                    self.finish_scan(0, true);
+                } else if start && self.radio.scan(self).is_err() {
                     self.scan_done(-libc::EIO);
                 }
             }
@@ -306,6 +348,18 @@ impl Station {
             _ => {}
         }
     }
+}
+
+/// The networks that answer a scan instead of the radio: the last good scan's (`last`: when it ended, its
+/// networks), while `joined`, within the radio's `reuse` of its end (None: the radio scans each time).
+pub(crate) fn cached_answer(
+    joined: bool,
+    last: Option<&(Instant, Vec<Bss>)>,
+    reuse: Option<Duration>,
+    now: Instant,
+) -> Option<&[Bss]> {
+    let (at, networks) = last?;
+    (joined && now.saturating_duration_since(*at) < reuse?).then_some(&networks[..])
 }
 
 /// The regulatory country: the Country element (7) of the strongest network that has one, as iOS's own drivers
@@ -373,6 +427,7 @@ pub(crate) mod tests {
         join: OwJoin,
         bss: Option<Bss>,
         link: Link,
+        reuse: Option<Duration>,
     }
     #[derive(Clone, Default)]
     struct FakeRadio(Arc<Mutex<FakeState>>);
@@ -398,6 +453,9 @@ pub(crate) mod tests {
         }
         fn link(&self) -> Result<Link, i32> {
             Ok(self.0.lock().unwrap().link)
+        }
+        fn joined_scan_reuse(&self) -> Option<Duration> {
+            self.0.lock().unwrap().reuse
         }
     }
 
@@ -553,5 +611,82 @@ pub(crate) mod tests {
         msg(OW_JOIN, &OwJoin::default().to_bytes());
         let fr = r.lock().unwrap();
         assert!(s.lock().unwrap().is_empty() && fr.joins == 3 && fr.scans == 1 && fr.leaves == 2);
+    }
+
+    /// The networks that answer a scan instead of the radio: only while joined, only within the radio's reuse.
+    #[test]
+    fn cached_answer_rules() {
+        let t0 = Instant::now();
+        let nets = vec![Bss::default()];
+        let last = Some((t0, nets));
+        let reuse = Some(Duration::from_secs(120));
+        let at = |s| t0 + Duration::from_secs(s);
+        assert_eq!(cached_answer(true, last.as_ref(), reuse, at(119)).map(<[Bss]>::len), Some(1));
+        assert!(cached_answer(true, last.as_ref(), reuse, at(120)).is_none()); // old: the radio scans
+        assert!(cached_answer(false, last.as_ref(), reuse, at(1)).is_none()); // not joined: the radio scans
+        assert!(cached_answer(true, last.as_ref(), None, at(1)).is_none()); // a radio that never reuses
+        assert!(cached_answer(true, None, reuse, at(1)).is_none()); // no good scan yet
+    }
+
+    /// A scan while joined soon after the last one: its networks again and the scan's end, and the radio is not
+    /// asked; the answer does not make the kept networks younger. Not joined: the radio scans.
+    #[test]
+    fn a_scan_while_joined_from_the_cache() {
+        let radio = FakeRadio::default();
+        let r = radio.0.clone();
+        r.lock().unwrap().reuse = Some(Duration::from_secs(120));
+        let (s, to_guest) = sink();
+        let sta = Station::new(Box::new(radio), MAC, None, to_guest);
+        let msg = |kind, payload: &[u8]| sta.message(&guest_frame(&MAC, kind, payload));
+        let net = |n: u8, ssid: &[u8]| OwBss {
+            bssid: [n; 6],
+            freq_mhz: 5180,
+            signal_dbm: -60,
+            ssid_length: ssid.len() as u8,
+            ssid: ssid32(ssid),
+            ..Default::default()
+        };
+        // not joined: the radio's scan, kept
+        msg(OW_SCAN, &[]);
+        sta.scan_add(&net(1, b"home"), b"\x00\x04home");
+        sta.scan_add(&net(2, b"other"), &[]);
+        sta.scan_done(0);
+        let kept = sta.lock().last_scan.as_ref().unwrap().0;
+        msg(OW_SCAN, &[]);
+        assert_eq!(r.lock().unwrap().scans, 2, "not joined: every scan is the radio's");
+        sta.scan_add(&net(1, b"home"), b"\x00\x04home");
+        sta.scan_add(&net(2, b"other"), &[]);
+        sta.scan_done(0);
+        let kept2 = sta.lock().last_scan.as_ref().unwrap().0;
+        assert!(kept2 >= kept);
+        // joined
+        r.lock().unwrap().link = Link { up: true, rssi_dbm: -50, freq_mhz: 5180, bssid: [1; 6], ..Default::default() };
+        msg(OW_JOIN, &OwJoin::new(b"home", OW_SECURITY_AUTO, b"password", false).to_bytes());
+        sta.join_done(OW_JOIN_OK, 0);
+        s.lock().unwrap().clear();
+        for _ in 0..2 {
+            msg(OW_SCAN, &[]);
+            assert_eq!(s.lock().unwrap().len(), 3);
+            let (k0, p0) = host_message(&s, 0);
+            let (k1, p1) = host_message(&s, 1);
+            let (k2, p2) = host_message(&s, 2);
+            assert!(
+                k0 == OW_BSS && OwBss::parse(&p0).unwrap().bssid == [1; 6] && p0[OwBss::SIZE..] == *b"\x00\x04home"
+            );
+            assert!(k1 == OW_BSS && OwBss::parse(&p1).unwrap().bssid == [2; 6] && p1.len() == OwBss::SIZE);
+            assert!(k2 == OW_SCAN_DONE && OwScanDone::parse(&p2).unwrap() == OwScanDone { count: 2, error: 0 });
+            s.lock().unwrap().clear();
+        }
+        assert_eq!((r.lock().unwrap().scans, sta.cached_scans()), (2, 2));
+        {
+            let i = sta.lock();
+            assert!(!i.scanning && i.scan.len() == 2 && i.last_scan.as_ref().unwrap().0 == kept2);
+        }
+        // the kept scan grows old: the radio scans again
+        sta.lock().last_scan.as_mut().unwrap().0 = Instant::now() - Duration::from_secs(121);
+        msg(OW_SCAN, &[]);
+        assert!(r.lock().unwrap().scans == 3 && s.lock().unwrap().is_empty());
+        sta.scan_done(-libc::ECANCELED); // a failed scan is not kept
+        assert!(sta.lock().last_scan.as_ref().unwrap().0 < kept2);
     }
 }

@@ -7,6 +7,7 @@
 //!   wlan        the back end on the phone: AF_PACKET on wlan0, nl80211 for scans and the link, wlan0's host state
 //!               kept and given back
 //!   traffic     the frames and bytes each way, the drops and why, one line a minute (no C original)
+//!   uplink      the guest's frames that find wlan0's send buffer full wait for POLLOUT, in order (no C original)
 //!   supplicant  joins: the vendor's wpa_supplicant through its AIDL service (crate::hal::aidl)
 //!   sim         a made-up radio for a boot with no phone (wifi=sim)
 //! C: wifi/wifi.h and the files of the same names.
@@ -19,6 +20,7 @@ pub mod sim; // wifi/sim.c
 pub mod station; // wifi/station.c
 pub mod supplicant; // wifi/supplicant.c, supplicant.h
 pub mod traffic; // the counts and the `wifi: 60 s:` line (no C original)
+pub mod uplink; // the guest's frames that wait for wlan0's send buffer (no C original)
 pub mod wlan; // wifi/wlan.c
 pub mod wonder; // wifi/wonder.c
 
