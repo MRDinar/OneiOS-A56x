@@ -40,11 +40,14 @@ D8=$(ls "$SDK"/build-tools/*/d8 2>/dev/null | sort | tail -n 1)
 [ -n "$D8" ] || D8=$(command -v d8 || true)
 [ -n "$D8" ] || { echo "display: no d8 (Android SDK build-tools) under $SDK" >&2; exit 1; }
 if [ -n "${JDK:-}" ]; then JAVAC=$JDK/bin/javac; export JAVA_HOME="$JDK" PATH="$JDK/bin:$PATH"; else JAVAC=javac; fi
-W=$T/dex-build
-rm -rf "$W" && mkdir -p "$W/classes" "$W/dex"
+# A work folder of this build's own: two builds at once shared $T/dex-build, and one's rm -rf took the other's classes.
+mkdir -p "$T"
+W=$(mktemp -d "$T/dex-build.XXXXXX")
+mkdir -p "$W/classes" "$W/dex"
 "$JAVAC" --release 11 -Xlint:all -Werror -d "$W/classes" "$HERE/java/OneiOSDisplay.java"
 "$D8" --release --min-api 30 --output "$W/dex" "$W/classes/OneiOSDisplay.class"
 cp "$W/dex/classes.dex" "$OUT/lib/oneios-display.dex"
+rm -rf -- "${W:?}"
 chmod 0755 "$OUT/bin/oneios-display" "$OUT/bin/displayctl" "$OUT/bin/liboneios-display.so"
 chmod 0644 "$OUT/lib/oneios-display.dex"
 echo "display: $OUT/bin/oneios-display $OUT/bin/displayctl $OUT/bin/liboneios-display.so $OUT/lib/oneios-display.dex"

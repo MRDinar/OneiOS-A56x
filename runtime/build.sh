@@ -84,12 +84,15 @@ cp "$ROOT/runtime/bridges/net/oneios-net.sh" "$STAGE/bin/oneios-net.sh"
 chmod 0755 "$STAGE/bin/oneios-net.sh"
 # The display helper: a launcher, the library app_process loads, the dex with the layer (needs javac and d8), and
 # displayctl (runtime/display/README.md).
-D=$ROOT/runtime/target/display-stage
-rm -rf "$D"
+# A folder of this build's own: two builds at once (the release's runtime lane and runtime/package/test.sh in its
+# tests lane, 2026-11-23) shared runtime/target/display-stage, and one's rm -rf took the other's files.
+mkdir -p "$ROOT/runtime/target"
+D=$(mktemp -d "$ROOT/runtime/target/display-stage.XXXXXX")
 CARGO_TARGET_DIR=$DYNAMIC_DIR "$ROOT/runtime/display/build-android.sh" "$D"
 for f in oneios-display displayctl liboneios-display.so; do "$STRIP" -o "$STAGE/bin/$f" "$D/bin/$f"; chmod 0755 "$STAGE/bin/$f"; done
 cp "$D/lib/oneios-display.dex" "$STAGE/lib/oneios-display.dex"
 chmod 0644 "$STAGE/lib/oneios-display.dex"
+rm -rf -- "${D:?}"
 # Can Android load what was built? A shared object links with undefined symbols unless its link has -z defs, and the
 # phone then refuses it (liboneios-display.so, 2026-11-14): a stage with such a file fails here, on the build machine
 # (docs/building.md section 4).
