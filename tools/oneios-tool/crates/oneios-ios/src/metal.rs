@@ -99,8 +99,8 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<
             ("timeout=1800)", "timeout=10800)".into(), "a longer limit for the fat-LTO Rust build"),
             (
                 "\n\ndef git_tree(*steps):",
-                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics in the translator patch stack",
+                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\n\n\ndef git_tree(*steps):".into(),
+                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch)",
             ),
         ],
     )?;
@@ -138,6 +138,7 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool) -> Result<
     std::fs::write(&frontend, format!("{}{}", &text[..b], &text[e..]))?;
     println!("metal: staged NativeBridgeMetalFrontend.mm: its supportsFamily: caller block removed; build-adreno-metal-plugin.py inserts the base's (RenderBox, WebGPU, ANGLE)");
     edit(root, "drivers/AdrenoMetal/NativeBridgeMetalFrontend.mm", &frontend_camera_edits())?;
+    edit(root, "drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm", &pool_row_edits())?;
 
     // The plug-in's shared cache addresses: upstream's are the iPad17,3 24A446 cache's.
     let plugin = root.join("drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm");
@@ -652,4 +653,27 @@ mod tests {
         assert!(addon(&dir.join("x"), None, Some(&dir.join("other.dylib"))).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
+}
+
+/// The command pool row (userland/metal/CommandPoolRow.inc, appended by build.sh after this edit): its start declared
+/// near the top of the plug-in and called where a process gets its device, the render server's path and a client's
+/// (docs/gpu.md, "Who keeps a blob").
+fn pool_row_edits() -> Vec<(&'static str, String, &'static str)> {
+    vec![
+        (
+            "static unsigned gClientPort;\n",
+            "static unsigned gClientPort;\nextern \"C\" void oneios_gpu_pool_row_start(unsigned port);   // CommandPoolRow.inc (OneiOS)\n".into(),
+            "declare the command pool row's start (CommandPoolRow.inc)",
+        ),
+        (
+            "        gpu->mark(0x6802);\n        startMemoryWriter();\n",
+            "        gpu->mark(0x6802);\n        startMemoryWriter();\n        oneios_gpu_pool_row_start(gpu->port);\n".into(),
+            "the render server's command pool row",
+        ),
+        (
+            "        startPassReporter(port);\n        startMemoryWriter();\n",
+            "        startPassReporter(port);\n        startMemoryWriter();\n        oneios_gpu_pool_row_start(port);\n".into(),
+            "a client's command pool row",
+        ),
+    ]
 }

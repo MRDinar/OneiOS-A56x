@@ -8,7 +8,7 @@
 #   libvulkan_freedreno.dylib   Mesa's Turnip (external/mesa-droidvm cecc0e9 + Droid-VM-UniXNU patches/mesa, the list of
 #                               scripts/data/adreno-compiler-inputs.json) with the darwin virtio-gpu backend, a Mach-O dylib
 #   libadreno_metal_bridge.a    metal2vulkan (external/metal2vulkan 624bab3 + NativeMetal bridge/patches + Droid-VM-UniXNU
-#                               patches/metal2vulkan) behind NativeMetal's C ABI; Rust, arm64e-apple-ios, std from source
+#                               patches/metal2vulkan + this folder's m2v-spare-command-pools.patch) behind NativeMetal's C ABI; Rust, arm64e-apple-ios, std from source
 #   NativeAdrenoMetal           external/NativeMetal b0d6a07: the plug-in and the Metal frontend, linked with the bridge
 #                               (GpuScanoutPresenter.h includes the wire header of external/NativeMobileDisplay)
 #   -> out/userland/NativeAdrenoMetal.bundle (Info.plist, NativeAdrenoMetal, libvulkan_freedreno.dylib, oneios-target)
@@ -85,6 +85,9 @@ stage() {
   cp "$HERE/trace-turnip-init.patch" "$R/patches/mesa/"
   cp "$HERE/trace-metal-vulkan-init.patch" "$R/patches/metal2vulkan/"
   cp "$HERE/trace-metal-surfaces.patch" "$R/patches/"
+  # Not a trace: spare command pools follow their recent use (docs/gpu.md, "Who keeps a blob"), applied after the trace
+  # patch by `ios metal-stage-edit` (a name of the bridge script's list; the 9xxx copies above are in no list).
+  cp "$HERE/m2v-spare-command-pools.patch" "$R/patches/metal2vulkan/"
   rsync -a --delete --exclude .git "$EXT/NativeMetal/" "$R/drivers/AdrenoMetal/"
   rsync -a --delete --exclude .git "$EXT/NativeAdreno/" "$R/drivers/Adreno740/"
   rsync -a --delete --exclude .git "$EXT/NativeMobileDisplay/" "$R/drivers/GopFramebuffer/"
@@ -125,6 +128,10 @@ stage() {
   # display-format=rgba16f) backboardd's framebuffer is half floats ('RGhA'), which the display path then keeps whole.
   cat "$HERE/DisplayWide.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
   say "staged NativeAdrenoMetalPlugin.mm: userland/metal/DisplayWide.inc appended (backboardd: CA_FORCE_FP16_FRAMEBUFFER with oneios-display-wide=1)"
+  # userland/metal/CommandPoolRow.inc: each client's command pools on its kernel text line every 60 s while they move
+  # (oneios-gpu-text: ... CP pools/command buffers cut ... idle ... tuc ...); metal-stage-edit added its calls.
+  cat "$HERE/CommandPoolRow.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/CommandPoolRow.inc appended (the command pool row)"
 }
 
 turnip() {
