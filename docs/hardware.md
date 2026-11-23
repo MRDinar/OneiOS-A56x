@@ -202,6 +202,11 @@ GPU memory on this phone (2026-11-11, `gpuctl` of runtime 0.1.3 as root; `docs/g
 
 ## 3. Wi-Fi and network
 
+**Switches (2026-11-23, docs/switches.md):** `wifi-ring-wait=0` (a frame for iOS on a full ring is dropped at once),
+`wifi-send-wait=0` (EAGAIN fails the frame), `wifi-buffers=0` (the kernel's socket buffers), `wifi-joined-scan=low|plain`
+(no cached answer; plain: no scan flags) and the kernel's `oneios-wifi-rssi=0` (no RSSI_CHANGED) each turn one change of
+cbf97ea or b704922 back. The defaults are those changes.
+
 Design of 2026-11-12 (owner): **no NAT**. Wi-Fi works the way a Treble GSI gets it: in a session iOS is the only OS
 that uses the radio, and it drives the vendor's own Wi-Fi stack. The tap, the private subnet and `oneios-net.sh` are
 the old route; xnuhost runs them only with `wifi=tap`.
@@ -3963,6 +3968,10 @@ Apple's, not serveable by another encoder) and **not** a `.videoencoder` bundle 
 camera plug-ins are likewise iOS-side code built on Apple's own loaders.
 
 ### The host side (`runtime/bridges/encoder`)
+
+**Switches (2026-11-23, docs/switches.md):** `encoder-10bit=8bit` (P010 taken, never Main10), `encoder-10bit=nv12`
+(the device takes no P010: the guest sends NV12) and `encoder-warmup=0` (the helper starts at the first encode, no
+warm-up open). xnuhost passes them to the helper as `oneios-encoder 3 [no-main10] [no-warmup]`.
 
 A stateful V4L2 encoder device, `droidvm,virtio-media` (`/arm-io/virtio-media-0`), on xnuhost's transport: OUTPUT is
 tightly packed NV12 (the IOSurfaces VideoToolbox gives, copied by `DroidVMVTHost` into the pool), CAPTURE is the

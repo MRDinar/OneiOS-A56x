@@ -25,6 +25,7 @@ use super::wonder::WonderOps;
 use super::{CONTROL_TYPE, FRAME};
 use crate::hal::binder::{last_errno, strerror};
 use crate::net::{NetBackend, NetConfig, NetOpen, RxFn};
+use crate::switches::JoinedScan;
 use crate::{br_error, br_info, br_log};
 use std::collections::VecDeque;
 use std::ffi::CString;
@@ -910,7 +911,13 @@ impl Radio for WlanRadio {
         let Some(w) = self.0.upgrade() else { return Err(-libc::ENODEV) };
         // While joined: a low-priority scan, with the flags the driver took the last time (JOINED_SCAN_FLAGS).
         let joined = lock(&w.ctl).joined;
-        let rc = if joined {
+        // wifi-joined-scan=plain (docs/switches.md): no flags while joined either, as before cbf97ea.
+        let plain = crate::switches::wifi().joined_scan == JoinedScan::Plain;
+        let rc = if joined && plain {
+            Traffic::add(&w.traffic.joined_scans, 1);
+            w.traffic.joined_scan_flags.store(0, Ordering::Relaxed);
+            trigger_scan(&mut lock(&w.nl), w.ifindex, 0)
+        } else if joined {
             let mut at = w.joined_scan_flags.load(Ordering::Relaxed);
             let mut nl = lock(&w.nl);
             let rc = loop {
@@ -1004,8 +1011,9 @@ impl Radio for WlanRadio {
     }
 
     /// While joined, a scan within JOINED_SCAN_REUSE_S of the last one is answered from its networks.
+    /// wifi-joined-scan=low or plain (docs/switches.md): never; every scan is the radio's, as before b704922.
     fn joined_scan_reuse(&self) -> Option<Duration> {
-        Some(Duration::from_secs(JOINED_SCAN_REUSE_S))
+        (crate::switches::wifi().joined_scan == JoinedScan::Cache).then(|| Duration::from_secs(JOINED_SCAN_REUSE_S))
     }
 
     /// The channels wlan0's radio may use: a split wiphy dump for wlan0 (NL80211_ATTR_SPLIT_WIPHY_DUMP, which newer
@@ -1142,10 +1150,14 @@ fn packet_open(ifname: &str, ifindex: u32) -> Result<OwnedFd, i32> {
     bind_packet(&fd, ifindex)?;
     // Deep buffers (PACKET_RCVBUF, PACKET_SNDBUF): SO_RCVBUFFORCE and SO_SNDBUFFORCE as root, past rmem_max and
     // wmem_max; SO_RCVBUF and SO_SNDBUF (capped) otherwise. What the kernel gave is logged.
-    for (opts, size) in [
+    // wifi-buffers=0 (docs/switches.md): the kernel's defaults, as before cbf97ea.
+    let deep = crate::switches::wifi().buffers;
+    let asked = [
         ([libc::SO_RCVBUFFORCE, libc::SO_RCVBUF], PACKET_RCVBUF),
         ([libc::SO_SNDBUFFORCE, libc::SO_SNDBUF], PACKET_SNDBUF),
-    ] {
+    ];
+    for (opts, size) in if deep { &asked[..] } else { &[] } {
+        let (opts, size) = (*opts, *size);
         for opt in opts {
             // SAFETY: an int option of our socket.
             if unsafe { libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, opt, (&size as *const i32).cast(), 4) } == 0
@@ -1165,13 +1177,21 @@ fn packet_open(ifname: &str, ifindex: u32) -> Result<OwnedFd, i32> {
             0
         }
     };
-    br_info!(
-        "wifi: {ifname}'s AF_PACKET socket: receive buffer {} KiB, send buffer {} KiB ({} KiB and {} KiB asked; the kernel doubles them)",
-        kib(libc::SO_RCVBUF),
-        kib(libc::SO_SNDBUF),
-        PACKET_RCVBUF / 1024,
-        PACKET_SNDBUF / 1024
-    );
+    if deep {
+        br_info!(
+            "wifi: {ifname}'s AF_PACKET socket: receive buffer {} KiB, send buffer {} KiB ({} KiB and {} KiB asked; the kernel doubles them)",
+            kib(libc::SO_RCVBUF),
+            kib(libc::SO_SNDBUF),
+            PACKET_RCVBUF / 1024,
+            PACKET_SNDBUF / 1024
+        );
+    } else {
+        br_info!(
+            "wifi: {ifname}'s AF_PACKET socket: receive buffer {} KiB, send buffer {} KiB (wifi-buffers=0: the kernel's defaults)",
+            kib(libc::SO_RCVBUF),
+            kib(libc::SO_SNDBUF)
+        );
+    }
     // Every multicast group: iOS's IPv6 neighbour discovery (its solicited-node group) and mDNS are groups Linux has
     // not joined on wlan0, and the driver passes up only the groups of the interface's list. The membership is the
     // socket's: it ends when the socket closes, also after a kill.
@@ -1277,7 +1297,7 @@ pub fn prepare(ifname: &str, session_dir: Option<&str>) -> Option<(NetOpen, [u8;
             packet,
             wake,
             kick,
-            uplink: Uplink::default(),
+            uplink: Uplink::new(crate::switches::wifi().send_wait),
             running: AtomicBool::new(false),
             state_path,
             rx: OnceLock::new(),

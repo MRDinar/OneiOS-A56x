@@ -560,7 +560,8 @@ pub fn ram_choice_log(config: &Config) {
             format!("{} tasks at {} KiB", t.tasks, t.task_cost >> 10)
         };
         format!(
-            "what fits beside the session's needs: {} MiB (MemAvailable {} MiB less {} MiB headroom{}, {} MiB for the GPU's own, {} ({} MiB: their page tables and kernel memory) and {}% of the guest for holding it{}); the host keeps about {} MiB at the peak",
+            "what fits beside the session's needs{}: {} MiB (MemAvailable {} MiB less {} MiB headroom{}, {} MiB for the GPU's own, {} ({} MiB: their page tables and kernel memory) and {}% of the guest for holding it{}); the host keeps about {} MiB at the peak",
+            if config.ram_fit_terms_old { " (ram-fit-terms=old: the terms before 2026-11-23)" } else { "" },
             config.ram_fit >> 20,
             config.ram_fit_available >> 20,
             t.reserve >> 20,

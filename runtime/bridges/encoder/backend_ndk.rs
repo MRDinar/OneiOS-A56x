@@ -729,7 +729,14 @@ mod ffi {
             let ten = input == MEDIA_PIXFMT_P010;
             let refused =
                 |size| main10_refused().lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&size);
-            if ten && codec == MEDIA_PIXFMT_HEVC && !refused((cw, ch)) && caps.is_none_or(|c| c.main10(cw, ch)) {
+            // encoder-10bit=8bit or nv12 (docs/switches.md): Main10 is never tried
+            let main10 = crate::switches::ten_bit() == crate::switches::TenBit::Main10;
+            if ten
+                && main10
+                && codec == MEDIA_PIXFMT_HEVC
+                && !refused((cw, ch))
+                && caps.is_none_or(|c| c.main10(cw, ch))
+            {
                 for cq in [true, false] {
                     if let Some((c, stride, slice)) = MediaCodec::open(name, codec, true, cq, cw, ch) {
                         let layout = Layout::new(2, 2, width, height, cw, ch).with_rows(stride, slice);

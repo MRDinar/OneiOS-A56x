@@ -269,8 +269,9 @@ on the phone].
 zygote, zygote_secondary, `bootanim` and every name of `control/base/stopped` stopped. It runs `XNUHOST --prop-wait 60
 init.svc.NAME=running ...` ([docs/booter.md](../docs/booter.md) 2.9d), which sleeps on init's property area until one
 of them says running: no process while nothing starts (it was three `getprop` every 0.2 s, 15 processes a second). On
-a wake it stops what runs (`ctl.stop`) and looks again after 0.2 s. A runtime without `--prop-wait` (it answers 2):
-one look a second. `control/stop-loop.log`: how it waits, a line for each stop, `ends: N stops in the session`; the
+a wake it stops what runs (`ctl.stop`) and looks again after 0.2 s. A runtime without `--prop-wait` (it answers 2),
+or `stop-loop=poll` in the image's `xnuhost.conf` (docs/switches.md; the last such line, as for `takeover-stops=`): one
+look a second. `control/stop-loop.log`: how it waits, a line for each stop, `ends: N stops in the session`; the
 wait's pid in `control/stop-loop.wait.pid`. The return writes `control/stop-loop.off`, kills the wait by that pid (only
 a process whose command line is that wait), so the loop ends at once, and logs `stop loop: N stops of a service that
 ran again; keeps ... stopped: waits on ...`.

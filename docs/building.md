@@ -699,6 +699,10 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
 
 ## 6. On the phone
 
+**Switches.** Each change since v0.1.19 can be turned back by one key of the image's `overlay/userland/xnuhost.conf`
+(or a boot-arg through `boot-args-add=`): [switches.md](switches.md) has the table, the sample fragment and the
+`switches:` line xnuhost logs at the start. Stage the changed conf with `oneios-tool phone manifest DIR --stage`.
+
 ### Test cycle on the phone
 
 **Phone and app work goes through `oneios-tool`** (`phone`, `app`, `cycle`; `tools/oneios-tool/README.md` has every

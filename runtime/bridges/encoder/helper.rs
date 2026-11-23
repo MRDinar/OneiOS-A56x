@@ -237,6 +237,9 @@ fn warm_up(link: Link) {
 /// The helper's main: its exit code.
 pub fn main() -> i32 {
     let fd = std::env::args().nth(1).map_or(3, |a| a.trim().parse().unwrap_or(0));
+    // encoder-10bit= and encoder-warmup= of xnuhost (docs/switches.md): its words after the fd
+    let words: Vec<String> = std::env::args().skip(2).collect();
+    crate::switches::from_helper_args(words.iter().map(String::as_str));
     // SAFETY: the socket xnuhost gave this process; it is ours for the process's life.
     let mut reader = unsafe { File::from_raw_fd(fd) };
     let Ok(writer) = reader.try_clone() else { return 1 };
@@ -253,9 +256,14 @@ pub fn main() -> i32 {
     }
     #[cfg(target_os = "android")]
     if let Some(threads) = threads {
-        say(&link, false, &threads);
-        let warm = Arc::clone(&link);
-        let _ = std::thread::Builder::new().name("warm-up".into()).spawn(move || warm_up(warm));
+        if crate::switches::warmup() {
+            say(&link, false, &threads);
+            let warm = Arc::clone(&link);
+            let _ = std::thread::Builder::new().name("warm-up".into()).spawn(move || warm_up(warm));
+        } else {
+            // encoder-warmup=0 (docs/switches.md): MediaCodec loads at the first open, as before b3da193
+            say(&link, false, &format!("{threads}; no warm-up (encoder-warmup=0)"));
+        }
     }
     let watch = Arc::new(Watch::default());
     {

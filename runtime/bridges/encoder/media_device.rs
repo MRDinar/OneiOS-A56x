@@ -20,6 +20,7 @@
 use crate::backend::{input_format, Backend, Coding, Session};
 use crate::pod::Pod;
 use crate::proto::*;
+use crate::switches::TenBit;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ptr::NonNull;
@@ -294,8 +295,10 @@ impl MediaDevice {
                 }
                 let mut f = MediaV4l2Format::read_from(payload);
                 if f.type_ == MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE {
-                    // NV12, or P010 (2026-11-23: iOS's 10-bit surfaces, two bytes a sample)
-                    if !input_format(f.pixelformat) || f.width == 0 || f.height == 0 {
+                    // NV12, or P010 (2026-11-23: iOS's 10-bit surfaces, two bytes a sample); encoder-10bit=nv12
+                    // (docs/switches.md): no P010, and the guest sends NV12 (the high bytes) then
+                    let refused = f.pixelformat == MEDIA_PIXFMT_P010 && crate::switches::ten_bit() == TenBit::Nv12;
+                    if !input_format(f.pixelformat) || refused || f.width == 0 || f.height == 0 {
                         return libc::EINVAL as u32;
                     }
                     (s.width, s.height, s.input) = (f.width, f.height, f.pixelformat);
@@ -435,7 +438,9 @@ impl MediaDevice {
                 }
                 let format = match (le::u32(payload, 4), le::u32(payload, 0)) {
                     (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 0) => MEDIA_PIXFMT_NV12,
-                    (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 1) => MEDIA_PIXFMT_P010,
+                    (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 1) if crate::switches::ten_bit() != TenBit::Nv12 => {
+                        MEDIA_PIXFMT_P010
+                    }
                     (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 0) => MEDIA_PIXFMT_HEVC,
                     (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 1) => MEDIA_PIXFMT_H264,
                     _ => return libc::EINVAL as u32,

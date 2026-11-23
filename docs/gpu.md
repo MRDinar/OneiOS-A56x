@@ -180,6 +180,10 @@ not exercised off the phone); not yet run on the phone.
 
 ### 2.2b The level by deadline, and each context's priority by its owner (fix-gpu-perf, 2026-11-15)
 
+**Switches (2026-11-23, docs/switches.md):** `gpu-down=bottom` judges the way down at KGSL's lowest clock (the rule
+before 3b36ff0); `gpu-blob-entries=16384` gives back the blob limit before 78c4b86; `uclamp-rule=all` sends drm2kgsl's
+animation clamp to every vCPU thread again (before 03d85ac).
+
 **What the path did until now (from the code).** The render server's (backboardd's) Turnip queue asks drm2kgsl for a
 deadline queue (`DRM2KGSL_SUBMITQUEUE_DEADLINE`); drm2kgsl made its KGSL context with `KGSL_CONTEXT_PWR_CONSTRAINT` and,
 with 0005's `MIN_RATE=0`, set KGSL's highest level (`KGSL_CONSTRAINT_PWR_MAX`) on it at **every** submission; 0005's hold

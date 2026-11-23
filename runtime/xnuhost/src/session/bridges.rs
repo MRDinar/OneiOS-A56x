@@ -235,7 +235,12 @@ fn plan_cpus(config: &Config, machine: &mut Machine) -> bool {
         cpu::vcpu(i).kind.store(v.kind.letter() as u8, Relaxed);
         // E vCPUs first, then P
     }
-    let cpufreq = Arc::new(Cpufreq::with_apply(&plan, Box::new(cpufreq_apply)));
+    // uclamp-rule=all (docs/switches.md): the device sets the vCPU thread's clamp itself, as before 03d85ac
+    let cpufreq = Arc::new(if cpu::UCLAMP_ALL.load(Relaxed) {
+        Cpufreq::new(&plan, Some(Box::new(vcpu_tid)))
+    } else {
+        Cpufreq::with_apply(&plan, Box::new(cpufreq_apply))
+    });
     let size = n as u64 * bcpu::CPUFREQ_WINDOW;
     let cpufreq = match xh_core::mmio::bus().add(xm::BOARD_CPUFREQ, size, "cpufreq", cpufreq.clone()) {
         Ok(()) => {

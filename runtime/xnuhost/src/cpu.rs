@@ -313,6 +313,34 @@ pub static GPU_VCPU_BOOST: AtomicU32 = AtomicU32::new(0);
 /// eight vCPUs 34-58% of a core each, the host 637-760% of 800 and the SoC at 94-98 C, while lsd, PerfPowerServices,
 /// chronod and CommCenter (default class) were the busiest processes.
 pub fn release_floor(hint: u32, request: u32, boost: u32) -> u32 {
+    if UCLAMP_ALL.load(Relaxed) {
+        return release_floor_all(hint, request, boost);
+    }
+    release_floor_work(hint, request, boost)
+}
+
+/// uclamp-rule=all (docs/switches.md, session.rs sets it once at the start): the rule before 03d85ac. drm2kgsl's boost
+/// goes on every vCPU thread ([`drm2kgsl_vcpu_uclamp`]) and on every iOS thread that is not background; the cpufreq
+/// device sets the vCPU thread's clamp itself; a vCPU thread keeps its clamp while idle ([`own_uclamp`] does nothing).
+pub static UCLAMP_ALL: AtomicBool = AtomicBool::new(false);
+
+/// The release floor of uclamp-rule=all (before 03d85ac): the request or the boost, the higher; a background thread
+/// 0; a UI or realtime thread at least its class's floor.
+pub fn release_floor_all(hint: u32, request: u32, boost: u32) -> u32 {
+    use xnuhost_abi::{xh_hint_floor, XH_HINT_BACKGROUND, XH_HINT_VALID};
+    let mut lo = request.max(boost);
+    if hint & XH_HINT_VALID != 0 {
+        if hint & XH_HINT_BACKGROUND != 0 {
+            lo = 0;
+        } else {
+            lo = lo.max(xh_hint_floor(hint));
+        }
+    }
+    lo.min(1024)
+}
+
+/// The release floor of uclamp-rule=work (the default, 03d85ac): see [`release_floor`].
+pub fn release_floor_work(hint: u32, request: u32, boost: u32) -> u32 {
     use xnuhost_abi::{xh_hint_floor, XH_HINT_BACKGROUND, XH_HINT_VALID};
     let max = |a: u32, b: u32| if a > b { a } else { b };
     let lo = if hint & XH_HINT_VALID == 0 {
@@ -355,6 +383,9 @@ pub const fn hint_class(hint: u32) -> usize {
 /// the floor of the work it does now. thread_run gives it the floor of the iOS thread it releases, [`idle`] 0, the guest's
 /// cpufreq request its value. One sched_setattr per change, none otherwise (perf: `vCPU threads N`).
 pub fn own_uclamp(v: &Vcpu, lo: u32) {
+    if UCLAMP_ALL.load(Relaxed) {
+        return; // uclamp-rule=all: the cpufreq device and drm2kgsl set the vCPU thread's clamp, as before 03d85ac
+    }
     let lo = lo.min(1024);
     if v.own_uclamp.load(Relaxed) == lo {
         return;
@@ -655,8 +686,24 @@ mod machine {
     /// Returns the vCPUs that take it (the started ones).
     #[no_mangle]
     pub extern "C" fn drm2kgsl_vcpu_uclamp(value: u32) -> libc::c_int {
-        GPU_VCPU_BOOST.store(value.min(1024), Relaxed);
-        vcpus().iter().filter(|v| v.started.load(Acquire)).count() as libc::c_int
+        let value = value.min(1024);
+        GPU_VCPU_BOOST.store(value, Relaxed);
+        if !UCLAMP_ALL.load(Relaxed) {
+            return vcpus().iter().filter(|v| v.started.load(Acquire)).count() as libc::c_int;
+        }
+        // uclamp-rule=all (docs/switches.md): every started vCPU thread gets the clamp, as before 03d85ac.
+        let mut set = 0;
+        for v in vcpus() {
+            let tid = v.tid.load(Acquire);
+            if !v.started.load(Acquire) || tid <= 0 {
+                continue;
+            }
+            // KEEP_POLICY | KEEP_PARAMS | UTIL_CLAMP_MIN
+            if crate::task::sched_setattr_uclamp(tid, 0x18 | 0x20, value, 0) == 0 {
+                set += 1;
+            }
+        }
+        set
     }
 
     // ---- signals ---------------------------------------------------------------------------------------------------
@@ -1395,6 +1442,11 @@ pub(crate) mod tests {
             [hint_class(rt), hint_class(ui), hint_class(uinit), hint_class(def), hint_class(bg), hint_class(0)],
             [0, 1, 1, 2, 3, 2]
         );
+        // uclamp-rule=all (docs/switches.md): the rule before 03d85ac: the boost reaches every thread not background
+        use super::release_floor_all;
+        assert!(release_floor_all(def, 0, 1024) == 1024 && release_floor_all(def, 0, 0) == 0);
+        assert!(release_floor_all(uinit, 0, 0) == 768 && release_floor_all(bg, 1024, 1024) == 0);
+        assert!(release_floor_all(0, 300, 0) == 300 && release_floor_all(ui, 0, 0) == 1024);
     }
 
     #[test]

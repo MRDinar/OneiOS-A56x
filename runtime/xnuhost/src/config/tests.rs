@@ -767,6 +767,16 @@ fn ram_config() {
     // Without the trim every task counts at 4 MiB, as on 2026-11-23: (7168 - 1536 - 256 - 1600) / 1.07 = 3528 -> 3328.
     let c = go(&with(&["task-trim=0"]), true).unwrap();
     assert!(c.ram_bytes == 3328 * M && c.ram_fit / M == 3528 && !c.task_trim);
+    // ram-fit-terms=old (docs/switches.md): the terms before 3b8742a: headroom 768 MiB locked, page tables 8 %, no tasks,
+    // no hold share: (7168 - 768 - 256) / 1.08 = 5688. A key given by hand still wins; unlocked the headroom is 1 GiB.
+    let c = go(&with(&["ram-fit-terms=old"]), true).unwrap();
+    assert!(c.ram_fit_terms_old && c.ram_fit / M == 5688 && c.ram_session_reserve == RAM_SESSION_RESERVE_LOCKED_OLD);
+    assert!(c.ram_pagetable_percent == 8 && c.ram_hold_percent == 0 && c.ram_tasks == 0 && c.ram_bytes <= c.ram_fit);
+    let c = go(&with(&["ram-fit-terms=old", "ram-hold-percent=7"]), true).unwrap();
+    assert!(c.ram_hold_percent == 7 && c.ram_pagetable_percent == 8 && c.ram_fit / M == (7168 - 768 - 256) * 100 / 115);
+    let c = go(&with(&["ram-fit-terms=old"]), false).unwrap();
+    assert!(c.ram_session_reserve == RAM_SESSION_RESERVE_OLD && c.ram_fit / M == (7168 - 1024 - 256) * 100 / 108);
+    assert!(go(&with(&["ram-fit-terms=new"]), true).is_err());
     // The tasks' terms by hand: 400 tasks, 100 awake at 4 MiB, 300 at 512 KiB: (7168 - 1536 - 256 - 550) / 1.07 = 4510.
     let c = go(&with(&["ram-tasks-awake=100", "ram-task-idle-cost=512K"]), true).unwrap();
     assert!(c.ram_fit / M == 4510 && c.ram_bytes == 4352 * M);
@@ -1404,5 +1414,68 @@ fn session_mode() {
     assert_eq!(host_info_line(&rig, &s24, Some("pixel-11")), "refused");
     let missing = dir.join("no-such.props");
     assert_eq!(host_info_line(&rig, missing.to_str().unwrap(), None), "refused");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The switches of docs/switches.md: each key's values, the image's xnuhost.conf (the command line wins), the line.
+#[test]
+fn the_switches() {
+    let mut c = Config::default();
+    assert!(c.switches_line().ends_with("all at their defaults"), "{}", c.switches_line());
+    assert!(c.wifi_ring_wait && c.wifi_send_wait && c.wifi_buffers && c.wifi_joined_scan == WifiJoinedScan::Cache);
+    assert!(c.encoder_10bit == Encoder10::Main10 && c.encoder_warmup && c.gpu_down == GpuDown::Governor);
+    assert!(c.gpu_blob_entries == 65532 && c.stop_loop == StopLoop::Wait);
+    for (k, v) in [
+        ("wifi-ring-wait", "0"),
+        ("wifi-send-wait", "0"),
+        ("wifi-buffers", "0"),
+        ("wifi-joined-scan", "plain"),
+        ("encoder-10bit", "nv12"),
+        ("encoder-warmup", "0"),
+        ("gpu-blob-entries", "16384"),
+        ("gpu-down", "bottom"),
+        ("stop-loop", "poll"),
+        ("uclamp-rule", "all"),
+    ] {
+        assert!(c.set(k, v).is_ok(), "{k}={v}");
+    }
+    for (k, v) in [
+        ("gpu-blob-entries", "65533"),
+        ("gpu-blob-entries", "1024"),
+        ("wifi-joined-scan", "on"),
+        ("encoder-10bit", "10"),
+        ("gpu-down", "top"),
+        ("stop-loop", "sleep"),
+        ("uclamp-rule", "some"),
+        ("wifi-buffers", "off"),
+    ] {
+        assert!(c.set(k, v).is_err(), "{k}={v} refused");
+    }
+    c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1".into();
+    let line = c.switches_line();
+    assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
+    assert!(line.contains(" oneios-wifi-rssi=0 oneios-telemetry-jobs=1 (docs/switches.md)"), "{line}");
+    assert!(
+        line.ends_with(
+            "not at the default: stop-loop uclamp-rule gpu-down gpu-blob-entries wifi-ring-wait wifi-send-wait wifi-buffers \
+             wifi-joined-scan encoder-10bit encoder-warmup oneios-wifi-rssi oneios-telemetry-jobs"
+        ),
+        "{line}"
+    );
+    // From the image's xnuhost.conf, and the command line over it.
+    let dir = testdir("switches");
+    let image = image_set(&dir, "image");
+    let meminfo = dir.join("meminfo");
+    write(&meminfo, "MemTotal:       11746000 kB\nMemAvailable:    7340032 kB\n");
+    write(
+        format!("{image}/xnuhost.conf"),
+        &format!(
+            "boot-args=-v\nwifi-joined-scan=low\ngpu-down=bottom\nencoder-10bit=8bit\nwifi-send-wait=0\nram-meminfo={}\n",
+            meminfo.display()
+        ),
+    );
+    let c = run(&["--image", &image, "--mode", "takeover", "--set", "wifi-joined-scan=cache"]).unwrap();
+    assert!(c.wifi_joined_scan == WifiJoinedScan::Cache && c.gpu_down == GpuDown::Bottom);
+    assert!(c.encoder_10bit == Encoder10::EightBit && !c.wifi_send_wait && c.wifi_ring_wait);
     let _ = fs::remove_dir_all(&dir);
 }

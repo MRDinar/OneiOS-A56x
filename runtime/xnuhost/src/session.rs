@@ -563,6 +563,31 @@ fn stop_signals() -> libc::sigset_t {
     }
 }
 
+/// The switches of docs/switches.md that act outside the config: set once, before the devices and the bridges start.
+fn set_switches(config: &Config) {
+    use crate::config::{Encoder10, GpuDown, WifiJoinedScan};
+    use onebridges::switches::{JoinedScan, Wifi};
+    onebridges::switches::set_wifi(Wifi {
+        ring_wait: config.wifi_ring_wait,
+        send_wait: config.wifi_send_wait,
+        buffers: config.wifi_buffers,
+        joined_scan: match config.wifi_joined_scan {
+            WifiJoinedScan::Cache => JoinedScan::Cache,
+            WifiJoinedScan::Low => JoinedScan::Low,
+            WifiJoinedScan::Plain => JoinedScan::Plain,
+        },
+    });
+    let ten = match config.encoder_10bit {
+        Encoder10::Main10 => oneencoder::switches::TenBit::Main10,
+        Encoder10::EightBit => oneencoder::switches::TenBit::EightBit,
+        Encoder10::Nv12 => oneencoder::switches::TenBit::Nv12,
+    };
+    oneencoder::switches::set(ten, config.encoder_warmup);
+    crate::virtio_gpu::set_blob_entries(config.gpu_blob_entries);
+    crate::cpu::UCLAMP_ALL.store(config.uclamp_rule == crate::config::UclampRule::All, Ordering::Relaxed);
+    crate::gpu3d_kgsl::DOWN_AT_BOTTOM.store(config.gpu_down == GpuDown::Bottom, Ordering::Relaxed);
+}
+
 fn hostcalls_vector() -> u64 {
     crate::hostcalls::vector().map_or(0, |v| v as *const _ as u64)
 }
@@ -617,6 +642,10 @@ pub fn main() -> i32 {
         "{}",
         VERSIONS.get_or_init(|| crate::imageset::versions_line(&config.runtime, &config.image, app.as_deref()))
     );
+    // The switches (docs/switches.md): one line with each one's value, and each set where it acts, once, before any
+    // device or bridge starts.
+    logi!("{}", config.switches_line());
+    set_switches(&config);
     // virtio's health lines (docs/booter.md 2.9b)
     xh_core::virtio::set_log(true);
     // who holds a device, in its "held by" line

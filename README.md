@@ -23,6 +23,9 @@ runtime/build.sh STAGE                       # -> STAGE/bin/xnuhost and helpers
 
 Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scripts/bg.sh -s NAME`.
 
+Every recent change has a switch in the image's `xnuhost.conf` (or a kernel boot-arg), so one boot tests them all and
+one setting turns one back: [docs/switches.md](docs/switches.md) has the table and a sample conf.
+
 ## What works
 
 | Area | Phone (S24 Ultra) | PC (qemu-aarch64) | Notes |

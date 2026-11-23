@@ -252,7 +252,9 @@ impl Shared {
         }
         let (ours, theirs): (OwnedFd, OwnedFd) =
             xh_core::fd::socket_pair(libc::SOCK_STREAM | libc::SOCK_CLOEXEC).map_err(|e| errno(&e))?;
-        let pid = spawn_with_fd3(&self.path, &["3"], theirs.as_fd());
+        let mut args = vec!["3"];
+        args.extend(crate::switches::helper_args()); // encoder-10bit=, encoder-warmup= (docs/switches.md)
+        let pid = spawn_with_fd3(&self.path, &args, theirs.as_fd());
         drop(theirs);
         let pid = pid?;
         let mut stream = UnixStream::from(ours);
@@ -423,6 +425,9 @@ impl Backend for HelperBackend {
     /// encode: it starts its binder threads and opens one HEVC encoder at once (its warm-up line), so the first
     /// encode does not wait for MediaCodec's first load. A vCPU calls it: the HELLO's limit only.
     fn prepare(&self) {
+        if !crate::switches::warmup() {
+            return; // encoder-warmup=0: the helper starts at the first encode, as before b3da193
+        }
         let shared = &self.shared;
         let mut st = shared.lock();
         if !st.alive() && st.hangs < HELPER_HANGS {

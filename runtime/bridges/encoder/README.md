@@ -236,3 +236,11 @@ onecamera's. The commands are at the top of this file.
   gives nothing; an open or a write that fails on a helper the stop already killed does not count a hang, and a
   reaped pid is never killed again; the stop that finds the state locked kills the helper by its pid alone (the C
   read the state without the lock).
+
+## Switches (2026-11-23, docs/switches.md)
+
+`switches.rs`: `encoder-10bit=main10|8bit|nv12` and `encoder-warmup=0|1` of xnuhost's config, set once before the
+device is made. `nv12`: the device lists no P010 at ENUM_FMT and refuses it at S_FMT (the guest sends NV12, its high
+bytes); `8bit`: P010 is taken and coded 8-bit, Main10 never tried (`backend_ndk`). The helper gets them on its command
+line: `oneios-encoder 3 [no-main10] [no-warmup]`; `no-warmup` skips the warm-up thread and `prepare()` (the helper starts
+at the first encode). The binder threads start either way.

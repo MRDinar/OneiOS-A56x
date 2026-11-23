@@ -21,3 +21,4 @@ pub mod helper;
 pub mod link;
 pub mod media_device;
 pub mod proto;
+pub mod switches;

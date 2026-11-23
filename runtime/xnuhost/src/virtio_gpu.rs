@@ -86,6 +86,14 @@ const MAX_CTX: usize = 128;
 /// It was 16384 (the display's MaxEntries), and an 80 MiB blob of single pages (20480 entries: Unity2025Poster,
 /// 2026-11-23 18:24) was refused. udmabufs() splits a blob into pieces of at most 1024 runs and 64 MiB.
 const MAX_BLOB_ENTRIES: u32 = ((1 << 20) - 56) / 16;
+/// gpu-blob-entries= (docs/switches.md): the most the device takes, MAX_BLOB_ENTRIES unless the config asks fewer (16384:
+/// the size before 78c4b86).
+static BLOB_ENTRIES: AtomicU32 = AtomicU32::new(MAX_BLOB_ENTRIES);
+
+/// session.rs, once before the device starts.
+pub fn set_blob_entries(n: u32) {
+    BLOB_ENTRIES.store(n.min(MAX_BLOB_ENTRIES), Ordering::Relaxed);
+}
 /// The live blobs at most (C: an open-addressed table of 1 << 15 slots, three quarters full at most).
 const MAX_BLOBS: usize = (1 << 15) / 4 * 3;
 const WORKER_IOV: usize = 256;
@@ -1001,10 +1009,9 @@ impl Gpu {
         if !guest_mem && !host {
             return refuse(format_args!("no such blob memory"));
         }
-        if size == 0 || n > MAX_BLOB_ENTRIES || (if guest_mem { n == 0 } else { n != 0 }) {
-            return refuse(format_args!(
-                "size or entry count (at most {MAX_BLOB_ENTRIES}; guest memory needs entries)"
-            ));
+        let max = BLOB_ENTRIES.load(Ordering::Relaxed);
+        if size == 0 || n > max || (if guest_mem { n == 0 } else { n != 0 }) {
+            return refuse(format_args!("size or entry count (at most {max}; guest memory needs entries)"));
         }
         if left - 32 < n as usize * 16 {
             return refuse(format_args!("the request holds {} bytes of entries, not {}", left - 32, n as usize * 16));

@@ -82,6 +82,13 @@ pub const RAM_TASKS: u32 = 400;
 /// 1567 MiB for 342 tasks, 4.6 MiB each (page tables 683 MiB). Less the 256 MiB of ram-gpu-reserve (which covers the
 /// non-task part): 3.9 MiB each; 4 MiB.
 pub const RAM_TASK_COST: u64 = 4 << 20;
+/// ram-fit-terms=old (docs/switches.md): the terms before 2026-11-23 (3b8742a): the headroom 768 MiB with the lock, 1 GiB
+/// without, page tables 8 % of the guest, no per-task cost, no hold share. Each of those keys given still wins.
+pub const RAM_SESSION_RESERVE_LOCKED_OLD: u64 = 768 << 20;
+pub const RAM_SESSION_RESERVE_OLD: u64 = 1 << 30;
+pub const RAM_PAGETABLE_PERCENT_OLD: u32 = 8;
+/// gpu-blob-entries: the guest 3D driver's MaxBlobEntries, (1 MiB - 56) / 16 (virtio_gpu.rs MAX_BLOB_ENTRIES, 78c4b86).
+pub const GPU_BLOB_ENTRIES: u32 = ((1 << 20) - 56) / 16;
 /// ram-tasks-awake: with task-trim (task.rs, "The trim"; docs/booter.md 2.6), the tasks counted at ram-task-cost; the
 /// rest of ram-tasks are trimmed (no thread released for task-trim-idle seconds: their host mappings, page tables and
 /// VMAs dropped) and counted at ram-task-idle-cost. An estimate (2026-11-23): no phone log yet counts the tasks that
@@ -139,6 +146,32 @@ macro_rules! named {
     };
 }
 
+named!(
+    /// wifi-joined-scan= (docs/switches.md): cache (b704922: within 120 s of the last scan its networks answer, else a
+    /// low-priority scan), low (cbf97ea: every scan the radio's, low priority), plain (no flags, as before cbf97ea).
+    WifiJoinedScan { Cache = "cache", Low = "low", Plain = "plain" }
+);
+named!(
+    /// encoder-10bit= (docs/switches.md): main10 (b3da193: P010 taken, HEVC Main10 where offered), 8bit (P010 taken,
+    /// coded 8-bit), nv12 (no P010: the guest sends NV12).
+    Encoder10 { Main10 = "main10", EightBit = "8bit", Nv12 = "nv12" }
+);
+named!(
+    /// gpu-down= (docs/switches.md): governor (3b36ff0: the level comes down when a frame fits at the governor's clock
+    /// in a burst) or bottom (when it would fit at KGSL's lowest clock, as before 3b36ff0).
+    GpuDown { Governor = "governor", Bottom = "bottom" }
+);
+named!(
+    /// uclamp-rule= (docs/switches.md): work (03d85ac: xnuhost alone sets a vCPU thread's clamp from its work, 0 at
+    /// idle; drm2kgsl's boost only for the frame's threads) or all (before it: the boost on every vCPU thread and every
+    /// iOS thread not background; the cpufreq device sets the vCPU thread's clamp).
+    UclampRule { Work = "work", All = "all" }
+);
+named!(
+    /// stop-loop= (docs/switches.md): wait (a3077a9, fork 1d9b58f: the fork's stop loop waits on init's properties
+    /// through xnuhost --prop-wait) or poll (one getprop look a second). The fork reads it; xnuhost only checks it.
+    StopLoop { Wait = "wait", Poll = "poll" }
+);
 named!(
     /// mode=: "takeover" (the OneOS session) or "bench" (a shell, no session files).
     Mode { Takeover = "takeover", Bench = "bench" }
@@ -401,6 +434,7 @@ const GIVEN_KEYS: &[&str] = &[
     "ram-hold-percent",
     "ram-tasks",
     "ram-task-cost",
+    "ram-fit-terms",
     "ram-unlock-below",
     "return-graceful-ms",
     "ready-content-wait",
@@ -430,6 +464,16 @@ const GIVEN_KEYS: &[&str] = &[
     "spin-task",
     "cpu-pin",
     "map-defer",
+    "wifi-ring-wait",
+    "wifi-send-wait",
+    "wifi-buffers",
+    "wifi-joined-scan",
+    "encoder-10bit",
+    "encoder-warmup",
+    "gpu-blob-entries",
+    "gpu-down",
+    "stop-loop",
+    "uclamp-rule",
     "task-trim",
     "task-trim-idle",
     "ram-tasks-awake",
@@ -505,6 +549,8 @@ pub struct Config {
     pub ram_tasks: u32,
     /// ram-task-cost=SIZE (4 MiB): the host's memory for one iOS task outside the guest (page tables, kernel memory)
     pub ram_task_cost: u64,
+    /// ram-fit-terms=tasks|old (tasks): old is the fit of before 2026-11-23 (RAM_SESSION_RESERVE_LOCKED_OLD ...)
+    pub ram_fit_terms_old: bool,
     /// ram-tasks-awake=N (150) and ram-task-idle-cost=SIZE (1 MiB): with task-trim, the tasks counted at ram-task-cost
     /// and what each of the others (trimmed) costs
     pub ram_tasks_awake: u32,
@@ -604,6 +650,23 @@ pub struct Config {
     pub cpu_pin: CpuPin,
     /// task.rs: task_map orders ride on the next release of one of the task's threads (on)
     pub map_defer: bool,
+    /// The switches of docs/switches.md (each one key, read once at the start; the defaults are main's behaviour):
+    /// wifi-ring-wait, wifi-send-wait, wifi-buffers (1), wifi-joined-scan (cache): the Wi-Fi bridge
+    pub wifi_ring_wait: bool,
+    pub wifi_send_wait: bool,
+    pub wifi_buffers: bool,
+    pub wifi_joined_scan: WifiJoinedScan,
+    /// encoder-10bit (main10), encoder-warmup (1): the video encoder
+    pub encoder_10bit: Encoder10,
+    pub encoder_warmup: bool,
+    /// gpu-blob-entries=N (65532, 78c4b86; 16384 before): the most entries of a guest 3D blob the device takes
+    pub gpu_blob_entries: u32,
+    /// gpu-down (governor): when the GPU level leaves the top
+    pub gpu_down: GpuDown,
+    /// stop-loop (wait): for the fork's stop loop; xnuhost checks it and names it in the switches line
+    pub stop_loop: StopLoop,
+    /// uclamp-rule (work): who sets the vCPU threads' clamps and where drm2kgsl's boost goes
+    pub uclamp_rule: UclampRule,
     /// task.rs, "The trim": an idle task's host mappings are dropped (on)
     pub task_trim: bool,
     /// task-trim-idle=SECONDS (30): no release for this long and a task is trimmed
@@ -776,6 +839,7 @@ impl Config {
             ram_hold_percent: RAM_HOLD_PERCENT,
             ram_tasks: RAM_TASKS,
             ram_task_cost: RAM_TASK_COST,
+            ram_fit_terms_old: false,
             ram_tasks_awake: RAM_TASKS_AWAKE,
             ram_task_idle_cost: RAM_TASK_IDLE_COST,
             ram_fit: 0,
@@ -823,6 +887,16 @@ impl Config {
             spin_task: None,
             cpu_pin: CpuPin::On,
             map_defer: true,
+            wifi_ring_wait: true,
+            wifi_send_wait: true,
+            wifi_buffers: true,
+            wifi_joined_scan: WifiJoinedScan::Cache,
+            encoder_10bit: Encoder10::Main10,
+            encoder_warmup: true,
+            gpu_blob_entries: GPU_BLOB_ENTRIES,
+            gpu_down: GpuDown::Governor,
+            stop_loop: StopLoop::Wait,
+            uclamp_rule: UclampRule::Work,
             task_trim: true,
             task_trim_idle: TASK_TRIM_IDLE,
             selftest: false,
@@ -931,6 +1005,13 @@ impl Config {
             "ram-hold-percent" => self.ram_hold_percent = number(value, 0, 50)?,
             "ram-tasks" => self.ram_tasks = number(value, 0, 4096)?,
             "ram-task-cost" => self.ram_task_cost = size_below_tib(value)?,
+            "ram-fit-terms" => {
+                self.ram_fit_terms_old = match value {
+                    "tasks" => false,
+                    "old" => true,
+                    _ => return Err(BadSetting),
+                }
+            }
             "ram-unlock-below" => self.ram_unlock_below = size_below_tib(value)?,
             "return-graceful-ms" => self.return_graceful_ms = number(value, 0, 120000)?,
             "ready-content-wait" => self.ready_content_wait = number(value, 0, 480)?,
@@ -999,6 +1080,16 @@ impl Config {
                 }
             }
             "map-defer" => self.map_defer = flag(value)?,
+            "wifi-ring-wait" => self.wifi_ring_wait = flag(value)?,
+            "wifi-send-wait" => self.wifi_send_wait = flag(value)?,
+            "wifi-buffers" => self.wifi_buffers = flag(value)?,
+            "wifi-joined-scan" => self.wifi_joined_scan = named(WifiJoinedScan::parse(value))?,
+            "encoder-10bit" => self.encoder_10bit = named(Encoder10::parse(value))?,
+            "encoder-warmup" => self.encoder_warmup = flag(value)?,
+            "gpu-blob-entries" => self.gpu_blob_entries = number(value, 16384, i64::from(GPU_BLOB_ENTRIES))?,
+            "gpu-down" => self.gpu_down = named(GpuDown::parse(value))?,
+            "stop-loop" => self.stop_loop = named(StopLoop::parse(value))?,
+            "uclamp-rule" => self.uclamp_rule = named(UclampRule::parse(value))?,
             "task-trim" => self.task_trim = flag(value)?,
             "task-trim-idle" => self.task_trim_idle = number(value, 1, 86400)?,
             "ram-tasks-awake" => self.ram_tasks_awake = number(value, 0, 4096)?,
@@ -1221,6 +1312,16 @@ impl Config {
         take!(self, image, "gpu-priority", gpu_priority);
         take!(self, image, "spin-task", spin_task);
         take!(self, image, "map-defer", map_defer);
+        take!(self, image, "wifi-ring-wait", wifi_ring_wait);
+        take!(self, image, "wifi-send-wait", wifi_send_wait);
+        take!(self, image, "wifi-buffers", wifi_buffers);
+        take!(self, image, "wifi-joined-scan", wifi_joined_scan);
+        take!(self, image, "encoder-10bit", encoder_10bit);
+        take!(self, image, "encoder-warmup", encoder_warmup);
+        take!(self, image, "gpu-blob-entries", gpu_blob_entries);
+        take!(self, image, "gpu-down", gpu_down);
+        take!(self, image, "stop-loop", stop_loop);
+        take!(self, image, "uclamp-rule", uclamp_rule);
         take!(self, image, "task-trim", task_trim);
         take!(self, image, "task-trim-idle", task_trim_idle);
         take!(self, image, "cpu-pin", cpu_pin);
@@ -1382,14 +1483,18 @@ impl Config {
         }
         // The headroom: smaller with a lock that can work (no zram pool or working set for the guest's pages), which is
         // asked here, before the size is known (ramfix::can_lock: CAP_IPC_LOCK, or no RLIMIT_MEMLOCK).
+        take!(self, image, "ram-fit-terms", ram_fit_terms_old);
         self.ram_lock_expected = self.ram_lock && can_lock();
         if !self.given("ram-session-reserve") {
             self.ram_session_reserve = if image.given("ram-session-reserve") {
                 image.ram_session_reserve
-            } else if self.ram_lock_expected {
-                RAM_SESSION_RESERVE_LOCKED
             } else {
-                RAM_SESSION_RESERVE
+                match (self.ram_lock_expected, self.ram_fit_terms_old) {
+                    (true, false) => RAM_SESSION_RESERVE_LOCKED,
+                    (false, false) => RAM_SESSION_RESERVE,
+                    (true, true) => RAM_SESSION_RESERVE_LOCKED_OLD,
+                    (false, true) => RAM_SESSION_RESERVE_OLD,
+                }
             };
         }
         // With the lock, what fits leaves at least the valve's level and a margin: else the valve would open as soon
@@ -1406,6 +1511,22 @@ impl Config {
         take!(self, image, "ram-task-cost", ram_task_cost);
         take!(self, image, "ram-tasks-awake", ram_tasks_awake);
         take!(self, image, "ram-task-idle-cost", ram_task_idle_cost);
+        // ram-fit-terms=old: the terms before 2026-11-23 for each one neither the command line nor the image gives.
+        if self.ram_fit_terms_old {
+            let unset: Vec<bool> = ["ram-pagetable-percent", "ram-hold-percent", "ram-tasks"]
+                .iter()
+                .map(|k| !self.given(k) && !image.given(k))
+                .collect();
+            if unset[0] {
+                self.ram_pagetable_percent = RAM_PAGETABLE_PERCENT_OLD;
+            }
+            if unset[1] {
+                self.ram_hold_percent = 0;
+            }
+            if unset[2] {
+                self.ram_tasks = 0;
+            }
+        }
         // What the host can hold for the guest without swapping it (2026-11-14, fix-ram-fit): MemAvailable now, after
         // the fork stopped One UI's zygote and before the guest takes anything (oneos/interface.md 4), less what the
         // session needs outside the guest at its peak (2026-11-23): what holding the RAM costs (a share of it), the iOS
@@ -1937,6 +2058,48 @@ impl FitTerms {
 }
 
 impl Config {
+    /// The switches line (docs/switches.md), once at the start: every switch's value, and which are not at their
+    /// default (main's behaviour). Kernel switches are boot-args: their value as boot-args gives it, else the kernel's.
+    pub fn switches_line(&self) -> String {
+        let on = |b: bool| if b { "1" } else { "0" };
+        let arg = |name: &str, default: &'static str| -> String {
+            let key = format!("{name}=");
+            self.boot_args
+                .split_whitespace()
+                .filter_map(|w| w.strip_prefix(key.as_str()))
+                .next_back()
+                .map_or(default.to_string(), str::to_string)
+        };
+        let all = [
+            ("session-mode", self.session_mode.as_str().to_string(), "hosted"),
+            ("stop-loop", self.stop_loop.as_str().to_string(), "wait"),
+            ("task-trim", on(self.task_trim).to_string(), "1"),
+            ("ram-fit-terms", (if self.ram_fit_terms_old { "old" } else { "tasks" }).to_string(), "tasks"),
+            ("uclamp-rule", self.uclamp_rule.as_str().to_string(), "work"),
+            ("gpu-down", self.gpu_down.as_str().to_string(), "governor"),
+            ("gpu-blob-entries", self.gpu_blob_entries.to_string(), "65532"),
+            ("wifi-ring-wait", on(self.wifi_ring_wait).to_string(), "1"),
+            ("wifi-send-wait", on(self.wifi_send_wait).to_string(), "1"),
+            ("wifi-buffers", on(self.wifi_buffers).to_string(), "1"),
+            ("wifi-joined-scan", self.wifi_joined_scan.as_str().to_string(), "cache"),
+            ("encoder-10bit", self.encoder_10bit.as_str().to_string(), "main10"),
+            ("encoder-warmup", on(self.encoder_warmup).to_string(), "1"),
+            ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
+            ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
+        ];
+        let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
+        let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();
+        format!(
+            "switches: {} (docs/switches.md); {}",
+            words.join(" "),
+            if changed.is_empty() {
+                "all at their defaults".to_string()
+            } else {
+                format!("not at the default: {}", changed.join(" "))
+            }
+        )
+    }
+
     /// ram_fit's terms from this configuration.
     pub fn fit_terms(&self) -> FitTerms {
         FitTerms {

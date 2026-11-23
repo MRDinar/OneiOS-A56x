@@ -306,8 +306,14 @@ fn run(s: &Stream, mode: Mode) -> (f64, u32, u32) {
 
 /// [`run`] with KGSL's top over lowest clock (x16) as the phone reads it (`ratio_x16`).
 fn run_kgsl(s: &Stream, mode: Mode, ratio_x16: u32) -> (f64, u32, u32) {
+    run_kgsl_down(s, mode, ratio_x16, false)
+}
+
+/// run_kgsl with gpu-down=bottom (`bottom`, docs/switches.md) or governor.
+fn run_kgsl_down(s: &Stream, mode: Mode, ratio_x16: u32, bottom: bool) -> (f64, u32, u32) {
     let mut p = Policy::new(mode);
     p.ratio_x16 = ratio_x16;
+    p.down_at_bottom = bottom;
     let (hold_ns, period, end, start0) = (150 * MS, (1e9 / s.hz) as u64, (s.seconds * 1e9) as u64, 100_000 * MS);
     let (mut held, mut hold_until, mut late, mut frames) = (0u64, 0u64, 0, 0);
     let mut at = 0;
@@ -748,6 +754,9 @@ fn down_with_a_wide_clock_range() {
     println!("{}: hold {h_hold:.1} % ({l_hold} late), deadline {h:.1} % ({l} late of {f})", s.what);
     assert!(h < 5.0, "the level comes down and stays down: {h:.1} % at the top");
     assert!(l <= l_hold, "no frame later than at the top");
+    // gpu-down=bottom (docs/switches.md): the rule before 3b36ff0, judged at KGSL's bottom: the level never comes down.
+    let (h_old, _, _) = run_kgsl_down(&s, Mode::Deadline, wide, true);
+    assert!(h_old > 95.0, "gpu-down=bottom keeps the old rule: {h_old:.1} % at the top");
     // A frame the governor's clock really cannot carry (it is at x12.5, as after a pause): the level goes back up at
     // the first near miss, learns the ratio and stays at the top; a frame late, not more.
     let s = Stream { what: "heavy 2.3 ms frames, governor at its bottom", ratio: 12.5, ..s };

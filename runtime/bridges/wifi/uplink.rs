@@ -26,9 +26,16 @@ struct Held {
 }
 
 /// The frames waiting for the socket.
-#[derive(Default)]
 pub struct Uplink {
     held: Mutex<VecDeque<Held>>,
+    /// wifi-send-wait (docs/switches.md): false: a frame that gets EAGAIN fails at once, as before b704922
+    wait: bool,
+}
+
+impl Default for Uplink {
+    fn default() -> Uplink {
+        Uplink::new(true)
+    }
 }
 
 /// What [`Uplink::send`] did with a frame.
@@ -83,6 +90,11 @@ fn step(
 }
 
 impl Uplink {
+    /// `wait`: frames that find the send buffer full wait (wifi-send-wait=on, the default), else they fail at once.
+    pub fn new(wait: bool) -> Uplink {
+        Uplink { held: Mutex::new(VecDeque::new()), wait }
+    }
+
     fn lock(&self) -> MutexGuard<'_, VecDeque<Held>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -110,8 +122,9 @@ impl Uplink {
                     Traffic::add(&t.tx_bytes, (packet.len() - hdr) as u64);
                     return Ok(Sent::Now);
                 }
-                Err(libc::EAGAIN) => {}
+                Err(libc::EAGAIN) if self.wait => {}
                 Err(rc) => {
+                    // (wifi-send-wait=0: EAGAIN too, counted as `send failed, last errno 11`)
                     Traffic::add(&t.tx_failed, 1);
                     t.tx_last_errno.store(rc, Ordering::Relaxed);
                     return Err(rc);
@@ -199,6 +212,20 @@ mod tests {
         *room -= 1;
         s.0.borrow_mut().push(p[HDR]);
         Ok(())
+    }
+
+    /// wifi-send-wait=0 (docs/switches.md): EAGAIN fails the frame at once and nothing is held, as before b704922.
+    #[test]
+    fn no_wait_when_switched_off() {
+        let (u, t) = (Uplink::new(false), Traffic::default());
+        let s = socket(1);
+        let t0 = Instant::now();
+        assert_eq!(u.send(&packet(1), HDR, t0, &t, |p| offer(&s, p)), Ok(Sent::Now));
+        assert_eq!(u.send(&packet(2), HDR, t0, &t, |p| offer(&s, p)), Err(libc::EAGAIN));
+        assert_eq!((u.len(), u.deadline()), (0, None));
+        let c = t.read();
+        assert_eq!((c.tx_frames, c.tx_failed, c.tx_waited), (1, 1, 0));
+        assert_eq!(t.tx_last_errno.load(Ordering::Relaxed), libc::EAGAIN);
     }
 
     /// EAGAIN, then the socket takes frames again (POLLOUT): the held frames go out in the guest's order, and a

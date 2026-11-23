@@ -24,6 +24,8 @@ use crate::gpu3d::{self, Chunk, Entry, Errno, Gpu3d, LogFn, Retire};
 
 // ---- the log ---------------------------------------------------------------------------------------------------------
 static SINK: AtomicUsize = AtomicUsize::new(0);
+/// gpu-down=bottom (docs/switches.md), set once by session.rs before the GPU opens.
+pub static DOWN_AT_BOTTOM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A line to the sink set at the open: at most 511 bytes, line breaks at its end dropped (as say() did).
 fn say(level: u8, line: &str) {
@@ -901,6 +903,7 @@ fn level_start(s: &mut St) {
         }
     }
     s.pol = Policy::new(m);
+    s.pol.down_at_bottom = DOWN_AT_BOTTOM.load(Ordering::Relaxed);
     if top != 0 && bottom != 0 && top > bottom {
         s.pol.ratio_x16 = (top * 16 / bottom) as u32;
     }

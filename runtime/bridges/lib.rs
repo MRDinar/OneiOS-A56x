@@ -25,6 +25,8 @@ pub mod log;
 pub mod net;
 /// The protocols shared with the guest's drivers (drivers/bridge, drivers/net, drivers/haptics).
 pub mod proto;
+/// The switches xnuhost sets once from its config (docs/switches.md).
+pub mod switches;
 /// Temperatures and thermal steps.
 pub mod thermal;
 /// Wi-Fi.

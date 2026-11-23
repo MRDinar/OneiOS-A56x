@@ -319,6 +319,8 @@ pub struct Policy {
     /// yet; then [`DOWN_GUESS_X16`]). The governor is not at its bottom in a burst: KGSL's ratio (ratio_x16, 12.5 on
     /// the S24 Ultra) said no frame over 0.53 ms at the top would ever fit at 120 Hz, so the level never came down
     pub gov_x16: u32,
+    /// gpu-down=bottom (docs/switches.md): the way down judges a frame at KGSL's lowest clock, as before 3b36ff0
+    pub down_at_bottom: bool,
     pub easy: u32,
     pub down_need: u32,
     // counters (since the start)
@@ -496,7 +498,8 @@ impl Policy {
                 return;
             }
             // Whether it would fit at the governor's clock (a burst's: not its bottom, which a cold frame meets).
-            self.easy = if self.at_governor(gpu_us) <= fit { self.easy + 1 } else { 0 };
+            let cost = if self.down_at_bottom { self.at_bottom(gpu_us) } else { self.at_governor(gpu_us) };
+            self.easy = if cost <= fit { self.easy + 1 } else { 0 };
             if self.level == Level::Top && self.easy >= self.down_need {
                 self.level = Level::Governor;
                 self.downs += 1;

@@ -128,7 +128,8 @@ fn to_guest(dev: &Virtio<NetDevice>, posted: &Posted, rx: &RxCounts, frame: &[u8
         return false;
     }
     let control = frame.len() >= 14 && u16::from_be_bytes([frame[12], frame[13]]) == CONTROL_TYPE;
-    let wait = if IN_SEND.with(Cell::get) {
+    // wifi-ring-wait=0 (docs/switches.md): no wait, the frame is dropped at once (before cbf97ea).
+    let wait = if IN_SEND.with(Cell::get) || !crate::switches::wifi().ring_wait {
         Duration::ZERO
     } else {
         Duration::from_millis(if control { CONTROL_WAIT_MS } else { DATA_WAIT_MS })
