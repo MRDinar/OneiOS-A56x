@@ -167,6 +167,11 @@ impl Context {
     fn async_error(&self) -> u32 {
         self.shmem_u32(2)
     }
+    /// The guest's reset of async_error after it read it.
+    fn clear_async_error(&self) {
+        // SAFETY: the shmem lies in the pool, mapped for the test's life.
+        unsafe { (self.shmem.add(8) as *mut u32).write_volatile(0) }
+    }
     fn rsp(&self) -> *mut u8 {
         // SAFETY: rsp_mem_offset lies inside the shmem.
         unsafe { self.shmem.add(self.shmem_u32(1) as usize) }
@@ -579,6 +584,79 @@ fn shown_surfaces() {
         for i in 1..=4 {
             r.gpu.ctx_destroy(i);
         }
+    });
+}
+
+/// Id 0, the key mesa's hash tables reserve: no request that names it may reach a table, where it is an assert that
+/// ends xnuhost (boot-jobs, 2026-11-23 13:51: `hash_table_search ... "!key_pointer_is_reserved(ht, key)" failed`, after
+/// two refused blobs and two refused unrefs). Every entry point with a resource, context, blob or queue id is called
+/// with 0, the device's commands and the guest's msm requests in the command stream both (hosted drm2kgsl patch 0009),
+/// and each is refused. Then the same context still makes a buffer, binds it and submits on it, so the renderer lives
+/// and its tables are whole.
+#[test]
+fn zero_ids() {
+    scenario("zero_ids", || {
+        let r = renderer(kgsl::A750);
+        let c = r.context_open(1, 1).unwrap();
+        // the device's side: resource 0, context 0
+        let p = pages(1 << 20, 0x4000);
+        assert!(r.gpu.create_blob(1, 0, BLOB_HOST3D, BLOB_FLAG_MAPPABLE, 0, 16384, &[]).is_err());
+        assert!(r.gpu.create_blob(0, 0, BLOB_GUEST, BLOB_FLAG_GUEST_HANDLE, 0, 0x4000, &p).is_err());
+        assert!(r.gpu.create_blob(0, 5, BLOB_HOST3D, BLOB_FLAG_MAPPABLE, 0, 16384, &[]).is_err());
+        assert!(r.gpu.map_blob(0).is_err());
+        assert!(r.gpu.attach(1, 0, true).is_err() && r.gpu.attach(0, 1, true).is_err());
+        assert!(r.gpu.attach(1, 0, false).is_err() && r.gpu.attach(0, 1, false).is_err());
+        r.gpu.unref(0);
+        assert!(r.gpu.ctx_create(0, CAPSET_DRM, b"zero").is_err());
+        assert!(r.gpu.submit(0, &[0u8; 16]).is_err() && r.gpu.submit_fence(0, 0, 1).is_err());
+        r.gpu.hint(0, [HINT_VALID | ROLE_FOREGROUND, QOS_USER_INTERACTIVE, 0]);
+        r.gpu.ctx_destroy(0);
+        // a buffer with a GPU address, for the submit on queue 0 below to reach the queue's lookup
+        assert_eq!(r.guest_buffer(&c, 2, 1, c.slice + (16 << 20), 0x4000, &p), Ok(()));
+        // the guest's side, in the command stream: each request naming resource 0 or queue 0 is answered with an error
+        // (their answers differ: an error in the response, the async error, or a refused submit; that the process lives
+        // and the context works after them is what counts)
+        let _ = r.set_iova(&c, 0, c.slice + (16 << 20));
+        let _ = r.upload(&c, 0);
+        c.rsp_want(8 + 8);
+        let mut prep = Req::new(5); // GEM_CPU_PREP: res_id, op
+        prep.u32(0).u32(1);
+        let _ = r.ccmd(&c, prep);
+        let mut name = Req::new(6); // GEM_SET_NAME: res_id, len, name
+        name.u32(0).u32(4).bytes(b"zero");
+        let _ = r.ccmd(&c, name);
+        let _ = r.submit_one(&c, 0, 2, 1);
+        c.rsp_want(8 + 16);
+        let mut query = Req::new(9); // SUBMITQUEUE_QUERY: queue_id, param, len
+        query.u32(0).u32(0).u32(4);
+        let _ = r.ccmd(&c, query);
+        c.rsp_want(8 + 8);
+        let mut wait = Req::new(10); // WAIT_FENCE: queue_id, fence
+        wait.u32(0).u32(1);
+        let _ = r.ccmd(&c, wait);
+        c.rsp_want(8 + 8);
+        let mut close = Req::new(2); // IOCTL_SIMPLE(SUBMITQUEUE_CLOSE) of queue 0
+        close.u32(0x4004_644b).u32(0);
+        let _ = r.ccmd(&c, close);
+        let mut gem = Req::new(3); // GEM_NEW with blob id 0
+        gem.u64(c.slice + (32 << 20)).u64(0x4000).u32(0x0002_0000 | 0x8000_0000).u32(0);
+        let _ = r.ccmd(&c, gem);
+        assert!(r.gpu.create_blob(1, 6, BLOB_HOST3D_GUEST, BLOB_FLAG_GUEST_HANDLE, 0, 0x4000, &p).is_err());
+        // and a blob id over 32 bits, which drm_context asserts
+        assert!(r.gpu.create_blob(1, 7, BLOB_HOST3D_GUEST, BLOB_FLAG_GUEST_HANDLE, 1 << 32, 0x4000, &p).is_err());
+        c.clear_async_error();
+        // still alive, and the context still works: a new buffer, a queue, a submit on each buffer
+        let q = r.queue_new(&c, 0);
+        assert_ne!(q, 0);
+        assert_eq!(r.guest_buffer(&c, 3, 2, c.slice + (64 << 20), 0x4000, &pages(2 << 20, 0x4000)), Ok(()));
+        assert!(r.submit_one(&c, q, 3, 2).is_ok());
+        r.gpu.unref(3);
+        assert!(r.submit_one(&c, q, 2, 1).is_ok());
+        r.gpu.unref(2);
+        r.gpu.unref(1);
+        r.gpu.ctx_destroy(1);
+        let s = stand();
+        assert!(s.objects.len() == 1 && s.objects[0].vbo, "{:?}", s.objects); // only the VBO is left
     });
 }
 

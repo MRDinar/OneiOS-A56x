@@ -664,7 +664,9 @@ fn three_d() {
     segs[1] = 0x2000;
     segs[2] = 0x1000;
     g.extra_u64s(&segs);
-    assert!(g.g(14, 32, 24) == 1 && g.resp(0) == 0x1205); // not guest RAM
+    // not guest RAM, and the refusal's line says so
+    let (refused, lines) = xh_core::log::capture(|| g.g(14, 32, 24) == 1 && g.resp(0) == 0x1205);
+    assert!(refused && lines.iter().any(|(_, l)| l.contains("refused") && l.contains("is not guest RAM")));
     segs[2] = g.pa(0x60000);
     g.cmd(12, 0x4000);
     g.extra_u64s(&segs);

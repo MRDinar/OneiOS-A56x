@@ -400,6 +400,38 @@ the guest hands memory to the GPU (or `DRM2KGSL_NONCOHERENT` turned the other wa
 attach asks none): built on the Linux PC (2026-11-13), not run there (no access to `/dev/udmabuf`, section 3); the Mac's
 container runs it. Not yet run on the phone.
 
+### 2.4a `drm2kgsl/patches/0009-id-0-is-no-key.patch` (2026-11-23)
+
+A guest request that names id 0 ended xnuhost. Mesa's hash tables reserve the NULL key, and drm_context's resource and
+blob tables and drm2kgsl's queue table use the guest's id as the key, so a search for 0 is `hash_table.c:311:
+hash_table_search: Assertion "!key_pointer_is_reserved(ht, key)" failed` (abort). The phone did it at 13:51 on
+2026-11-23 (`out/session-logs/2026-11-23/boot-jobs/xnuhost-final.log`, the wallpaper gallery open): two
+`RESOURCE_CREATE_BLOB` refused (`command 10c response 1205`), two `RESOURCE_UNREF` of the ids the host never made
+(`command 102 response 1203`), then the abort. The host test below reproduces that line, and its backtrace is
+`kgsl_ccmd_gem_set_iova` -> `kgsl_object_from_res_id` -> `drm_context_get_object_from_res_id(0)`: a guest BO whose
+blob was refused has no resource id, and the guest still clears its GPU address with `GEM_SET_IOVA` of res_id 0. The
+device's own commands were never the path: `virtio_gpu.rs` refuses resource and context 0 itself, and
+virglrenderer's resource and context tables (`util_hash_table_get`) answer key 0 with "not found".
+
+The patch makes 0 "no such id" before each of drm2kgsl's searches: `kgsl_object_from_res_id` (GEM_SET_IOVA,
+GEM_UPLOAD, the BOs of GEM_SUBMIT, attach, export), `kgsl_object_from_blob_id` (also a blob id above 32 bits, which
+`drm_context_retrieve_object_from_blob_id` asserts), `get_blob`'s res_id check, GEM_SUBMIT's queue lookup and
+`SUBMITQUEUE_CLOSE`. Each answers with its usual error (`Could not lookup obj: res_id=0 (ignored, not escalated)`, `No
+obj: res_id=0`, `unknown submitqueue: 0`, `-EINVAL`). Host test: `zero_ids` in `src/gpu3d_kgsl/tests.rs` (section 3)
+aborted with the phone's assertion before the patch and passes with it. Not yet run on the phone.
+
+Why the two blobs were refused (`INVALID_PARAMETER`) is a fault of its own (README, Known issues): the guest logs only
+the response, and `virtio_gpu.rs` said nothing. Since this change each refused `RESOURCE_CREATE_BLOB` is one line with
+the check that failed (the first 32, then every 1024th; the answer is unchanged):
+
+```
+virtio-gpu: blob R of context C refused (K so far): mem M flags F, S bytes, E entries: entry I at A, L bytes, is not guest RAM
+```
+
+The other checks it names: no such blob memory; the size or entry count (at most 16384, and guest memory needs
+entries); the request holds fewer entry bytes than it says; an entry that is not whole 4 KiB pages; entries that hold
+less than the blob. Host test: `virtio_gpu::tests::three_d` (its not-guest-RAM case checks the line).
+
 To change it: edit a copy of the pinned file, `diff -u` against the original into `drm2kgsl/patches/`, then `cargo build -p xnuhost` (`drm2kgsl/build.rs` applies the series again).
 A new pin of virglrenderer that the patch no longer applies to stops the build (`patch -F0`).
 
@@ -587,7 +619,8 @@ tests pass with drm2kgsl and in the 2D-only build); the numbers of checks below 
   VA): the 256 GiB rung then leaves no import room and the renderer takes the 128 GiB one, and a GEM_SUBMIT on a queue
   shows the default is the WAITTIMESTAMP_CTXTID path (no TIMESTAMP_EVENT) while `NCTX_NO_WAITTS` asks for
   TIMESTAMP_EVENT(FENCE) (patch 0007's A/B switch). Also `coherence` (patch 0007's read-back, section 2.4), `classes`
-  and `shown_surfaces` (section 2.2b). The C had 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL from
+  and `shown_surfaces` (section 2.2b), and `zero_ids` (patch 0009, section 2.4a: every device entry point and msm
+  request with resource, context, blob or queue id 0 is refused, and the context still makes a buffer and submits). The C had 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL from
   its source; it is not KGSL. `layout_matches_msm_kgsl_h` checks the stand-in's mirror of `msm_kgsl.h` against the header
   (`glue/oneios_kgsl_layout.c`).
 - `leaks` in the same file (`tests/test_gpu_leaks.c` in the C, which ran under LeakSanitizer): the same renderer and

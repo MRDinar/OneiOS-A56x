@@ -445,6 +445,8 @@ pub struct Gpu {
 pub type GpuDev = Arc<Virtio<Gpu>>;
 
 static HALF_SAID: AtomicU32 = AtomicU32::new(0);
+/// RESOURCE_CREATE_BLOBs refused as INVALID_PARAMETER (create_blob's line).
+static BLOB_REFUSED: AtomicU32 = AtomicU32::new(0);
 
 /// A view of `v`'s bytes.
 fn words_as_bytes(v: &mut [u32]) -> &mut [u8] {
@@ -969,13 +971,36 @@ impl Gpu {
         }
         let guest_mem = mem == gpu3d::BLOB_GUEST || mem == gpu3d::BLOB_HOST3D_GUEST;
         let host = mem == gpu3d::BLOB_HOST3D || mem == gpu3d::BLOB_HOST3D_GUEST;
-        if (!guest_mem && !host)
-            || size == 0
-            || n > MAX_BLOB_ENTRIES
-            || (if guest_mem { n == 0 } else { n != 0 })
-            || left - 32 < n as usize * 16
-        {
-            return RESP_ERR_INVALID_PARAMETER;
+        // A refused blob is one line naming the check (the guest only logs `command 10c response 1205`; the phone's
+        // 2026-11-23 13:51 session had two before the abort of drm2kgsl patch 0009, and nothing said why). Rare: the
+        // first 32, then every 1024th.
+        let refuse = |why: std::fmt::Arguments| {
+            let k = BLOB_REFUSED.fetch_add(1, Ordering::Relaxed);
+            if k < 32 || k % 1024 == 0 {
+                logi!(
+                    "virtio-gpu: blob {} of context {} refused ({} so far): mem {} flags {:#x}, {} bytes, {} entries: {}",
+                    res,
+                    h.ctx,
+                    k + 1,
+                    mem,
+                    flags,
+                    size,
+                    n,
+                    why
+                );
+            }
+            RESP_ERR_INVALID_PARAMETER
+        };
+        if !guest_mem && !host {
+            return refuse(format_args!("no such blob memory"));
+        }
+        if size == 0 || n > MAX_BLOB_ENTRIES || (if guest_mem { n == 0 } else { n != 0 }) {
+            return refuse(format_args!(
+                "size or entry count (at most {MAX_BLOB_ENTRIES}; guest memory needs entries)"
+            ));
+        }
+        if left - 32 < n as usize * 16 {
+            return refuse(format_args!("the request holds {} bytes of entries, not {}", left - 32, n as usize * 16));
         }
         if host && c.ctx_find(h.ctx).is_none() {
             return RESP_ERR_INVALID_CONTEXT_ID;
@@ -987,17 +1012,20 @@ impl Gpu {
             let mut total = 0u64;
             for i in 0..n as usize {
                 let e = Entry::decode(&body[32 + i * 16..]);
-                if e.length == 0
-                    || (e.addr | e.length as u64) & 0xfff != 0
-                    || xh_core::hooks::ram(e.addr, e.length as u64).is_none()
-                {
-                    return RESP_ERR_INVALID_PARAMETER;
+                if e.length == 0 || (e.addr | e.length as u64) & 0xfff != 0 {
+                    return refuse(format_args!(
+                        "entry {i} at {:#x}, {} bytes, is not whole 4 KiB pages",
+                        e.addr, e.length
+                    ));
+                }
+                if xh_core::hooks::ram(e.addr, e.length as u64).is_none() {
+                    return refuse(format_args!("entry {i} at {:#x}, {} bytes, is not guest RAM", e.addr, e.length));
                 }
                 total += e.length as u64;
                 entries.push(e);
             }
             if total < size {
-                return RESP_ERR_INVALID_PARAMETER;
+                return refuse(format_args!("the entries hold {total} bytes"));
             }
         }
         if c.blobs.as_ref().is_some_and(|t| t.len() >= MAX_BLOBS) {
