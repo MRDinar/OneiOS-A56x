@@ -283,12 +283,12 @@ pub fn fetch(profile_path: &str, indir: &str, jobs: usize, only: Option<&str>, g
     Ok(())
 }
 
-/// An AEA whose decrypted image is recorded and still there is not downloaded again.
+/// An AEA whose decrypted image (a UDIF member whose raw image) is recorded and still there is not downloaded again.
 fn decrypted_is_there(m: &Value, record: &Value, indir: &str, out: &str) -> bool {
     let plain = py::join(indir, &profile::input_name(m));
     let known = record.get("members").and_then(|members| members.get(text(m, "role")));
     let size = std::fs::metadata(&plain).ok().filter(|meta| meta.is_file()).map(|meta| meta.len() as i128);
-    py::truthy(m.get("aea"))
+    (py::truthy(m.get("aea")) || profile::is_udif(m))
         && !std::path::Path::new(out).is_file()
         && size.is_some()
         && known.is_some_and(|k| k.get("member") == m.get("path") && k.get("crc32") == m.get("crc32") && k.get("plain_size").and_then(py::as_int) == size)

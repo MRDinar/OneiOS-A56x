@@ -137,8 +137,12 @@ pub fn apply(a: &Apply) -> Result<Applied> {
     let mut conf = format!("# written by roottweak: the UI scale this image was made for (2 or 3)\nscale={scale}\n");
     if cx.build == "20F66" {
         // iOS 16.5 (port-a56, docs/a56.md): the 16.5 userland on the 24A446 collection (cli.py has the reasons).
+        // oneios-mac-exec-skip (kernel 0073): 24A446's Sandbox refuses 20F66's mediaserverd and TVRemoteConnectionService at
+        // exec, and without mediaserverd SpringBoard waits on the boot logo for com.apple.coremedia.systemcontroller.xpc (the
+        // other A56 fork's lock-screen run of 2026-11-18 passed it on its switch's command line; here the image carries it,
+        // 2026-11-23, so the OneOS switch passes nothing of the A56's own).
         conf.push_str(
-            "boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 oneios-gpu-metal=0 ool_port_array_enforced=0 oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1\n",
+            "boot-args=debug=0x14e serial=3 -v kt_fixed_zones=120 -no_slto_panic ml-timeout-lock-panic-scale=40 tlto_us=0 sheng-smp=1 armcpu-self-ipi=1 armcpu-spi-ipi=1 use_contiguous_hint=0 interrupt-masked-debug-mode=0 sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 oneios-gpu-metal=0 ool_port_array_enforced=0 oneios-legacy-bootstrap-replies=1 oneios-legacy-registered-ports=1 oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService\n",
         );
         let keybagd = "usr/libexec/keybagd";
         // Scope the software keystore path to keybagd: the 20F66 binary only.

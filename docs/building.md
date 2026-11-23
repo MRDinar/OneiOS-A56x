@@ -100,6 +100,28 @@ image build attaches the three images with `hdiutil` (read-only, owners ignored)
 the fetch took 62 minutes (10.6 GiB at about 3 MB/s, then both decryptions), the image build 2 minutes with the
 archive (11.15 GB). The three images and the trust files are byte for byte the Linux PC's (the phone's manifest).
 
+### The iOS 16.5 (20F66) image set for the Galaxy A56 (2026-11-23)
+
+The A56's set is iOS 16.5's own (docs/a56.md): every file from Apple's iPhone X restore file, except `kernel.kc`,
+which is the 24A446 one (section 3; `HOSTED_OUT=a56` below is the same series as the release kernel). The commands as
+run on the Linux PC (20 cores; the OS image is a UDIF disk image, which `image build` converts: docs/image-format.md):
+
+```sh
+T=tools/oneios-tool/target/release/oneios-tool
+P=profiles/ios-16.5-a56.toml
+$T image check-ipsw "$P"                              # 11 members, 5.43 GiB; "ok: ... matches" Apple's file
+$T image fetch "$P" inputs/20F66 -j 8                 # 186 s from Apple's CDN
+$T image build "$P" --indir inputs/20F66 --out out/image/20F66 --work out/image/.work-20F66 --no-fetch \
+  --kernel-kc out/kernel/a56-24A446/kernel.kc         # 10 s: the UDIF to raw APFS (6 s alone), the seed, the
+                                                      # root tweaks, the manifest, verify with the compressed files
+```
+
+Result: 22 files, 8,979,698,218 bytes, `manifest.json` `9ef3423d...`; `os.img` `9f430a58...` (5,628,755,968 bytes),
+165,519 of its 179,361 files kept compressed and all readable (`image apfs-check`). On a phone the OneOS app's Make
+iOS image runs the same build with the runtime's `lib/profiles/ios-16.5-a56.toml` and its own prelink of the
+24A446 kernel (the app fetches Apple's 24A446 kernelcache first, as Update the kernel does). **Not booted**: there is
+no A56 here.
+
 ## 2. The kernel
 
 Linux or macOS, the same command (the script picks the toolchain by `uname -s`):
@@ -1271,6 +1293,9 @@ oneios-tool ioslog haptics data.img [--detail] [-o FILE]            # the path o
                                                                     #   step with a 0 is where it stops (README.md "haptics")
 oneios-tool ioslog save data.img out/session.logarchive             # the .logarchive the manual steps made
 oneios-tool image apfs-checkpoints data.img                         # the store's checkpoints: which pass the checks, and why the others do not
+oneios-tool image apfs-check out/image/20F66/os.img [PATH] [-v]       # every compressed file as iOS reads it: exit 1 names the ones it cannot
+                                                                    #   (`image verify` of a set folder runs it; README.md "apfs-check")
+oneios-tool image udif-raw IN.dmg OUT [--sha256 HEX]               # a UDIF .dmg's Apple_APFS partition as raw APFS (iOS 16's OS image)
 ```
 
 `ioslog health` gives the numbers that tell lag and heat apart, the same way for every session (the owner's request,

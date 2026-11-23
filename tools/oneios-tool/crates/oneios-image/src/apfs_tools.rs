@@ -398,3 +398,94 @@ pub fn copy(image: &str, src: &str, dst: &str, volume: Option<&str>, pick: Pick,
     let more = if done.skipped == 0 { String::new() } else { format!(", skipped {} compressed files", done.skipped) };
     say(&format!("copied {} files, {} bytes{was}{more}", done.files, done.bytes))
 }
+
+/// What `image apfs-check` found: the regular files read, how many are kept compressed, and each compressed file
+/// iOS could not read (its path in the volume, why), by path.
+#[derive(Debug, Default)]
+pub struct CompressedCheck {
+    pub files: u64,
+    pub compressed: u64,
+    pub bad: Vec<(String, String)>,
+}
+
+impl CompressedCheck {
+    /// One line: `IMAGE: N files, M kept compressed, all readable` or `..., K that iOS cannot read: /a (why); ...`
+    /// (the first `show`, then how many more).
+    pub fn line(&self, image: &str, show: usize) -> String {
+        let head = format!("{image}: {} files, {} kept compressed", self.files, self.compressed);
+        if self.bad.is_empty() {
+            return format!("{head}, all readable");
+        }
+        let mut text = format!("{head}, {} that iOS cannot read:", self.bad.len());
+        for (path, why) in self.bad.iter().take(show) {
+            text.push_str(&format!("\n  /{path}: {why}"));
+        }
+        if self.bad.len() > show {
+            text.push_str(&format!("\n  ... and {} more", self.bad.len() - show));
+        }
+        text
+    }
+}
+
+/// The regular files below `id` (paths from the volume's root), listed in parallel.
+fn regular_files(tree: &ApfsTree, id: u64, kind: u16, path: &str) -> Result<Vec<(String, u64)>, Fail> {
+    use rayon::prelude::*;
+    job_check()?;
+    match kind {
+        DT_DIR => {
+            let entries = tree.list(id)?;
+            let below: Vec<Vec<(String, u64)>> = entries
+                .par_iter()
+                .map(|e| regular_files(tree, e.id, e.kind, &if path.is_empty() { e.name.clone() } else { format!("{path}/{}", e.name) }))
+                .collect::<Result<_, Fail>>()?;
+            Ok(below.into_iter().flatten().collect())
+        }
+        DT_REG => Ok(vec![(path.to_string(), id)]),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// `image apfs-check`: every compressed file below `path` read as iOS reads it (`ApfsTree::compressed_problem`), in
+/// every thread of the pool. A volume our reader cannot read is the `Err`; a file iOS could not read is in `bad`.
+pub fn check_compressed(image: &str, path: &str, volume: Option<&str>, pick: Pick, verbose: bool) -> Result<CompressedCheck, Fail> {
+    check_tree(&open(image, volume, pick)?, image, path, verbose)
+}
+
+/// `check_compressed` on a volume already open (`image verify`: the first volume as `ApfsTree::open` reads it).
+pub fn check_tree(tree: &ApfsTree, image: &str, path: &str, verbose: bool) -> Result<CompressedCheck, Fail> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let id = tree.find(path)?.ok_or_else(|| err!("{image}: no /{} in the volume", path.trim_matches('/')))?;
+    let kind = if tree.stat(id)?.mode & 0o170000 == 0o040000 { DT_DIR } else { DT_REG };
+    let files = regular_files(tree, id, kind, path.trim_matches('/'))?;
+    let compressed = AtomicU64::new(0);
+    let mut bad: Vec<(String, String)> = files
+        .par_iter()
+        .map(|(p, id)| -> Result<Option<(String, String)>, Fail> {
+            job_check()?;
+            if !ApfsTree::is_compressed(&tree.stat(*id)?) {
+                return Ok(None);
+            }
+            compressed.fetch_add(1, Ordering::Relaxed);
+            if verbose {
+                eprintln!("/{p}: {}", tree.compressed_layout(*id)?.unwrap_or_default());
+            }
+            Ok(tree.compressed_problem(*id)?.map(|why| (p.clone(), why)))
+        })
+        .collect::<Result<Vec<_>, Fail>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    bad.sort();
+    Ok(CompressedCheck { files: files.len() as u64, compressed: compressed.into_inner(), bad })
+}
+
+/// `image apfs-check IMAGE [PATH] [--verbose]`: the line, and exit status 1 when a file is bad; `verbose`: each
+/// compressed file's layout on stderr (`describe_compressed`), a lasting tool for a file iOS refuses and we decode.
+pub fn check(image: &str, path: &str, volume: Option<&str>, pick: Pick, verbose: bool) -> Result<(), Fail> {
+    let found = check_compressed(image, path, volume, pick, verbose)?;
+    if found.bad.is_empty() {
+        return say(&found.line(image, 20));
+    }
+    Err(err!("{}", found.line(image, 20)))
+}

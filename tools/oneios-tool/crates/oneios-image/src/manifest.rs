@@ -124,11 +124,16 @@ pub fn make_manifest(
             // Python: m["path"] of None is a TypeError
             let m = profile.member_of(role).ok_or(Fail::Usage)?;
             let aea = py::truthy(m.get("aea"));
+            // an AEA member's image was decrypted, a UDIF member's converted: both pin the plain image
+            let plain = aea || profile::is_udif(m);
             entry.set("role", role);
             let mut source = Value::dict();
             source.set("component", component);
             source.set("member", m.get("path").cloned().unwrap_or(Value::Null));
             source.set("decrypted", aea);
+            if profile::is_udif(m) {
+                source.set("converted", "udif");
+            }
             entry.set("source", source);
             if kind == "volume" {
                 entry.set("format", "apfs-raw");
@@ -136,11 +141,11 @@ pub fn make_manifest(
                 entry.set("hashes", format!("{rel}.hashes"));
                 entry.set("apfs", facts.apfs.expect("a volume's APFS facts")?.to_value());
                 let rec = inputs.as_ref().filter(|i| py::truthy(Some(i))).and_then(|i| i.get("members")).and_then(|m| m.get(role));
-                let want = rec.and_then(|r| r.get(if aea { "plain_sha256" } else { "sha256" }));
+                let want = rec.and_then(|r| r.get(if plain { "plain_sha256" } else { "sha256" }));
                 if py::truthy(want) && want.and_then(Value::as_str) != Some(facts.sha256.as_str()) {
                     return Err(err!("{rel}: differs from the input the fetch recorded ({})", py::str_value(want.unwrap())));
                 }
-                let pin = m.get(if aea { "plain_sha256" } else { "sha256" });
+                let pin = m.get(if plain { "plain_sha256" } else { "sha256" });
                 if py::truthy(pin) && pin.and_then(Value::as_str) != Some(facts.sha256.as_str()) {
                     return Err(err!("{rel}: SHA-256 {}, the profile pins {}", facts.sha256, py::str_value(pin.unwrap())));
                 }
@@ -414,7 +419,34 @@ pub fn verify_dir(setdir: &str, quick: bool) -> Result<Value, Fail> {
             hashes::first_difference(&full, &list, &got)?;
         }
     }
+    if !quick {
+        compressed_files_readable(setdir, &listed)?;
+    }
     Ok(m)
+}
+
+/// Every compressed file of each read-only volume image (`os.img`, `systemos.img`, `app.img`) read as iOS reads it
+/// (`image apfs-check`, every volume of the container): a file iOS could not read stops the boot at its first use
+/// (OneiOS issue 73: a hand-made os.img whose dyld iOS refused, `invalid resource map`, before the Data volume was
+/// made). Apple's images pass (24A446: 231,460 compressed files in 3.3 s on 20 CPUs); the hashes above only say the
+/// files are the ones the manifest names, not that iOS can read them.
+fn compressed_files_readable(setdir: &str, listed: &[(&str, &Value)]) -> Result<(), Fail> {
+    for (rel, f) in listed {
+        if f.get("format").and_then(Value::as_str) != Some("apfs-raw") || !py::truthy(f.get("read_only")) {
+            continue;
+        }
+        let full = py::join(setdir, rel);
+        // the first volume as apfs-owners reads it (the hashes above pinned the bytes); any other one, checked
+        let others = apfs::apfs_info(&full)?.volumes.len().saturating_sub(1);
+        for volume in 0..=others {
+            let tree = if volume == 0 { apfs::ApfsTree::open(&full)? } else { apfs::ApfsTree::open_volume(&full, volume, false)? };
+            let found = crate::apfs_tools::check_tree(&tree, &full, "", false)?;
+            if !found.bad.is_empty() {
+                return Err(err!("{}", found.line(&format!("{rel} (volume {volume})"), 5)));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The line `verify` prints for a good set.

@@ -40,7 +40,8 @@ scripts/image/verify.sh out/image/OneiOS_iOS27.0.1_24A446_iPhone18-2.tar.zst
 ### The read-only images: raw APFS, unchanged
 
 `os.img`, `systemos.img` and `app.img` are the IPSW's disk images **byte for byte** (the OS and SystemOS
-ones after AEA decryption). Each is a raw APFS container: the container superblock (`NXSB`) is at offset 0,
+ones after AEA decryption; iOS 16's OS image, a UDIF disk image, as the bytes of its one `Apple_APFS` partition:
+`oneios-tool image udif-raw`, below). Each is a raw APFS container: the container superblock (`NXSB`) is at offset 0,
 with no partition table and no UDIF wrapper. The guest kernel mounts them with Apple's own APFS kext through
 the booter's block device, read-only.
 
@@ -64,7 +65,15 @@ Checked against Apple's files of 24A446 (fetched and decrypted on the Linux PC f
 on the Mac on 2026-11-12, the same SHA-256 both times): `os.img` 10,359,930,880 bytes (`bba6accc...`), `systemos.img`
 6,157,238,272 (`a41d72a6...`), `app.img` 16,777,216 (`37f1a44e...`, volume `AppCryptex`
 `27C33F9D-750F-4413-8E83-25E83EA25A6F`); each is raw APFS. `build.sh` stops with a clear line if an image is
-anything else (a UDIF image has to be converted to raw first).
+anything else (a UDIF image has to be converted to raw first: a profile marks such a member `udif = true`, section 2).
+
+**iOS 16.5 (20F66), the Galaxy A56's set** (`profiles/ios-16.5-a56.toml`, docs/a56.md; built on the Linux PC 2026-11-23): the
+iPhone X restore file's OS image `096-04088-077.dmg` (4,728,546,953 bytes) is UDIF: a GPT disk of six partitions, its
+`Apple_APFS` partition 10,993,664 sectors in 3,628 chunks (stored, LZFSE and ignored). `image udif-raw` makes
+`os.img` of it: 5,628,755,968 bytes, `9f430a58...`, volume `SydneyF20F66.D22D221OS` (apfs-info: role system, not
+sealed by its incompatible-features flag); the partition table's CRC-32 `3abcd8a4` is checked, and the SHA-256 is the
+profile's `plain_sha256`. Its SystemOS (2,726,297,600 bytes) and AppOS (10,485,760) images are raw APFS as shipped. Every
+file of the set is from that one restore file except `kernel.kc` (24A446's kexts: docs/a56.md).
 
 ## 2. Profile
 
@@ -75,7 +84,7 @@ anything else (a UDIF image has to be converted to raw first).
 | top | `schema = 1` |
 | `[os]` | `name`, `version`, `build`, `device`, `board`, `chip_id`, `board_id`, `arch` |
 | `[ipsw]` | `url` (Apple's CDN), `size`, `sha256` (whole file), `metadata` (where the URL came from), `variant` (the BuildManifest identity), `need_gib` |
-| `[[member]]` | `role`, `component` (BuildManifest key), `path` (ZIP member), `size`, `crc32`, then `sha384` or `sha256`, or `aea = true` |
+| `[[member]]` | `role`, `component` (BuildManifest key), `path` (ZIP member), `size`, `crc32`, then `sha384` or `sha256`, or `aea = true`; `udif = true` (a volume whose `.dmg` is a UDIF disk image) with `plain_sha256` |
 | `[image]` | `format = 1`, `id`, `stage`, `archive`, `chunk`, `seed`, `kernel` |
 | `[image.files]` | role -> path in the set |
 | `[data]` | `volume_uuid`, `volume_name`, `store_gib`, `source`, `epoch` |
@@ -86,6 +95,11 @@ How a member is pinned:
 - A member that is not AEA carries `sha384`: the `Digest` of its component in BuildManifest.plist, which is
   the SHA-384 of the file as shipped (checked on all nine such members of 24A446). `BuildManifest.plist`
   and `Restore.plist` carry `sha256`.
+- A UDIF member (`udif = true`, since 2026-11-23: iOS 16's OS image) carries `sha384` (the BuildManifest digest of the
+  `.dmg`, which the fetch checks) and `plain_sha256` (of the raw APFS image `image udif-raw` makes of it). `image build`
+  and `make-image` convert it in their `decrypt` step, name the raw image `<member>.raw` in INDIR, record it in
+  `inputs.json` as an AEA member's plain image is (`record-plain`) and remove the `.dmg`; a recorded raw image that is
+  still there is not fetched again. The manifest's entry says `"converted": "udif"` in its `source`.
 - An AEA member (`OS`, `Cryptex1,SystemOS`) carries `sha256` (of the encrypted member: the fetch checks it) and
   `plain_sha256` (of the decrypted image: `oneios-tool image aea-decrypt --profile` and `image manifest` check it),
   both pinned for 24A446 on 2026-11-21 (two fetches from Apple and two decryptions, `ipsw` and `aea-decrypt`, gave
@@ -309,6 +323,14 @@ The fork's steps (its side is `oneos/interface.md`):
 `scripts/image/verify.sh ARCHIVE` does steps 1 to 4 on the build machine, and `verify.sh FOLDER` checks an
 unpacked set and each image against its hash list; both are tested against tampered sets.
 
+**Compressed files (since 2026-11-23).** `oneios-tool image verify FOLDER` (not `--quick`; `image build` and `make-image`
+run it last) also reads every compressed file of each read-only volume (`os.img`, `systemos.img`, `app.img`) as iOS
+reads it (`image apfs-check`, tools/oneios-tool/README.md): the hashes say the files are the ones the manifest names,
+not that iOS can read them. A set whose OS image another writer made fails here, before a boot (OneiOS issue 73: the
+other A56 fork's set, whose `dyld` iOS refused at its first start). On the Linux PC: the 24A446 set verifies in 6 s,
+the 20F66 set too (OS 165,519, SystemOS 1,277, AppOS 608 compressed files, all readable). The archive form
+(`verify ARCHIVE`) streams and does not read the volumes; its folder, once unpacked, does.
+
 ## 8. Building: tools, and what needs macOS
 
 The same commands on Linux and on macOS; neither needs root. `build.sh` picks the way to read the images by
@@ -385,7 +407,9 @@ much again for the archive.
 `cargo test --release --manifest-path tools/oneios-tool/Cargo.toml -p oneios-image -p oneios-imagebuild -p oneios-tweaks`:
 the image tool's own tests on generated stand-in files (a ZIP laid out like an IPSW, APFS images made by
 `tools/oneios-tool/tests/support/mkapfs.rs`, the code of `oneios-tool debug mkapfs`, trust files and kernels), the
-image build in one process (`make-image`) and the root tweaks. `scripts/image/tests/run.sh` (23 tests of the
+image build in one process (`make-image`) and the root tweaks. Since 2026-11-23 also `apfs::decmpfs::tests::layout_as_ios_reads_it`
+(Apple's resource map passes, the other fork's header copy in it fails, the chunk tables) and `udif::tests` (the UDIF
+converter); the stand-in volumes of `fixtures.rs` have a root folder now, so `verify` reads them. `scripts/image/tests/run.sh` (23 tests of the
 Python `imagetool.py`, `build.sh` from stand-in inputs among them) went with that script on 2026-11-21; `build.sh`
 itself is checked by a run on the real inputs (24A446 on 2026-11-21, after its Python blocks were replaced:
 `data.seed` `27ec4e10...`, the overlay and `manifest.json` byte for byte as with the Python record writer;

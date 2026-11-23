@@ -1,5 +1,11 @@
 # A56 work that belongs to the OneOS app fork (proposal, not files here)
 
+> **Applied 2026-11-23 (OneiOS issue 73)**, section 1 only, in the fork's `oneios` branch: the iOS kind offered on an
+> SM-A566, Make iOS image with `profiles/ios-16.5-a56.toml`, the switch's A56 lines (docs/a56.md "In the OneOS fork").
+> The 20F66 session settings went into this tree instead of the switch (the host table, the image's `xnuhost.conf`),
+> so the switch passes nothing of the A56's own. Sections 2 and 3 (the bootstrap, the in-app download of a prebuilt
+> image) are not taken: the A56 makes its own image from Apple's file, as the S24 Ultra does. Untested on an A56.
+
 `app/` in this repo is a submodule of the separate OneOS app fork — `port-a56` touches nothing in it.
 Everything below lives in `Musicalista/OneiOS-A56` and needs the owner's decision before it (or its idea)
 moves to the OneOS fork. Structural note first: the A56 "app" is a **standalone side-app** (`app/` is a plain

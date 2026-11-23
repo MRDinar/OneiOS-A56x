@@ -65,6 +65,8 @@ cmp -s "$TA" "$T/x/bin/oneios-tool" || fail "oneios-tool beside the package is n
 ok "bin/oneios-tool and $(basename "$TA") ($(wc -c < "$TA" | tr -d ' ') bytes, stripped)"
 cmp -s "$T/x/lib/profiles/ios-27.0.1-iPhone18-2.toml" "$ROOT/profiles/ios-27.0.1-iPhone18,2.toml" || fail "lib/profiles/ is not profiles/"
 grep -q '"path": "lib/profiles/ios-27.0.1-iPhone18-2.toml"' "$T/x/runtime.json" || fail "lib/profiles/ is not in runtime.json"
+# the Galaxy A56's iOS 16.5 profile (docs/a56.md): the OneOS fork's Make iOS image sends it on an A56
+cmp -s "$T/x/lib/profiles/ios-16.5-a56.toml" "$ROOT/profiles/ios-16.5-a56.toml" || fail "lib/profiles/ has no A56 profile"
 ok "lib/profiles/: the IPSW profiles for the phone's fetch"
 # Its dynamic ELF files were checked against the NDK's API 30 stubs (elf-check.sh), twice: runtime/build.sh on its
 # stage, then package.sh on the package's content.

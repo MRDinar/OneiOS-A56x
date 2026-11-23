@@ -170,7 +170,15 @@ fn version(cx: &mut Context) -> Result<()> {
     let have = plist.get("ProductVersion");
     let want = str_value(&cx.dev("device", "version"));
     let name = py(plist.get("ProductName"));
+    // 20F66 (iOS 16.5): the Galaxy A56's userland (docs/a56.md, profiles/ios-16.5-a56.toml), the one other build these
+    // tweaks know (apply.rs writes its xnuhost.conf): applied with this profile, as --any-version would, and said so
+    let known_16 = cx.build == "20F66" && have.and_then(P::as_str) == Some("16.5");
     if have.and_then(P::as_str) != Some(want.as_str()) {
+        if known_16 {
+            let note = format!("root is {} ({}), the A56's iOS 16.5 (docs/a56.md): applied with the {want} profile", py(have), cx.build);
+            cx.say("applied", "version", &note, None);
+            return Ok(());
+        }
         if !cx.o.any_version {
             bail!(Refused(format!("the root is {name} {} ({}); the profile is for {want}. --any-version applies it anyway", py(have), cx.build)));
         }

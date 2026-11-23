@@ -1,83 +1,171 @@
-# OneiOS build profile: iOS 16.5 (20F66) for Samsung Galaxy A56 5G (SM-A566E / a56x)
-# Target SoC: Samsung Exynos 1580 (s5e8855 / erd8855)
-# Target GPU: Samsung Xclipse 540 (AMD RDNA3) via /dev/dri/renderD128 (amdgpu/sgpu)
-# Optimizations: Ultra-lightweight QuartzCore compositor, ~1.8 GB RAM footprint, zero zRAM swapping
+# OneiOS build profile: iOS 16.5 (20F66), the iPhone X restore file (iPhone10,3 and iPhone10,6, D22AP, T8015), for
+# the Galaxy A56 (SM-A566, a56x, Exynos 1580): docs/a56.md.
 #
-# REFERENCE ONLY (port-a56): no [[member]] fetch pins yet (docs/image-format.md section 2), so `oneios-tool image`'s
-# profile reader and the fetch refuse it by design; the 16.5 set was staged by hand, not fetched. What is pinned
-# here: the IPSW identity, the A56 hardware facts the session needs, and the launchd jobs disabled for the
-# lock-screen run of 2026-11-18 (docs/a56.md). Enforcement of the daemon list is the root tweaks' config
-# (userland/config, `oneios-tool image tweaks`), not this file.
+# The image set is iOS 16.5's own, all of it from this one restore file: the OS, SystemOS and AppOS images, their
+# trust caches and root hashes, and the Data seed made from this OS image's /private/var. Nothing of 24A446 is in it.
+# The kernel collection beside it (kernel.kc) is the exception: OneiOS's hosted XNU prelinked with the iPhone18,2
+# 24A446 kexts, the only collection there is (the 16.5 userland on it is the other A56 fork's result, docs/a56.md).
+# So Make iOS image needs the 24A446 kernelcache as well (the app's Update the kernel, kb/kernelcache.macho): this
+# profile has no kernelcache member.
+#
+# Every pin below was read on 2026-11-23 from Apple's own data:
+#   - the IPSW's URL, size and SHA-256: https://api.ipsw.me/v4/ipsw/iPhone10,3/20F66 (the same file for iPhone10,6)
+#   - member names, sizes and CRC-32: the IPSW's ZIP directory (its last 2 MiB, by a range request)
+#   - component -> member, and sha384: BuildManifest.plist, identity "Customer Erase Install (IPSW)" of d22ap.
+#     For a member that is not AEA, the BuildManifest digest is the SHA-384 of the file as shipped.
+#   - plain_sha256 of the OS image: the raw APFS image `oneios-tool image udif-raw` made of the fetched member
+#     (the member is a UDIF disk image: a GPT disk with one Apple_APFS partition, LZFSE chunks; docs/image-format.md).
+# The reference-only version of this file (port-a56, 2026-11-21: the A56's hardware facts, now in docs/a56.md, and
+# the launchd jobs the other fork disabled) had another URL, which Apple's server answers with 403, and another
+# sha256; its size and build were right.
+# Format of this file: docs/image-format.md, "Profile".
 schema = 1
 
 [os]
-name = "ios-16.5-20F66-GalaxyA56"
+name = "ios-16.5-20F66-iPhone10,3"
 version = "16.5"
 build = "20F66"
-device = "GalaxyA56"
+device = "iPhone10,3"
 board = "d22ap"
-platform = "s5e8855"
-chip_id = 0x8855
-board_id = 0x0E
+platform = "t8015"
+chip_id = 0x8015
+board_id = 0x06
 arch = "arm64"
 
-[device.hardware]
-vendor = "Samsung"
-model = "SM-A566E"
-codename = "a56x"
-soc = "Exynos 1580"
-cpu_cores = 8
-cpu_topology = [
-    { name = "Cortex-A520", count = 4, max_freq_khz = 1950000, policy = "policy0" },
-    { name = "Cortex-A720", count = 3, max_freq_khz = 2600000, policy = "policy4" },
-    { name = "Cortex-X4",   count = 1, max_freq_khz = 2910000, policy = "policy7" }
-]
-gpu = "Samsung Xclipse 540"
-gpu_arch = "AMD RDNA3"
-drm_node = "/dev/dri/renderD128"
-display_panel = "1080x2340 at 120Hz"
-display_scale = 3
-touch_device = "/dev/input/event4"
-
-[display]
-# The guest frame: the panel's 1080x2340 @3x, 360x780 points, a width no iPhone has, so 20F66's UIKit shows
-# "Please see rdar://45025538" (no status bar visual provider). iPhone X's 1125x2436 (375x812 points) removes that
-# but SpringBoard then aborted in a loop on the phone (2026-11-18, open). oneios_switch_a56.sh --inner, ONEIOS_FRAME.
-width = 1080
-height = 2340
-refresh_hz = 120
-scale = 3
-orientation = "portrait"
-
-[launch_policy]
-disable_jobs = [
-    "com.apple.analyticsd",
-    "com.apple.rapportd",
-    "com.apple.parsecd",
-    "com.apple.parsec-fbf",
-    "com.apple.symptomsd",
-    "com.apple.fileindexerd",
-    "com.apple.AppIntentsLiveEntityService",
-    "com.apple.telephonyutilities.callservicesd",
-    "com.apple.OTACrashCopier",
-    "com.apple.cloudtelemetryd",
-    "com.apple.hangtelemetryd",
-    "com.apple.diagnosticd",
-    "com.apple.diagnosticextensions.osx.spotlight.helper",
-    "com.apple.iconservices.iconservicesagent"
-]
-
 [ipsw]
-url = "https://updates.cdn-apple.com/2023SpringFCS/032-44109/4C697B34-3A80-4D56-A6F7-5C72559FE132/iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw"
+url = "https://updates.cdn-apple.com/2023SpringFCS/fullrestores/032-85130/6AB0D10A-8AF9-4F6C-8CF5-A1B315CABE88/iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw"
 size = 6165698198
-sha256 = "65757d2427a1a44139d6715f3ec5d827299a913db23dd88e3ad03c94d2c803df"
+# of the whole file (ipsw.me). The fetch never has the whole file, so it cannot check this one; it checks the members.
+sha256 = "c1091c401f67e3aa7cdfeb2cc19e6c79be3c957aae4e097a019e9ccea07d52f2"
+metadata = "https://api.ipsw.me/v4/ipsw/iPhone10,3/20F66"
 variant = "Customer Erase Install (IPSW)"
+# free space the fetch wants in inputs/: the members (7.0 GiB) and the OS image's raw APFS image beside its UDIF file
+need_gib = 20
+
+# --- members: 11 of the IPSW's 91 ---------------------------------------------------------------------------
+
+[[member]]
+role = "os"
+component = "OS"
+path = "096-04088-077.dmg"
+size = 4728546953
+crc32 = "028fc181"
+sha384 = "14a9e57f31e1f64bac1fbff2d20d34d20210530b03e700d6279a0ef7a7a370b27ac17cd257c880e60bd16e2b26bc754f"
+udif = true
+# the raw APFS image `image udif-raw` makes of it (5,628,755,968 bytes; the table's CRC-32 3abcd8a4 checked), 2026-11-23
+plain_sha256 = "9f430a582b86dd422bba74b66b16b1e0311af570a533b87e4b17014e996579a3"
+
+[[member]]
+role = "systemos"
+component = "Cryptex1,SystemOS"
+path = "096-04666-078.dmg"
+size = 2726297600
+crc32 = "1ddd2ad5"
+sha384 = "f778d9abf553a111a3eb36d7e2c5b18569d4d7ca119d20156c8e0a910469e79be720e1c217f1f7af98a73ecd62bdf411"
+
+[[member]]
+role = "app"
+component = "Cryptex1,AppOS"
+path = "096-03536-083.dmg"
+size = 10485760
+crc32 = "27c0c027"
+sha384 = "cd6c42de4466b3746c86004aac419569189ef75408bb083a86b16a4265a7cd7d38e7dc86b0fcb68c9ea932fa52198773"
+
+[[member]]
+role = "trust-static"
+component = "StaticTrustCache"
+path = "Firmware/096-04088-077.dmg.trustcache"
+size = 66265
+crc32 = "f30c424a"
+sha384 = "ec3696f897cd016d36d75dd8b47da4113b74744efc6ed67ea2c74440176bf2eb6f8a2bf6e625ac06800988ee6ddaf0db"
+
+[[member]]
+role = "trust-system"
+component = "Cryptex1,SystemTrustCache"
+path = "Firmware/096-04666-078.dmg.trustcache"
+size = 1511
+crc32 = "93b4ff24"
+sha384 = "8f5ef0b4a59d821263ebe4c6523b184da5064b7d3656089eca072063482afcca8749ee865bf1cb70efe2f90638ea93c3"
+
+[[member]]
+role = "trust-app"
+component = "Cryptex1,AppTrustCache"
+path = "Firmware/096-03536-083.dmg.trustcache"
+size = 767
+crc32 = "68952e36"
+sha384 = "5c2c1a84e72178daef360fdda486f4d8260b267160b0827b7f9e8ceef463e350be0d9b31af7e9e167b55adeed661eb81"
+
+[[member]]
+role = "roothash-os"
+component = "SystemVolume"
+path = "Firmware/096-04088-077.dmg.root_hash"
+size = 229
+crc32 = "6629689a"
+sha384 = "b59c3c079cf601bb0fba994080f106dd62691d0b8dcf4725e4bbe9137de3d0ecc0879d2799dadacdbfeef71310e98c06"
+
+[[member]]
+role = "roothash-system"
+component = "Cryptex1,SystemVolume"
+path = "Firmware/096-04666-078.dmg.root_hash"
+size = 229
+crc32 = "6f340d8a"
+sha384 = "b75d9f6fabb1d9649ee47901d6fbf736a0490f203ebae55e45aef60079ffcd5810d1c7ddd56f8f9b280e9781b92853f8"
+
+[[member]]
+role = "roothash-app"
+component = "Cryptex1,AppVolume"
+path = "Firmware/096-03536-083.dmg.root_hash"
+size = 229
+crc32 = "7f341f09"
+sha384 = "ef77e35dbd392bf3e5e29ab538a1cb2e3354e816f6b71c8211fe1c78af0abc90d048d1f307a621f4cf7eba203a8419ce"
+
+# No kernelcache and no devicetree member: the kernel collection is the 24A446 one (above), and xnuhost makes the
+# device tree itself.
+
+[[member]]
+role = "buildmanifest"
+path = "BuildManifest.plist"
+size = 449650
+crc32 = "5b652e99"
+sha256 = "7dd041dc7ac05f2e1f041013024f9062b8166d916c708ff8b46aca5e089e091f"
+
+[[member]]
+role = "restore"
+path = "Restore.plist"
+size = 1418
+crc32 = "e48407b7"
+sha256 = "c8f2b132e7eb38e987874b13120c67a881eb8d1faba739b76c609060a41d25ab"
+
+# --- the image set (out/image/20F66/) ----------------------------------------------------------------------
 
 [image]
 format = 1
-id = "ios-16.5-20F66-GalaxyA56"
+id = "ios-16.5-20F66-iPhone10-3"
+# where the OneOS fork unpacks the set on the phone (oneos/interface.md, section 3)
 stage = "/data/local/tmp/oneios/image"
-archive = "OneiOS_iOS16.5_20F66_A56.tar.zst"
+archive = "OneiOS_iOS16.5_20F66_iPhone10-3.tar.zst"
+# bytes per entry of an image's hash list (NAME.hashes)
 chunk = 1048576
 seed = "data.seed"
+# the kernel collection: OneiOS's hosted XNU prelinked with the 24A446 kexts (kernel/prelink/README.md)
 kernel = "kernel.kc"
+
+[image.files]
+os = "os.img"
+systemos = "systemos.img"
+app = "app.img"
+trust-static = "trust/static.trustcache"
+trust-system = "trust/system.trustcache"
+trust-app = "trust/app.trustcache"
+roothash-os = "trust/os.root_hash"
+roothash-system = "trust/system.root_hash"
+roothash-app = "trust/app.root_hash"
+
+[data]
+# The Data volume the guest makes from the seed on its first start (the same UUID as the 24A446 set's)
+volume_uuid = "1B7DB2B7-5ECA-4FDA-98AF-55DF8632E355"
+volume_name = "Data"
+store_gib = 16
+source = "private/var"
+# time of every seed file the build adds or rewrites: the restore file's release (2023-05-18T18:14:18Z, ipsw.me)
+epoch = 1684433658

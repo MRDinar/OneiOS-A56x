@@ -1275,6 +1275,8 @@ oneios-tool image apfs-copy IMAGE SRC DST [--volume N|NAME] [--newest] [--apfs o
 # both: --newest reads the newest checkpoint that passes the checks, --checkpoint XID that one (a used store; said on stderr)
 oneios-tool image apfs-checkpoints IMAGE     # a used store's checkpoints: at each, does the container pass, does each volume ("The APFS reader")
 oneios-tool image aea-decrypt IN OUT [...]   # an AEA image of the IPSW to its plain file, the key from Apple's key service ("aea-decrypt" below)
+oneios-tool image apfs-check IMAGE [PATH] [-v]   # every compressed file read as iOS reads it; exit 1 names the ones iOS cannot read ("apfs-check" below)
+oneios-tool image udif-raw IN OUT [--sha256 HEX] # a UDIF .dmg's Apple_APFS partition as raw APFS (iOS 16's OS image; "udif-raw" below)
 ```
 
 **`apfs-copy` in threads (2026-11-15).** Our reader's copy lists the folders and reads the files' sizes in every
@@ -1301,6 +1303,64 @@ and 8 threads, parts of a volume, and a stop) check it.
 `kernelcache.release.v54` of 24A446: 78,135,296 bytes, sha256 `349c4692...0c57e3`, which is the hash the kernel
 profile pins (made with the `lzfse` program on the Mac), in 0.7 s. Not done: the two decoders side by side on one
 host (the Linux box has no `lzfse` program).
+
+### apfs-check: compressed files as iOS reads them (2026-11-23)
+
+```sh
+oneios-tool image apfs-check IMAGE [PATH] [--volume N|NAME] [--newest] [-v]
+# IMAGE: 258055 files, 228550 kept compressed, all readable                       exit 0
+# imagetool: IMAGE: 45044 files, 40179 kept compressed, 8340 that iOS cannot read:  exit 1, then the first 20:
+#   /usr/lib/dyld: kind 4: invalid resource map: the map (50 bytes) is not Apple's: 6 bytes differ, from byte 2 (...)
+# -v: each compressed file's layout on stderr (kind, sizes, the resource fork's header and map, or its chunk table)
+```
+
+Every compressed (decmpfs) file below PATH, in every thread: its layout as iOS's reader (AppleFSCompression) needs it,
+then the whole decode to its plain size (`ApfsTree::compressed_problem`, `apfs/decmpfs.rs` `check_layout`). Our
+decoder reads only the place of a resource fork's data, so a file can decode here and not on iOS. The layout check:
+a kind 4 (zlib) fork's header, its data inside the fork, Apple's 50-byte resource map **byte for byte**, cmpf's chunk
+count for the plain size and each chunk inside cmpf; the other fork kinds' chunk table (first offset just after it,
+rising, not past the fork). `image verify` of a set folder runs it on each read-only volume (below).
+
+**Why (OneiOS issue 73).** An A56 user's first start ended with `ChunkCompression.cpp:415: /usr/lib/dyld: invalid
+resource map`, then `newfs_apfs did not run: 13` and the panic `offline scratch Data mount failed: 13`. The image was
+the other A56 fork's (`Musicalista/OneiOS-A56` v1.0.0, `ios16.5-a56-image.tar.gz.part00/01`), whose `os.img` (2.47 GB,
+an unsealed volume `System`) and `systemos.img` (12.5 MB) its own APFS writer made. Read on the Linux PC, 2026-11-23:
+
+| Image | Compressed files | iOS cannot read | Time (20 CPUs) |
+|---|---|---|---|
+| 24A446 `os.img` (Apple's) | 228,550 of 258,055 | 0 | 3.2 s |
+| 24A446 `systemos.img`, `app.img` (Apple's) | 1,980, 930 | 0 | |
+| 20F66 `os.img` (Apple's, after `udif-raw`) | 165,519 of 179,361 | 0 | 3 s |
+| the other fork's `os.img` | 40,179 of 45,044 | **8,340** (all kind 4, `dyld` among them) | |
+| the other fork's `systemos.img` | 1,397 of 1,412 | **272** | |
+| the other fork's `app.img` (20F66's AppOS as Apple made it) | 608 of 884 | 0 | |
+
+Every one of the 8,612 differs from Apple's map in the same place: the map's first 16 bytes, which Apple's writer
+leaves zero, hold a copy of the fork's header (as the classic Resource Manager writes it). The rest of the fork is
+sound: our decoder decodes all of them. Apple's 20F66 `dyld` and theirs have the same plain size (922,912 bytes) and
+different forks (325,570 and 318,163 bytes): theirs was compressed again by their writer. That iOS refuses a file for
+those 16 bytes is inferred from this (the message names the map; no other difference was found), not read in Apple's
+code; a boot of a set that passes the check on an A56 would prove it.
+
+### udif-raw: iOS 16's OS image (2026-11-23)
+
+```sh
+oneios-tool image udif-raw IN OUT [--sha256 HEX]     # stdout: SHA256  BYTES  OUT
+```
+
+iOS 16's IPSWs ship the OS image as a UDIF disk image (20F66's `096-04088-077.dmg`, 4,728,546,953 bytes: a `koly`
+trailer, a GPT disk of six partitions, LZFSE and stored chunks); 24A446's are raw APFS already. `udif-raw` writes the
+one `Apple_APFS` partition as a raw image (`src/udif.rs`): its chunks decoded in every thread and written in place
+(zeros and ignored chunks left as holes), then the file read once for the partition table's CRC-32 and its SHA-256,
+against `--sha256` when given; `OUT.part` is renamed last, and a failure leaves nothing. Chunk types: zeros, ignored,
+stored, zlib, LZFSE; ADC, bzip2 and LZMA are refused. **The CRC-32 leaves out the ignored chunks (type 2)**: 20F66's
+table says `3abcd8a4`, which is the CRC-32 over its stored and LZFSE chunks; with its 609,648 ignored sectors counted
+as zeros it is `60176318` (the first version of the converter checked that, and refused Apple's image).
+20F66 on the Linux PC: 6 s, 5,628,755,968 bytes, SHA-256 `9f430a58...` (the profile's `plain_sha256`), volume
+`SydneyF20F66.D22D221OS`. A profile marks such a member `udif = true` (docs/image-format.md section 2): `image build`
+and `make-image` convert it in their `decrypt` step, record the raw image in `inputs.json` as an AEA member's plain
+image is, and remove the `.dmg`. Tests: `udif::tests` (every chunk kind on a made image, a wrong pin, a wrong CRC-32,
+no APFS inside, no trailer).
 
 ### aea-decrypt: the IPSW's AEA images, without an outside program (2026-11-21)
 
@@ -1476,14 +1536,14 @@ this (crate `crates/oneios-imagebuild`). The steps, in build.sh's order and with
 |---|---|---|
 | `check` | the profile (`image profile --shell`, `--members`), the inputs that are there, the kernel's inputs, the set folder (absent or empty), and **one** room check for everything the build writes (`serve`: one `space` event). What the tool cannot do is refused here, before anything is fetched or written (`not-ported`: nothing since 2026-11-21, the AEA decryption and the root tweaks are in it) | the tool and input checks at its top |
 | `directory`, `download` | `image fetch` of the profile's members into INDIR (resumable; a member that is there and whole is not fetched again; an AEA whose decrypted image `record-plain` recorded is not fetched) | `scripts/fetch/fetch.sh` before it |
-| `decrypt` | the AEA images into their plain images (`aea_decrypt` of oneios-image, since 2026-11-21: the key from Apple's key service kept in INDIR/.aea-keys/, the profile's `plain_sha256`, resumable; only this step's progress, no steps or room of its own), then `record-plain` and the `.aea` removed | `oneios-tool image aea-decrypt` in fetch.sh (`ipsw fw aea` before 2026-11-21) |
+| `decrypt` | the AEA images into their plain images (`aea_decrypt` of oneios-image, since 2026-11-21: the key from Apple's key service kept in INDIR/.aea-keys/, the profile's `plain_sha256`, resumable; only this step's progress, no steps or room of its own), then `record-plain` and the `.aea` removed; a UDIF member (`udif = true`, iOS 16's OS image, since 2026-11-23) into its raw APFS image the same way (`udif-raw`: `<member>.raw`, the table's CRC-32 and `plain_sha256` checked), then `record-plain` and the `.dmg` removed | `oneios-tool image aea-decrypt` in fetch.sh (`ipsw fw aea` before 2026-11-21) |
 | `place` | the images and trust files into the set: hard links where the folder allows, else copies (`put`); each volume must pass `apfs-info` | `put`, `apfs-info` |
 | `data` | the OS volume's `/private/var` copied out with **our APFS reader** (`src/data.rs`), with tree-copy's meta file: the same folders (0700), files (0600, both times the source's whole seconds), links and meta entries, in tree-copy's order; the three xattrs that only say how APFS stores a file are left out, as tree-copy leaves them out | apfs-fuse (hdiutil on a Mac) and `tree-copy` |
 | `tweaks` | the root tweaks into the tree, the overlay and the owner rules: `oneios_tweaks::run_hook` ("image tweaks"), the OS volume read from `os.img` with our APFS reader; its record (`hook` `oneios-tool image tweaks`, `hook_sha256` of the tool's binary, `info`; no git) goes into the manifest. `--no-tweaks` (`"tweaks": false`) builds without them | the userland hook |
 | `seed` | `seed-pack` into `data.seed`; the overlay into `overlay/` | `seed-pack`, `cp -R` |
 | `kernelcache` | Apple's kernelcache member decoded (`im4p`), unless one is given (`--kernelcache`, the stage's `kb/kernelcache.macho`) | `kernel-inputs.sh` |
 | `kernel-check` ... `kernel-place` | `prelink build` of the runtime's `kernel/xnu.macho` with it: its sixteen steps, the audit and `stubs-check` before `kernel.kc` is taken (`audit` refuses); unless a `kernel.kc` is given (`--kernel-kc`) | `kernel/prelink/build.sh`, then `--kernel FILE` |
-| `manifest`, `verify` | `manifest` (the hash lists too) and `verify` of the set, every chunk | the same |
+| `manifest`, `verify` | `manifest` (the hash lists too) and `verify` of the set, every chunk, and every compressed file of the three volumes as iOS reads it (since 2026-11-23, "apfs-check") | the same |
 | `lists` | the stage's lists of the set (`SHA256  PATH` and `DEV:INODE:SIZE:MTIME PATH`, sorted, `manifest.json` included: what root's `receive` writes for an import), then the set into its folder | replacing `out/image/BUILD` |
 
 The image tool's commands run **in the process** (`oneios_image::run`, the standard output and error read back

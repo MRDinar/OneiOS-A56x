@@ -145,8 +145,40 @@ pub fn fake_apfs(path: &str, name: &str, role: u16, blocks: usize, fill: &[u8]) 
     put(&mut image, vol + 704, name.as_bytes());
     put16(&mut image, vol + 964, role);
     put(&mut image, 4 * BLOCK, fill);
+    empty_root(&mut image, blocks);
     fs::write(path, image).unwrap();
     uuid_text(&vol_uuid)
+}
+
+/// The volume of `fake_apfs` a file-system tree with only its root folder, in the image's last three blocks (its
+/// object map, the map's leaf, the tree's one leaf), so that `ApfsTree` opens it (`image verify` reads every volume's
+/// compressed files: none here).
+fn empty_root(image: &mut [u8], blocks: usize) {
+    let (omap, leaf, root, root_oid) = (blocks - 3, blocks - 2, blocks - 1, 1100u64);
+    let vol = 3 * BLOCK;
+    put32(image, vol + 0x74, 2); // root tree: virtual
+    put64(image, vol + 0x80, omap as u64);
+    put64(image, vol + 0x88, root_oid);
+    put64(image, vol + 0x108, 1); // unencrypted
+    put64(image, omap * BLOCK + 48, leaf as u64);
+    fixed_leaf(image, leaf, &[(root_oid, root as u64)]);
+    // the root folder's inode (object 2, parent 1): its key and its value, alone in a root leaf
+    let node = root * BLOCK;
+    let key = (2u64 | 3 << 60).to_le_bytes();
+    let mut val = 1u64.to_le_bytes().to_vec();
+    val.extend_from_slice(&2u64.to_le_bytes());
+    val.extend_from_slice(&[0u8; 64]);
+    val.extend_from_slice(&0o40755u16.to_le_bytes());
+    val.extend_from_slice(&[0u8; 10]);
+    put16(image, node + 32, 1 | 2);
+    put32(image, node + 36, 1);
+    put16(image, node + 42, 8);
+    put16(image, node + 56 + 2, key.len() as u16);
+    put16(image, node + 56 + 4, val.len() as u16);
+    put16(image, node + 56 + 6, val.len() as u16);
+    put(image, node + 64, &key);
+    put(image, node + BLOCK - 40 - val.len(), &val);
+    put32(image, node + BLOCK - 36, BLOCK as u32);
 }
 
 /// An APFS image whose one volume has a file-system tree, for `ApfsTree`: entries are

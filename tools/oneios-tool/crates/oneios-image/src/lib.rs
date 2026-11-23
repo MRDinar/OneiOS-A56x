@@ -34,6 +34,7 @@ mod ipsw;
 pub mod rangeserve;
 pub mod remotezip;
 pub mod transfer;
+pub mod udif;
 
 use oneios_common::json::{self, Value};
 use std::io::Write;
@@ -89,6 +90,13 @@ Only in this tool (imagetool.py has no such command): read a volume without moun
                                                                  that one; files kept compressed are decoded)
     oneios-tool image apfs-checkpoints IMAGE                     every checkpoint of a store, and whether the container
                                                                  and each volume pass the checks at it
+    oneios-tool image apfs-check IMAGE [PATH] [--volume N|NAME] [--newest] [-v]
+                                                                 every compressed file read as iOS reads it (the
+                                                                 resource fork's map, the chunk tables, the decode);
+                                                                 exit 1 names each one iOS could not read
+    oneios-tool image udif-raw IN OUT [--sha256 HEX]               the Apple_APFS partition of a UDIF .dmg (iOS 16's OS
+                                                                 image) as raw APFS; the table's CRC-32 and the pin
+                                                                 checked; stdout: SHA256  BYTES  OUT
 
 The IPSW, the AEA header and the archive (ported on 2026-11-13; imagetool.py has the same commands):
     oneios-tool image check-ipsw PROFILE [--source URL|FILE]     compare the profile with the IPSW's directory and BuildManifest
@@ -251,6 +259,27 @@ pub enum Command {
     /// Only in this tool: every checkpoint of a store copied after use, and whether the container and each
     /// volume pass the checks at it
     ApfsCheckpoints { image: String },
+    /// Only in this tool: the Apple_APFS partition of a UDIF disk image as a raw APFS image
+    UdifRaw {
+        input: String,
+        out: String,
+        /// The raw image's SHA-256 (a profile's plain_sha256): another one fails and writes nothing
+        #[arg(long, value_name = "HEX")]
+        sha256: Option<String>,
+    },
+    /// Only in this tool: every compressed file read as iOS reads it; exit 1 when one cannot be read
+    ApfsCheck {
+        image: String,
+        path: Option<String>,
+        #[arg(long, value_name = "N|NAME")]
+        volume: Option<String>,
+        /// The newest checkpoint that passes the checks, for a store copied after use
+        #[arg(long)]
+        newest: bool,
+        /// Each compressed file's layout on stderr: kind, sizes, the fork's header and map or chunk table
+        #[arg(long, short = 'v')]
+        verbose: bool,
+    },
     /// Compare the profile with the IPSW's directory and BuildManifest
     CheckIpsw(Raw),
     /// Fetch the IPSW's members a profile names
@@ -480,6 +509,8 @@ fn dispatch(command: Command) -> Result<(), Fail> {
         Command::ApfsLs { image, path, volume, newest, checkpoint, apfs } => apfs_tools::ls(&image, path.as_deref().unwrap_or(""), volume.as_deref(), apfs_tools::pick(newest, checkpoint), apfs),
         Command::ApfsCopy { image, src, dst, volume, newest, checkpoint, apfs } => apfs_tools::copy(&image, &src, &dst, volume.as_deref(), apfs_tools::pick(newest, checkpoint), apfs),
         Command::ApfsCheckpoints { image } => say(apfs::Container::open(&image, apfs::Pick::Newest)?.report().trim_end()),
+        Command::UdifRaw { input, out, sha256 } => udif::to_raw(&input, &out, sha256.as_deref()).and_then(|r| say(&format!("{}  {}  {out}", r.sha256, r.bytes))),
+        Command::ApfsCheck { image, path, volume, newest, verbose } => apfs_tools::check(&image, path.as_deref().unwrap_or(""), volume.as_deref(), apfs_tools::pick(newest, None), verbose),
         Command::CheckIpsw(Raw { args }) => ipsw::cmd_check_ipsw(arg(&args, 0)?, opt(&args, "--source")?),
         Command::Fetch(Raw { args }) => {
             let jobs = match opt(&args, "-j")? {

@@ -16,6 +16,7 @@ mod files;
 pub mod fuse;
 pub use check::{Checkpoint, Container, Opened, Pick};
 pub use files::{DirEnt, Stat, DT_DIR, DT_LNK, DT_REG};
+pub use decmpfs::describe as describe_compressed;
 use std::sync::Arc;
 
 /// A read outside a block: Python's struct.error, which ends the tool with a traceback.
@@ -768,6 +769,9 @@ mod tests {
         // an image without a file-system tree at all
         let plain = tmp.path("plain.img");
         fake_apfs(&plain, "Plain", 1, 16, b"");
+        let mut data = std::fs::read(&plain).unwrap();
+        data[3 * 4096 + 0x88..3 * 4096 + 0x90].fill(0); // fake_apfs's root folder taken away
+        std::fs::write(&plain, data).unwrap();
         assert!(ApfsTree::open(&plain).is_err());
     }
 }

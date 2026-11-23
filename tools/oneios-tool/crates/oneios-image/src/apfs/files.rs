@@ -280,6 +280,35 @@ impl ApfsTree {
         Ok(data)
     }
 
+    /// Whether iOS can read compressed file `oid`: `None` when it can (or the file is not compressed), else why not.
+    /// The layout as iOS's reader needs it (`decmpfs::check_layout`: a kind 4 resource fork's map, the chunk
+    /// tables), then the whole decode to the plain size. A volume that cannot be read at all is the `Err`.
+    pub fn compressed_problem(&self, oid: u64) -> Result<Option<String>, Fail> {
+        let st = self.stat(oid)?;
+        if st.bsd_flags & UF_COMPRESSED == 0 {
+            return Ok(None);
+        }
+        let Some(attr) = self.xattr(oid, "com.apple.decmpfs")? else {
+            return Ok(Some("marked compressed, and has no com.apple.decmpfs attribute".into()));
+        };
+        let kind = decmpfs::header(&attr).map_or(0, |(k, _)| k);
+        let fork = if decmpfs::in_resource_fork(kind) { self.xattr(oid, "com.apple.ResourceFork")? } else { None };
+        if let Err(e) = decmpfs::check_layout(&attr, fork.as_deref()) {
+            return Ok(Some(format!("kind {kind}: {e}")));
+        }
+        Ok(decmpfs::decode(&attr, || fork.ok_or_else(|| "no resource fork".to_string())).err().map(|e| format!("kind {kind}: {e}")))
+    }
+
+    /// Compressed file `oid`'s layout in one line (`decmpfs::describe`); `None` when it is not compressed.
+    pub fn compressed_layout(&self, oid: u64) -> Result<Option<String>, Fail> {
+        if self.stat(oid)?.bsd_flags & UF_COMPRESSED == 0 {
+            return Ok(None);
+        }
+        let attr = self.xattr(oid, "com.apple.decmpfs")?.unwrap_or_default();
+        let fork = self.xattr(oid, "com.apple.ResourceFork")?;
+        Ok(Some(decmpfs::describe(&attr, fork.as_deref())))
+    }
+
     /// Whether `oid`'s contents are kept compressed (decmpfs); `read_file` decodes them.
     pub fn is_compressed(st: &Stat) -> bool {
         st.bsd_flags & UF_COMPRESSED != 0

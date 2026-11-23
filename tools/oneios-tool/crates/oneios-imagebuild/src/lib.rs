@@ -302,9 +302,11 @@ pub type Space<'a> = &'a (dyn Fn(&Path, u64) -> Result<(), String> + Sync);
 struct Member {
     role: String,
     path: String,
-    /// The input's file name in INDIR (an AEA member's: the decrypted image's).
+    /// The input's file name in INDIR (an AEA member's: the decrypted image's; a UDIF member's: the raw image's).
     name: String,
     aea: bool,
+    /// A UDIF disk image (iOS 16's OS image), converted to raw APFS in the decrypt step.
+    udif: bool,
     size: u64,
     /// Its path in the set (`None`: not part of the set).
     out: Option<String>,
@@ -343,6 +345,7 @@ impl Profile {
                 path: f[1].into(),
                 name: f[2].into(),
                 aea: f[3] == "1",
+                udif: f[3] == "2",
                 size: f[4].parse().unwrap_or(0),
                 out: (f[5] != "-").then(|| f[5].to_string()),
             });
@@ -471,14 +474,14 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     if !args.fetch {
         // build.sh: one line that names every missing input (an AEA member: its plain image, or the encrypted member,
         // which the decrypt step makes the plain image of)
-        let encrypted_there = |m: &Member| m.aea && size_of(&format!("{indir}/{}", m.path.rsplit('/').next().unwrap_or(&m.path))).is_some();
+        let encrypted_there = |m: &Member| (m.aea || m.udif) && size_of(&format!("{indir}/{}", m.path.rsplit('/').next().unwrap_or(&m.path))).is_some();
         let absent: Vec<&str> = p.members.iter().filter(|m| m.out.is_some() && size_of(&format!("{indir}/{}", m.name)).is_none() && !encrypted_there(m)).map(|m| m.name.as_str()).collect();
         if !absent.is_empty() {
             return Err(refused("not-found", format!("missing inputs in {indir}: {} (fetch them first)", absent.join(" "))));
         }
     }
-    let to_decrypt: Vec<&Member> = p.members.iter().filter(|m| m.aea && m.out.is_some() && !plain_recorded(m, &indir, record.as_ref())).collect();
-    if !to_decrypt.is_empty() && aea_decryptor().is_none() {
+    let to_decrypt: Vec<&Member> = p.members.iter().filter(|m| (m.aea || m.udif) && m.out.is_some() && !plain_recorded(m, &indir, record.as_ref())).collect();
+    if to_decrypt.iter().any(|m| m.aea) && aea_decryptor().is_none() {
         return Err(refused(
             "not-ported",
             format!(
@@ -530,7 +533,7 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     // links when INDIR and the set's folder are one volume), the seed's tree and tar, the kernel's work, the
     // hash lists. Asked once, here.
     let need = {
-        let member_there = |m: &Member| if m.aea { plain_recorded(m, &indir, record.as_ref()) } else { size_of(&format!("{indir}/{}", m.name)) == Some(m.size) };
+        let member_there = |m: &Member| if m.aea || m.udif { plain_recorded(m, &indir, record.as_ref()) } else { size_of(&format!("{indir}/{}", m.name)) == Some(m.size) };
         let fetch: u64 = if args.fetch { p.members.iter().filter(|m| !member_there(m)).map(|m| m.size).sum() } else { 0 };
         // the profile's need_gib is the inputs' whole room: the members and the decrypted images beside them
         let members: u64 = p.members.iter().map(|m| m.size).sum();
@@ -592,9 +595,24 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     // ---- 3. decrypt
     between()?;
     job::step("decrypt");
-    for m in p.members.iter().filter(|m| m.aea && m.out.is_some()) {
+    for m in p.members.iter().filter(|m| (m.aea || m.udif) && m.out.is_some()) {
         if plain_recorded(m, &indir, record.as_ref()) {
-            println!("{}: decrypted image present", m.path);
+            println!("{}: {} image present", m.path, if m.udif { "raw" } else { "decrypted" });
+            continue;
+        }
+        if m.udif {
+            // iOS 16's OS image: its Apple_APFS partition as raw APFS, the table's CRC-32 and the profile's plain_sha256
+            // checked (oneios_image::udif), then recorded as an AEA's plain image is; the .dmg goes
+            let (dmg, raw) = (format!("{indir}/{}", m.path.rsplit('/').next().unwrap_or(&m.path)), format!("{indir}/{}", m.name));
+            let pin = oneios_image::aea_decrypt::profile_pin(&p.path, &dmg).map_err(|e| failed(e.to_string()))?;
+            let done = oneios_image::udif::to_raw(&dmg, &raw, pin.as_deref()).map_err(|e| match job::stop_reason() {
+                Some(stop) => Stop::Stopped(stop),
+                None if e.to_string().contains("the profile pins") => refused("mismatch", e.to_string()),
+                None => failed(e.to_string()),
+            })?;
+            println!("{raw}: {} bytes, SHA-256 {} (the {} partition of {})", done.bytes, done.sha256, done.partition, m.path);
+            image_cmd(&["record-plain", &indir, &m.role, &raw])?;
+            let _ = std::fs::remove_file(&dmg);
             continue;
         }
         let decrypt = aea_decryptor().ok_or_else(|| refused("not-ported", format!("step decrypt: {} must be decrypted; the AEA decryption is not in this tool yet", m.path)))?;

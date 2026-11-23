@@ -1785,8 +1785,9 @@ fn make_image_takes_the_apps_request_with_the_released_runtimes_profiles() {
     b.put("stage/runtime/runtime.json", br#"{"format": 1, "kernel": {"path": "kernel/xnu.macho", "profile": "ios-99.0-99Z999"}}"#);
     assert_eq!(s.ask(app.clone())["code"], "not-found");
     // with no iPhone18,2 profile among several iOS profiles, the request must name one, and the refusal names them.
-    // The repository's A56 profiles are no IPSW profile `image profile` reads (no [[member]]: reference only), so two
-    // of another device are made from iPhone18,2's.
+    // Two of another device are made from iPhone18,2's; the repository's ios-16.5-a56.toml is an IPSW profile since
+    // 2026-11-23 (Apple's 20F66 pins, the A56's image), so it is named too; ios-27.0.1-a56.toml is still reference only
+    // (no [[member]]) and is not.
     let iphone = std::fs::read_to_string(b.stage("runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml")).unwrap();
     assert!(iphone.contains("device = \"iPhone18,2\""), "the iPhone profile's device line");
     for other in ["iPhone99-1", "iPhone99-2"] {
@@ -1797,9 +1798,19 @@ fn make_image_takes_the_apps_request_with_the_released_runtimes_profiles() {
     assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("usage")), "{last}");
     let text = last["text"].as_str().unwrap();
     assert!(text.contains("give \"profile\"") && text.contains("ios-27.0.1-iPhone99-1.toml") && text.contains("ios-27.0.1-iPhone99-2.toml"), "{last}");
-    assert!(!text.contains("host-") && !text.contains("a56"), "only IPSW profiles are named: {last}");
+    assert!(text.contains("holds 3 iOS profiles") && text.contains("ios-16.5-a56.toml"), "the A56's 20F66 profile is one: {last}");
+    assert!(!text.contains("host-") && !text.contains("ios-27.0.1-a56"), "only IPSW profiles are named: {last}");
+    // the A56's request names its profile (the fork's A56 path): past the profile, to the kernel's inputs, as above
+    let mut a56 = app.clone();
+    a56["profile"] = json!(b.stage("runtime/lib/profiles/ios-16.5-a56.toml"));
+    let last = s.ask(a56);
+    assert_eq!(last["ev"].as_str(), Some("refused"), "{last}");
+    assert!(!last["text"].as_str().unwrap().contains("give \"profile\""), "the profile was taken: {last}");
+    assert_eq!(last["code"].as_str(), Some("not-found"), "{last}");
+    assert!(last["text"].as_str().unwrap().contains("the kernel's inputs are missing"), "as for iPhone18,2's: {last}");
+    nothing_left(&b, "the A56's request");
     // host profiles and reference-only ones alone are no iOS profile
-    for name in ["ios-27.0.1-iPhone99-1.toml", "ios-27.0.1-iPhone99-2.toml"] {
+    for name in ["ios-27.0.1-iPhone99-1.toml", "ios-27.0.1-iPhone99-2.toml", "ios-16.5-a56.toml"] {
         std::fs::remove_file(b.stage(&format!("runtime/lib/profiles/{name}"))).unwrap();
     }
     assert!(names.iter().any(|n| n.contains("a56")), "the A56 profiles stay: {names:?}");

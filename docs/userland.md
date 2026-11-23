@@ -55,7 +55,12 @@ Output in `OUT` (the hook puts it in the image set's `overlay/userland/`):
 
 The build is not root, so owners are recorded, not set; the hook writes them to `$ONEIOS_OWNERS`.
 A second run over the same trees changes nothing. A preference file that is not a property list stops the
-run instead of being written over. A root that is not iOS 27.0.1 is refused (`--any-version`).
+run instead of being written over. A root that is not iOS 27.0.1 is refused (`--any-version`), except iOS 16.5
+(20F66), the Galaxy A56's userland (docs/a56.md, 2026-11-23): its tweaks apply with a line that says so, and its
+`xnuhost.conf` carries the 16.5 boot arguments (the 16.5 shims, `oneios-gpu-metal=0`, and since 2026-11-23
+`oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService`, kernel 0073), the keybagd fixup (only for 20F66's own
+`keybagd`, by its SHA-256) and the QuartzCore vsync fixup. On the 20F66 root of 2026-11-23 the report says 6 launchd jobs
+disabled (most of the policy's labels are not in 16.5) and no jetsam properties for V54 (the root has D22's).
 
 ## 2. Layouts
 

@@ -179,6 +179,17 @@ pub fn load_profile(path: &str) -> Result<Profile, Fail> {
         if aea != Some(ends) {
             return Err(err!("{path}: member {name}: aea must be true exactly when the path ends in .aea"));
         }
+        // udif: a UDIF disk image (iOS 16's OS image), converted to raw APFS (`image udif-raw`); its plain_sha256 pins the raw
+        // image. Only for a volume, never with aea.
+        match m.get("udif") {
+            None | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => {
+                if !matches!(name, "os" | "systemos" | "app") || ends || !m.get("path").unwrap().as_str().unwrap().ends_with(".dmg") {
+                    return Err(err!("{path}: member {name}: udif is for a volume whose path ends in .dmg"));
+                }
+            }
+            Some(_) => return Err(err!("{path}: member {name}: udif must be true or false")),
+        }
         for key in ["sha256", "sha384", "plain_sha256"] {
             match m.get(key) {
                 None => {}
@@ -269,9 +280,18 @@ impl Profile {
     }
 }
 
+/// Whether member `m` is a UDIF disk image to convert (`udif = true`).
+pub(crate) fn is_udif(m: &Value) -> bool {
+    matches!(m.get("udif"), Some(Value::Bool(true)))
+}
+
 /// `input_name(m)`: the file name of a member in inputs/<build>/ (AEA members: the decrypted image, without .aea).
+/// A UDIF member's input is the raw image `image udif-raw` makes of it: its name with `.raw` added.
 pub(crate) fn input_name(m: &Value) -> String {
     let name = py::basename(m.get("path").and_then(Value::as_str).unwrap_or(""));
+    if is_udif(m) {
+        return format!("{name}.raw");
+    }
     if py::truthy(m.get("aea")) {
         let cut = name.char_indices().rev().nth(3).map_or(0, |(i, _)| i);
         name[..cut].to_string()
@@ -322,7 +342,7 @@ pub fn cmd_profile(args: &[String]) -> Result<String, Fail> {
                 role.to_string(),
                 m.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
                 input_name(m),
-                if py::truthy(m.get("aea")) { "1".into() } else { "0".into() },
+                if py::truthy(m.get("aea")) { "1".into() } else if is_udif(m) { "2".into() } else { "0".into() },
                 m.get("size").map_or(String::new(), py::str_value),
                 file.to_string(),
             ];

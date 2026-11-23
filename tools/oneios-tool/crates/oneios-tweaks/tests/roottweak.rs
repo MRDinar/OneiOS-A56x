@@ -839,9 +839,19 @@ fn sealed_20f66_gets_the_16_userland_boot_args() {
     let mut c = Case::new("20f66");
     fs::write(c.root.join("System/Library/CoreServices/SystemVersion.plist"), version_plist("20F66", "16.5")).unwrap();
     fs::write(c.root.join("usr/libexec/keybagd"), b"not the real one").unwrap();
-    c.apply(&["--any-version"]);
+    // 20F66 with 16.5 needs no --any-version (the A56's userland, 2026-11-23); another build of 16.5 still does
+    c.apply(&[]);
+    let report = fs::read_to_string(c.out.join("report.txt")).unwrap();
+    assert!(report.contains("applied   version: root is 16.5 (20F66), the A56's iOS 16.5"), "{report}");
     let conf = fs::read_to_string(c.out.join("xnuhost.conf")).unwrap();
-    for part in ["scale=", "oneios-gpu-metal=0", "oneios-legacy-bootstrap-replies=1", "oneios-legacy-registered-ports=1", "text-fixup=dyld_shared_cache_arm64.03,15e4684,e8279f1a,28008052"] {
+    for part in [
+        "scale=",
+        "oneios-gpu-metal=0",
+        "oneios-legacy-bootstrap-replies=1",
+        "oneios-legacy-registered-ports=1",
+        "oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService\n",
+        "text-fixup=dyld_shared_cache_arm64.03,15e4684,e8279f1a,28008052",
+    ] {
         assert!(conf.contains(part), "{part}");
     }
     assert!(!conf.contains("text-fixup=keybagd"));
