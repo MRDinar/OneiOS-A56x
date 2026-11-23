@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // OneiOS: the phone's buttons, appended to the staged DroidVMVirtioInput.c by build-oneios-hid.py.
 //
-// xnuhost's virtio-input device carries the touch screen's events and the side keys' (runtime/xnuhost/src/input.c:
+// xnuhost's virtio-input device carries the touch screen's events and the side keys' (runtime/xnuhost/src/input.rs:
 // evdev codes unchanged, read without a grab, so the switch's Volume Up + Volume Down watcher sees them too).
 // input_event() hands every EV_KEY here first. The pressed set goes to NativeHidInput's button sink as the bits of
 // its report 2:

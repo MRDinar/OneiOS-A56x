@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 //
 // The guest end of the OneiOS bridge channel: a virtio-mmio device at /arm-io/bridge, compatible
-// "oneios,bridge", whose host end is runtime/bridges/devices/bridge_dev.c in xnuhost. It carries the
+// "oneios,bridge", whose host end is runtime/bridges/devices/bridge_dev.rs in xnuhost. It carries the
 // small messages of oneios_bridge_proto.h (haptic requests, Bluetooth HCI packets).
 //
 // The transport (window lookup, split virtqueues from one contiguous region, a worker that sleeps on

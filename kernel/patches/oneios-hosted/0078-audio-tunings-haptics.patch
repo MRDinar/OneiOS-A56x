@@ -18,7 +18,7 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 + * waits for an answer that never comes: "AVHapticClient ... Initial XPC call to server timed out" for each key tap
 + * (Settings at 106-110 % of a CPU while typing a Wi-Fi password, phone 2026-11-15, 180 of them), and no haptic of the
 + * Actuator device is ever played. The hardware model is the guest tree's first compatible, "oneios,xnuhost" (xnuhost's
-+ * loader, runtime/loader/src/machine.c, with no identity tree); the OS volume has the iPhone's own folder,
++ * loader, runtime/loader/src/machine.rs, with no identity tree); the OS volume has the iPhone's own folder,
 + * /Library/Audio/Tunings/V54 (its Haptics folder only: the preset and its tap and keyboard waveforms). So the Data
 + * folder /private/var/oneios/addons/AudioTunings is made here before launchd with one link, "oneios,xnuhost" -> "V54"
 + * (made when missing; anything else there is left alone), and shown over /Library/Audio/Tunings read-only as a union

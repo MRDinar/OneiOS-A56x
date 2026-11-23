@@ -244,7 +244,7 @@
 # inspect_data_abort ask vm_fault for write: KERN_PROTECTION_FAILURE in sys_icache_invalidate, every WebContent
 # process at JSC::LLInt::createJSGateThunk (phone, 2026-11-14 06:03). Now the access is a read (user and kernel faults),
 # and a user CM fault reaches XNU with CM and WnR kept and an access flag fault (XNU's own CM rule makes it a read).
-# The runtime's stub says XH_PROT_READ for it too (runtime/xnuhost/stub/stub_abi.h, xs_fault_access).
+# The runtime's stub says XH_PROT_READ for it too (runtime/abi/src/stub.rs, fault_access).
 0071-cache-maintenance-fault-read.patch
 # port-a56 (docs/a56.md): iOS 16.5 (20F66) userland on this collection's iOS 27 (24A446) IOMobileGraphicsFamily and
 # IOSurface: the external methods kept their numbers but some structures grew, and the dispatch tables check sizes

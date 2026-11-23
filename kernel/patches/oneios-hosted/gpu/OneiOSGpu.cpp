@@ -7,7 +7,7 @@
 //   DroidVMVirtioGpu3D.cpp   the DRM native context (capset 6), blobs over the guest's pages, fenced submissions,
 //                            and droidvm_virtgpu_call: the DROIDVM_VIRTGPU_* interface (NativeAdreno
 //                            DroidVMVirtgpuABI.h) that the accelerator's user client gives Turnip's vdrm
-// The device is xnuhost's (runtime/xnuhost/src/virtio_gpu.c with drm2kgsl on /dev/kgsl-3d0), which answers as
+// The device is xnuhost's (runtime/xnuhost/src/virtio_gpu.rs with drm2kgsl on /dev/kgsl-3d0), which answers as
 // crosvm's does. Called once from oneios_board_late_start (0005-gpu-3d.patch), after the IOKit bootstrap.
 //
 // Boot arguments: vgpu-3d=0 leaves the 3D half alone (the display driver may still start the transport);

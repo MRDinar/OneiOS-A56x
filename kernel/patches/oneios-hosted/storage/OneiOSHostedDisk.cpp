@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 //
-// OneiOSHostedDisk: every disk xnuhost serves to the hosted kernel (runtime/xnuhost/src/virtio_blk.c: virtio-blk
+// OneiOSHostedDisk: every disk xnuhost serves to the hosted kernel (runtime/xnuhost/src/virtio_blk.rs: virtio-blk
 // on a virtio-mmio window), as one IOBlockStorageDevice class. The read-only images of the set (os.img,
 // systemos.img, app.img), the Data seed (a tar on a raw disk) and the writable Data store.
 //
@@ -13,7 +13,7 @@
 //     the fdatasync(2) and completes the request later, and transfer() waits for it asleep (IOSleep), not on the vCPU.
 //   - Writes and flush, for a disk the device does not offer as read-only.
 //   - Verified root: xnuhost checks every chunk of a read-only image against the image set's hash lists before
-//     the guest sees it (runtime/xnuhost/src/imageset.c) and says so in the disk's device tree node
+//     the guest sees it (runtime/xnuhost/src/imageset.rs) and says so in the disk's device tree node
 //     ("oneios,verified" = the SHA-256 of the hash list). That property is this disk's policy: no signed block
 //     hashes are checked a second time here. xnuhost holds the kernel's memory, so it is the root of trust.
 //   - Which disk is which comes from the node too: "oneios,role" (os, systemos, app, data, seed) and
@@ -150,7 +150,7 @@ static bool compatibleWith(IOService *provider, const char *name)
 
 IOService *OneiOSHostedDisk::probe(IOService *provider, SInt32 *score)
 {
-  // The read-only disks and the Data store, as runtime/loader/src/machine.c names them.
+  // The read-only disks and the Data store, as runtime/loader/src/machine.rs names them.
   if (!compatibleWith(provider, "virtio,mmio") && !compatibleWith(provider, "droidvm,data-store")) return nullptr;
   return IOBlockStorageDevice::probe(provider, score);
 }

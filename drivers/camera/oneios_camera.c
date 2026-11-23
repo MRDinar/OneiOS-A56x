@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 //
 // The guest end of the OneiOS camera device: a virtio-mmio device at /arm-io/camera, compatible
-// "oneios,camera", whose host end is runtime/bridges/camera/virtio_camera.c in xnuhost. It carries
+// "oneios,camera", whose host end is runtime/bridges/camera/virtio_camera.rs in xnuhost. It carries
 // commands (which camera, what picture size) and whole NV12 frames (oneios_camera_proto.h).
 //
 // The transport (window lookup, split virtqueues from one contiguous region) follows
