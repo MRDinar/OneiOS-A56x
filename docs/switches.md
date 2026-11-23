@@ -16,7 +16,7 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 xnuhost logs every switch once, after the `versions:` line:
 
 ```text
-switches: session-mode=hosted stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 ram-fit-terms=tasks ram-ondemand=0 uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 display-post=apart oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 (docs/switches.md); all at their defaults
+switches: session-mode=hosted stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 ram-fit-terms=tasks ram-ondemand=0 uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 display-post=apart oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 oneios-dont-care=1 oneios-queue-priority=1 (docs/switches.md); all at their defaults
 ```
 
 When some are changed, the end says which: `not at the default: wifi-send-wait gpu-down`. Kernel switches are read
@@ -54,6 +54,22 @@ change (the default value), and whether one has run the other value.
 | `boot-args-add=oneios-disable-allowed=0` | `0\|1\|NAME` | `1` | 1: before launchd the kernel renames the 19 `DisableAllowed` keys of the sealed `/System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist` (same length, nothing else changes) in a copy that 0031's union shows over LaunchDaemons, so launchd honours disabled.plist for every job (osanalyticshelper and its agent, diagnosticextensionsd, symptomsd-diag, OTATaskingAgent, softwareupdated ran although disabled); NAME: the plist of that product type; 0: no copy (an earlier boot's removed), launchd runs the marked jobs whatever disabled.plist says (before 0098). With `oneios-telemetry-jobs=1` the telemetry labels are enabled in disabled.plist, so they run either way. Kernel, hosted 0098; `oneios-kill` (0100) is logging (no switch) | 0098, 0100 (fix/disable-allowed) | no |
 | `boot-args-add=oneios-idle-spares=0` | `0\|1` | `1` | 1: the Metal plug-in's idle trim (every 2 s) also frees the images and buffers metal2vulkan's recyclers parked past their second and the spare dedicated image blocks past their 10 s (they went only as another object was parked, taken or returned, so a still process kept up to 128 + 64 MiB parked and every spare); 0: they age only as before (the plug-in sets `METAL2VULKAN_IDLE_SPARES=0`). Metal plug-in only (the boot add-on), `userland/metal/m2v-idle-memory.patch`, docs/gpu.md "The idle memory" | this build | no |
 | `boot-args-add=oneios-bo-cache-idle=0` | `0\|1` | `1` | 1: every 60 s the plug-in gives back the BOs in Turnip's cache of freed BOs that no allocation took for 30 s (`tu_darwin_bo_cache_trim_idle`); 0: the cache goes back only past its budgets or at a pressure rise, as before (the render server kept 78 MiB at a still screen). Metal plug-in only (the boot add-on), `userland/metal/turnip-idle-bo-cache.patch` | this build | no |
+| `boot-args-add=oneios-dont-care=0` | `0\|1` | `1` | rt add-on only: 1: Metal's DontCare and MultisampleResolve stores are Vulkan `DONT_CARE` on Turnip (rt 0005, Droid-VM 0021's measurement: 37 ms against 9 ms a pass); 0: they store (`METAL2VULKAN_DONT_CARE_STORES=0`, `userland/metal/rt/RtSwitches.inc`). The 624bab3 add-on has Droid-VM 0021 always | port/m2v-rt | no |
+| `boot-args-add=oneios-queue-priority=0` | `0\|1` | `1` | rt add-on only: 1: the render server's queues at the high global priority (rt 0006, Droid-VM 0012); 0: the driver's default (`METAL2VULKAN_QUEUE_PRIORITY=default`) | port/m2v-rt | no |
+
+### The Metal add-on: 624bab3 or rt
+
+Not a key of `xnuhost.conf`: which boot add-on (`image/kernel.kc.gpuaddon`) the Mac stages, with
+`oneios-tool phone addon FILE` (and `phone addon --remove` for the image's own plug-in). Both carry the same Turnip and
+the same camera plug-in; they differ in the bridge's runtime (`userland/metal/rt/README.md`).
+
+| Add-on | Built by | Default | What |
+|---|---|---|---|
+| 624bab3 | `userland/metal/build.sh` (`METAL_RUNTIME` unset) | yes, until a phone boot of rt passes | the old runtime and its 56 patches; the fallback |
+| rt | `METAL_RUNTIME=rt userland/metal/build.sh` | no | metal2vulkan `development` 6462199fa (`metal2vulkan-runtime` 0.2) with `userland/metal/rt/patches` 0001-0008 and the rewritten bridge; not booted |
+
+Each build writes `NativeAdrenoMetal.runtime` (`624bab3` or `rt`) beside its bundle; the CDHashes of a pair the Mac
+was given are in that hand-off, and `oneios-tool phone sums` shows the staged one.
 
 Not switched, on purpose:
 
@@ -90,8 +106,8 @@ wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
 display-post=apart
-# kernel switches (boot-args-add appends to boot-args; one line, all seven words):
-# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-idle-spares=1 oneios-bo-cache-idle=1
+# kernel and plug-in switches (boot-args-add appends to boot-args; one line, all nine words):
+# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 oneios-dont-care=1 oneios-queue-priority=1
 ```
 
 ## Tests

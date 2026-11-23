@@ -2148,6 +2148,9 @@ impl Config {
             ("oneios-disable-allowed", arg("oneios-disable-allowed", "1"), "1"),
             ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
             ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
+            // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
+            ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
+            ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),
         ];
         let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
         let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();
