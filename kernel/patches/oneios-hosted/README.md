@@ -2159,7 +2159,15 @@ imports (`watchImportPressure`) all wait for that note (docs/gpu.md, "Who keeps 
   (they are purgeable memory the client owns) is not checked yet: the last-notes column shows the footprints.
 
 Tested: `git apply --check` after 0096 on the patched tree; built release-style (`ONEIOS_CRYPTO=original`) and
-prelinked (docs/switches.md has the build). The kernel built for the phone leaves out 0095 (its `recount.c:753` panic
-is being fixed apart). Not booted. **Watch in its first boot:** the `oneios-wired` lines (`IOKIT` near the GPU's own +
+prelinked (docs/switches.md has the build). First built with the series less 0095 (its `recount.c:753` panic was
+fixed apart); merged 2026-11-24 after the fixed 0095 and built with the whole series (`HOSTED_OUT=wired`, 182 patches,
+`xnu.macho` `32f88a27`, releasable), prelinked (`kernel.kc` `e79886d9`, audit 0 failures, stubs 666 good). Under
+qemu-aarch64 (docs/building.md section 5, a new Data volume, 8 vCPUs, 4 GiB, the integration build's runtime) it ran
+the 20 minutes of its timeout with no panic: `hello, launchd` at +209 s, SpringBoard at +247 s, 39 `thread calls:`
+lines, 20 `oneios-wired` reports (one a minute; wired 178 MiB at the start, 529 at the end: `ZONE` 136, `PTE` 120,
+`RESERVED` 87, `SECURITY` 63, IOSurface 35, `unnamed` 45; GPU blobs 0, qemu has no KGSL) and 20 `oneios-pressure`
+pairs (level normal throughout, 2804 MiB available at the end, no rise), each line under 240 characters. Logs:
+`out/session-logs/2026-11-24-pc-wiredm/`. Not tested: a pressure rise (so `big first`), a GPU client's blobs in the
+counts, a phone boot. **Watch in its first boot:** the `oneios-wired` lines (`IOKIT` near the GPU's own +
 imported, `unnamed` small), and in `oneios-pressure` a warning round whose first notes are backboardd and the other
 large GPU clients (`big first` above 0), then `oneios-gpu-memory` own bytes falling within seconds of the rise.
