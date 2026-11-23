@@ -454,7 +454,8 @@ impl Session {
         onebridges::hw::hw_configure(&config.hw);
         if config.input {
             // Touch and the side keys: one lookup for both backends (input.rs: event0..31 by their capabilities, never
-            // grabbed, except an explicit bench+SHM touch-exclusive=1, which grabs only the native sec_touchscreen).
+            // grabbed, except touch-exclusive=1, which grabs only the native sec_touchscreen: a bench+SHM preview, or
+            // session-mode=takeover, where the side keys are still read and never grabbed).
             use onebridges::hw::{Backend, Bridge};
             let (touch, touch_why) = config.hw.choose(Bridge::Touch, Backend::Unset);
             let (keys, keys_why) = config.hw.choose(Bridge::Keys, Backend::Unset);
@@ -464,7 +465,7 @@ impl Session {
                 touch_why,
                 keys.name(),
                 keys_why,
-                if config.touch_exclusive { "requested (bench+SHM sec_touchscreen grab)" } else { "off" }
+                config.exclusive_touch_text()
             );
         }
         let host_pen_dev = pen_dev.as_ref().filter(|_| host_pen.is_some());
@@ -475,7 +476,9 @@ impl Session {
                 rotate,
                 mirror: config.pen_mirror,
             });
-            if input::start(&input_dev, ipen, fb_width, fb_height, config.touch_exclusive).is_err() {
+            // The bench preview leaves the side keys to the Android that runs under it; every session reads them.
+            let read_keys = config.reads_side_keys();
+            if input::start(&input_dev, ipen, fb_width, fb_height, config.touch_exclusive, read_keys).is_err() {
                 if config.touch_exclusive {
                     loge!(
                         "input: exclusive touchscreen unavailable; refusing to boot guest, Android input stays usable"

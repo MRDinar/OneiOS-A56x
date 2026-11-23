@@ -579,7 +579,25 @@ pub fn main() -> i32 {
         unsafe { android_set_application_target_sdk_version(30) };
     }
     let mut config = Config::new();
-    if let Err(e) = config.args(&argv).and_then(|()| config.finish_with(&crate::ramfix::can_lock)) {
+    if let Err(e) = config.args(&argv) {
+        e.print();
+        return EXIT_SETUP;
+    }
+    // --host-info: the host table's answer for this phone, one line on stdout, nothing else (the OneOS switch's preflight
+    // asks it before it stops anything: oneos/interface.md 4a).
+    if config.host_info {
+        return match config.host_info_line() {
+            Ok(line) => {
+                println!("{line}");
+                0
+            }
+            Err(e) => {
+                e.print();
+                EXIT_SETUP
+            }
+        };
+    }
+    if let Err(e) = config.finish_with(&crate::ramfix::can_lock) {
         e.print();
         return EXIT_SETUP;
     }
@@ -587,13 +605,19 @@ pub fn main() -> i32 {
     let _ = SESSION_DIR.set(config.session.clone());
     READY_WAIT.store(config.ready_content_wait, Ordering::Relaxed);
     logi!("xnuhost: session ABI {}, mode {}, pid {}", config.session_abi, config.mode, std::process::id());
-    xh_core::virtio::set_log(true); // virtio's health lines (docs/booter.md 2.9b)
-    xh_core::hooks::install_cpu(|| cpu::current().map(|v| v.index() as u32)); // who holds a device, in its "held by" line
-                                                                              // The host phone (onebridges::hw, config.rs): what was found, from which property, and each default it changed.
-                                                                              // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
-                                                                              // variable the session already set wins.
+    // virtio's health lines (docs/booter.md 2.9b)
+    xh_core::virtio::set_log(true);
+    // who holds a device, in its "held by" line
+    xh_core::hooks::install_cpu(|| cpu::current().map(|v| v.index() as u32));
+    // The host phone (onebridges::hw, config.rs): what was found, from which property, and each default it changed.
+    // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
+    // variable the session already set wins.
     if !config.host_line.is_empty() {
         logi!("{}", config.host_line);
+    }
+    // Only in the opt-in mode: the default session's log has no such line (docs/booter.md 2.9d).
+    if let Some(line) = config.takeover_line() {
+        logi!("{}", line);
     }
     if let Some(h) = config.host {
         onebridges::hw::host_env_apply(h.0);
@@ -669,6 +693,7 @@ pub fn main() -> i32 {
         Ok(p) => p,
         Err(BootFailed) => {
             task::shutdown();
+            input::stop(); // the touchscreen's grab (touch-exclusive), released here too, not only by the exit
             return EXIT_SETUP;
         }
     };
@@ -676,6 +701,7 @@ pub fn main() -> i32 {
     let block = cpu::vcpu(0).cpu.as_ptr() as u64;
     if cpu::start(0, placed.entry_va, placed.args_va, hostcalls_vector(), block).is_err() {
         task::shutdown();
+        input::stop();
         return EXIT_SETUP;
     }
     let _ = ARGV.set(argv);

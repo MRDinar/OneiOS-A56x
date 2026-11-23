@@ -90,7 +90,7 @@ turns detection off; an unknown phone keeps today's defaults. xnuhost logs one `
 entry, the property that matched, each default taken or not); the bridges' ctl tools and `oneios-tool phone status`
 use the same table (oneios-tool's copy, `crates/oneios-phone/src/host.rs`, is checked against the bridges' by a test). A new phone is a new table row plus its
 record, never a fork: [hardware.md](hardware.md) 7h has the table, what is marked unverified per phone, and the tests.
-A row may also allow the opt-in Android takeover (`.takeover = true`: the S24 Ultra and the S26 Ultra), which
+A row may also allow the opt-in Android takeover (`takeover: true`: the S24 Ultra and the S26 Ultra), which
 `xnuhost --host-info` tells the OneOS switch before it stops anything.
 
 ## Two session modes: hosted (the default) and the opt-in Android takeover

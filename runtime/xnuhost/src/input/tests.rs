@@ -92,6 +92,27 @@ fn which_touchscreen() {
 }
 
 #[test]
+fn the_grab_lines_and_one_release() {
+    assert_eq!(
+        grabbed_line(false),
+        "input: touch-exclusive: sec_touchscreen grabbed for the bench preview; Android input hidden until release"
+    );
+    assert_eq!(
+        grabbed_line(true),
+        "input: touch-exclusive: sec_touchscreen grabbed (session-mode=takeover; the side keys are read, never grabbed); Android input hidden until release"
+    );
+    // The release runs once, whichever of stop() and the devices' drop comes first: a descriptor that is no evdev device
+    // (the release fails and says so), then nothing more; a stop with no reader changes nothing.
+    let (a, _b) = xh_core::fd::socket_pair(libc::SOCK_SEQPACKET).expect("a socket pair");
+    EXCLUSIVE.store(a.as_raw_fd(), Ordering::Release);
+    drop(Devices { sources: Vec::new(), pen: None });
+    assert_eq!(EXCLUSIVE.load(Ordering::Acquire), -1);
+    release_exclusive();
+    stop();
+    assert_eq!(EXCLUSIVE.load(Ordering::Acquire), -1);
+}
+
+#[test]
 fn filter() {
     let mut g = Guest::new(45);
     let (hz, counter, now) = (19_200_000u64, 1_000_000_000u64, 100_000_000_000i64);

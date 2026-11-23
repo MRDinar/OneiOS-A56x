@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MIT
-//! Touch and side keys, read from /dev/input/event*. During a normal takeover zygote and system_server are gone; the
-//! touchscreen is not grabbed, so the switcher's Volume Up + Down watcher keeps receiving keys. The explicitly
-//! opted-in bench+SHM touch-exclusive mode is different: only Samsung's native sec_touchscreen is EVIOCGRABbed, so that
-//! Android underneath the preview gets no touches at the same time. Side keys are NEVER grabbed. Closing xnuhost's
-//! descriptor (SIGKILL included) releases the touch for One UI.
+//! Touch and side keys, read from /dev/input/event*. In the default session (session-mode=hosted) zygote and
+//! system_server are gone and nothing is grabbed, so the switcher's Volume Up + Down readers keep receiving keys.
+//! touch-exclusive=1 is different: only Samsung's native sec_touchscreen is EVIOCGRABbed, in two cases:
+//!   - the bench+SHM preview (Android still runs underneath: no tap may reach it), where `read_keys` is false and no
+//!     side-key device is opened at all;
+//!   - session-mode=takeover (the opt-in Android takeover, docs/booter.md 2.9d: the touchscreen is iOS's alone), where
+//!     the side keys are still read as in every session, and never grabbed.
+//!
+//! Side keys are NEVER grabbed. The grab ends with [`stop`] (before it waits for the reader: a reader blocked in a
+//! guest device cannot keep the touchscreen from One UI), with the reader's end, and with the descriptor: an exit, a
+//! SIGKILL, the exec of a restart in place (the descriptor is O_CLOEXEC; the kernel ends a grab with its file).
 //!
 //! Each touch frame goes to the guest with its scan time: an EV_MSC / MSC_TIMESTAMP event before the SYN_REPORT whose
 //! value is the low 32 bits of the time the kernel stamped the frame with, in counter ticks (CNTVCT_EL0, the guest's
@@ -20,7 +26,7 @@
 //! ...): the frames and their spacing (the touch IC's report rate), how long after the scan the reader got each frame,
 //! and, for a touch on a still screen, how long until the guest showed its next frame ([`frame_shown`], called from
 //! the display).
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use xh_core::logi;
@@ -197,7 +203,8 @@ pub fn accept_touch(name: Option<&str>, direct: bool, have_touch: bool, native_p
     direct && !have_touch && (!native_present || name == Some("sec_touchscreen"))
 }
 
-/// The exclusive preview never falls back to a wearable or a secondary pointer.
+/// The exclusive grab (a bench+SHM preview, session-mode=takeover) admits only the native sec_touchscreen: it never
+/// falls back to a wearable or a secondary pointer.
 pub fn exclusive_touch_allowed(name: Option<&str>, direct: bool, have_touch: bool) -> bool {
     direct && !have_touch && name == Some("sec_touchscreen")
 }
@@ -471,7 +478,7 @@ pub(crate) use xh_core::evdev;
 // ---- the reader ------------------------------------------------------------------------------------------------------
 use crate::pen;
 use crate::virtio_input::{self, InputDev};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::AsRawFd;
 
 /// What input.rs and input_script.rs get of the pen: the guest's pen device, the host's (its descriptor, or None for
 /// the script's), the turn.
@@ -488,19 +495,41 @@ const MAX_DEVICES: usize = 8;
 struct Devices {
     sources: Vec<Source<InputDev>>,
     pen: Option<pen::Source<InputDev>>,
-    exclusive: Option<RawFd>,
 }
 
 impl Drop for Devices {
     fn drop(&mut self) {
-        if let Some(fd) = self.exclusive.take() {
-            if !evdev::grab(fd, false) {
-                xh_core::loge!("input: touch-exclusive: explicit release failed: {}", std::io::Error::last_os_error());
-            } else {
-                logi!("input: touch-exclusive: sec_touchscreen released to Android");
-            }
-        }
+        release_exclusive();
     }
+}
+
+/// The grabbed touchscreen's descriptor (-1: none). Its owner is the reader's [`Devices`]; whichever of [`stop`] and
+/// the devices' drop comes first releases the grab, once (the descriptor stays open until the drop, after both).
+static EXCLUSIVE: AtomicI32 = AtomicI32::new(-1);
+
+/// The grab released, once: its line, or why the release failed (the descriptor's close ends it then).
+fn release_exclusive() {
+    let fd = EXCLUSIVE.swap(-1, Ordering::AcqRel);
+    if fd < 0 {
+        return;
+    }
+    if !evdev::grab(fd, false) {
+        xh_core::loge!("input: touch-exclusive: explicit release failed: {}", std::io::Error::last_os_error());
+    } else {
+        logi!("input: touch-exclusive: sec_touchscreen released to Android");
+    }
+}
+
+/// The line of the grab: the bench preview's, or the takeover's (the side keys read).
+fn grabbed_line(read_keys: bool) -> String {
+    format!(
+        "input: touch-exclusive: sec_touchscreen grabbed{}; Android input hidden until release",
+        if read_keys {
+            " (session-mode=takeover; the side keys are read, never grabbed)"
+        } else {
+            " for the bench preview"
+        }
+    )
 }
 
 struct Reader {
@@ -606,16 +635,19 @@ fn reader_main(mut devices: Devices, running: std::sync::Arc<AtomicBool>) {
 }
 
 /// Starts the reader: /dev/input/event* into the virtio-input device; with `pen` the pen's device too, read on the
-/// same thread into its own guest device (pen.rs). `touch_exclusive` grabs only the native sec_touchscreen
-/// (bench+SHM). Err: touch-exclusive could not take sec_touchscreen, or no thread.
+/// same thread into its own guest device (pen.rs). `touch_exclusive` grabs only the native sec_touchscreen (a
+/// bench+SHM preview, or session-mode=takeover); `read_keys` false (the bench preview only,
+/// [`crate::config::Config::reads_side_keys`]) leaves every side-key device to Android. Err: touch-exclusive could not
+/// take sec_touchscreen, or no thread.
 pub fn start(
     dev: &InputDev,
     pen: Option<InputPen>,
     width: u32,
     height: u32,
     touch_exclusive: bool,
+    read_keys: bool,
 ) -> Result<(), Failed> {
-    let mut devices = Devices { sources: Vec::new(), pen: None, exclusive: None };
+    let mut devices = Devices { sources: Vec::new(), pen: None };
     let mut have_touch = false;
     let native_touch = native_touch_present();
     for i in 0..32 {
@@ -629,9 +661,10 @@ pub fn start(
         evdev::bits(raw, EV_KEY, &mut key);
         let name = evdev::name(raw, 63).unwrap_or_default();
         let mut touch = evdev::bit(&abs, ABS_MT_POSITION_X as usize) && evdev::bit(&abs, ABS_MT_POSITION_Y as usize);
-        // Keep physical side keys on Android during the interactive bench. Skipping all key-only nodes also reserves
-        // the reader's limited slots for sec_touchscreen even if it was assigned a late eventN number.
-        let keys = !touch_exclusive && SIDE_KEYS.iter().any(|&k| evdev::bit(&key, k as usize));
+        // Keep physical side keys on Android during the interactive bench preview (read_keys false). Skipping all
+        // key-only nodes also reserves the reader's limited slots for sec_touchscreen even if it was assigned a late
+        // eventN number.
+        let keys = read_keys && SIDE_KEYS.iter().any(|&k| evdev::bit(&key, k as usize));
         // One touchscreen: the multitouch device that is the screen itself (INPUT_PROP_DIRECT). The S24 Ultra also
         // has "sec_touchpad", a multitouch pointer device with the same axes: its events went into the same guest
         // device as the screen's (one slot state for two sources) and its ranges replaced the screen's. Not taken.
@@ -672,8 +705,8 @@ pub fn start(
                     );
                     return Err(Failed);
                 }
-                devices.exclusive = Some(raw);
-                logi!("input: touch-exclusive: sec_touchscreen grabbed for bounded guest; Android input hidden until release");
+                EXCLUSIVE.store(raw, Ordering::Release); // the descriptor goes into devices below and lives as long
+                logi!("{}", grabbed_line(read_keys));
             }
             have_touch = true;
             // The guest gets the panel's own coordinate ranges and scales them to its frame.
@@ -744,10 +777,13 @@ pub fn start(
     Ok(())
 }
 
-/// Stops the reader and closes its devices (the exclusive grab released first).
+/// Stops the reader and closes its devices, the exclusive grab released first. Once: a second call finds no reader.
 pub fn stop() {
     let reader = READER.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(r) = reader {
+        // Before the join: a reader that does not come back (blocked in a guest device's lock, docs/booter.md 2.9c)
+        // must not keep the touchscreen from One UI until the stop path's limit. It still holds the descriptor.
+        release_exclusive();
         r.running.store(false, Ordering::Release);
         let _ = r.thread.join();
     }

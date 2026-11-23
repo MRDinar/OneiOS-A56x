@@ -20,7 +20,7 @@ pub struct HostDevice {
     pub config: &'static [&'static str],
     /// environment defaults NAME=VALUE for the bridges (a variable already set wins)
     pub env: &'static [&'static str],
-    /// session-mode=takeover (the opt-in Android takeover) is allowed on this phone (the C entry's `.takeover = true`)
+    /// session-mode=takeover (the opt-in Android takeover) is allowed on this phone (host_device.rs's `takeover: true`)
     pub takeover: bool,
 }
 
@@ -283,7 +283,7 @@ mod tests {
             ] {
                 assert_eq!(rs_list(b, field), ours.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "{}: {field}", r.name);
             }
-            assert_eq!(c.contains(".takeover = true"), r.takeover, "{}: .takeover", r.name);
+            assert_eq!(b.contains("takeover: true"), r.takeover, "{}: takeover", r.name);
         }
     }
 }

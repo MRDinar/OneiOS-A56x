@@ -100,6 +100,12 @@ named!(
     Mode { Takeover = "takeover", Bench = "bench" }
 );
 named!(
+    /// session-mode=: hosted (the default: the session as before session-mode existed, byte for byte) or takeover (the
+    /// opt-in Android takeover, docs/booter.md 2.9d: mode=takeover, input=1 and a host-table row that allows it; it
+    /// turns the native touchscreen's grab on unless touch-exclusive= was given).
+    SessionMode { Hosted = "hosted", Takeover = "takeover" }
+);
+named!(
     /// display=
     DisplayBackend { Shm = "shm", Drm = "drm", None = "none" }
 );
@@ -315,7 +321,9 @@ pub const USAGE: &str = "usage: xnuhost --image DIR [--kernel FILE] [--data DIR]
 \x20              [--set haptics-native-impacts=0|1] (1: needs hw-backend-haptics=treble, hw-backend-fallback=0)\n\
 \x20              [--host-device auto|none|NAME] [--host-props FILE] [--host-root DIR]\n\
 \x20              [--no-input] [--input-script FILE] [--set touch-exclusive=1] [--no-tasks] [--config FILE] [--set KEY=VALUE] [-v]\n\
+\x20              [--set session-mode=hosted|takeover]\n\
 \x20      xnuhost --selftest      checks of this host (trap layer, PAC, memory), no kernel\n\
+\x20      xnuhost --host-info [--host-device ...] [--host-props FILE]   this phone's row of the host table, one line\n\
 docs/booter.md describes the image set's files, the session files and the exit codes.\n";
 
 /// `field` from the image set where the command line did not give `key`.
@@ -354,6 +362,8 @@ const GIVEN_KEYS: &[&str] = &[
     "scale",
     "scale-fixup",
     "display-direct",
+    "touch-exclusive",
+    "session-mode",
     "pen",
     "pen-rotate",
     "pen-mirror",
@@ -480,8 +490,17 @@ pub struct Config {
     pub input: bool,
     /// a helper that can copies frames from guest RAM itself (display.rs); false: xnuhost copies (true)
     pub display_direct: bool,
-    /// touch-exclusive=1: bench+SHM only, EVIOCGRAB sec_touchscreen so Android cannot also tap; default off
+    /// touch-exclusive=1: EVIOCGRAB the native sec_touchscreen only (never a key device); default off. Allowed in a
+    /// bench+SHM preview (bridges=0; the side keys are then not read at all) and in session-mode=takeover, which turns
+    /// it on (the side keys still read, never grabbed). Whether it was given: given("touch-exclusive") (session-mode=
+    /// takeover then keeps that value)
     pub touch_exclusive: bool,
+    /// session-mode=hosted (default: the session as before, byte for byte) or takeover (the opt-in Android takeover,
+    /// docs/booter.md 2.9d: the host table must allow it, mode=takeover); given("session-mode"): the command line wins
+    /// over the image set's
+    pub session_mode: SessionMode,
+    /// --host-info: print the host table's answer for this phone (host-info: device=... takeover=...) and exit
+    pub host_info: bool,
     /// touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
     pub touch_sleep: bool,
     /// a file of scripted touches and keys (input_script.rs), "" = none
@@ -688,7 +707,9 @@ impl Config {
             text_fixups: TextFixups::default(),
             input: true,
             display_direct: true,
-            touch_exclusive: false, // bench-only touchscreen grab; never on in takeover
+            touch_exclusive: false, // the touchscreen grab: a bench preview, or session-mode=takeover (which turns it on)
+            session_mode: SessionMode::Hosted, // the default session, byte for byte as before session-mode existed
+            host_info: false,
             touch_sleep: true,
             input_script: String::new(),
             pen: Pen::Off,
@@ -838,6 +859,8 @@ impl Config {
             "input" => self.input = flag(value)?,
             "display-direct" => self.display_direct = flag(value)?,
             "touch-exclusive" => self.touch_exclusive = flag(value)?,
+            // hosted (the default) or takeover (docs/booter.md 2.9d): the finish checks the host table and the mode
+            "session-mode" => self.session_mode = named(SessionMode::parse(value))?,
             "input-script" => self.input_script = text(value, 512)?,
             "tasks" => self.tasks = flag(value)?,
             "task-uid" => self.task_uid = u32::try_from(parse::atoi(value)).ok(),
@@ -958,6 +981,7 @@ impl Config {
             match a {
                 "-v" => self.log_level = Level::Debug,
                 "--selftest" => self.selftest = true,
+                "--host-info" => self.host_info = true,
                 "--no-input" => self.input = false,
                 "--no-tasks" => self.tasks = false,
                 "-h" | "--help" => return Err(ConfigError { lines: Vec::new(), usage: true }),
@@ -1031,18 +1055,48 @@ impl Config {
         take!(self, image, "encoder", encoder);
         take!(self, image, "camera-vm", camera_vm);
         take!(self, image, "camera-model", camera_model);
-        // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
-        // Never let an input-grabbing guest take control of Android outside a SHM bench.
+        // session-mode= of the image set (its overlay/userland/xnuhost.conf) when the command line has none.
+        take!(self, image, "session-mode", session_mode);
+        let takeover_mode = self.session_mode == SessionMode::Takeover;
+        // The touchscreen grab, outside the opt-in Android takeover, is a bounded non-takeover diagnostic only: never let
+        // an input-grabbing guest take control of Android outside a SHM bench.
         if self.touch_exclusive
+            && !takeover_mode
             && (self.mode != Mode::Bench || self.display != DisplayBackend::Shm || !self.input || self.bridges)
         {
-            return Err(ConfigError::new("touch-exclusive=1 requires mode=bench, display=shm, input=1, bridges=0"));
+            return Err(ConfigError::new(
+                "touch-exclusive=1 requires session-mode=takeover, or mode=bench, display=shm, input=1, bridges=0",
+            ));
         }
         if self.selftest {
             return Ok(());
         }
         // The host phone's defaults (onebridges::hw), under both: the command line > the image set > the table > built in.
         let device = self.host_device_layer(&image)?;
+        // session-mode=takeover (docs/booter.md 2.9d): only in the OneOS session, only where the host table allows it (the
+        // switch asked --host-info before it stopped One UI; this is the same rule, for a command line that did not), and
+        // with input: it turns the native touchscreen's grab on unless touch-exclusive= was given.
+        if takeover_mode {
+            if self.mode != Mode::Takeover {
+                return Err(ConfigError::new("session-mode=takeover needs mode=takeover (the OneOS session)"));
+            }
+            match self.host {
+                Some(h) if h.0.takeover => {}
+                _ => {
+                    return Err(ConfigError::new(format!(
+                        "session-mode=takeover is not supported on this phone ({}): the host table \
+                         (runtime/bridges/hw/host_device.rs) does not allow it; session-mode=hosted is the session as before",
+                        self.host.map_or("no row of the host table", |h| h.0.name)
+                    )))
+                }
+            }
+            if !self.input {
+                return Err(ConfigError::new("session-mode=takeover needs input=1 (its touchscreen grab)"));
+            }
+            if !self.given("touch-exclusive") {
+                self.touch_exclusive = true;
+            }
+        }
         if !self.given("gpu") {
             self.gpu = if image.given("gpu") { image.gpu } else { device.gpu };
         }
@@ -1350,6 +1404,52 @@ impl Config {
             bhw::host_describe(&facts)
         );
         Ok(device)
+    }
+
+    /// --host-info (session::main): the host table's row for this phone, the one line (without its line break) for the
+    /// OneOS switch's preflight (oneos/interface.md 4a): "host-info: device=galaxy-s24-ultra takeover=yes (matched by
+    /// ro.product.model=SM-S928B)", or "host-info: device=none takeover=no (unknown phone; read: ...)". It reads what
+    /// the finish's host layer reads (the properties, three sysfs and proc files; host-device=, host-props=, host-root=
+    /// from the command line or a --config file) and needs no image. Err: a property file that cannot be read (a
+    /// host-device= that names no row is refused when it is set).
+    pub fn host_info_line(&self) -> Result<String, ConfigError> {
+        let (entry, facts, why) =
+            bhw::host_choose(&self.host_device, &self.host_props, &self.host_root).map_err(ConfigError::new)?;
+        Ok(match entry {
+            Some(e) => {
+                format!("host-info: device={} takeover={} ({why})", e.name, if e.takeover { "yes" } else { "no" })
+            }
+            None => format!("host-info: device=none takeover=no ({why}; read: {})", bhw::host_describe(&facts)),
+        })
+    }
+
+    /// Whether the session reads the side keys: every session does; only the bench preview's grab (touch-exclusive=1
+    /// with mode=bench) leaves them to the Android that runs under it (input::start's `read_keys`).
+    pub fn reads_side_keys(&self) -> bool {
+        !(self.touch_exclusive && self.mode == Mode::Bench)
+    }
+
+    /// What the "hw: touch: ..." line says of the grab ("off", the bench preview's, the takeover's).
+    pub fn exclusive_touch_text(&self) -> &'static str {
+        if !self.touch_exclusive {
+            "off"
+        } else if self.mode == Mode::Bench {
+            "requested (bench+SHM sec_touchscreen grab)"
+        } else {
+            "requested (session-mode=takeover: sec_touchscreen grab, the side keys read and never grabbed)"
+        }
+    }
+
+    /// The session's line in the opt-in mode only (None in session-mode=hosted: its log has no such line;
+    /// docs/booter.md 2.9d).
+    pub fn takeover_line(&self) -> Option<String> {
+        (self.session_mode == SessionMode::Takeover).then(|| {
+            format!(
+                "session: Android takeover (session-mode=takeover; {} allows it): the native touchscreen is grabbed for iOS{}; the side keys are read, never grabbed; the switch's CPU caps and the way back are the OneOS fork's",
+                self.host.map_or("?", |h| h.0.name),
+                if self.touch_exclusive { "" } else { " (not: touch-exclusive=0 was given)" }
+            )
+        })
     }
 
     /// Whether the command line or the image set (`over`, the two already merged for hw) gives the key of `key=value`.

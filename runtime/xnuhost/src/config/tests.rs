@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-// tests/test_xnuhost.c's test_config and test_host_device: the settings, the image set's xnuhost.conf under the
-// command line, ram=auto and what fits, the display's mode, the boot arguments' helpers, the host phone's layer.
+// tests/test_xnuhost.c's test_config, test_host_device and test_session_mode: the settings, the image set's xnuhost.conf
+// under the command line, ram=auto and what fits, the display's mode, the boot arguments' helpers, the host phone's layer,
+// session-mode= and --host-info.
 
 use super::*;
 use std::path::PathBuf;
@@ -978,5 +979,160 @@ fn host_device() {
     // The selftest leaves no gpu unset.
     let c = run(&["--selftest"]).unwrap();
     assert!(c.gpu == Gpu::Auto && c.host_line.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---- session-mode= and --host-info (docs/booter.md 2.9d) ---------------------------------------------------------------
+// hosted is the default and changes nothing; takeover only in the OneOS session, only on a phone whose host-table row
+// allows it (the S24 Ultra, the S26 Ultra), and it turns the native touchscreen's grab on unless touch-exclusive= was
+// given; the image set's session-mode= under the command line's. And --host-info, the one line the OneOS switch reads
+// before it stops anything.
+
+/// The fork's command line on the phone whose properties are `props`, with `extra` after it, finished.
+fn mode_finish(rig: &HostRig, props: &str, extra: &[&str]) -> Result<Config, ConfigError> {
+    let ram_meminfo = format!("ram-meminfo={}", rig.meminfo);
+    let host_props = format!("host-props={props}");
+    let host_root = format!("host-root={}", rig.root);
+    let mut a = vec!["--image", &rig.image, "--ram", "4G", "--set", &ram_meminfo, "--set", &host_props];
+    a.extend(["--set", &host_root]);
+    a.extend_from_slice(extra);
+    run(&a)
+}
+
+/// --host-info's line for a phone (and a host-device=), or "refused".
+fn host_info_line(rig: &HostRig, props: &str, device: Option<&str>) -> String {
+    let mut a = vec!["--host-info", "--host-props", props, "--host-root", &rig.root];
+    if let Some(d) = device {
+        a.extend(["--host-device", d]);
+    }
+    let mut c = Config::new();
+    match args(&mut c, &a).map(|()| c.host_info).map(|on| on.then(|| c.host_info_line())) {
+        Ok(Some(Ok(line))) => line,
+        _ => "refused".to_owned(),
+    }
+}
+
+#[test]
+fn session_mode() {
+    let dir = testdir("mode");
+    let image = image_set(&dir, "mode-image");
+    let root = dir.join("mode-root");
+    fs::create_dir_all(&root).unwrap();
+    let meminfo = dir.join("mode-meminfo");
+    write(&meminfo, "MemTotal:       11746000 kB\nMemAvailable:    9000000 kB\n");
+    let rig = HostRig {
+        image: image.clone(),
+        meminfo: meminfo.to_str().unwrap().into(),
+        root: root.to_str().unwrap().into(),
+    };
+    let s24 = host_props(&dir, "mode-s24u", "SM-S928B", "SM8650");
+    let s26 = host_props(&dir, "mode-s26u", "SM-S948B", "SM8850");
+    let s25u = host_props(&dir, "mode-s25u", "SM-S938B", "SM8750");
+    let pixel = host_props(&dir, "mode-pixel", "Pixel 11 Pro", "Tensor G5");
+    let find = |name| bhw::host_find(name).map(Host);
+
+    // The table: the S24 Ultra and the S26 Ultra allow it, no other row.
+    for e in bhw::host_table() {
+        assert_eq!(e.takeover, e.name == "galaxy-s24-ultra" || e.name == "galaxy-s26-ultra", "{}", e.name);
+    }
+
+    // hosted: the default, and the same config as no setting at all, on the S24 Ultra too.
+    let plain = mode_finish(&rig, &s24, &[]).unwrap();
+    assert!(plain.session_mode == SessionMode::Hosted && !plain.touch_exclusive);
+    assert!(plain.takeover_line().is_none() && plain.reads_side_keys() && plain.exclusive_touch_text() == "off");
+    let mut c = mode_finish(&rig, &s24, &["--set", "session-mode=hosted"]).unwrap();
+    assert!(c.session_mode == SessionMode::Hosted && !c.touch_exclusive);
+    c.given.remove("session-mode");
+    assert_eq!(c, plain);
+    let mut c = Config::new();
+    assert!(c.set("session-mode", "android").is_err() && c.set("session-mode", "").is_err());
+    assert!(c.session_mode == SessionMode::Hosted && !c.given("session-mode"));
+
+    // takeover on the two phones that allow it: the touchscreen grab on, the session's mode unchanged.
+    let takeover = ["--set", "session-mode=takeover"];
+    let c = mode_finish(&rig, &s24, &takeover).unwrap();
+    assert!(c.session_mode == SessionMode::Takeover && c.touch_exclusive && c.input && c.mode == Mode::Takeover);
+    assert!(c.host == find("galaxy-s24-ultra"));
+    // the side keys read, the lines of the mode
+    assert!(c.reads_side_keys());
+    assert_eq!(
+        c.exclusive_touch_text(),
+        "requested (session-mode=takeover: sec_touchscreen grab, the side keys read and never grabbed)"
+    );
+    assert_eq!(
+        c.takeover_line().unwrap(),
+        "session: Android takeover (session-mode=takeover; galaxy-s24-ultra allows it): the native touchscreen is grabbed for iOS; the side keys are read, never grabbed; the switch's CPU caps and the way back are the OneOS fork's"
+    );
+    let c = mode_finish(&rig, &s26, &takeover).unwrap();
+    assert!(c.touch_exclusive && c.host == find("galaxy-s26-ultra"));
+    // touch-exclusive=0 given: kept off, before or after session-mode=.
+    let c = mode_finish(&rig, &s24, &["--set", "touch-exclusive=0", "--set", "session-mode=takeover"]).unwrap();
+    assert!(c.session_mode == SessionMode::Takeover && !c.touch_exclusive && c.exclusive_touch_text() == "off");
+    assert!(c.takeover_line().unwrap().contains("grabbed for iOS (not: touch-exclusive=0 was given); the side keys"));
+    let c = mode_finish(&rig, &s24, &["--set", "session-mode=takeover", "--set", "touch-exclusive=0"]).unwrap();
+    assert!(c.session_mode == SessionMode::Takeover && !c.touch_exclusive);
+    // Refused: a phone whose row does not allow it, an unknown phone, detection off, the bench, no input.
+    let e = mode_finish(&rig, &s25u, &takeover).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "session-mode=takeover is not supported on this phone (galaxy-s25-ultra): the host table (runtime/bridges/hw/host_device.rs) does not allow it; session-mode=hosted is the session as before"
+    );
+    let e = mode_finish(&rig, &pixel, &takeover).unwrap_err();
+    assert!(e.to_string().contains("not supported on this phone (no row of the host table)"));
+    assert!(mode_finish(&rig, &s24, &["--set", "session-mode=takeover", "--set", "host-device=none"]).is_err());
+    let forced = ["--set", "session-mode=takeover", "--set", "host-device=galaxy-s24-ultra"];
+    assert!(mode_finish(&rig, &pixel, &forced).unwrap().touch_exclusive); // a forced row is that row
+    let e = mode_finish(&rig, &s24, &["--set", "session-mode=takeover", "--mode", "bench"]).unwrap_err();
+    assert_eq!(e.to_string(), "session-mode=takeover needs mode=takeover (the OneOS session)");
+    let e = mode_finish(&rig, &s24, &["--set", "session-mode=takeover", "--no-input"]).unwrap_err();
+    assert_eq!(e.to_string(), "session-mode=takeover needs input=1 (its touchscreen grab)");
+    // hosted still refuses the grab in a session, as before session-mode existed.
+    let e = mode_finish(&rig, &s24, &["--set", "touch-exclusive=1"]).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "touch-exclusive=1 requires session-mode=takeover, or mode=bench, display=shm, input=1, bridges=0"
+    );
+    // The bench preview: the grab, and the side keys left to Android.
+    let bench = ["--mode", "bench", "--display", "shm", "--set", "bridges=0", "--set", "touch-exclusive=1"];
+    let c = mode_finish(&rig, &s24, &bench).unwrap();
+    assert!(c.touch_exclusive && !c.reads_side_keys() && c.takeover_line().is_none());
+    assert_eq!(c.exclusive_touch_text(), "requested (bench+SHM sec_touchscreen grab)");
+
+    // The image set's overlay/userland/xnuhost.conf may say it; the command line's session-mode= wins.
+    let conf = Path::new(&image).join("overlay/userland");
+    fs::create_dir_all(&conf).unwrap();
+    let conf = conf.join("xnuhost.conf");
+    write(&conf, "session-mode=takeover\n");
+    let c = mode_finish(&rig, &s24, &[]).unwrap();
+    assert!(c.session_mode == SessionMode::Takeover && c.touch_exclusive);
+    let c = mode_finish(&rig, &s24, &["--set", "session-mode=hosted"]).unwrap();
+    assert!(c.session_mode == SessionMode::Hosted && !c.touch_exclusive);
+    assert!(mode_finish(&rig, &s25u, &[]).is_err());
+    fs::remove_file(&conf).unwrap();
+
+    // --host-info: one line, no image needed.
+    assert_eq!(
+        host_info_line(&rig, &s24, None),
+        "host-info: device=galaxy-s24-ultra takeover=yes (matched by ro.product.model=SM-S928B)"
+    );
+    assert_eq!(
+        host_info_line(&rig, &s26, None),
+        "host-info: device=galaxy-s26-ultra takeover=yes (matched by ro.product.model=SM-S948B)"
+    );
+    assert_eq!(
+        host_info_line(&rig, &s25u, None),
+        "host-info: device=galaxy-s25-ultra takeover=no (matched by ro.product.model=SM-S938B)"
+    );
+    assert!(host_info_line(&rig, &pixel, None)
+        .starts_with("host-info: device=none takeover=no (unknown phone; read: ro.product.model=Pixel 11 Pro "));
+    assert!(host_info_line(&rig, &s24, Some("none"))
+        .starts_with("host-info: device=none takeover=no (host-device=none: detection off; read: "));
+    assert_eq!(
+        host_info_line(&rig, &pixel, Some("galaxy-s26-ultra")),
+        "host-info: device=galaxy-s26-ultra takeover=yes (host-device=galaxy-s26-ultra (forced))"
+    );
+    assert_eq!(host_info_line(&rig, &s24, Some("pixel-11")), "refused");
+    let missing = dir.join("no-such.props");
+    assert_eq!(host_info_line(&rig, missing.to_str().unwrap(), None), "refused");
     let _ = fs::remove_dir_all(&dir);
 }
