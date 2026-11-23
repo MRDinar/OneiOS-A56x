@@ -12,8 +12,9 @@ console until `backboardd`'s first frame, then iOS. On the PC, `oneios-tool kern
 client of `display.sock` in this helper's place: it says when the picture changed and writes it as PNGs.
 
 The helper is Rust, the crate `oneios-display` of the runtime's workspace ([runtime/RUST.md](../RUST.md)), ported 1:1
-from C on 2026-11-23 (every log line, default and protocol layout). **The Rust helper has not run on the phone yet**:
-every phone result below is of the C helper.
+from C on 2026-11-23 (every log line, default and protocol layout). **The Rust helper first ran on the phone on
+2026-11-23** (iOS's frames on the screen, the session's `oneios-display:` lines; docs/booter.md 2.6a); every other
+phone result below is of the C helper.
 
 ```sh
 runtime/display/build-android.sh OUT   # OUT/bin/{oneios-display,displayctl,liboneios-display.so}, OUT/lib/oneios-display.dex

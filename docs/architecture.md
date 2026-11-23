@@ -49,7 +49,7 @@ back stay exactly OneOS-shaped.
 
 Everything that runs on One UI's side (xnuhost, the loader, the bridges and their helpers, the camera and encoder
 helpers, the display helper, the phone checks) is Rust, one Cargo workspace, `runtime/Cargo.toml` (ported from C on
-2026-11-23; no phone has run the Rust runtime yet). Its crates: `xh-core` (the log, the virtio-mmio transport, the
+2026-11-23; it first booted iOS on the phone that day, docs/booter.md 2.6a). Its crates: `xh-core` (the log, the virtio-mmio transport, the
 MMIO bus, the shared helpers), `xnuhost-abi` (the host-call ABI), `xnuloader`, `xnuhost` (with `drm2kgsl-sys`, Droid-VM's
 renderer built from its pinned C), `onebridges`, `onecamera`, `oneencoder`, `oneios-display`; the task stub and the
 test kernel are bare-metal Rust programs of their own. What stays C is what the guest side or another project owns:

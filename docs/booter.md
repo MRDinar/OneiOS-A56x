@@ -15,9 +15,10 @@ and `mkkernel`. What stays C: the guest-facing headers the kernel's C includes,
 (`runtime/abi/src/`, `runtime/core/src/pixels.rs`) with a test that reads the header and checks every constant, size
 and offset; and the GPU's renderer (virglrenderer's drm2kgsl, pinned, built by `runtime/xnuhost/drm2kgsl/build.rs`
 with a small C glue). Function names below are the Rust ones (`module::function`) where the text names code; a record
-of a test or a measurement keeps the names of the tree it was made on. **The Rust xnuhost has not run on the phone
-yet**: it passes the host tests and boots the test kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`,
-the three boots); every phone measurement below was made with the C xnuhost.
+of a test or a measurement keeps the names of the tree it was made on. **The Rust xnuhost first booted iOS on the
+phone on 2026-11-23** (section 2.6a, "On the phone, Rust against C"); it also passes the host tests and boots the test
+kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`, the three boots). Every other phone measurement
+below was made with the C xnuhost.
 
 xnuhost boots a source-built XNU **as a Linux process** on One UI's kernel: it loads the kernel collection
 into its own address space, gives it CPUs (host threads), interrupts and a timer (signals), devices
@@ -905,8 +906,26 @@ Rust stub now copies by 8-byte words when both ends are aligned (all of these ar
 null call C 9.95 us, Rust before 10.63, Rust after **6.48 us**; svc to the kernel 4.88 / 5.22 / **3.14**; release to
 user code 5.00 / 5.34 / **3.28**; xnuhost's `up` step 3.27 / 3.39 / **1.93** us; page fault 14.7 / 15.6 / **11.1**; timer
 interrupt 12.9 / 15.8 / **11.0**; rpc mode 2 (one vCPU) 19.5 / 18.3 / **12.2**. On the phone the same loop was about
-1500 bytes a trap at roughly a byte a cycle each way: not measured there yet (the `perf:` lines' `up` and `down`).
-The C stub kept the byte copy until it was deleted with the rest of the C runtime (2026-11-23).
+1500 bytes a trap at roughly a byte a cycle each way. The C stub kept the byte copy until it was deleted with the rest
+of the C runtime (2026-11-23).
+
+**On the phone, Rust against C** (2026-11-23, S24 Ultra; the same kernel.kc `988c2a7b...` and image set; C: runtime
+0.1.16, xnuhost `e2c013ab...`, session of 03:28; Rust: xnuhost `58a378e2...` from `rust-runtime` `00c174d`, staged with
+`phone stage runtime-asis` over 0.1.16, session of 13:03). One boot each, so the numbers move with the boot's own
+order of work. First frame with content after xnuhost's start: C 51.9 s, Rust 50.1 s. The `perf:` windows 2-5 (the
+busy part of the boot; mean / p50 in us, the p50 is the histogram's bucket):
+
+| Window | task traps/s C / Rust | `up` C / Rust | `down` C / Rust | kernel: syscall C / Rust | kernel: fault C / Rust |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 56,644 / 59,802 | 7.39/6.14 / 7.37/5.12 | 8.53/7.17 / 8.43/6.14 | 66.4/12.3 / 60.9/12.3 | 46.5/3.6 / 32.4/3.6 |
+| 3 | 87,085 / 81,814 | 7.43/6.14 / 7.70/6.14 | 8.50/7.17 / 8.95/7.17 | 51.3/14.3 / 52.5/14.3 | 23.0/4.1 / 23.6/5.1 |
+| 4 | 69,787 / 71,963 | 8.59/7.17 / 8.87/6.14 | 9.99/8.19 / 10.28/8.19 | 51.0/14.3 / 53.6/14.3 | 29.4/5.1 / 27.4/5.1 |
+| 5 | 48,847 / 65,049 | 9.31/7.17 / 8.42/7.17 | 10.29/8.19 / 10.06/8.19 | 58.5/16.4 / 51.5/16.4 | 24.7/6.1 / 21.1/5.1 |
+
+So on the phone the Rust xnuhost is level with the C: the hand-off steps are within 5% either way, the kernel's own
+work the same. The word copy's gain under qemu (`up` 3.39 to 1.93 us) does not show here: a phone hand-off is about
+7-9 us, most of it the futex sleep and wake-up of the other side (the `futex sleeps` counts of the same lines), not the
+copy.
 
 **On the phone** (combined boot of 2026-11-12 12:30, kernel.kc 1e297354, runtime 0.1.10-dev; `cpu-pin=1`, vCPU *i*
 on CPU *i*; 30 s windows during the boot): 17,000-22,600 task traps a second, two to three faults for each system

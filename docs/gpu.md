@@ -25,14 +25,15 @@ hosted XNU: DroidVMVirtioGpu3D.cpp (droidvm_virtgpu_call) -> DroidVMVirtioGpu.cp
    | virtio-mmio: /arm-io/virtio-gpu, control queue
 xnuhost: src/virtio_gpu.rs (the device) -> src/gpu3d.rs -> src/gpu3d_kgsl.rs                 Rust, tested on the PC
    | function calls, same process
-drm2kgsl (external/virglrenderer src/drm/drm2kgsl, linked in) -> ioctl on /dev/kgsl-3d0      not run on the phone
+drm2kgsl (external/virglrenderer src/drm/drm2kgsl, linked in) -> ioctl on /dev/kgsl-3d0      ran on the phone (2026-11-23)
 ```
 
 ## 2. Host side (`runtime/xnuhost`)
 
 The host side is Rust since 2026-11-23 (branch `rust-runtime`; until then the same files in C: `src/virtio_gpu.c`,
 `src/gpu3d.h`/`.c`, `src/gpu3d_kgsl.c`, `tools/gpuctl.c`, built by `runtime/xnuhost/Makefile`). Every behaviour, log
-line and test case was kept ([runtime/RUST.md](../runtime/RUST.md)); the Rust GPU path has not run on the phone yet.
+line and test case was kept ([runtime/RUST.md](../runtime/RUST.md)); the Rust GPU path first ran on the phone on
+2026-11-23 (SpringBoard's and the posters' contexts through drm2kgsl, `gpu: context N ...` lines; docs/booter.md 2.6a).
 
 | File | What |
 |---|---|
