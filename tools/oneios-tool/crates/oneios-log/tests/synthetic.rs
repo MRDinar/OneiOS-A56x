@@ -740,4 +740,12 @@ fn summary_says_how_xnuhost_ended() {
     assert!(row(&out, "how xnuhost ended").ends_with("killed by signal 6 (SIGABRT)"), "{out}");
     // A log of an app up to 0.5.80 has no such line, and no row.
     assert!(!f.run(&["summary", &f.log("old.log", &t)]).contains("how xnuhost ended"));
+    // The host short of memory when xnuhost ended (its pressure line with no "is over" after it): a row of its own.
+    let short = "[   250.000] xnuhost E memory: the host is short of memory: MemAvailable 1503 MiB, under the 1536 MiB headroom; its RAM by user (MiB): the guest's RAM 5632, page tables 538\n";
+    let over = "[   280.000] xnuhost I memory: the host's shortage is over after 30 s: lowest MemAvailable 1503 MiB, swap-ins 0 MiB in all; now MemAvailable 1700 MiB\n";
+    let end = "oneios inner: 2026-11-23 19:06:31 xnuhost 1043 ended: killed by signal 9 (SIGKILL)\n";
+    let out = f.run(&["summary", &f.log("short.log", &format!("{t}{short}{end}"))]);
+    assert!(row(&out, "host short of memory at the end").contains("line      5  MemAvailable 1503 MiB, under the 1536 MiB"), "{out}");
+    let out = f.run(&["summary", &f.log("over.log", &format!("{t}{short}{over}{end}"))]);
+    assert!(!out.contains("host short of memory at the end"), "{out}");
 }

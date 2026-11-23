@@ -111,7 +111,10 @@ back. xnuhost's part: [booter.md](booter.md) 2.9d.
    composer keep running. With UsbDeviceManager gone, the fork's USB watcher keeps adb on the USB gadget across
    unplug and replug ([oneos/interface.md](../oneos/interface.md) 6a; its repairs are off, logged only, until a phone
    session turns them on with `usb-repair` in the stage).
-4. **Start xnuhost** in a mount namespace with the stage over `/data`, in its own cgroup, then `oneios-display`.
+4. **Start xnuhost** in a mount namespace with the stage over `/data`, in its own cgroup, then `oneios-display`. xnuhost
+   sizes the guest's RAM from the host's MemAvailable less what the session needs beside it at its peak (the iOS
+   tasks' page tables and kernel memory, KGSL's own, a headroom for the host; the GPU's blobs are the guest's own
+   pages) and holds it prefaulted and locked for the session (`docs/booter.md` 2.2, "What fits", "Fixed RAM").
 5. **Boot:** xnuhost loads `kernel.kc`; XNU mounts the OS volume (verified by xnuhost), on first start formats the
    Data volume and unpacks the seed, mounts the cryptexes, starts launchd; backboardd draws on the guest's framebuffer, and at its first frame that is not all black (not the boot console's; since 2026-11-15, `docs/booter.md` 2.8)
    xnuhost writes `session/ready`.

@@ -494,6 +494,31 @@ pub fn sample() -> Counters {
     c
 }
 
+/// One of KGSL's per-process memory files of `pid` (`kernel`: KGSL's own kernel memory for it), bytes; None where
+/// there is none.
+pub fn kgsl_value(pid: i32, name: &str) -> Option<u64> {
+    let v = read_line(format!("/sys/class/kgsl/kgsl/proc/{pid}/{name}"))?;
+    v.split_whitespace().next()?.parse().ok()
+}
+
+/// zram's pools in the host's RAM (mem_used_total, the third figure of each /sys/block/zram*/mm_stat), bytes; 0 where
+/// there is no zram.
+pub fn zram_pool() -> u64 {
+    let Ok(dir) = std::fs::read_dir("/sys/block") else { return 0 };
+    dir.flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("zram"))
+        .filter_map(|e| read_line(e.path().join("mm_stat")))
+        .filter_map(|line| line.split_whitespace().nth(2)?.parse::<u64>().ok())
+        .sum()
+}
+
+/// This process's oom_score and oom_score_adj (/proc/self): the kernel's OOM killer ends the highest score first.
+/// Read only (CLAUDE.md: xnuhost never lowers its own).
+pub fn oom_score() -> (Option<i64>, Option<i64>) {
+    let num = |p: &str| read_line(p).and_then(|v| v.trim().parse().ok());
+    (num("/proc/self/oom_score"), num("/proc/self/oom_score_adj"))
+}
+
 /// KGSL's per-process memory files of `pid` (/sys/class/kgsl/kgsl/proc/PID: "name value, ..." as KGSL prints
 /// them), at most 12; "" where there is no KGSL.
 pub fn kgsl_memory(pid: i32) -> String {

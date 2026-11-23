@@ -191,6 +191,10 @@ helper and no boot screen, when the session's display is `drm`.
 
 **RAM.** `ram=auto` gives the guest `(MemAvailable at the start - ram-session-reserve - 256 MiB for the GPU) / 1.08`
 in 256 MiB steps (`docs/booter.md` 2.2). Today [F]: (8,618 - 2,048 - 256) / 1.08 = 5,846 -> **5,632 MiB**.
+**Since 2026-11-23** the formula counts the tasks on their own (`docs/booter.md` 2.2, "The terms of 2026-11-23"):
+`(MemAvailable - 1536 MiB headroom - 256 MiB - 400 tasks * 4 MiB) / 1.07`, 4,608 MiB from 8,561; two sessions with
+5,632 MiB ran out of host memory. The paragraphs below are of the formula before that; a MiB freed before xnuhost
+starts now raises the guest by 0.93 (1 / 1.07) as before, and the headroom is the measured swap-in floor.
 
 - Each MiB that a stopped process frees before xnuhost starts raises `MemAvailable at the start` by one, so the
   guest by 0.93. The size of that is [U] until `phone procs` runs. A bound: 2,466 MiB are not available at the

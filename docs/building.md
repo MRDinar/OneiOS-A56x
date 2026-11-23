@@ -532,7 +532,7 @@ xnuloader --bin mkkernel -- testkernel.elf kernel.kc os.img`); logs and the data
 | Mode | What |
 |---|---|
 | `smoke` | The vCPU machinery alone, no kernel image, no session (`runtime/xnuhost/examples/machine_smoke.rs`): a few instructions of hand-written "kernel" on one vCPU through every seam (a trapped `mrs`, host calls, a UART store, an interrupt on a host call's return, a timer signal diverted through frame_resume; then the task layer: the factory, a task, a thread, a page of user code run to a system call, a fault filled by task_map and a brk); prints `machine-smoke: passed`. Seconds |
-| `check` | The three boots of `runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK`: the normal boot (3 vCPUs, 256 MiB: `TESTKERNEL: all passed`), `ram=auto` with a made-up meminfo (4 GiB, 2.5 GiB available: 1024 or 1280 MiB, held and prefaulted, or the clean `mlock` fallback), the restart loop (exit 3 after 9 `TESTKERNEL: restart`) |
+| `check` | The three boots of `runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK`: the normal boot (3 vCPUs, 256 MiB: `TESTKERNEL: all passed`), `ram=auto` with a made-up meminfo (4 GiB, 3.5 GiB available, `ram-tasks=64`: 1024 or 1280 MiB, held and prefaulted, or the clean `mlock` fallback), the restart loop (exit 3 after 9 `TESTKERNEL: restart`) |
 | `bench` | The trap path's costs (boot argument `testkernel-bench`), printed with xnuhost's `perf:` report; `BENCH_SET="--set cpu-pin=0 --set map-defer=0"` measures other settings, `BENCH_SCALE=2` doubles the loops ([booter.md](booter.md) 2.6a has the numbers) |
 | `parallel` | N threads of one task, one per vCPU: the speed-up for 1, 2, 4 and 8 threads (`PAR_CPUS=8`, `PAR_SCALE`, `PAR_SET`; booter.md 2.6b) |
 | `rpc` | The round trip of a synchronous Mach message between two tasks as the hosted kernel makes it (two user stays, two IPIs, two wakes of an idle vCPU), once per interrupt path: `RPC_MODES="0 1 2"` = ArmCpu's trapped GIC registers (the kernel before hosted 0081), host calls (0081), one vCPU without an IPI (the floor); each mode its own run, with xnuhost's `perf:` lines and `emulated:` counts at the stop; `RPC_SET="--set cpu-pin=2"` pins, `RPC_SCALE=2` doubles the 4,000 round trips (booter.md 2.6d). On the phone: the same command line, as the parallel test's (2.6c step 2) |
@@ -1325,7 +1325,9 @@ A session's health on one screen (2026-11-22): first which runtime, kernel, imag
 (xnuhost's `versions:` line, v0.1.19 on; a tail of the log has it too), then the boot's stages and their times, then each part of xnuhost, the
 bridges and iOS's report lines with its count of lines, its last line and its first problem, the crashes and kills,
 the gestures and the `xnuhost E` lines, and how xnuhost ended (the row `how xnuhost ended`: the fork's inner shell's
-record, `exit N` or `killed by signal S (NAME)`, from the OneOS app after 0.5.80; booter.md "Log") (which line each
+record, `exit N` or `killed by signal S (NAME)`, from the OneOS app after 0.5.80; booter.md "Log"; and the row `host short
+of memory at the end` when xnuhost's last `memory: the host is short of memory` line had no "over" after it, booter.md
+2.2 "The host's pressure") (which line each
 part writes: [booter.md](booter.md) 2.9b; the output:
 tools/oneios-tool/README.md "log"):
 

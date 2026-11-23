@@ -812,6 +812,11 @@ mod machine {
         *last = (now, c);
     }
 
+    /// The iOS tasks alive now (the host's pressure line, session/memory.rs).
+    pub fn live() -> u32 {
+        tables().counts.live
+    }
+
     pub fn shutdown() {
         let sock = SOCK.swap(-1, AcqRel);
         if sock < 0 {
@@ -1863,6 +1868,9 @@ mod machine {
     }
     pub fn shutdown() {}
     pub fn tick() {}
+    pub fn live() -> u32 {
+        0
+    }
     /// No tasks here: the caller signals the vCPU.
     pub fn kick(_v: &crate::cpu::Vcpu) -> bool {
         false

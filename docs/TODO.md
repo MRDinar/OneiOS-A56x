@@ -99,4 +99,4 @@ the gains and the stages are in [plan-ios-first-session.md](plan-ios-first-sessi
 - [ ] Stage 2: the fork's stop loop without 15 `getprop` a second; the switch stops zygote's restart list where no
   bridge uses it (the return restarts those services already).
 - [ ] Stage 3: the display on DRM/KMS with surfaceflinger and the composer stopped (a read-only probe first).
-- [ ] Stage 4: `ram-session-reserve` from the measured floor.
+- [x] Stage 4: `ram-session-reserve` from the measured floor (2026-11-23: 1536 MiB with the lock, the swap-in floor of two sessions; with the tasks counted on their own, docs/booter.md 2.2 "The terms of 2026-11-23").

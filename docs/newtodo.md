@@ -177,6 +177,7 @@ the runtime and the APK from these two, then:
   "The virtual transport is bluetoothd's own", `docs/hardware.md` 4). xnuhost now logs an error line for either.
 - **RAM:** `ram=auto` alone. Since #39 (fix-ram-locked) the default is `ram-giveback=0 ram-prefault=1 ram-lock=1`, and
   `ram=auto` takes (MemAvailable − 768 MiB − 256 MiB) / 1.08 when the lock can work: about 6912 MiB on this phone.
+  (Since 2026-11-23: (MemAvailable − 1536 − 256 − 400 tasks × 4 MiB) / 1.07, 4608 MiB; docs/booter.md 2.2.)
   Writing `ram-giveback=0 ram-prefault=1 ram-lock=1` out does the same. Lines that prove it: `CAP_IPC_LOCK yes`,
   `the guest gets 6912 MiB ... less 768 MiB headroom with the lock`, `memory: fixed RAM: held and locked`,
   `oneios-mem: free pages given back to the host: no`, no `the host swaps iOS's RAM` line, no `unlocked for the rest

@@ -68,7 +68,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks. `.gpuaddon` is the boot addon the kernel writes into the Data store: the Metal plug-in (`addons/`) and, since hosted 0090, the capture plug-in (`camera/`); `oneios-tool ios addon` makes it, `phone addon` stages it (the manifest need not list it) |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2; [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
-| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `boot-args-add`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
+| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `boot-args-add`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ram-gpu-reserve`, `ram-pagetable-percent`, `ram-hold-percent`, `ram-tasks`, `ram-task-cost`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
 | `boot-args-add=WORDS` (`--set`, or the image set's `xnuhost.conf`; 2026-11-22) | none | boot arguments added to the guest's, whichever gave those (`--boot-args`, the image set's `boot-args`, or the built-in default), each unless they name it already (`NAME` or `NAME=...`): what `boot-args` says wins, and a profile adds one argument (`oneios-disable-jobs=...`, a debugging switch such as `oneios-ubt=`) without repeating the defaults. A `boot-args=` line that replaced the defaults was the cause of logo-only stalls in the S25 Ultra forks ([s25.md](s25.md)). The command line's `boot-args-add` wins over the image set's; a result over 1023 bytes is refused (exit 2). Ported from `YumikoHayamato/OneiOS` (440abb2). A runtime older than this key refuses it as a bad setting and does not start: stage the runtime before an image set that has it |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
@@ -82,10 +82,13 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--cpus` | the host's cores, at most 8 | 1 to 8 |
 | `--ram SIZE` or `--ram auto` (`ram=`) | `auto` | the guest's RAM: a multiple of 2 MiB, 256 MiB to 64 GiB. `auto`: the least of `ram-percent` of the host's `MemTotal`, `MemTotal` less `ram-host-floor`, and what fits beside the session's needs (section 2.2, "What fits"), rounded down to 256 MiB (below). A size given by hand that is more than fits is used, with an error line saying so |
 | `--set ram-fit=0\|1` | 1 | 1: `ram=auto` takes no more than what fits (2026-11-14); 0: as before (share and floor only) |
-| `--set ram-gpu-reserve=SIZE` | 256M | what fits leaves this for KGSL's own memory |
+| `--set ram-gpu-reserve=SIZE` | 256M | what fits leaves this for KGSL's own memory and the helpers (the GPU's blobs are in the guest's RAM: section 2.2, "The terms of 2026-11-23") |
+| `--set ram-tasks=N` | 400 | what fits is sized for this many iOS tasks at once, 0 to 4096 (2026-11-23) |
+| `--set ram-task-cost=SIZE` | 4M | the host's memory for one iOS task outside the guest: its page tables and kernel memory (2026-11-23) |
+| `--set ram-hold-percent=N` | 7 | what holding the guest's RAM costs the host beyond its bytes, % of it, 0 to 50 (2026-11-23) |
 | `--set gpu-level=deadline\|hold\|governor` (`gpu-level=`) | `deadline` | the GPU's level (`docs/gpu.md` 2.2b): the top only for a frame that would miss its deadline; `hold`: every render-server frame at the top to 150 ms after it (the rule before 2026-11-15); `governor`: KGSL's governor alone. Passed to the renderer as `ONEIOS_GPU_LEVEL` |
 | `--set gpu-priority=0\|1` (`gpu-priority=`) | 1 | 1: each GPU context's KGSL priority from its owner's class (render server and front 4, default and background 8), background contexts at KGSL's lowest level at a still screen while no other context has GPU work queued (`docs/gpu.md` 2.2b); 0: the guest's queue priority, as upstream, and no lowest level (`ONEIOS_GPU_PRIORITY=off`) |
-| `--set ram-pagetable-percent=N` | 8 | what fits counts the iOS tasks' page tables as this share of the guest's RAM, 0 to 50 |
+| `--set ram-pagetable-percent=N` | 0 (8 before 2026-11-23) | page tables as a share of the guest's RAM on top of `ram-task-cost`, 0 to 50 |
 | `--set ram-huge=0\|1` | 1 | 1: 2 MiB host pages for xnuhost's window of the RAM where the host allows them (shmem THP by `MADV_HUGEPAGE`; only with the RAM held fixed); section 2.2, "2 MiB pages" |
 | `--set ram-percent=N` | 90 | `ram=auto`'s share of `MemTotal`, 10 to 100 |
 | `--set ram-host-floor=SIZE` | 1.5G | what `ram=auto` always leaves the host |
@@ -106,7 +109,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set ram-meminfo=FILE` | `/proc/meminfo` | where `ram=auto` reads `MemTotal` and `MemAvailable` (tests) |
 | `--set ram-giveback=0\|1` | **0** (since fix-ram-locked, 2026-11-15) | 0: the RAM is **held fixed and locked for the session** (section 2.2, "Fixed RAM": prefaulted, `mlock`ed, no free pages given back; the owner's rule: iOS's RAM is never swapped). 1: 0058's way again (faulted in as used, free pages given back, the host may swap it); one setting flips it back |
 | `--set ram-prefault=0\|1`, `ram-lock=0\|1` | 1, 1 (with `ram-giveback=0`) | prefault the whole memfd on a nice-19 thread, `mlock`ing it as it goes; at the first `mlock` that fails the prefault stops and what is locked stays locked (where it fails at the first step, EPERM or an RLIMIT_MEMLOCK under 16 MiB, nothing is prefaulted); nothing is prefaulted unlocked unless `ram-lock=0`; neither if the RAM is more than fits |
-| `--set ram-session-reserve=SIZE` | 768M where the lock can work (CAP_IPC_LOCK, or no RLIMIT_MEMLOCK), else 1G | the headroom what fits leaves the host (section 2.2, "What fits"); with the lock never less than `ram-unlock-below` + 256 MiB; the lock is tried only if the RAM is within what fits |
+| `--set ram-session-reserve=SIZE` | 1536M where the lock can work (CAP_IPC_LOCK, or no RLIMIT_MEMLOCK), else 1792M (768M and 1G before 2026-11-23) | the headroom: MemAvailable what fits leaves the host at the session's peak, and the level of the pressure line (section 2.2, "What fits"); with the lock never less than `ram-unlock-below` + 256 MiB; the lock is tried only if the RAM is within what fits |
 | `--set ram-view=SIZE\|auto\|off` (also in `xnuhost.conf`) | **off** (until a phone boot proves it) | the memory view (section 2.2, "The memory view"): iOS is told SIZE of DRAM (`auto` = 12 GiB, an iPhone18,2's) over the same locked RAM: `hw.memsize_physical`, an iPhone18,2's per-process limits scaled to SIZE, and room in iOS's compressor for SIZE (`kern.compressor_pool_multiplier`). The RAM itself stays `ram=` (with `ram=auto`, the most that fits locked) |
 | `--set ram-unlock-below=SIZE` | 256M | with the RAM locked, the valve: the host's `MemAvailable` under this (read once a second by the main loop, and before each prefault step) unlocks it once for the rest of the session; with the lock at least 128M (0 or less is raised to 128M, with a line) |
 
@@ -315,7 +318,10 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   9.5 MB/s in, 8 MB/s out) at 800 % CPU (226 % sys): **the swap was also the main heat source, so a RAM that fits and is
   held fixed is the thermal fix too.** Outside the guest the host used about 11,084 - 860 - (7,263 - 2,126) = 5,087 MiB,
   zram's compressed pool and the 575 MiB of page tables included. So `ram=auto` now also takes no more than what fits:
-  - `fit = (MemAvailable - ram-session-reserve - ram-gpu-reserve) / (1 + ram-pagetable-percent / 100)` (`config::ram_fit`,
+  - Since 2026-11-23 (the terms below, "The terms of 2026-11-23"): `fit = (MemAvailable - ram-session-reserve -
+    ram-gpu-reserve - ram-tasks * ram-task-cost) / (1 + (ram-hold-percent + ram-pagetable-percent) / 100)`. The rest of
+    this point and the next ones are the history of the terms. As of 2026-11-14:
+    `fit = (MemAvailable - ram-session-reserve - ram-gpu-reserve) / (1 + ram-pagetable-percent / 100)` (`config::ram_fit`,
     `config.rs`), MemAvailable read at xnuhost's start, which is after the fork stopped One UI's zygote and
     system_server (`oneos/interface.md` 4) and before the guest takes anything.
   - The page tables: every iOS task is a Linux process with its own page tables over the memfd, and the same pages are
@@ -369,12 +375,68 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     iOS's RAM` line; the kernel's `oneios-mem: free pages given back to the host: no`; host MemAvailable staying above
     256 MiB (no `unlocked for the rest of the session`); the `thermal: 30 s:` line with `swap in 0 out 0 KiB/s` or near
     it; and `stopping:` right after the return's SIGTERM.
+  - **The terms of 2026-11-23 (fix/ram-auto-sizing; the default).** Two phone sessions ran out of host memory with the
+    terms above and the image's `ram-session-reserve=2G` (written on 2026-11-16 after a kill): 18:24 and 19:04 (runtime
+    0.1.19; `out/session-logs/2026-11-23-mac-s1824/xnuhost-final.log`, `.../2026-11-23-mac-s1904/xnuhost.log`).
+    `ram=auto` gave 5632 MiB both times (what fits 5686 and 5793 MiB from MemAvailable 8445 and 8561). The host's
+    MemAvailable fell to 1077-1265 MiB, it swapped in and out at 31-42 MB/s, and at 19:06 xnuhost ended without a line
+    (the kernel's OOM killer fits [guess]; section 2.9 records how it ends since df485a0). What the logs measure:
+    - **Holding the RAM**: MemAvailable at the start less the guest less MemAvailable once it is held and locked: 8561 -
+      5632 - 2540 = 389 MiB and 8445 - 5632 - 2480 = 333 MiB, 5.9-6.9 % of the guest. `ram-hold-percent=7`. Measured
+      at one size; that it scales with the size is a guess.
+    - **The tasks**: after the lock MemAvailable fell 1463 and 1321 MiB to the end while the host swapped out 277 and
+      369 MiB more (zram: about 2/3 of that is RAM it freed, at 3:1 [guess]), so the session took 1648 and 1567 MiB
+      beside the guest with 353 and 342 live tasks (`tasks: 60 s: ... live N`). The host's page tables were 728 and
+      683 MiB of it (60 -> 788 and 743 MiB), 2.0-2.1 MiB a task: every iOS task is a Linux process mapping the memfd
+      (2.6), so they follow the tasks, not the guest's size (the old 8 % of the guest counted 450 MiB). The rest, about
+      900 MiB, is what no line named [guess: the tasks' kernel memory: the VMAs of their many small maps, 2.6, and
+      their threads' stacks; the pressure line below names it on the next boot]. Less the 256 MiB of
+      `ram-gpu-reserve`: 3.8-3.9 MiB a task. `ram-task-cost=4M` for `ram-tasks=400` (the most at once was 354 and 346),
+      1600 MiB. `ram-pagetable-percent` is 0 now (kept for configs that set it: a share of the guest on top).
+    - **The GPU**: no term of its size. Every blob is a udmabuf over the guest's memfd ([gpu.md](gpu.md) 2, "No
+      separate GPU pool"): the 1633 MiB of `gpu: 10 s: host blobs` at 19:06 (3133 MiB at 18:28) were KGSL's
+      `imported_mem` 1640 MiB, the guest's own pages, and KGSL's own kernel memory was 1.7 MiB. So the guest's size
+      bounds the GPU's memory and nothing of ours caps it (the owner's rule); `ram-gpu-reserve=256M` stays for KGSL's
+      tables over the blobs (about 1 % [estimate]) and the helpers.
+    - **The headroom** (`ram-session-reserve`, what the host keeps at the peak): the host swapped in 31-42 MB/s at
+      MemAvailable 1077-1265 MiB and under 0.2 MB/s from 1503 MiB up (the `memory:` and `thermal: 30 s:` lines). With
+      the lock 1536 MiB (was 768 MiB); unlocked 1792 MiB (was 1 GiB).
+    - **On this phone**: (8561 - 1536 - 256 - 1600) / 1.07 = 4830 -> **4608 MiB** (and 4722 -> 4608 from 8445), 1024
+      MiB less than these sessions. With the measured needs (holding scaled to 4608: 318 MiB; the tasks 1648 MiB) the
+      host keeps about 8561 - 4608 - 318 - 1648 = 1988 MiB at the peak, 452 MiB above the headroom; the old 5632 MiB
+      left 893 MiB without the swap. The `ram=auto` line now ends `... 400 tasks at 4096 KiB (1600 MiB: their page
+      tables and kernel memory) and 7% of the guest for holding it); the host keeps about 1774 MiB at the peak` (the
+      model's own estimate). **The image's `ram-session-reserve=2G` must go** (`overlay/userland/xnuhost.conf`): kept,
+      it gives 4352 MiB, because the 2 GiB counted what the tasks' term counts now. Host tests:
+      `config::tests::ram_fit_sessions_2026_11_23` (both logs' numbers), `ram_config`, `ram_arithmetic`. Not run on the
+      phone yet.
   - A size given by hand (`ram=`) is used as given; if it is more than fits, an error line says so: `memory: ram=N MiB is
     more than this host can hold without swapping it (F MiB fit): the host will swap iOS's RAM; give ram=auto or ram=..M`.
   - When the host does swap iOS's RAM (held less resident, every 5 s), a plain line, once past 64 MiB and again at each
     further 256 MiB: `memory: the host swaps iOS's RAM: N MiB (host MemAvailable M MiB); host swap-ins I pages/s (X MB/s),
     swap-outs O pages/s (Y MB/s)` (the rates are the host's, all processes, `/proc/vmstat` pswpin and pswpout over the
     last 5 s). Heat has its own line (fix-thermal-log); this one is only about iOS's RAM.
+  - **The host's pressure (2026-11-23, `MemoryWatch::pressure_watch`, `config::Pressure`).** Every 5 s the main loop
+    reads `/proc/meminfo` and `/proc/vmstat` once. When MemAvailable falls under `ram-session-reserve`, or the host
+    swaps in 4 MiB/s or more over the 5 s, one error line, once per event:
+    `memory: the host is short of memory: WHY; its RAM by user (MiB): the guest's RAM 5632, page tables 788, ...; page
+    tables K KiB for each of N live tasks; GPU blobs B MiB, inside the guest's RAM; host swap S MiB used; xnuhost's
+    oom_score O (oom_score_adj 500: the kernel's OOM killer ends the highest first)`. The users, largest first: the
+    guest's RAM (the memfd's held bytes), page tables, the unreclaimable slab (SUnreclaim: the tasks' VMAs are there),
+    kernel stacks, anonymous memory, the page cache (Cached less Shmem), other shmem, the reclaimable slab, zram's pool
+    (`/sys/block/zram*/mm_stat`), KGSL's own (`/sys/class/kgsl/kgsl/proc/PID/kernel`) and the rest that meminfo does not
+    name (drivers' pages, dma-bufs, vmalloc). When it has been calm for 30 s (MemAvailable at least the headroom and
+    128 MiB, swap-ins under 1 MiB/s): `memory: the host's shortage is over after T s: lowest MemAvailable M MiB,
+    swap-ins X MiB in all; now MemAvailable A MiB`. Nothing in between: the `memory:` lines every `host-mem-log`
+    seconds go on. `oneios-tool log summary` shows a pressure line with no "over" after it as `host short of memory at
+    the end`. The zram, KGSL and OOM score reads happen only when a line is written. Host tests:
+    `config::tests::host_pressure` (the 19:04 session's MemAvailable and swap figures), `oneios-log`'s
+    `summary_says_how_xnuhost_ended`.
+  - **The OOM score (task 3 of 2026-11-23, read, not changed).** xnuhost's `oom_score_adj` is 500 (as read on the phone,
+    [hardware.md](hardware.md); xnuhost does not set it and never lowers it, CLAUDE.md) and its RSS holds the whole locked RAM, so the kernel's OOM killer ends xnuhost
+    before any One UI service that is left: that is the session's end and the way back, by design ("The way back",
+    below). The pressure line prints `oom_score` and `oom_score_adj` as read, so a log shows it. The fix is the size:
+    enough room that the OOM killer has no reason to run.
 - **Fixed RAM (`ram-giveback=0`, `src/ramfix.rs`, fix-fixed-memory, 2026-11-13; the default since fix-ram-locked,
   2026-11-15, the owner's rule that iOS's RAM is never swapped; `ram-giveback=1` turns it off).** The owner's requirement:
   iOS's RAM must not grow and shrink during a session. The phone's c2d281a session showed why: the memfd was faulted in

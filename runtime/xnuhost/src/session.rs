@@ -789,6 +789,7 @@ fn run(config: &'static Config) -> i32 {
             s.memory.host_memory_tick(config, false); // "memory: host MemAvailable" every host-mem-log seconds
             step(Step::SwapWatch);
             s.memory.swap_watch(config); // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
+            s.memory.pressure_watch(config); // "memory: the host is short of memory" once per event (every 5 s a look)
             step(Step::RamValve);
             s.memory.ram_valve_tick(); // the lock's valve, once a second while locked
             step(Step::HugeReport);

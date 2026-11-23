@@ -44,23 +44,51 @@ pub const RAM_VIEW_AUTO: u64 = 12 << 30;
 /// ram=auto (docs/booter.md 1): min(percent % of total, total - floor), rounded down to 256 MiB, at most RAM_MAX.
 pub const RAM_AUTO_PERCENT: u32 = 90;
 pub const RAM_AUTO_FLOOR: u64 = 3 << 29; // 1.5 GiB
-/// ram-session-reserve: the headroom what fits leaves the host (docs/booter.md 2.2, "What fits"). With the RAM locked
-/// (the default since fix-ram-locked, 2026-11-15, where the lock can work: CAP_IPC_LOCK or no RLIMIT_MEMLOCK) 768 MiB:
-/// the valve's level and 512 MiB for what grows beside the guest (the iOS threads' kernel memory, surfaceflinger and
-/// the display helper, the host's working page cache, the way back). Unlocked 1 GiB: the host may swap the guest, and
-/// zram's pool and working set for it come on top.
-pub const RAM_SESSION_RESERVE: u64 = 1 << 30;
-pub const RAM_SESSION_RESERVE_LOCKED: u64 = 768 << 20;
+/// ram-session-reserve: the host's MemAvailable that what fits leaves at the session's peak, after the guest, its tasks
+/// and the GPU took theirs (docs/booter.md 2.2, "What fits"). With the RAM locked (the default since fix-ram-locked,
+/// 2026-11-15, where the lock can work: CAP_IPC_LOCK or no RLIMIT_MEMLOCK) 1536 MiB, from the phone's two sessions of
+/// 2026-11-23 (18:24 and 19:04, 5632 MiB locked): the host swapped in 31-42 MB/s at MemAvailable 1077-1265 MiB (its own
+/// working set: surfaceflinger, the helpers, xnuhost's code, the image's page cache) and under 0.2 MB/s from 1503 MiB
+/// up. It holds the valve's level, the way back and that working set. Unlocked 256 MiB more: the host may swap the
+/// guest, and zram's pool and working set for it come on top.
+pub const RAM_SESSION_RESERVE: u64 = 1792 << 20;
+pub const RAM_SESSION_RESERVE_LOCKED: u64 = 1536 << 20;
 /// ram-unlock-below: the lock's valve.
 pub const RAM_UNLOCK_BELOW: u64 = 256 << 20;
 /// With the lock the valve is never lower (0 included): the way back must fit.
 pub const RAM_UNLOCK_MIN: u64 = 128 << 20;
 /// What fits leaves at least the valve's level and this much.
 pub const RAM_VALVE_MARGIN: u64 = 256 << 20;
-/// ram-gpu-reserve: KGSL's own memory and the GPU's host buffers.
+/// ram-gpu-reserve: KGSL's own memory and what the helpers hold outside the guest. The GPU's blobs are not in it: every
+/// blob is a udmabuf over the guest's RAM memfd (docs/gpu.md 2, "No separate GPU pool"), so the guest's size bounds
+/// them. The phone, 2026-11-23 19:06: host blobs 1633 MiB, KGSL imported_mem 1640 MiB (the same pages), KGSL's own
+/// kernel memory 1.7 MiB; the blobs' udmabuf page arrays, sg tables and IOMMU tables are about 1 % of them [estimate].
 pub const RAM_GPU_RESERVE: u64 = 256 << 20;
-/// ram-pagetable-percent: the iOS tasks' page tables (the phone, 2026-11-14: 575 MiB for 7263 MiB held).
-pub const RAM_PAGETABLE_PERCENT: u32 = 8;
+/// ram-pagetable-percent: page tables as a share of the guest's RAM, on top of the per-task cost. 0 since 2026-11-23:
+/// the tasks' page tables follow the tasks, not the RAM (RAM_TASK_COST). Was 8 (575 MiB for 7263 MiB, 2026-11-14).
+pub const RAM_PAGETABLE_PERCENT: u32 = 0;
+/// ram-hold-percent: what holding the guest's RAM costs the host beyond its own bytes, % of it: MemAvailable at the
+/// start less the guest's size less MemAvailable once it is held and locked. The phone, 2026-11-23: 8561 - 5632 - 2540
+/// = 389 MiB (6.9 %) and 8445 - 5632 - 2480 = 333 MiB (5.9 %). Measured at one size; that it scales with the size is
+/// a guess.
+pub const RAM_HOLD_PERCENT: u32 = 7;
+/// ram-tasks: the iOS tasks the session is sized for (each one a Linux process). The phone, 2026-11-23: most 354 at
+/// 19:06 and 346 at 18:30, with 5632 MiB.
+pub const RAM_TASKS: u32 = 400;
+/// ram-task-cost: the host's memory for one iOS task outside the guest's RAM: its page tables over the memfd and its
+/// kernel memory (its maps' VMAs, its threads' stacks and task structures). The phone, 2026-11-23: MemAvailable fell
+/// 1463 MiB after the lock (2540 -> 1077) while the host swapped out 277 MiB more (zram, about 185 MiB of RAM at 3:1
+/// [guess]): 1648 MiB for 353 tasks, 4.7 MiB each, of which page tables 728 MiB (60 -> 788), 2.1 MiB each; at 18:24
+/// 1567 MiB for 342 tasks, 4.6 MiB each (page tables 683 MiB). Less the 256 MiB of ram-gpu-reserve (which covers the
+/// non-task part): 3.9 MiB each; 4 MiB.
+pub const RAM_TASK_COST: u64 = 4 << 20;
+/// The host's pressure line (docs/booter.md 2.2, "The host's pressure"): swap-ins at or over this many bytes a second
+/// over 5 s start an event (the phone, 2026-11-23: 31-42 MB/s at the end, 0.1-2.5 MB/s before).
+pub const PRESSURE_SWAP_IN: u64 = 4 << 20;
+/// An event ends after this many seconds with MemAvailable at least the headroom and PRESSURE_CALM_MARGIN, and
+/// swap-ins under a quarter of PRESSURE_SWAP_IN.
+pub const PRESSURE_CALM_S: u64 = 30;
+pub const PRESSURE_CALM_MARGIN: u64 = 128 << 20;
 /// The RAM window and the kernel's own range share 0x20_0000_0000 .. 0x3c_0000_0000.
 pub const RAM_MAX: u64 = 64 << 30;
 /// The host swaps the guest's RAM: said once past 64 MiB, then at each further 256 MiB.
@@ -354,6 +382,9 @@ const GIVEN_KEYS: &[&str] = &[
     "ram-huge",
     "ram-gpu-reserve",
     "ram-pagetable-percent",
+    "ram-hold-percent",
+    "ram-tasks",
+    "ram-task-cost",
     "ram-unlock-below",
     "return-graceful-ms",
     "ready-content-wait",
@@ -433,8 +464,8 @@ pub struct Config {
     pub ram_lock: bool,
     /// the lock can work here (ramfix::can_lock: CAP_IPC_LOCK, or no RLIMIT_MEMLOCK) and is asked
     pub ram_lock_expected: bool,
-    /// ram-session-reserve=SIZE (768 MiB with the lock expected, else 1 GiB): MemAvailable at the start that ram=auto
-    /// and the lock leave the host
+    /// ram-session-reserve=SIZE (1536 MiB with the lock expected, else 1792 MiB): MemAvailable that ram=auto and the
+    /// lock leave the host at the session's peak
     pub ram_session_reserve: u64,
     /// ram-unlock-below=SIZE (256 MiB): the valve; with the lock at least RAM_UNLOCK_MIN
     pub ram_unlock_below: u64,
@@ -445,8 +476,14 @@ pub struct Config {
     pub ram_huge: bool,
     /// ram-gpu-reserve=SIZE (256 MiB): KGSL's own memory and the GPU's host buffers
     pub ram_gpu_reserve: u64,
-    /// ram-pagetable-percent=N (8): the iOS tasks' page tables, % of the guest's RAM
+    /// ram-pagetable-percent=N (0): page tables, % of the guest's RAM, on top of ram-task-cost
     pub ram_pagetable_percent: u32,
+    /// ram-hold-percent=N (7): what holding the guest's RAM costs the host beyond its bytes, % of it
+    pub ram_hold_percent: u32,
+    /// ram-tasks=N (400): the iOS tasks the session is sized for
+    pub ram_tasks: u32,
+    /// ram-task-cost=SIZE (4 MiB): the host's memory for one iOS task outside the guest (page tables, kernel memory)
+    pub ram_task_cost: u64,
     /// what fits and the MemAvailable it came from (both 0: not known)
     pub ram_fit: u64,
     pub ram_fit_available: u64,
@@ -685,6 +722,9 @@ impl Config {
             ram_huge: true,
             ram_gpu_reserve: RAM_GPU_RESERVE,
             ram_pagetable_percent: RAM_PAGETABLE_PERCENT,
+            ram_hold_percent: RAM_HOLD_PERCENT,
+            ram_tasks: RAM_TASKS,
+            ram_task_cost: RAM_TASK_COST,
             ram_fit: 0,
             ram_fit_available: 0,
             ram_lock_fit: 0,
@@ -832,6 +872,9 @@ impl Config {
             "ram-huge" => self.ram_huge = flag(value)?,
             "ram-gpu-reserve" => self.ram_gpu_reserve = size_below_tib(value)?,
             "ram-pagetable-percent" => self.ram_pagetable_percent = number(value, 0, 50)?,
+            "ram-hold-percent" => self.ram_hold_percent = number(value, 0, 50)?,
+            "ram-tasks" => self.ram_tasks = number(value, 0, 4096)?,
+            "ram-task-cost" => self.ram_task_cost = size_below_tib(value)?,
             "ram-unlock-below" => self.ram_unlock_below = size_below_tib(value)?,
             "return-graceful-ms" => self.return_graceful_ms = number(value, 0, 120000)?,
             "ready-content-wait" => self.ready_content_wait = number(value, 0, 480)?,
@@ -1292,18 +1335,17 @@ impl Config {
         take!(self, image, "ram-huge", ram_huge);
         take!(self, image, "ram-gpu-reserve", ram_gpu_reserve);
         take!(self, image, "ram-pagetable-percent", ram_pagetable_percent);
+        take!(self, image, "ram-hold-percent", ram_hold_percent);
+        take!(self, image, "ram-tasks", ram_tasks);
+        take!(self, image, "ram-task-cost", ram_task_cost);
         // What the host can hold for the guest without swapping it (2026-11-14, fix-ram-fit): MemAvailable now, after
         // the fork stopped One UI's zygote and before the guest takes anything (oneos/interface.md 4), less what the
-        // session needs outside the guest: the iOS tasks' page tables (a share of the guest's RAM), KGSL's own memory,
-        // and a headroom. With the RAM locked the host can neither swap nor reclaim it, so this is the bound; the page
+        // session needs outside the guest at its peak (2026-11-23): what holding the RAM costs (a share of it), the iOS
+        // tasks' page tables and kernel memory (per task), KGSL's own memory, and the headroom the host keeps. With the RAM locked the host can neither swap nor reclaim it, so this is the bound; the page
         // cache MemAvailable counts is taken (the host reclaims cache, never the locked RAM).
         let known = meminfo(&self.ram_meminfo);
         let (total, available) = known.unwrap_or((0, 0));
-        self.ram_fit = if known.is_some() {
-            ram_fit(available, self.ram_session_reserve, self.ram_gpu_reserve, self.ram_pagetable_percent)
-        } else {
-            0
-        };
+        self.ram_fit = if known.is_some() { ram_fit(available, &self.fit_terms()) } else { 0 };
         self.ram_fit_available = available;
         self.ram_lock_fit = if self.ram_lock_expected { self.ram_fit & !(STEP_256M - 1) } else { 0 };
         if self.ram_bytes == 0 {
@@ -1779,14 +1821,202 @@ pub fn ram_auto(total: u64, percent: u32, floor: u64) -> u64 {
     }
 }
 
+/// What the session needs outside the guest's RAM at its peak (ram_fit's terms, docs/booter.md 2.2, "What fits").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FitTerms {
+    /// ram-session-reserve: MemAvailable the host keeps at the peak
+    pub reserve: u64,
+    /// ram-gpu-reserve: KGSL's own memory and the helpers'
+    pub gpu: u64,
+    /// ram-tasks and ram-task-cost: the iOS tasks' page tables and kernel memory
+    pub tasks: u32,
+    pub task_cost: u64,
+    /// ram-hold-percent and ram-pagetable-percent: what scales with the guest's size, % of it
+    pub hold_percent: u32,
+    pub pagetable_percent: u32,
+}
+
+impl FitTerms {
+    /// What does not scale with the guest's size: the headroom, the GPU's and the tasks' (each term < 1 TiB, at most
+    /// 4096 tasks: no overflow).
+    pub fn fixed(&self) -> u64 {
+        self.reserve + self.gpu + self.tasks_bytes()
+    }
+
+    pub fn tasks_bytes(&self) -> u64 {
+        self.tasks as u64 * self.task_cost
+    }
+
+    /// The share of the guest's size the host needs beside it, %.
+    pub fn percent(&self) -> u64 {
+        self.hold_percent as u64 + self.pagetable_percent as u64
+    }
+
+    /// MemAvailable left at the session's peak for a guest of `ram` from `available` at the start: available less the
+    /// guest, its share, the tasks and the GPU (the headroom is what this must stay above); negative when it does not
+    /// fit at all.
+    pub fn left_at_peak(&self, available: u64, ram: u64) -> i64 {
+        let need = ram + ram * self.percent() / 100 + self.gpu + self.tasks_bytes();
+        available as i64 - need as i64
+    }
+}
+
+impl Config {
+    /// ram_fit's terms from this configuration.
+    pub fn fit_terms(&self) -> FitTerms {
+        FitTerms {
+            reserve: self.ram_session_reserve,
+            gpu: self.ram_gpu_reserve,
+            tasks: self.ram_tasks,
+            task_cost: self.ram_task_cost,
+            hold_percent: self.ram_hold_percent,
+            pagetable_percent: self.ram_pagetable_percent,
+        }
+    }
+}
+
 /// xh_ram_fit: the guest's RAM that fits beside what the session needs outside it (docs/booter.md 2.2, "What fits"):
-/// the largest G with G + G * pagetable_percent / 100 + gpu + reserve <= available (MemAvailable at xnuhost's start,
-/// after the fork stopped One UI). Not rounded; 0 when nothing fits.
-pub fn ram_fit(available: u64, reserve: u64, gpu: u64, pagetable_percent: u32) -> u64 {
-    if available <= reserve + gpu {
+/// the largest G with G + G * (hold + pagetable percent) / 100 + tasks * task_cost + gpu + reserve <= available
+/// (MemAvailable at xnuhost's start, after the fork stopped One UI). Not rounded; 0 when nothing fits.
+pub fn ram_fit(available: u64, t: &FitTerms) -> u64 {
+    let fixed = t.fixed();
+    if available <= fixed {
         return 0;
     }
-    (available - reserve - gpu) * 100 / (100 + pagetable_percent as u64) // MemAvailable < 2^57: no overflow
+    (available - fixed) * 100 / (100 + t.percent()) // MemAvailable < 2^57: no overflow
+}
+
+// ---- the host's pressure (docs/booter.md 2.2, "The host's pressure") -------------------------------------------------
+/// What the pressure watch says (Pressure::step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PressureNote {
+    /// An event starts: MemAvailable is under the headroom (`short`), the host swaps in at PRESSURE_SWAP_IN or more
+    /// (`swapping`), or both. The caller writes the line with the host's biggest users.
+    Start { short: bool, swapping: bool },
+    /// It is over (PRESSURE_CALM_S calm): how long it lasted, the lowest MemAvailable and the swap-ins in all, bytes.
+    Over { seconds: u64, lowest: u64, swapped_in: u64 },
+}
+
+/// The pressure watch's state: one line when an event starts and one when it is over, never one per look.
+#[derive(Debug, Default, Clone)]
+pub struct Pressure {
+    since: Option<u64>,
+    calm_since: Option<u64>,
+    lowest: u64,
+    swapped_in: u64,
+}
+
+impl Pressure {
+    /// One look at `now` (seconds): MemAvailable, the host's swap-ins in bytes a second over the last `seconds`, and
+    /// the headroom (ram-session-reserve).
+    pub fn step(&mut self, now: u64, available: u64, swap_in: u64, seconds: u64, reserve: u64) -> Option<PressureNote> {
+        let short = available < reserve;
+        let swapping = swap_in >= PRESSURE_SWAP_IN;
+        let Some(start) = self.since else {
+            if !short && !swapping {
+                return None;
+            }
+            *self = Pressure { since: Some(now), calm_since: None, lowest: available, swapped_in: swap_in * seconds };
+            return Some(PressureNote::Start { short, swapping });
+        };
+        self.lowest = self.lowest.min(available);
+        self.swapped_in += swap_in * seconds;
+        if available < reserve + PRESSURE_CALM_MARGIN || swap_in >= PRESSURE_SWAP_IN / 4 {
+            self.calm_since = None;
+            return None;
+        }
+        let calm = *self.calm_since.get_or_insert(now);
+        if now - calm < PRESSURE_CALM_S {
+            return None;
+        }
+        let note = PressureNote::Over { seconds: now - start, lowest: self.lowest, swapped_in: self.swapped_in };
+        *self = Pressure::default();
+        Some(note)
+    }
+
+    pub fn active(&self) -> bool {
+        self.since.is_some()
+    }
+}
+
+/// The host's /proc/meminfo figures the pressure line splits (bytes).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemory {
+    pub total: u64,
+    pub free: u64,
+    pub cached: u64,
+    pub shmem: u64,
+    pub anon: u64,
+    pub page_tables: u64,
+    pub slab_unreclaimable: u64,
+    pub slab_reclaimable: u64,
+    pub kernel_stack: u64,
+}
+
+/// The keys of HostMemory, in its order, for one proc_values read (MemAvailable and the swap read beside them).
+pub const HOST_MEMORY_KEYS: [&str; 12] = [
+    "MemTotal",
+    "MemFree",
+    "Cached",
+    "Shmem",
+    "AnonPages",
+    "PageTables",
+    "SUnreclaim",
+    "SReclaimable",
+    "KernelStack",
+    "MemAvailable",
+    "SwapTotal",
+    "SwapFree",
+];
+
+impl HostMemory {
+    /// From HOST_MEMORY_KEYS' values (None counts 0).
+    pub fn from_values(v: &[Option<u64>]) -> HostMemory {
+        let g = |i: usize| v.get(i).copied().flatten().unwrap_or(0);
+        HostMemory {
+            total: g(0),
+            free: g(1),
+            cached: g(2),
+            shmem: g(3),
+            anon: g(4),
+            page_tables: g(5),
+            slab_unreclaimable: g(6),
+            slab_reclaimable: g(7),
+            kernel_stack: g(8),
+        }
+    }
+}
+
+/// The host's memory by user, largest first, none of 0 bytes: the guest's RAM in the host's RAM (`guest`), the page
+/// tables, the kernel's unreclaimable slab (the iOS tasks' VMAs among it) and stacks, the processes' anonymous memory,
+/// the page cache, other shmem, the reclaimable slab, zram's pool (`zram`, 0 unknown), KGSL's own (`kgsl`), and the
+/// rest that /proc/meminfo does not name (drivers' pages, dma-bufs, vmalloc). The guest's RAM is shmem: it is taken out
+/// of Shmem and Cached.
+pub fn host_users(m: &HostMemory, guest: u64, kgsl: u64, zram: u64) -> Vec<(&'static str, u64)> {
+    let other_shmem = m.shmem.saturating_sub(guest);
+    let file = m.cached.saturating_sub(m.shmem);
+    let mut users = vec![
+        ("the guest's RAM", guest),
+        ("page tables", m.page_tables),
+        ("unreclaimable slab", m.slab_unreclaimable),
+        ("kernel stacks", m.kernel_stack),
+        ("anonymous", m.anon),
+        ("page cache", file),
+        ("other shmem", other_shmem),
+        ("reclaimable slab", m.slab_reclaimable),
+        ("zram's pool", zram),
+        ("KGSL's own", kgsl),
+    ];
+    let named: u64 = users.iter().map(|u| u.1).sum();
+    users.push(("the rest", m.total.saturating_sub(m.free).saturating_sub(named)));
+    users.retain(|u| u.1 != 0);
+    users.sort_by_key(|u| std::cmp::Reverse(u.1));
+    users
+}
+
+/// "the guest's RAM 5632, page tables 788, ..." in MiB.
+pub fn host_users_text(users: &[(&str, u64)]) -> String {
+    users.iter().map(|(name, b)| format!("{name} {}", b >> 20)).collect::<Vec<_>>().join(", ")
 }
 
 /// xh_ram_fit_auto, ram=auto: ram_auto and, unless `fit` is None (ram-fit=0), no more than `fit`, in 256 MiB steps; 0

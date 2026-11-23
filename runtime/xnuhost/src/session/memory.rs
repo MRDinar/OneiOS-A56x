@@ -44,6 +44,10 @@ pub struct MemoryWatch {
     swap_was: (u64, u64),
     huge_said: bool,
     valve_last: Option<u64>,
+    /// the host's pressure line (pressure_watch): its state, its last look and the swap-ins then
+    pressure: config::Pressure,
+    pressure_last: Option<u64>,
+    pressure_swap_ins: u64,
 }
 
 impl MemoryWatch {
@@ -167,6 +171,87 @@ impl MemoryWatch {
             outs,
             (outs * page) as f64 / 1e6
         );
+    }
+
+    /// Every 5 s: the host's pressure (docs/booter.md 2.2, "The host's pressure"). One line when MemAvailable falls
+    /// under the headroom (ram-session-reserve) or the host swaps in PRESSURE_SWAP_IN a second or more, with the host's
+    /// memory by user, largest first, and xnuhost's OOM score; one line when it is over (30 s calm). Nothing in
+    /// between: the memory lines every host-mem-log seconds go on. The phone, 2026-11-23 19:06: xnuhost ended without a
+    /// line at MemAvailable 1077 MiB and swap-ins of 42 MB/s, and nothing said what held the host's RAM. Cheap: one read
+    /// of /proc/meminfo and one of /proc/vmstat every 5 s; the rest (zram, KGSL, the OOM score) once per event.
+    pub fn pressure_watch(&mut self, config: &Config) {
+        let now = mono_s();
+        if self.pressure_last.is_some_and(|last| now - last < 5) {
+            return;
+        }
+        let (ins, _) = ramfix::vmstat_swaps().unwrap_or((0, 0));
+        let seconds = self.pressure_last.map_or(0, |last| now - last);
+        let page = xh_core::sys::page_size();
+        let rate = if seconds != 0 && ins >= self.pressure_swap_ins {
+            (ins - self.pressure_swap_ins) * page / seconds
+        } else {
+            0
+        };
+        self.pressure_last = Some(now);
+        self.pressure_swap_ins = ins;
+        let v = config::proc_values(&config.ram_meminfo, &config::HOST_MEMORY_KEYS);
+        let Some(available) = v[9] else { return };
+        let reserve = config.ram_session_reserve;
+        match self.pressure.step(now, available, rate, seconds, reserve) {
+            None => {}
+            Some(config::PressureNote::Start { short, swapping }) => {
+                let host = config::HostMemory::from_values(&v);
+                let m = mem::state();
+                let pid = std::process::id() as i32;
+                let guest = held(m.fd).unwrap_or(0).min(host.shmem);
+                let kgsl = ramfix::kgsl_value(pid, "kernel").unwrap_or(0);
+                let blobs = ramfix::kgsl_value(pid, "imported_mem").unwrap_or(0);
+                let users = config::host_users(&host, guest, kgsl, ramfix::zram_pool());
+                let swap_used = v[10].unwrap_or(0).saturating_sub(v[11].unwrap_or(0));
+                let tasks = crate::task::live();
+                let per_task = if tasks != 0 {
+                    format!(
+                        "; page tables {} KiB for each of {} live tasks",
+                        (host.page_tables >> 10) / tasks as u64,
+                        tasks
+                    )
+                } else {
+                    String::new()
+                };
+                let (score, adj) = ramfix::oom_score();
+                let why = match (short, swapping) {
+                    (true, true) => format!(
+                        "MemAvailable {} MiB, under the {} MiB headroom, and swap-ins of {:.1} MB/s",
+                        available >> 20,
+                        reserve >> 20,
+                        rate as f64 / 1e6
+                    ),
+                    (true, false) => {
+                        format!("MemAvailable {} MiB, under the {} MiB headroom", available >> 20, reserve >> 20)
+                    }
+                    _ => format!("swap-ins of {:.1} MB/s (MemAvailable {} MiB)", rate as f64 / 1e6, available >> 20),
+                };
+                loge!(
+                    "memory: the host is short of memory: {}; its RAM by user (MiB): {}{}; GPU blobs {} MiB, inside the guest's RAM; host swap {} MiB used; xnuhost's oom_score {} (oom_score_adj {}: the kernel's OOM killer ends the highest first)",
+                    why,
+                    config::host_users_text(&users),
+                    per_task,
+                    blobs >> 20,
+                    swap_used >> 20,
+                    score.map_or("-".to_owned(), |s| s.to_string()),
+                    adj.map_or("-".to_owned(), |s| s.to_string())
+                );
+            }
+            Some(config::PressureNote::Over { seconds, lowest, swapped_in }) => {
+                logi!(
+                    "memory: the host's shortage is over after {} s: lowest MemAvailable {} MiB, swap-ins {} MiB in all; now MemAvailable {} MiB",
+                    seconds,
+                    lowest >> 20,
+                    swapped_in >> 20,
+                    available >> 20
+                );
+            }
+        }
     }
 
     /// Every host-mem-log seconds (or `now`): what the host has left and how much of the guest's RAM it holds (the
@@ -342,14 +427,21 @@ impl MemoryWatch {
 
 /// The guest's RAM as chosen (config.rs, ram=auto), once at the start.
 pub fn ram_choice_log(config: &Config) {
-    // What fits beside the session's needs (config.rs ram_fit, 2026-11-14): MemAvailable at the start, less the
-    // headroom, the GPU's allowance and the page tables' share of the guest.
+    // What fits beside the session's needs at its peak (config.rs ram_fit, 2026-11-14, the terms of 2026-11-23):
+    // MemAvailable at the start, less the headroom, the GPU's allowance, the tasks' page tables and kernel memory, and
+    // the share of the guest that holding it costs; and what that leaves the host at the peak with the size chosen.
     let fits = if config.ram_fit_available != 0 {
+        let t = config.fit_terms();
+        let pagetables = if t.pagetable_percent != 0 {
+            format!(" and {}% for page tables", t.pagetable_percent)
+        } else {
+            String::new()
+        };
         format!(
-            "what fits beside the session's needs: {} MiB (MemAvailable {} MiB less {} MiB headroom{}, {} MiB for the GPU and {}% of the guest for page tables)",
+            "what fits beside the session's needs: {} MiB (MemAvailable {} MiB less {} MiB headroom{}, {} MiB for the GPU's own, {} tasks at {} KiB ({} MiB: their page tables and kernel memory) and {}% of the guest for holding it{}); the host keeps about {} MiB at the peak",
             config.ram_fit >> 20,
             config.ram_fit_available >> 20,
-            config.ram_session_reserve >> 20,
+            t.reserve >> 20,
             if config.ram_lock_expected {
                 " with the lock"
             } else if config.ram_lock {
@@ -357,8 +449,13 @@ pub fn ram_choice_log(config: &Config) {
             } else {
                 ""
             },
-            config.ram_gpu_reserve >> 20,
-            config.ram_pagetable_percent
+            t.gpu >> 20,
+            t.tasks,
+            t.task_cost >> 10,
+            t.tasks_bytes() >> 20,
+            t.hold_percent,
+            pagetables,
+            t.left_at_peak(config.ram_fit_available, config.ram_bytes) >> 20
         )
     } else {
         String::new()

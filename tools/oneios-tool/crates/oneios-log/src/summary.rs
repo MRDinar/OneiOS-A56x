@@ -196,6 +196,14 @@ fn inner_end(recs: &[Rec]) -> Option<(&Rec, &str)> {
     })
 }
 
+/// The host's pressure at a boot's end (docs/booter.md 2.2, "The host's pressure"): xnuhost's last `memory: the host is
+/// short of memory: ...` line when no `memory: the host's shortage is over` came after it; the record and its words.
+fn pressure_at_end(recs: &[Rec]) -> Option<(&Rec, &str)> {
+    const SHORT: &str = "memory: the host is short of memory: ";
+    let r = recs.iter().rev().find(|r| host(r, SHORT) || host(r, "memory: the host's shortage is over"))?;
+    r.text.strip_prefix(SHORT).map(|why| (r, why))
+}
+
 /// How the boot ended: the record and what it says, or None (the log stops while the session ran, or was cut).
 fn ending(recs: &[Rec]) -> Option<(&Rec, String)> {
     let signal = |r: &Rec| r.src == Src::Raw && r.text.starts_with("xnuhost !!");
@@ -293,6 +301,9 @@ pub fn report(log: &Log, window: Window, all: bool) -> String {
         }
         if let Some((r, how)) = inner_end(recs) {
             let _ = writeln!(out, "  {:<34} {:>10}  line {:>6}  {}", "how xnuhost ended", at(r.time), r.line, short(how, 70));
+        }
+        if let Some((r, why)) = pressure_at_end(recs) {
+            let _ = writeln!(out, "  {:<34} {:>10}  line {:>6}  {}", "host short of memory at the end", at(r.time), r.line, short(why, 70));
         }
         let stage_time = |name: &str| stages.iter().find(|s| s.name == name).and_then(|s| s.rec).and_then(|r| r.time);
         if let (Some(first), Some(ready)) = (stage_time("the guest's first frame"), stage_time("guest ready")) {
