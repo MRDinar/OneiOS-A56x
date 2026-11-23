@@ -445,3 +445,10 @@
 # CPU for minutes after the Wi-Fi join, every guest CPU busy. ReportCrash stays (it writes a crash's .ips itself). The
 # roottweak test checks both lists against the policy. README.md, "0093". Applies after 0092 (git apply --check).
 0093-telemetry-jobs-off.patch
+# osanalytics-agent-off (2026-11-23): 0093's default disable list gets com.apple.osanalytics.osanalyticshelper.agent,
+# osanalyticshelper's second job ("agent-init", LaunchDaemons/com.apple.osanalytics.osanalyticshelper.agent.plist,
+# launched by the notifyd event com.apple.trial.NamespaceUpdate.STEEL_ROSE_CHECK_IN_COHORT). With 0093 alone the
+# session of 2026-11-23 20:23 (out/session-logs/2026-11-23-mac-s2023) still logged "osanalyticshelper: disabled there
+# already" and then osanalyticshelper[268] at 15-49% of a CPU (oneios-cpu). The daemon policy's telemetry group has the
+# label too (userland/config/daemons.toml); the roottweak test checks the list. README.md, "0094". Applies after 0093.
+0094-osanalytics-agent-off.patch

@@ -2005,3 +2005,22 @@ Built on the Linux laptop with `ONEIOS_CRYPTO=original` (xnu.macho `22bf1532...`
 `40eb1263...`: audit 0 failures, stubs-check 666 good, 0 bad), with the Wi-Fi signal change of `net/`; not booted
 yet. **Watch in its first boot:** no
 osanalyticshelper in `oneios-cpu`; a crash still leaves an `.ips` under `/private/var/mobile/Library/Logs/CrashReporter`.
+
+## 0094-osanalytics-agent-off.patch (osanalytics-agent-off, 2026-11-23)
+
+**Why.** The session of 2026-11-23 20:23 ran 0093 (`kernel.kc 40eb12633c45`, `out/session-logs/2026-11-23-mac-s2023/`):
+`oneios-jobs: com.apple.osanalytics.osanalyticshelper: disabled there already`, and still `osanalyticshelper[268]` at
+15-49% of a CPU from about 91120 to the return (`oneios-cpu: ... osanalyticshelper[268] 49%`; `oneios-top:
+osanalyticshelper[268] ... 55341 traps ... vm_fault 29005`). 24A446 has two jobs that run
+`/System/Library/CoreServices/osanalyticshelper` (all 661 plists of `os.img`'s `/System/Library/LaunchDaemons` read with
+`oneios-tool image apfs-copy` and `plistutil`): `com.apple.osanalytics.osanalyticshelper` (`server-init`, the Mach
+services) and `com.apple.osanalytics.osanalyticshelper.agent` (`agent-init`, `LaunchEvents` `com.apple.notifyd.matching`
+`com.apple.trial.NamespaceUpdate.STEEL_ROSE_CHECK_IN_COHORT`: a Trial namespace update, which comes after the network is
+up). 0093 disabled only the first.
+
+**What.** 0093's `oneios_jobs_disable_default` gets `com.apple.osanalytics.osanalyticshelper.agent` (0.6 KiB of its
+1024), and the daemon policy's telemetry group has it (18 labels; `userland/config/daemons.toml`), so a new seed's
+`disabled.plist` has it too. `roottweak.rs` reads 0094's added label with 0093's list and checks them against the policy.
+Tested: `cargo test -p oneios-tweaks` on the laptop. **Watch in its first boot:** `oneios-jobs:
+com.apple.osanalytics.osanalyticshelper.agent: disabled in disabled.plist (it was not)`, and no osanalyticshelper in
+`oneios-cpu` after the Wi-Fi join.
