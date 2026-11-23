@@ -157,6 +157,12 @@ named!(
     Encoder10 { Main10 = "main10", EightBit = "8bit", Nv12 = "nv12" }
 );
 named!(
+    /// decoder= (docs/switches.md, 2026-11-24): auto (the video device decodes too: the phone's MediaCodec for iOS's
+    /// paravirtualized VideoToolbox decoder; needs encoder=auto or sim, whose device and media pool it shares) | off (an
+    /// encoder only: iOS decodes video in software, as before).
+    Decoder { Auto = "auto", Off = "off" }
+);
+named!(
     /// gpu-down= (docs/switches.md): governor (3b36ff0: the level comes down when a frame fits at the governor's clock
     /// in a burst) or bottom (when it would fit at KGSL's lowest clock, as before 3b36ff0).
     GpuDown { Governor = "governor", Bottom = "bottom" }
@@ -470,6 +476,8 @@ const GIVEN_KEYS: &[&str] = &[
     "wifi-joined-scan",
     "encoder-10bit",
     "encoder-warmup",
+    "decoder",
+    "decoder-codecs",
     "gpu-blob-entries",
     "gpu-down",
     "stop-loop",
@@ -659,6 +667,9 @@ pub struct Config {
     /// encoder-10bit (main10), encoder-warmup (1): the video encoder
     pub encoder_10bit: Encoder10,
     pub encoder_warmup: bool,
+    /// decoder (auto), decoder-codecs (h264,hevc,vp9,av1; bits of oneencoder::proto::DECODER_CODECS): the video decoder
+    pub decoder: Decoder,
+    pub decoder_codecs: u32,
     /// gpu-blob-entries=N (65532, 78c4b86; 16384 before): the most entries of a guest 3D blob the device takes
     pub gpu_blob_entries: u32,
     /// gpu-down (governor): when the GPU level leaves the top
@@ -893,6 +904,8 @@ impl Config {
             wifi_joined_scan: WifiJoinedScan::Cache,
             encoder_10bit: Encoder10::Main10,
             encoder_warmup: true,
+            decoder: Decoder::Auto,
+            decoder_codecs: oneencoder::switches::ALL_CODECS,
             gpu_blob_entries: GPU_BLOB_ENTRIES,
             gpu_down: GpuDown::Governor,
             stop_loop: StopLoop::Wait,
@@ -1086,6 +1099,8 @@ impl Config {
             "wifi-joined-scan" => self.wifi_joined_scan = named(WifiJoinedScan::parse(value))?,
             "encoder-10bit" => self.encoder_10bit = named(Encoder10::parse(value))?,
             "encoder-warmup" => self.encoder_warmup = flag(value)?,
+            "decoder" => self.decoder = named(Decoder::parse(value))?,
+            "decoder-codecs" => self.decoder_codecs = named(oneencoder::switches::parse_codecs(value))?,
             "gpu-blob-entries" => self.gpu_blob_entries = number(value, 16384, i64::from(GPU_BLOB_ENTRIES))?,
             "gpu-down" => self.gpu_down = named(GpuDown::parse(value))?,
             "stop-loop" => self.stop_loop = named(StopLoop::parse(value))?,
@@ -1318,6 +1333,8 @@ impl Config {
         take!(self, image, "wifi-joined-scan", wifi_joined_scan);
         take!(self, image, "encoder-10bit", encoder_10bit);
         take!(self, image, "encoder-warmup", encoder_warmup);
+        take!(self, image, "decoder", decoder);
+        take!(self, image, "decoder-codecs", decoder_codecs);
         take!(self, image, "gpu-blob-entries", gpu_blob_entries);
         take!(self, image, "gpu-down", gpu_down);
         take!(self, image, "stop-loop", stop_loop);
@@ -2084,6 +2101,8 @@ impl Config {
             ("wifi-joined-scan", self.wifi_joined_scan.as_str().to_string(), "cache"),
             ("encoder-10bit", self.encoder_10bit.as_str().to_string(), "main10"),
             ("encoder-warmup", on(self.encoder_warmup).to_string(), "1"),
+            ("decoder", self.decoder.as_str().to_string(), "auto"),
+            ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
             ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
             ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),

@@ -127,6 +127,22 @@ fn the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source() {
     assert!(at("uint32_t surfaceSampleBytes(") < at("bool feedFrame(Session *s)"));
     assert!(at("int openForPicture(") < at("int queueEncodeTile(") && at("int openForPicture(") < at("int queueEncodeFrame("));
     assert!(!staged.contains("view.format != cc(\"420v\") && view.format != cc(\"420f\")"));   // the 8-bit-only check is gone
+    // The decoder (2026-11-24, edit 6): dcap and dcan answered once each, VP9 and AV1 listed and started, the surface's
+    // kernel mapping kept, the counters; each helper before its first caller.
+    for case in ["case cc(\"dcap\"):", "case cc(\"dcan\"): {"] {
+        assert_eq!(staged.matches(case).count(), 1, "{case}");
+    }
+    for text in ["{\"vp09\", \"com.oneios.videodecoder.virtio-media.vp9\"", "{\"av01\", \"com.oneios.videodecoder.virtio-media.av1\"",
+                 "const int list = p->array(entries, count);", "f.pixelformat = decoderFourcc(d.codec);",
+                 "if (find(d.extensions, d.extensionsSize, cc(\"vpcC\"), record)) {", "w.plist(cc(\",cda\"), *p, capabilities);",
+                 "s->mappedSurfaces[s->mappedCount++] = {to.id, to.base, memory, map, surface};", "else refreshCapture(s);",
+                 "countDecoded(s, frame, bytesused != 0);", "volatile uint32_t oneios_decode_frames[4], oneios_decode_dropped[4];"] {
+        assert!(staged.contains(text), "{text}");
+    }
+    assert!(!staged.contains("decoderDevice() == ~0u ? 0 : 2"));
+    assert!(at("uint32_t decoderCodecs()") < at("void emitFrame(") && at("int codecIndex(") < at("void copyFrame("));
+    assert!(at("void countDecoded(") < at("void emitFrame(") && at("void refreshCapture(") < at("void workerMain("));
+    assert!(at("bool streamHeaders(") < at("int startSession(") && at("int32_t acceptFormat(") < at("int droidvm_vthost_message("));
 }
 
 #[test]

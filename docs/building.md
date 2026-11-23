@@ -248,7 +248,7 @@ with `wc -c`, CPUs with `getconf _NPROCESSORS_ONLN`, checksums with `sha256sum` 
 ```sh
 runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static, the task stub inside it), the bridges' helpers, the
                                   #    display helper, and the phone checks (gpuctl, bridgectl, wifictl, brightctl,
-                                  #    batteryctl, thermalctl, displayctl, camctl, encctl); then the NEEDED and symbol
+                                  #    batteryctl, thermalctl, displayctl, camctl, encctl: its `encctl decode FILE` tests the decoder, 2026-11-24); then the NEEDED and symbol
                                   #    check of the stage (runtime/package/elf-check.sh, below)
 runtime/package.sh 0.1.0-dev      # -> out/release/oneios-runtime-0.1.0-dev-arm64.tar.zst + .sha256 + runtime.json,
                                   #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256
@@ -623,7 +623,7 @@ sched_preemption_disable_debug_mode=0 wdt=-1 sheng-smp=1 oneios-data-wait=3000" 
   audiomxd` (`actuator port`, `Actuator`). [hardware.md](hardware.md) section 5, "Haptics do nothing".
 - The video encoder on the PC: add `--set encoder=auto`. With the bridges off (`--mode bench`) xnuhost runs the
   stand-in encoder itself (the PC has no MediaCodec and cannot run the Android helper): `encoder: on: stand-in
-  backend, media pool 48 MiB at 0x... (2 session slots)` and `encoder: the stand-in encoder (encoder=auto with the
+  backend, media pool 48 MiB at 0x... (4 sessions)`, `decoder: on: stand-in backend, H.264, HEVC, VP9, AV1 (decoder-codecs=)` (the stand-in decoder: no decoding, a picture per frame; 2026-11-24) and `encoder: the stand-in encoder (encoder=auto with the
   bridges off: no phone): ...`. The guest then says `ONEIOS CODEC: 1 virtio-media device(s), 1 up; VideoToolbox
   paravirtualization registered (stage 2)`, 3 s later `ONEIOS CODEC: device 0: oneios-encoder caps 0x4004000 out:
   NV12 cap: HEVC H264`, and `ONEIOS CODEC: counters: ...` every 30 s while a process uses the service

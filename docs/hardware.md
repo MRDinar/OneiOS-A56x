@@ -4023,8 +4023,9 @@ HEVC SPS has there, so the hvcC carried `03` bytes as flags and level 0; they ar
 the three files (with the last message type the host has no case for) and the session lines `DroidVMVTHost.cpp`
 keeps (`codec/README.md` has the lines and what each failed step means).
 
-Limits [F from the code]: a session's buffers come from its half of the 48 MiB pool, about 9 bytes a pixel, so a
-frame above about 2.7 megapixels gets no encoder; two sessions at a time; no decoder (iOS keeps its own).
+Limits [F from the code]: a session's buffers come from the 48 MiB pool, first fit (each of two sessions had a fixed half
+until 2026-11-24), about 9 bytes a pixel for an encoder; four sessions at a time, encoders and decoders. The decoder:
+"The video decoder" below.
 
 ### Built and booted on the Linux PC (hevc-guest, 2026-11-15)
 
@@ -4135,6 +4136,66 @@ the phone).** No tile was coded, for two reasons ([codec README](../kernel/patch
   call it waits in (`encoder: helper: an open of HEVC 96x96 (NV12) has waited 1000 ms in AMediaCodec_configure`). A
   picture below the encoder's smallest size is coded at that size (the guest's SPS crop takes it back).
   `encctl caps` prints the encoders' sizes and Main10 support; `encctl hevc10 96 96` codes a P010 picture.
+
+### The video decoder (fix/hw-decode, 2026-11-24; host-tested, built; not yet booted on the phone)
+
+**The fault [F, `out/session-logs/2026-11-24-mac-gpumem/live.log`].** YouTube in Safari lagged and the phone got hot.
+The device was an encoder only (card `oneios-encoder`), so `decs` (videocodecd asked it at 108622 s) listed no
+decoder, and iOS decoded the video on the CPU: `oneios-cpu` had com.apple.WebKit.Web at 91-142 %, videocodecd at
+15-26 % and mediaplaybackd at 58 % during the video.
+
+**What 24A446 does [F, its VideoToolbox, WebCore and VideoToolboxParavirtualizationSupport, `ipsw dyld extract` of
+`out/ios27-cache`].** The paravirtualized decoder takes any codec type the host lists: `vtLoadParavirtualizedVideoDecoders`
+registers each `decs` entry, and `VTIsHardwareDecodeSupported` creates a decoder with hardware required (VP9 only
+behind `VTIsVP9DecodeEnabledForCurrentProcess`). The guest's messages are `decs +dec dsta dfrm dfin dinv -dec dset
+dmul dcop dsup`, plus two that upstream's host did not answer:
+- `dcap` (`vtCreateDecoderCapabilitiesDictionary`, in a guest: `,ver ,cod`, answer `,cda`). `VTCopyAV1DecoderCapabilitiesDictionary`
+  and `VTCopyHEVCDecoderCapabilitiesDictionary` (WebCore's) send it. The dictionary: `VTSupportedProfiles` (profile
+  numbers), `VTPerProfileSupport` (by the profile's number as a string: `VTIsHardwareAccelerated`,
+  `VTMaxDecodeLevel`, `VTMaxPlaybackLevel`).
+- `dcan` (`CanAcceptFormatDescription`, `,fds`, answer `,can`).
+- The tile decoder (`dsts dtil dtfi`) exists too and is not answered (HEIC decoding stays in software).
+
+**The route.** The guest's half is upstream's decoder in `DroidVMVTHost.cpp` (H.264 and HEVC), with staged edit 6
+(`tools/oneios-tool/crates/oneios-kernel/src/staged/codec_decode.rs`): VP9 and AV1 (8-bit 4:2:0 only, by their `vpcC`
+and `av1C`), `dcap` and `dcan` answered, the surface's kernel mapping kept for the session (upstream mapped and
+unmapped about 3 MB of IOSurface per 1080p frame), a SOURCE_CHANGE while streaming taken, and decode counters. The
+host's half is xnuhost's same virtio-media device, which now decodes too (`runtime/bridges/encoder/README.md`, "The
+decoder"):
+- The compressed frames go to the oneios-encoder helper over its socket.
+- MediaCodec runs there in asynchronous mode (`decode_ndk.rs`: `video/avc`, `video/hevc`, `video/x-vnd.on2.vp9`,
+  `video/av01`; ByteBuffer output asked as NV12).
+- The helper writes each picture **straight into the guest's CAPTURE buffer**, in the media pool, which it maps from
+  xnuhost's RAM memfd (sent by SCM_RIGHTS after the HELLO).
+- The guest copies it once into the IOSurface.
+- No thread polls: MediaCodec's callbacks drive the copy, and the device's worker is woken by each result.
+
+**The lines.**
+- xnuhost: `decoder: on: mediacodec-helper backend, H.264, HEVC, VP9, AV1 (decoder-codecs=)`,
+  `decoder: session N: VP9 1920x1080 on mediacodec-helper`, and
+  `decoder: session N: pictures 1920x1080 at a stride of S`.
+- The helper: `encoder: helper: decoder: VP9 1920x1080: c2.qti.vp9.decoder, opened in N ms` and
+  `encoder: helper: decoder: VP9 1920x1080: output ..., taken`.
+- Every 60 s while frames are decoded: `decoder: 60 s: decoded H.264 N, HEVC N, VP9 N, AV1 N of N fed; decode time
+  avg A ms, max M ms; dropped N; sessions N, opens refused N (mediacodec-helper)`.
+- The guest: `ONEIOS CODEC: decoded: avc1 N, hvc1 N, vp09 N, av01 N; dropped ...; dfrm to Demt avg N us, max N us
+  (N frames)` at the codec report's 30 s cadence.
+
+**Switches:** `decoder=auto|off`, `decoder-codecs=` (docs/switches.md).
+
+**Tested [F, the build laptop].**
+- `cargo test -p oneencoder`: the decoder's unit tests, and `tests/decoder.rs`. That test runs the guest's V4L2
+  sequence over the real transport, through the helper process with a memfd pool (VP9, H.264) and in-process (AV1,
+  HEVC), and checks `decoder=off`. It also runs `encctl decode` on an IVF and an Annex-B file.
+- `cargo test -p oneios-kernel --test golden`: the edit on the pinned source.
+- The kernel build and prelink (`codec/README.md`), and `runtime/build.sh` (elf-check 0 failures).
+
+**Guesses [I].**
+- That WebCore offers VP9 and AV1 to YouTube once `dcap` answers.
+- That c2.qti's decoders take the in-band parameter sets and give NV12 in ByteBuffer mode.
+- That 1080p decodes in time.
+
+`encctl decode FILE` checks the second and third on the phone, and a session's lines the first.
 
 ## 7h. The host device (host-device, 2026-11-21)
 

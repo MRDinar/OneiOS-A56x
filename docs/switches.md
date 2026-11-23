@@ -16,7 +16,7 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 xnuhost logs every switch once, after the `versions:` line:
 
 ```text
-switches: session-mode=hosted stop-loop=wait task-trim=1 ram-fit-terms=tasks uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 (docs/switches.md); all at their defaults
+switches: session-mode=hosted stop-loop=wait task-trim=1 ram-fit-terms=tasks uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 decoder=auto decoder-codecs=h264,hevc,vp9,av1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 (docs/switches.md); all at their defaults
 ```
 
 When some are changed, the end says which: `not at the default: wifi-send-wait gpu-down`. Kernel switches are read
@@ -43,6 +43,8 @@ change (the default value), and whether one has run the other value.
 | `wifi-joined-scan` | `cache\|low\|plain` | `cache` | cache: within 120 s of the last scan its networks answer, else a low-priority scan; low: every scan the radio's, low priority (cbf97ea); plain: every scan the radio's, no flags (before cbf97ea) | b704922, cbf97ea + this build | low: 19:40 (the driver took no flags: `flags 0x0`); cache: no |
 | `encoder-10bit` | `main10\|8bit\|nv12` | `main10` | main10: the device takes P010 (iOS's 10-bit tiles) and the helper codes HEVC Main10 where the encoder offers it, else 8-bit of the high bytes; 8bit: P010 taken, Main10 never tried; nv12: the device lists and takes no P010, the guest sends NV12 (its high bytes). Not exact: before b3da193 the guest refused 10-bit tiles itself (stage 101), which the kernel no longer does | b3da193 + this build | no |
 | `encoder-warmup` | `0\|1` | `1` | 1: the encoder helper starts at the guest's first virtio-media session and opens one HEVC encoder at once; 0: it starts at the first encode, no warm-up (its binder threads start either way: that is the fix of the hang, not a choice) | b3da193 + this build | no |
+| `decoder` | `auto\|off` | `auto` | auto (2026-11-24): the video device decodes too (card `oneios-encoder+decoder`): iOS's paravirtualized VideoToolbox decoder gets the phone's MediaCodec for H.264, HEVC, VP9 and AV1 (8-bit 4:2:0; a 10-bit stream, a size outside 96..4096 or above 4096x2304 is refused and decoded in software). Needs `encoder=auto` or `sim` (the device and media pool are the encoder's). off: an encoder only, `decs` lists nothing and iOS decodes in software (videocodecd, WebKit), as before. Exact: the guest's decoder half is the same code either way, it finds no device | fix/hw-decode | no |
+| `decoder-codecs` | `h264,hevc,vp9,av1` (any of them, comma separated) | all four | the codecs the device offers (ENUM_FMT of OUTPUT, so `decs` and `dcap`); one left out is decoded in software. Pins a codec whose MediaCodec decoder misbehaves | fix/hw-decode | no |
 | `boot-args-add=oneios-wifi-rssi=0` | `0\|1` | `1` | 1: the Wi-Fi driver posts RSSI_CHANGED records (the bars follow the signal); 0: none, wifid reads the signal at the join only (before cbf97ea). Kernel (net/OneiOSWifi.cpp) | cbf97ea + this build (db2eb42) | no |
 | `boot-args-add=oneios-telemetry-jobs=1` | `0\|1` | `0` | 0: 0093 and 0094 disable the telemetry group (osanalyticshelper and its agent job, 16 uploaders); 1: the disable list is 0053's loops only and the enable pass enables the telemetry labels again (a store 0093 changed gets them back). Kernel, hosted 0096 | bad88c3, 30bdea6 + 0096 | 0093 alone: 20:23 (osanalyticshelper still ran: 0094) |
 | `boot-args-add=oneios-pool-cut=0` | `0\|1` | `1` | 1: metal2vulkan releases a spare command pool that holds more than its last 10 s need plus 8 command buffers (the render server's small command-stream BOs go back); 0: the pools are kept as before (the plug-in sets `METAL2VULKAN_POOL_USE_WINDOW_S=0`). Metal plug-in only (the boot add-on), docs/gpu.md "Who keeps a blob" | 50873fe | no |
@@ -80,6 +82,8 @@ wifi-buffers=1
 wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
+decoder=auto
+decoder-codecs=h264,hevc,vp9,av1
 # kernel switches (boot-args-add appends to boot-args; one line, all five words):
 # boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1
 ```
@@ -91,7 +95,8 @@ encoder-warmup=1
   with the lock, a given key wins, 1 GiB headroom unlocked), `gpu3d_kgsl::policy::tests::down_with_a_wide_clock_range`
   (`gpu-down=bottom` stays at the top in the phone's case), `cpu::tests::release_floor` (`uclamp-rule=all`'s floor).
 - Bridges: `switches::tests::words_and_defaults`, `wifi::uplink::tests::no_wait_when_switched_off`; the encoder's
-  `switches::tests::words`.
+  `switches::tests::words` (with `decoder-codecs=`'s words); the decoder's `tests/decoder.rs` (`decoder=off`: the card
+  and the formats of an encoder only; `decoder-codecs=vp9`: VP9 alone).
 - Metal: metal2vulkan's `tests::spares` (12, fix/gpu-blobs); the plug-in of this build is made with the patch.
 - Kernel: 0096 applies after 0095; the kernel of this build has both boot-args (`strings`).
 - Kernel: 0097 applies after 0096 (`git apply --check` on the patched tree). Built on the laptop with `HOSTED_OUT=wired ONEIOS_CRYPTO=original` and the series less 0095 (its `recount.c:753` panic is fixed apart): `xnu.macho` `9a604844`, 412 s, releasable; prelinked to `out/kernel/24A446-wired/kernel.kc` `2890c098` (`.hashes` `cfd918a8`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 8 of 8. `config::tests::the_switches` has `oneios-pressure-big=0`. Merged after the fixed 0095 (2026-11-24) and built again with the whole series: `xnu.macho` `32f88a27` (182 patches, releasable), `kernel.kc` `e79886d9` (`.hashes` `e06b673d`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 10 of 10, `cargo test -p xnuhost config::` 16 passed. Under qemu-aarch64 (8 vCPUs, 4 GiB, the integration runtime) 20 minutes, no panic, SpringBoard at +247 s, `oneios-wired` and `oneios-pressure` every 60 s; no pressure rise there, so the default 512 itself is not exercised (kernel/patches/oneios-hosted/README.md, "0097").

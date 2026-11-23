@@ -1424,6 +1424,7 @@ fn the_switches() {
     assert!(c.switches_line().ends_with("all at their defaults"), "{}", c.switches_line());
     assert!(c.wifi_ring_wait && c.wifi_send_wait && c.wifi_buffers && c.wifi_joined_scan == WifiJoinedScan::Cache);
     assert!(c.encoder_10bit == Encoder10::Main10 && c.encoder_warmup && c.gpu_down == GpuDown::Governor);
+    assert!(c.decoder == Decoder::Auto && c.decoder_codecs == 0xf);
     assert!(c.gpu_blob_entries == 65532 && c.stop_loop == StopLoop::Wait);
     for (k, v) in [
         ("wifi-ring-wait", "0"),
@@ -1432,6 +1433,8 @@ fn the_switches() {
         ("wifi-joined-scan", "plain"),
         ("encoder-10bit", "nv12"),
         ("encoder-warmup", "0"),
+        ("decoder", "off"),
+        ("decoder-codecs", "vp9,av1"),
         ("gpu-blob-entries", "16384"),
         ("gpu-down", "bottom"),
         ("stop-loop", "poll"),
@@ -1444,6 +1447,9 @@ fn the_switches() {
         ("gpu-blob-entries", "1024"),
         ("wifi-joined-scan", "on"),
         ("encoder-10bit", "10"),
+        ("decoder", "on"),
+        ("decoder-codecs", "vp8"),
+        ("decoder-codecs", ""),
         ("gpu-down", "top"),
         ("stop-loop", "sleep"),
         ("uclamp-rule", "some"),
@@ -1454,6 +1460,7 @@ fn the_switches() {
     c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0".into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
+    assert!(line.contains(" decoder=off decoder-codecs=vp9,av1 "), "{line}");
     assert!(
         line.contains(
             " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0 \
@@ -1464,8 +1471,8 @@ fn the_switches() {
     assert!(
         line.ends_with(
             "not at the default: stop-loop uclamp-rule gpu-down gpu-blob-entries wifi-ring-wait wifi-send-wait wifi-buffers \
-             wifi-joined-scan encoder-10bit encoder-warmup oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut \
-             oneios-pressure-big oneios-disable-allowed"
+             wifi-joined-scan encoder-10bit encoder-warmup decoder decoder-codecs oneios-wifi-rssi oneios-telemetry-jobs \
+             oneios-pool-cut oneios-pressure-big oneios-disable-allowed"
         ),
         "{line}"
     );
@@ -1477,12 +1484,13 @@ fn the_switches() {
     write(
         format!("{image}/xnuhost.conf"),
         &format!(
-            "boot-args=-v\nwifi-joined-scan=low\ngpu-down=bottom\nencoder-10bit=8bit\nwifi-send-wait=0\nram-meminfo={}\n",
+            "boot-args=-v\nwifi-joined-scan=low\ngpu-down=bottom\nencoder-10bit=8bit\ndecoder=off\ndecoder-codecs=h264\nwifi-send-wait=0\nram-meminfo={}\n",
             meminfo.display()
         ),
     );
     let c = run(&["--image", &image, "--mode", "takeover", "--set", "wifi-joined-scan=cache"]).unwrap();
     assert!(c.wifi_joined_scan == WifiJoinedScan::Cache && c.gpu_down == GpuDown::Bottom);
     assert!(c.encoder_10bit == Encoder10::EightBit && !c.wifi_send_wait && c.wifi_ring_wait);
+    assert!(c.decoder == Decoder::Off && c.decoder_codecs == 1, "decoder= and decoder-codecs= of the image");
     let _ = fs::remove_dir_all(&dir);
 }
