@@ -1100,19 +1100,57 @@ fn cpu(rq: &Rq) -> Result<Done, Fail> {
 
 // ---------------------------------------------------------------- the whole image set
 
-/// The IPSW profile of a stage's runtime (`runtime/lib/profiles/`): the only one there, else the one the fetch's
-/// `inputs.json` names.
+/// The iOS device of this tree's runtime (the Galaxy S24 Ultra's iOS: README; kernel/profiles/iphone18-2-ios27.md):
+/// the profile `make-image` takes when the runtime's `lib/profiles/` holds several of the staged kernel's build. A
+/// fork for another device sends "profile".
+const DEFAULT_DEVICE: &str = "iPhone18,2";
+
+/// The IPSW profile of a stage's runtime (`runtime/lib/profiles/`) for a request without "profile": the only file
+/// there; else the one the fetch's `inputs.json` names; else, of the IPSW profiles there (`image profile` reads them;
+/// a host profile `host-*.toml` is not one), the only one, else the only one of the staged kernel's iOS build
+/// (`runtime.json` `kernel.profile`, `ios-<version>-<build>`), else the only one of those for [`DEFAULT_DEVICE`].
+/// A released runtime packs every file of `profiles/` (v0.1.16: two host profiles and three IPSW profiles, two of
+/// them 24A446). Until 2026-11-23 this took only a folder of one file and refused `usage` there, so the app's
+/// request, which named no profile, never got past it (issue 75).
 fn stage_profile(stage: &str, indir: &str) -> Result<String, Fail> {
     let dir = format!("{stage}/runtime/lib/profiles");
     let mut found: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".toml")).collect();
     found.sort();
-    let named = std::fs::read_to_string(format!("{indir}/inputs.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["profile"].as_str().map(|s| s.replace(',', "-")));
-    match (found.len(), named) {
-        (1, _) => Ok(format!("{dir}/{}", found[0])),
-        (_, Some(name)) if found.contains(&name) => Ok(format!("{dir}/{name}")),
-        (0, _) => Err(Fail::refused("not-found", format!("{dir} holds no profile: give \"profile\" (the staged runtime is older than the profiles in it)"))),
-        _ => Err(Fail::usage(format!("make-image: {dir} holds {} profiles: give \"profile\"", found.len()))),
+    if found.len() == 1 {
+        return Ok(format!("{dir}/{}", found[0]));
     }
+    let named = std::fs::read_to_string(format!("{indir}/inputs.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["profile"].as_str().map(|s| s.replace(',', "-")));
+    if let Some(name) = named.filter(|name| found.contains(name)) {
+        return Ok(format!("{dir}/{name}"));
+    }
+    let mut pick: Vec<(String, oneios_image::ProfileOs)> = found.iter().filter_map(|n| oneios_image::profile_os(&format!("{dir}/{n}")).map(|os| (n.clone(), os))).collect();
+    if pick.is_empty() {
+        return Err(Fail::refused("not-found", format!("{dir} holds no iOS profile: give \"profile\" (the staged runtime is older than the profiles in it)")));
+    }
+    // narrowed only while more than one is left, and only to a choice that keeps one or more
+    fn narrow(pick: &mut Vec<(String, oneios_image::ProfileOs)>, keep: impl Fn(&oneios_image::ProfileOs) -> bool) {
+        if pick.len() > 1 && pick.iter().any(|(_, os)| keep(os)) {
+            pick.retain(|(_, os)| keep(os));
+        }
+    }
+    let kernel = stage_kernel_profile(stage);
+    narrow(&mut pick, |os| kernel.as_deref() == Some(format!("ios-{}-{}", os.version, os.build).as_str()));
+    narrow(&mut pick, |os| os.device == DEFAULT_DEVICE);
+    match pick.as_slice() {
+        [(name, _)] => Ok(format!("{dir}/{name}")),
+        _ => Err(Fail::usage(format!(
+            "make-image: {dir} holds {} iOS profiles ({}) and none is the staged kernel's for {DEFAULT_DEVICE}: give \"profile\"",
+            pick.len(),
+            pick.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ")
+        ))),
+    }
+}
+
+/// The staged kernel's iOS (`runtime.json` `kernel.profile`, e.g. `ios-27.0.1-24A446`), when the runtime has one.
+fn stage_kernel_profile(stage: &str) -> Option<String> {
+    let text = std::fs::read_to_string(format!("{stage}/runtime/runtime.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v["kernel"]["profile"].as_str().map(str::to_string)
 }
 
 /// The staged runtime's kernel (`runtime.json`'s `kernel.path`, below the runtime).

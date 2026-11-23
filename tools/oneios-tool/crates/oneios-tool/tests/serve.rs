@@ -227,6 +227,8 @@ fn hello_ping_and_the_end_of_the_pipe() {
     assert_eq!((hello["proto"].as_u64(), hello["jobs"].as_u64(), hello["nice"].as_i64(), hello["realtime"].as_bool()), (Some(1), Some(3), Some(12), Some(false)), "{hello}");
     assert_eq!(hello["pid"].as_i64(), Some(s.pid() as i64));
     assert_eq!((hello["idle"].as_u64(), hello["battery_min"].as_u64()), (Some(300), Some(10)));
+    // the release's version (runtime/package.sh builds with ONEIOS_VERSION), else the crate's (issue 75)
+    assert_eq!(hello["tool"].as_str(), Some(option_env!("ONEIOS_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))), "{hello}");
     // the pairing files' format the prelink reads (the app's kb.json kb: 2, the fixtures alone)
     assert_eq!(hello["kb"].as_u64(), Some(2));
     assert_eq!(hello["thermal"], json!([44.0, 46.0, 45.0, 50.0]));
@@ -1734,6 +1736,76 @@ fn make_image_refuses_what_it_cannot_do_yet_and_writes_nothing() {
     let last = s.ask(make_image(&b, "m", json!({"profile": profile, "tweaks": false, "kc": kc, "fetch": false})));
     assert_eq!((last["code"].as_str(), last["text"].as_str().map(|t| t.contains("not empty"))), (Some("exists"), Some(true)), "{last}");
     assert_eq!(std::fs::read(b.stage("image.new/old")).unwrap(), b"x", "what was there stays");
+    let (status, rest, _) = s.end(true);
+    assert_eq!(status, 0);
+    clean_bye(&rest, "eof");
+}
+
+/// The runtime's `lib/profiles/` as runtime/package.sh packs it: every file of the repository's `profiles/`, the
+/// comma of a name as a dash (v0.1.16: two host profiles and three IPSW profiles, two of them iOS 27.0.1 24A446).
+fn packed_profiles(b: &Box) -> Vec<String> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../profiles");
+    let mut names = Vec::new();
+    for e in std::fs::read_dir(&repo).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().replace(',', "-");
+        if name.ends_with(".toml") {
+            b.put(&format!("stage/runtime/lib/profiles/{name}"), &std::fs::read(e.path()).unwrap());
+            names.push(name);
+        }
+    }
+    names
+}
+
+#[test]
+fn make_image_takes_the_apps_request_with_the_released_runtimes_profiles() {
+    // Issue 75: the app's request names no profile, and a released runtime packs every profile of profiles/; the
+    // tool refused `usage` ("holds 5 profiles: give \"profile\"") before it fetched a byte, on every phone, and the
+    // app said "OneOS and the runtime don't agree". Now it takes the staged kernel's iOS for iPhone18,2.
+    let b = Box::new("make-packed");
+    let names = packed_profiles(&b);
+    assert!(names.len() >= 5 && names.iter().any(|n| n.starts_with("host-")), "the packed profiles: {names:?}");
+    // a staged runtime as v0.1.16's: runtime.json's kernel with its record's profile (no pairing files in kb/)
+    b.put("stage/runtime/runtime.json", br#"{"format": 1, "version": "0.1.16", "kernel": {"path": "kernel/xnu.macho", "profile": "ios-27.0.1-24A446"}}"#);
+    b.put("stage/runtime/kernel/xnu.macho", &noise(4096, 43));
+    begin_image(&b);
+    let mut s = Serve::start(&b, &[]);
+    // the app's request (fork OneiosTool.makeImageRequest up to 0.5.74: no "profile"), as it is
+    let app = json!({"id": "m", "cmd": "make-image", "indir": b.stage("make/inputs"), "out": b.stage("image.new"), "sums_list": b.stage("image.new.sha256"), "ids_list": b.stage("image.new.ids"), "work": b.stage("make"), "resume": true});
+    let last = s.ask(app.clone());
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("not-found")), "past the profile, to the kernel's inputs: {last}");
+    assert!(last["text"].as_str().unwrap().contains("the kernel's inputs are missing"), "{last}");
+    nothing_left(&b, "the app's request");
+    // the app's request from 0.5.75 on names the profile (OneiosTool.IPSW_PROFILE): the same
+    let mut named = app.clone();
+    named["profile"] = json!(b.stage("runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml"));
+    let last = s.ask(named);
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("not-found")), "{last}");
+    assert!(last["text"].as_str().unwrap().contains("the kernel's inputs are missing"), "{last}");
+    // a runtime whose kernel is of no profile there: two 27.0.1 24A446 profiles are left, and iPhone18,2's is taken
+    b.put("stage/runtime/runtime.json", br#"{"format": 1, "kernel": {"path": "kernel/xnu.macho", "profile": "ios-99.0-99Z999"}}"#);
+    assert_eq!(s.ask(app.clone())["code"], "not-found");
+    // with no iPhone18,2 profile among several iOS profiles, the request must name one, and the refusal names them.
+    // The repository's A56 profiles are no IPSW profile `image profile` reads (no [[member]]: reference only), so two
+    // of another device are made from iPhone18,2's.
+    let iphone = std::fs::read_to_string(b.stage("runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml")).unwrap();
+    assert!(iphone.contains("device = \"iPhone18,2\""), "the iPhone profile's device line");
+    for other in ["iPhone99-1", "iPhone99-2"] {
+        b.put(&format!("stage/runtime/lib/profiles/ios-27.0.1-{other}.toml"), iphone.replace("device = \"iPhone18,2\"", &format!("device = \"{}\"", other.replace('-', ","))).as_bytes());
+    }
+    std::fs::remove_file(b.stage("runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml")).unwrap();
+    let last = s.ask(app.clone());
+    assert_eq!((last["ev"].as_str(), last["code"].as_str()), (Some("refused"), Some("usage")), "{last}");
+    let text = last["text"].as_str().unwrap();
+    assert!(text.contains("give \"profile\"") && text.contains("ios-27.0.1-iPhone99-1.toml") && text.contains("ios-27.0.1-iPhone99-2.toml"), "{last}");
+    assert!(!text.contains("host-") && !text.contains("a56"), "only IPSW profiles are named: {last}");
+    // host profiles and reference-only ones alone are no iOS profile
+    for name in ["ios-27.0.1-iPhone99-1.toml", "ios-27.0.1-iPhone99-2.toml"] {
+        std::fs::remove_file(b.stage(&format!("runtime/lib/profiles/{name}"))).unwrap();
+    }
+    assert!(names.iter().any(|n| n.contains("a56")), "the A56 profiles stay: {names:?}");
+    let last = s.ask(app);
+    assert_eq!((last["code"].as_str(), last["text"].as_str().map(|t| t.contains("holds no iOS profile"))), (Some("not-found"), Some(true)), "{last}");
+    nothing_left(&b, "the refusals");
     let (status, rest, _) = s.end(true);
     assert_eq!(status, 0);
     clean_bye(&rest, "eof");

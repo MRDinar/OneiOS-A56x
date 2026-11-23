@@ -975,6 +975,8 @@ once, and attaches both with their `.sha256` to the release. No kernel, no image
 machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the
 runners. It signs the APK with the debug key CI uses, `secrets/oneios-debug.keystore`, which is git-ignored (releases.md,
 "Releasing from a build machine" and "The debug key").
+`runtime/package.sh VERSION` builds the phone's `bin/oneios-tool` with `ONEIOS_VERSION=VERSION`: its `serve` hello's
+`tool` is the release's version (up to v0.1.16 every release said the crate's `0.1.0`; issue 75).
 The first release is [`v0.1.0`](https://github.com/akshaynexus/OneiOS/releases/tag/v0.1.0) (2026-11-10).
 
 ## 9. iOS user-space code (executables, dylibs, bundles): Xcode on macOS, a cross toolchain on Linux
