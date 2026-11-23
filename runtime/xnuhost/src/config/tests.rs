@@ -1526,7 +1526,7 @@ fn the_switches() {
     // takeover-ram (2026-11-23): the takeover's memory steps and option C, in the line after stop-loop and ram-fit-terms.
     let mut m = Config::default();
     assert!(m.switches_line().contains(
-        " stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 ram-fit-terms=tasks ram-ondemand=0 "
+        " stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 timer-coalesce=1 ram-fit-terms=tasks ram-ondemand=0 "
     ));
     for (k, v) in [("takeover-reclaim", "0"), ("takeover-swappiness", "20"), ("ram-ondemand", "1")] {
         assert!(m.set(k, v).is_ok(), "{k}={v}");
