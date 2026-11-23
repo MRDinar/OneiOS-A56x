@@ -1442,7 +1442,7 @@ is a port, not a rebase. What is left for it: (1) an `Instance` over Turnip's `v
 (a patch, or Khronos's loader built for iOS); (2) the bridge's heaps, archives, argument encoders, IOSurface imports,
 purgeable states and functions written over the new API; (3) each of the 51 patches judged again (most mend code paths
 the new runtime does not have); (4) a phone boot of every Metal client (backboardd, SpringBoard, WebKit, the camera,
-the posters). Several days of work and boots; not started.
+the posters). Several days of work and boots; started as the rt port (next paragraph), built only with `METAL_RUNTIME=rt`.
 
 **Upstream commits looked at for our faults** (named in the task, then `git log 624bab3..5d725aeec~1` of the old
 runtime: 2,981 commits on its sources, 995 with words of memory, blocks, pools, spares, free, idle, release or cache in
@@ -1500,6 +1500,12 @@ hash of the Mesa revision and the source diff (`build-turnip-darwin.py`), and `t
 diff: every pipeline's driver record misses once, and Turnip compiles it again (NIR to ir3) at its first use. How long
 that takes on the phone is not measured (no line times it); each app's first opening after the add-on pays for its own
 pipelines, and later boots hit.
+
+**The port to metal2vulkan-rt (2026-11-23, in progress):** [`userland/metal/rt/README.md`](../userland/metal/rt/README.md). Upstream rewrote the runtime
+(`metal2vulkan-runtime` 0.2); the inventory of our 56 patches on it, the loader-free instance (rt patch 0001, run on
+the laptop through ANV: 1000 of 1000 outputs right), Turnip as an Adreno 750 against rt's floor (above it with rt
+patch 0002; no `VK_EXT_device_generated_commands`, so rt refuses Metal indirect command buffers there) and a census
+of the guest's own metallibs. The add-on below is still the 624bab3 one.
 
 Built with the toolchain of [building.md](building.md) section 9: Xcode's on macOS, the cross toolchain on Linux. The
 same command on both; every link is against this guest's own iOS 27 stubs (`out/ios27-tbd`).
