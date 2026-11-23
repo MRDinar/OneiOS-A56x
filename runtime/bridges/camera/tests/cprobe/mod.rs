@@ -62,11 +62,11 @@ impl Probe {
             eprintln!("header test skipped: no C compiler ({cc}) to read {}", self.header.display());
             return None;
         }
-        let dir = std::env::temp_dir().join(format!(
-            "oneios-cprobe-{}-{:x}",
-            std::process::id(),
-            self.exprs.len() ^ self.header.as_os_str().len()
-        ));
+        // One folder per probe: two tests of one process (the same pid) ran at once with folder names that matched and one
+        // removed the other's probe ("cannot open output file", 2026-11-23).
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("oneios-cprobe-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let includes =
             if self.ndk.is_empty() { format!("#include \"{}\"", self.header.display()) } else { self.ndk.join("\n") };
