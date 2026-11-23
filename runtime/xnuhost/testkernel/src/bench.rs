@@ -390,8 +390,8 @@ pub(crate) fn parallel_bench(cpu: *mut XhCpu, scale: u32) {
     let code_va = 0x1_0000_0000u64;
     PAR.code_va.store(code_va, Relaxed);
     host!(task_map(cpu, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa));
-    for i in 0..ncpu as usize {
-        if host!(thread_create(cpu, task, PAR.thread[i].as_ptr())) != 0 {
+    for thread in PAR.thread.iter().take(ncpu as usize) {
+        if host!(thread_create(cpu, task, thread.as_ptr())) != 0 {
             put("PARALLEL skipped: no thread\n");
             return;
         }

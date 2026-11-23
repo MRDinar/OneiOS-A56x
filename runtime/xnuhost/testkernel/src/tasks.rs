@@ -282,7 +282,9 @@ fn test_xcall(task: u64, code_va: u64) {
         SGI_SEEN.fetch_and(!(1 << 7), SeqCst);
         let sent = now();
         host!(ipi(c, 1, 7));
-        while SGI_SEEN.load(Acquire) & (1 << 7) == 0 && now() - sent < hz {}
+        while SGI_SEEN.load(Acquire) & (1 << 7) == 0 && now() - sent < hz {
+            core::hint::spin_loop();
+        }
         if SGI_SEEN.load(Acquire) & (1 << 7) != 0 {
             let took = now() - sent;
             taken += 1;
@@ -292,14 +294,16 @@ fn test_xcall(task: u64, code_va: u64) {
     }
     write64(flag, 1); // the thread leaves its loop and stops at brk
     let start = now();
-    while WORKER.done.load(Acquire) != 1 && now() - start < hz * 5 {}
+    while WORKER.done.load(Acquire) != 1 && now() - start < hz * 5 {
+        core::hint::spin_loop();
+    }
     WORKER.armed.store(0, Release);
     put("  cross-call to a vCPU in the hand-off: taken ");
     hex(taken);
     put(" of 20, slowest (us) ");
     hex(worst * 1_000_000 / hz);
     put(", mean (us) ");
-    hex(if taken != 0 { total * 1_000_000 / hz / taken } else { 0 });
+    hex((total * 1_000_000 / hz).checked_div(taken).unwrap_or(0));
     put(" (hex)\n");
     check(
         taken == rounds && worst < hz / 2,
@@ -314,7 +318,6 @@ fn test_xcall(task: u64, code_va: u64) {
         "cross-call: the thread destroyed, the word unmapped",
     );
 }
-
 
 static JIT_ST: Racy<XhUserState> = Racy::new(zeroed_state());
 
@@ -573,15 +576,15 @@ pub(crate) fn test_tasks() {
     let code = code_words(
         code_pa,
         &[
-            (0, 0xd280_0540), // mov x0, #42
-            (1, 0xd280_0030), // mov x16, #1
-            (2, 0xd400_1001), // svc #0x80
-            (3, 0xd2c0_0041), // mov x1, #0x200000000
-            (4, 0xf900_0020), // str x0, [x1]
-            (5, 0xd420_0020), // brk #1
-            (6, 0x1400_0000), // b .
-            (8, 0xf940_0020), // ldr x0, [x1]      (test_unmap_race)
-            (9, 0xd420_0020), // brk #1
+            (0, 0xd280_0540),  // mov x0, #42
+            (1, 0xd280_0030),  // mov x16, #1
+            (2, 0xd400_1001),  // svc #0x80
+            (3, 0xd2c0_0041),  // mov x1, #0x200000000
+            (4, 0xf900_0020),  // str x0, [x1]
+            (5, 0xd420_0020),  // brk #1
+            (6, 0x1400_0000),  // b .
+            (8, 0xf940_0020),  // ldr x0, [x1]      (test_unmap_race)
+            (9, 0xd420_0020),  // brk #1
             (10, 0xf940_0020), // ldr x0, [x1]     (test_xcall: spin, never trapping, until the word is set)
             (11, 0xb4ff_ffe0), // cbz x0, .-4
             (12, 0xd420_0020), // brk #1

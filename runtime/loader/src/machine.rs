@@ -383,8 +383,9 @@ impl Machine {
     /// Fills the windows for `ncpu` CPUs and the given devices from the BOARD_* layout.
     pub fn board(&mut self, ncpu: u32, kinds: &[DeviceKind]) {
         self.ncpu = ncpu;
-        for i in 0..(ncpu as usize).min(MAX_CPUS) {
-            self.cpu_reg[i] = i as u32; // Affinity0, as crosvm numbers its vCPUs
+        // Affinity0, as crosvm numbers its vCPUs
+        for (i, reg) in self.cpu_reg.iter_mut().enumerate().take(ncpu as usize) {
+            *reg = i as u32;
         }
         self.armio_base = BOARD_ARMIO_BASE;
         self.armio_size = BOARD_ARMIO_SIZE;
