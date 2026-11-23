@@ -25,7 +25,7 @@
 # (ONEIOS_TOOL_ANDROID=PATH names a phone oneios-tool built elsewhere; CARGO_TARGET_DIR is honoured).
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
-#      KERNEL_DIR, OUT_DIR (out/release), SOURCE_DATE_EPOCH (default: the commit time),
+#      KERNEL_DIR, OUT_DIR (out/release; a relative one is taken from the current folder), SOURCE_DATE_EPOCH (default: the commit time),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -45,6 +45,9 @@ oneios_tool "$ROOT"
 if command -v sha256sum >/dev/null; then SHA256=(sha256sum); else SHA256=(shasum -a 256); fi
 tar --version 2>/dev/null | grep -q 'GNU tar' && GNU_TAR=1 || GNU_TAR=0
 OUT=${OUT_DIR:-$ROOT/out/release}
+# Absolute: the archive step lists the members from inside the stage (a relative OUT_DIR, e.g. out/release-x, failed
+# there with "members: No such file or directory" after every other step had passed).
+mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd)
 NAME=oneios-runtime-$VERSION-arm64
 WORK=$OUT/.work-$VERSION
 STAGE=$WORK/stage

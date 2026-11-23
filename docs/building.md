@@ -251,7 +251,8 @@ runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static, the task stub 
                                   #    batteryctl, thermalctl, displayctl, camctl, encctl); then the NEEDED and symbol
                                   #    check of the stage (runtime/package/elf-check.sh, below)
 runtime/package.sh 0.1.0-dev      # -> out/release/oneios-runtime-0.1.0-dev-arm64.tar.zst + .sha256 + runtime.json,
-                                  #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256
+                                  #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256;
+                                  #    OUT_DIR=DIR KERNEL_DIR=DIR for another output and kernel (relative: from the current folder)
 runtime/package/elf-check.sh DIR  # can Android load every library and dynamic helper under DIR? (a stage, or one file)
 runtime/host-tests.sh             # every host test of the runtime, one summary line per part (below)
 runtime/build.sh --test           # the same as runtime/host-tests.sh
