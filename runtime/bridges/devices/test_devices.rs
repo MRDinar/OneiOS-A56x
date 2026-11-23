@@ -518,8 +518,25 @@ fn net_device() {
     // No buffer posted: the frame is dropped, nothing breaks.
     // SAFETY: a valid buffer of 60 bytes.
     assert_eq!(unsafe { libc::send(wire_fd, seen.as_ptr().cast(), 60, 0) }, 60);
-    std::thread::sleep(Duration::from_millis(20));
+    std::thread::sleep(Duration::from_millis(virtio_net::DATA_WAIT_MS * 2)); // its wait for a buffer is over
     assert_eq!(g.reap(0), None);
+    // A data frame that finds the ring full waits for the guest's kick of the receive queue (2026-11-23): a buffer
+    // posted 5 ms later takes it; the receive function says whether the guest got the frame.
+    let slot1 = g.slot(1);
+    std::thread::scope(|s| {
+        let rx = Arc::clone(&guest_rx);
+        let data = seen;
+        let handle = s.spawn(move || rx(&data[..60]));
+        std::thread::sleep(Duration::from_millis(5));
+        g.drv.post(0, &[(slot1, 2048, true)]);
+        assert!(handle.join().unwrap(), "the guest got the frame");
+    });
+    assert_eq!(g.reap(0), Some(72));
+    let t0 = Instant::now();
+    assert!(!guest_rx(&seen[..60]), "no buffer: dropped after the wait");
+    assert!(t0.elapsed() >= Duration::from_millis(virtio_net::DATA_WAIT_MS - 2));
+    let (waited, longest_us) = virtio_net::take_ring_waits();
+    assert!(waited >= 2 && longest_us >= 3000, "{waited} {longest_us}");
     // A frame of the Wi-Fi station's own type (0x88b5) is not dropped at once: it waits for a buffer. One posted 10 ms
     // later takes it; with none, it is dropped after the wait (50 ms).
     let mut control = [0u8; 60];

@@ -498,6 +498,7 @@ fn net() -> i32 {
         &c,
         Arc::new(move |_: &[u8]| {
             count.fetch_add(1, Ordering::Relaxed);
+            true
         }),
     ) else {
         return 1;

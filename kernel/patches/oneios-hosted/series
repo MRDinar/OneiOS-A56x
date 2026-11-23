@@ -303,6 +303,12 @@
 # oneios-display-wide=1 (xnuhost's display-format=rgba16f) a half-float 'RGhA' frame goes to the virtio scanout as it
 # is (xnuhost's format 0x52476841); OneiOSDisplay.cpp logs each surface format the compositor swaps and the display
 # service's properties (display/README.md, "Colour, depth and the panel").
+# wifi-signal (2026-11-23): no numbered patch, no XNU source changed: in the Wi-Fi archive (net/OneiOSWifi.cpp) the
+# driver posts APPLE80211_M_RSSI_CHANGED (39) with the 592-byte link quality record (RSSI, noise, rates, at the places
+# 24A446's CoreWiFi reads them) at the join and whenever the host's 2 s state moves the RSSI by 3 dB or the rate by a
+# quarter: wifid follows the signal by that event, and the bars kept the join's RSSI for the whole session. One line
+# `ONEIOS WIFI: signal: -56 dBm, noise -95, 433 Mb/s: RSSI_CHANGED record posted` for the first six, then the 60 s
+# line's `signal records N (last ... dBm, ... Mb/s)` (net/README.md, "The signal").
 # fix-dyld-objc (2026-11-15): the shared region and dyld's protects. pmap_protect flushes (host unmaps) only the entries
 # whose host mapping changed (vm_map_protect asks for "minus write" when it adds write: dyld's protected memory, made
 # writable and read-only again around its work on a device without TPRO, was unmapped and faulted in again each time);

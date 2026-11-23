@@ -99,7 +99,8 @@ enum {
     kRssiBounds = 106, kChannelsInfo = 207, kHwSupportedChannels = 254,
 };
 // events: class IEEE 802.11 (6), subclass 1, the data starting with the interface name
-enum { kEvPowerChanged = 1, kEvSsidChanged = 2, kEvBssidChanged = 3, kEvLinkChanged = 4, kEvAssocDone = 9, kEvScanDone = 10 };
+enum { kEvPowerChanged = 1, kEvSsidChanged = 2, kEvBssidChanged = 3, kEvLinkChanged = 4, kEvAssocDone = 9, kEvScanDone = 10,
+       kEvRssiChanged = 39 };
 // ASSOCIATE_RESULT as the framework reads it: 0 while the join runs, 1 joined, anything else a failure; 9 and 21 are
 // the ones Settings words as a timeout and as a wrong password (UniXNU-sheng's WifiNet.cpp, which joins real networks
 // on this OS build).
@@ -138,6 +139,18 @@ struct link_event {
     uint8_t down, unused0[3]; int32_t rssi; uint16_t snr, noise; uint8_t unused1[4]; uint8_t involuntary, unused2[3]; uint32_t reason, subreason;
     uint8_t unused3[4];
 };
+// APPLE80211_M_RSSI_CHANGED (39): the link quality record (LQM), 592 bytes. wifid watches this event ("monitoring
+// APPLE80211_M_RSSI_CHANGED", 24A446's /usr/sbin/wifid) and its signal, the status bar's bars and Settings' come from
+// it; without it the bars kept the join's RSSI for the whole session. The layout as 24A446's CoreWiFi reads it
+// (CWFXPCRequestProxy's event handler: event 0x27 wants at least 0x250 bytes and keeps them as the
+// CWFLinkQualityMetric; its getters): RSSI valid (byte 0x00) and the RSSI in dBm (int32 at 0x04), noise valid (0x0e)
+// and the noise (int16 at 0x10), CCA valid (0x12) and the CCA (int8 at 0x13), the transmit rate (uint32 at 0x90) and
+// the receive rate (0x98) in kb/s. Its APPLE80211_M_LINK_QUALITY (17, 8 bytes: RSSI and rate in Mb/s) is turned into
+// the same record: byte 0 = 1, the RSSI at 0x04, the rate times 1000 at 0x90. Everything else stays zero.
+enum { kLqmSize = 0x250, kLqmRssiValid = 0x00, kLqmRssi = 0x04, kLqmNoiseValid = 0x0e, kLqmNoise = 0x10, kLqmTxRate = 0x90, kLqmRxRate = 0x98 };
+// A new record when the RSSI moved by this many dB from the last one posted, or the rate by a quarter: not one every
+// 2 s (the host's state) for no change.
+enum { kRssiStepDb = 3 };
 // 24A446's scan record is 2280 bytes (IO80211.framework's __addScanResultToList reads fields up to 0x8e6 and asks
 // CURRENT_NETWORK with that length): the 1164-byte record's fields at the same places, a longer element area, and a
 // tail. The tail starts with the BSS's TIMESTAMP at 0x8d0: 64 bits, nanoseconds of the continuous clock (the framework
@@ -203,6 +216,9 @@ static bool gAssocModern;              // the last ASSOCIATE had the 24A446 layo
 static bool gKeyed;                    // the last join had a key
 static int32_t gRssi = -127, gNoise = -95;
 static uint32_t gRate;
+static bool gSignalSent;                // an RSSI_CHANGED record went out for this join: its values below
+static int32_t gSignalRssi;
+static uint32_t gSignalRate;
 static char gCountry[3] = "XX";
 static ow_channel gChannels[OW_MAX_CHANNELS];   // the host's channel list (OW_CHANNELS); empty: the built-in one
 static unsigned gChannelCount;
@@ -259,7 +275,7 @@ enum { kRateSeconds = 60, kRateWho = 5 };
 enum { kRateScanAsked, kRateScanStarted, kRateScanReused, kRateScanJoined, kRateScanRefused, kRateScanDone, kRateScanTimeout, kRateRead, kRatePowerSet,
        kRatePowerChanged, kRateKinds };
 struct RateWho { char name[16]; uint32_t scans, reads; };
-struct Rates { uint32_t events[16], kinds[kRateKinds], networks; RateWho who[kRateWho]; };
+struct Rates { uint32_t events[16], kinds[kRateKinds], networks; RateWho who[kRateWho]; uint32_t signals; int32_t signal_dbm, signal_mbps; };
 static IOLock *gRateLock;
 static Rates gRates;
 static bool gRateArmed;
@@ -276,10 +292,12 @@ static void rate_line(thread_call_param_t, thread_call_param_t) {
     for (const RateWho &w : r.who)
         if (w.name[0] && n < sizeof who) n += static_cast<size_t>(snprintf(who + n, sizeof who - n, " %s %u/%u", w.name, w.scans, w.reads));
     const uint32_t *k = r.kinds;
+    char signal[64] = "";   // the RSSI_CHANGED records posted (signal_changed) and the last one's values
+    if (r.signals) snprintf(signal, sizeof signal, "; signal records %u (last %d dBm, %d Mb/s)", r.signals, r.signal_dbm, r.signal_mbps);
     log("%u s: events %s; scans asked %u (started %u, reused %u, joined %u, refused %u), done %u (%u networks), timed out %u; records %u; "
-        "power sets %u (changed %u); by%s", kRateSeconds, events[0] ? events : "none", k[kRateScanAsked], k[kRateScanStarted],
+        "power sets %u (changed %u); by%s%s", kRateSeconds, events[0] ? events : "none", k[kRateScanAsked], k[kRateScanStarted],
         k[kRateScanReused], k[kRateScanJoined], k[kRateScanRefused], k[kRateScanDone], r.networks, k[kRateScanTimeout], k[kRateRead], k[kRatePowerSet],
-        k[kRatePowerChanged], who[0] ? who : " nobody");
+        k[kRatePowerChanged], who[0] ? who : " nobody", signal);
 }
 static void rate_arm_locked() {
     if (gRateArmed || !gRateCall) return;
@@ -316,7 +334,8 @@ static void rate_event(uint32_t code) {
 
 static void post_event(uint32_t code, const void *payload, size_t length) {
     rate_event(code);
-    uint8_t data[16 + sizeof(assoc_event27)]; if (length > sizeof data - 16) length = sizeof data - 16;   // the largest event
+    uint8_t data[16 + kLqmSize]; if (length > sizeof data - 16) length = sizeof data - 16;   // the largest event (the LQM record)
+    static_assert(kLqmSize >= sizeof(assoc_event27), "the event buffer holds the largest event");
     memset(data, 0, 16);
     if (gIf) snprintf(reinterpret_cast<char *>(data), 16, "%s%u", ifnet_name(gIf), ifnet_unit(gIf));
     if (length) memcpy(data + 16, payload, length);
@@ -361,6 +380,7 @@ static void leave_locked(bool involuntary, uint32_t reason, bool *notify) {
     if (gState >= kStaAuth && gState < kStaUp && gAssocResult == kAssocRunning) gAssocResult = kAssocFailed;
     gState = gPower ? kStaIdle : kStaOff;
     *notify = was_up;
+    gSignalSent = false;   // the next join posts its first record
     (void)involuntary; (void)reason;
 }
 static void left(bool involuntary, uint32_t reason) {
@@ -479,13 +499,49 @@ static void leave() {
     if (pending) post_assoc_done();   // the daemon's wait for the join ends now, with a failure (UniXNU-sheng's order)
 }
 
+// The signal as wifid follows it (2026-11-23): an RSSI_CHANGED record (kLqmSize) for the join, then one whenever the
+// host's state (every 2 s while joined) has an RSSI kRssiStepDb or more from the last record's, or a transmit rate a
+// quarter or more from it. Until then the driver kept the host's RSSI for the RSSI request only, and wifid, which
+// reads the request once at the join ("Initializing lqm value") and then follows the event, showed the join's bars
+// for the whole session. With gLock held: whether a record is due now (`first`: the join's own); it is taken as sent.
+static bool signal_due_locked(bool first) {
+    if (gState != kStaUp) return false;
+    const int32_t step = gRssi > gSignalRssi ? gRssi - gSignalRssi : gSignalRssi - gRssi;
+    const uint32_t moved = gRate > gSignalRate ? gRate - gSignalRate : gSignalRate - gRate;
+    const bool due = first || !gSignalSent || step >= kRssiStepDb || (gSignalRate ? moved * 4 >= gSignalRate : gRate != 0);
+    if (due) { gSignalSent = true; gSignalRssi = gRssi; gSignalRate = gRate; }
+    return due;
+}
+static void signal_post(int32_t rssi, int32_t noise, uint32_t rate_mbps) {
+    uint8_t lqm[kLqmSize]; memset(lqm, 0, sizeof lqm);
+    const int16_t noise16 = static_cast<int16_t>(noise);
+    const uint32_t kbps = rate_mbps * 1000;
+    lqm[kLqmRssiValid] = 1; memcpy(lqm + kLqmRssi, &rssi, sizeof rssi);
+    lqm[kLqmNoiseValid] = 1; memcpy(lqm + kLqmNoise, &noise16, sizeof noise16);
+    memcpy(lqm + kLqmTxRate, &kbps, sizeof kbps); memcpy(lqm + kLqmRxRate, &kbps, sizeof kbps);   // the host knows the transmit rate only
+    post_event(kEvRssiChanged, lqm, sizeof lqm);
+    if (gRateLock) {
+        IOLockLock(gRateLock);
+        gRates.signals++; gRates.signal_dbm = rssi; gRates.signal_mbps = static_cast<int32_t>(rate_mbps);
+        rate_arm_locked();
+        IOLockUnlock(gRateLock);
+    }
+    static unsigned said;
+    if (said < 6) { ++said; log("signal: %d dBm, noise %d, %u Mb/s: RSSI_CHANGED record posted (%u B)", rssi, noise, rate_mbps, kLqmSize); }
+}
+
 // A join that worked, in the order of UniXNU-sheng's driver: the link (configd starts DHCP when it comes up), the
-// join's result, then the network's name and access point and the Apple80211 link event.
+// join's result, then the network's name and access point and the Apple80211 link event, then the first signal record.
 static void joined() {
     if (gLink) gLink(true);
     post_assoc_done();
     post_event(kEvSsidChanged, nullptr, 0); post_event(kEvBssidChanged, nullptr, 0);
     link_event_post(true, false, 0);
+    IOLockLock(gLock);
+    const bool due = signal_due_locked(true);
+    const int32_t rssi = gRssi, noise = gNoise; const uint32_t rate = gRate;
+    IOLockUnlock(gLock);
+    if (due) signal_post(rssi, noise, rate);
 }
 
 // ---- the host's messages (the transport's receive worker) ----
@@ -517,11 +573,15 @@ static void host_message(uint16_t type, const uint8_t *payload, size_t length) {
         const bool completes = s.link == OW_LINK_UP && gAssocResult == kAssocRunning && gState >= kStaAuth && gState < kStaUp &&
             s.bss.ssid_length == gCurrent.bss.ssid_length && !memcmp(s.bss.ssid, gCurrent.bss.ssid, gCurrent.bss.ssid_length > 32 ? 32 : gCurrent.bss.ssid_length);
         if (completes) { gState = kStaUp; gAssocResult = kAssocOk; }
+        bool signal = false;
         if (s.link == OW_LINK_UP) {
             gRssi = s.rssi_dbm; gNoise = s.noise_dbm ? s.noise_dbm : -95; gRate = s.tx_rate_mbps;
             if (gState == kStaUp) copy_bss(gCurrent, s.bss, payload + sizeof s, length - sizeof s);
+            signal = !completes && signal_due_locked(false);   // a completing state's record goes with joined()
         } else if (gState == kStaUp) leave_locked(true, s.reason, &notify);
+        const int32_t rssi = gRssi, noise = gNoise; const uint32_t rate = gRate;
         IOLockUnlock(gLock);
+        if (signal) signal_post(rssi, noise, rate);
         if (first) log("the host has the phone's radio (%02x:%02x:%02x:..)", s.mac[0], s.mac[1], s.mac[2]);
         if (lost) log("the host has no radio any more");
         if (notify) { log("link down (reason %u)", s.reason); left(true, s.reason); }

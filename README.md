@@ -31,7 +31,7 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | GPU compositing | Yes, via virtio-gpu: 40–58 fps on the idle lock screen (2026-11-11); 20–32 fps in launches and Control Center (2026-11-22, cause found: see "Known issues") | Yes, frames captured | [docs/gpu.md](docs/gpu.md) |
 | Touch + buttons | Yes | Scripts (`--input-script`) | HID via kernel event driver |
 | Battery | Published to iOS | Stand-in tested | Real readings on phone |
-| Wi-Fi | Joins; scan rate cut 20→5/min (reuse works); the late enable proven (2026-11-22: `en0` up 0.05 s after configd names it) | Sim radio (`wifi=sim`) | [docs/hardware.md](docs/hardware.md) |
+| Wi-Fi | Joins and gets its DHCP lease; scan rate cut 20→5/min (reuse works); the late enable proven (2026-11-22: `en0` up 0.05 s after configd names it). 2026-11-23 18:24: pages did not load or were very slow, the bars never moved: a traffic line, a receive ring that waits instead of dropping, low-priority scans while joined and the signal event (RSSI_CHANGED) built, host-tested, not booted | Sim radio (`wifi=sim`) | [docs/hardware.md](docs/hardware.md) |
 | Keyboard | Yes (hosted 0083, 2026-11-22): Spotlight took 30 key taps, its hangs 3.8 s in all (86.4 s before) | Host-tested | The busy keyboard was the dictation availability loop, kernel README "0083" |
 | Haptics | The haptic server starts (0078); the Actuator then played silence (no DSP chain): hosted 0086 merged, phone proof pending | Host-tested | [docs/hardware.md](docs/hardware.md) §5 |
 | Interrupts / Mach RPC | — | Verified: 41k host-call IPIs vs 110 trapped | `oneios-perf` `rpc:`/`0081:` lines |

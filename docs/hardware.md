@@ -275,7 +275,8 @@ the old route; xnuhost runs them only with `wifi=tap`.
    - leave: `disconnect`, `removeNetwork`.
    - the link drops (`onDisconnected` while joined): the network is removed and iOS is told (`OW_STATE`, link down
      with the 802.11 reason). **iOS decides when to join again**, not the supplicant.
-   - scan: nl80211 `TRIGGER_SCAN` on wlan0 with one wildcard SSID (an active scan, as wificond's) and `GET_SCAN`
+   - scan: nl80211 `TRIGGER_SCAN` on wlan0 with one wildcard SSID (an active scan, as wificond's; while joined a
+     low-priority one: section "After the join") and `GET_SCAN`
      after `NEW_SCAN_RESULTS` (or after 8 s without the event): BSSID, frequency, signal (mBm), capability, beacon
      interval, and the information elements as they are, cut to whole elements within the 1024 bytes of iOS's scan
      record. A busy radio (`EBUSY`: the supplicant's own scan) is not an error: its results are taken.
@@ -406,9 +407,10 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 - Events (kernel event class 6, subclass 1, the interface name first): 1 POWER_CHANGED, 2 SSID_CHANGED, 3
   BSSID_CHANGED, 4 LINK_CHANGED (32 bytes: down, RSSI, SNR, noise, reason), 9 ASSOC_DONE (**on 24A446 with 540
   bytes**: ten 52-byte access point records, then the result at 0x214 and a flag that it is valid at 0x218; the
-  daemon's `_dispatchAsyncAssocEvent` reads them, so an empty event is not safe), 10 SCAN_DONE; and the link state on
+  daemon's `_dispatchAsyncAssocEvent` reads them, so an empty event is not safe), 10 SCAN_DONE, 39 RSSI_CHANGED (the
+  592-byte link quality record: section "After the join" below); and the link state on
   the IOKit side (`setLinkStatus`, which configd's DHCP waits for). A join that worked sends, in this order: the
-  IOKit link, ASSOC_DONE, SSID_CHANGED, BSSID_CHANGED, LINK_CHANGED.
+  IOKit link, ASSOC_DONE, SSID_CHANGED, BSSID_CHANGED, LINK_CHANGED, RSSI_CHANGED.
 - The regulatory country (51 COUNTRY_CODE) is the Country element of the strongest network of the last scan that
   has one (the host's station finds it and sends it in `OW_STATE`); "XX" until a scan.
 
@@ -417,8 +419,9 @@ networks on 24A446, so its join details are the ones used) and iOSPlus10's 20H39
 | File | What |
 |---|---|
 | `frames.rs` | which frames cross (above), and the cut of a coalesced TCP frame |
+| `traffic.rs` | the counts of frames and bytes each way, the drops and why, and the `wifi: 60 s:` line (section "After the join") |
 | `station.rs` | the station the guest's driver talks to: its messages become calls on a radio back end, the radio's reports become messages |
-| `wlan.rs` | the back end on the phone: the AF_PACKET socket, nl80211, wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
+| `wlan.rs` | the back end on the phone: the AF_PACKET socket (a 4 MiB receive buffer), nl80211 (low-priority scans while joined), wlan0's settings kept and given back. Three threads: frames, nl80211 events, control. The guest's vCPU only sends a frame or queues a message; netlink, binder and the join's timeouts are the control thread's |
 | `sim.rs` | a made-up radio (`wifi=sim`) |
 | `p2p.rs`, `wonder.rs` | what the radio offers for a peer-to-peer link (interface types and combinations, action frames, NAN, vendor commands, every interface), for `wifictl p2p` (section 4a) |
 | `supplicant.rs` | the supplicant's client: the lookup, the interface, the callback object, the join's plan and its outcome |
@@ -431,7 +434,8 @@ makes no network device, `wifi=tap` is the old route, `wifi=sim` is `sim.rs`: a 
 run and read in the log; no frame goes anywhere (unit-tested; not yet run in a boot). Log lines: `wifi: wlan0 is iOS's for the session: ...`, `wifi:
 on: wlan0 (..) is the guest's en0`, `wifi: the vendor's supplicant is the bridge's`, `wifi: the guest's driver is up`,
 `wifi: join: network N in the supplicant, WPA2 (passphrase): selected`, `wifi: supplicant: <state>`, `wifi: join done`
-or `join failed (status S, code C)`, `wifi: link down (reason R)`, `wifi: closed (...)`, `wifi: wlan0 given back`.
+or `join failed (status S, code C)`, `wifi: link down (reason R)`, `wifi: 60 s: to iOS ...` (the traffic line, section "After
+the join" below), `wifi: scans while joined: flags 0x...`, `wifi: closed (...)`, `wifi: wlan0 given back`.
 
 Old (only with `wifi=tap`): `runtime/bridges/net/net.rs` (tap `oneios0`, DHCP answered in the bridge: 192.168.77.2/24)
 and `runtime/bridges/net/oneios-net.sh` (NAT). The script's `ip rule del priority 16000` would delete netd's own rule
@@ -507,6 +511,74 @@ absent: a reason not to run it on the phone as it is.
   manager's lookup, `getStaInterface("wlan0")`, `getMacAddress` (wlan0's own address), `listNetworks` (0) all
   answered by Android 17's servicemanager and the vendor's supplicant; `wifictl scan`: 53 networks with their
   security from nl80211 in 6 s.
+
+### After the join: traffic, scans while joined, the signal (2026-11-23)
+
+The session of 2026-11-23 18:24 (runtime 0.1.18, `kernel.kc` aef14856 = main + 0092; `out/session-logs/2026-11-23-mac-s1824/`)
+joined (`supplicant: completed: joined`, `join done (status 0, code 0)`) and got its lease (DHCP DISCOVER, OFFER,
+REQUEST, ACK of 192.168.2.192 from 192.168.2.1), and then web pages did not load or loaded very slowly. What the log
+has, and what was missing:
+
+- **No line said anything about the traffic after DHCP.** The only counts were virtio's 60 s line: `net#0 q0 +430 q1
+  +452` to `q0 +759 q1 +785`, about 7 to 13 frames a second each way, while the owner tried to load pages. Nothing
+  said whether frames were dropped, where, or why.
+- **iOS itself was slow to answer**: 11 s from the join to iOS's DISCOVER, and 2.6 s from the OFFER to its REQUEST,
+  with every guest CPU busy (`oneios-cpu: ... (all 800%)`: the poster extensions, osanalyticshelper) and the host at
+  700-735% of 800 (section 7, the daemon policy's `telemetry` group in `docs/userland.md`). [I: a large part of the
+  slowness is iOS's CPU, not the radio.]
+- **A frame that found the guest's receive ring full was dropped at once** (`devices/virtio_net.rs`). The ring has
+  64 buffers and the guest's worker gives them back in a batch; with iOS's CPUs busy a TCP burst from the radio
+  could fill it, and each loss costs TCP a retransmit.
+- **A frame the kernel could not describe was lost silently**: `recv` on the AF_PACKET socket answered with an error
+  (for example `EINVAL` when a coalesced frame's GSO type is not TCP) and the loop went on without a count.
+- **wifid scans every channel about every 35 s while joined** (`wifid[48] sets 10: len 5528`, then `event 10` 5.2-5.4 s
+  later with 20-29 networks): each scan takes the radio off the joined network's channel channel by channel.
+- **The bars kept the join's signal** (fault 2 of that session): the host sends the RSSI every 2 s (`OW_STATE`) and
+  the driver kept it for the RSSI request (16), but posted only the join's LINK_CHANGED. wifid follows the signal by
+  APPLE80211_M_RSSI_CHANGED (39) [F: 24A446's `/usr/sbin/wifid` logs `monitoring APPLE80211_M_RSSI_CHANGED failed`
+  when it cannot watch it, and `Initializing lqm value: rawRssi %d, scaledRssi %f, noise %ld, snr %ld` once at the
+  join; it does not watch LINK_QUALITY (17)].
+
+Changed (runtime and the Wi-Fi archive of the hosted kernel):
+
+1. **The traffic line** (`wifi/traffic.rs`, on the control thread's 2 s wake), once a minute while anything moved:
+   `wifi: 60 s: to iOS 1200 frames (1.5 MiB, 3 cut from coalesced), from iOS 400 frames (39.1 KiB); dropped to iOS: 2
+   the guest's ring full; from iOS: none; ring full and waited 9 (longest wait that got a buffer 1500 us); 2 scans
+   while joined (scan flags 0x1)`. The drops to iOS: `the guest's ring full` (the wait below ran out), `too long`
+   (longer than the link and not TCP), `receive errors` (with `last errno N`); from iOS: `refused` (not a frame the
+   radio may send), `send failed` (with the errno: `ENOBUFS`/`EAGAIN` is wlan0's queue full). The stop's `wifi:
+   closed (...)` line has the same totals with bytes.
+2. **The receive ring waits instead of dropping** (`devices/virtio_net.rs`): a data frame that finds no buffer waits
+   for the guest's kick of the receive queue (a condition variable, not a poll) up to 20 ms, a frame of the station's
+   own type up to 50 ms (it polled every millisecond before). The bridge's receive thread blocks meanwhile and the
+   AF_PACKET socket's buffer, now 4 MiB (`SO_RCVBUFFORCE`, as root; about 200 KiB before), holds what comes from
+   wlan0, as a NIC's ring and its host's queue would. A frame made on the guest's own transmit (the tap backend's
+   DHCP answer, on the vCPU) never waits. The receive function now says whether the guest took the frame.
+3. **Receive errors are counted** (above), with the errno.
+4. **Scans while joined are low priority**: nl80211 `TRIGGER_SCAN` with `NL80211_ATTR_SCAN_FLAGS` low priority and
+   low span (0x101), low priority (0x1) when the driver refuses that (cfg80211 answers a flag the wiphy does not offer
+   with `EOPNOTSUPP`, an older kernel `EINVAL`), none after that; the flags the driver took are kept for the next
+   scan and logged once: `wifi: scans while joined: flags 0x1 (...)`. A low-priority scan is one the driver may pause
+   or cut short for the link's traffic. [U: which of the two this phone's driver takes.]
+5. **The signal** (`kernel/patches/oneios-hosted/net/OneiOSWifi.cpp`, net/README.md "The signal"): the driver posts
+   RSSI_CHANGED (39) with the 592-byte link quality record at the join and whenever the host's 2 s state moves the
+   RSSI by 3 dB or more, or the transmit rate by a quarter. The record's layout is the one 24A446's CoreWiFi reads
+   (`CWFLinkQualityMetric`: RSSI valid at 0x00, RSSI int32 at 0x04, noise valid at 0x0e, noise int16 at 0x10, CCA at
+   0x12/0x13, transmit and receive rate in kb/s at 0x90 and 0x98; an event 39 shorter than 0x250 bytes is refused
+   with `Unexpected event payload length`). The event buffer holds 608 bytes (16 + 592); 0049 lets an IEEE 802.11
+   event fill an mbuf cluster.
+
+Proof lines on the phone: `wifi: 60 s: to iOS ...` every minute while browsing, with its drops (none or few expected
+with the wait); `wifi: scans while joined: flags 0x...`; `ONEIOS WIFI: signal: -56 dBm, noise -95, 433 Mb/s:
+RSSI_CHANGED record posted (592 B)` at the join and when walking away from the access point; the guest's `ONEIOS
+WIFI: 60 s: events ... 15+xN ...; signal records N (last ... dBm, ... Mb/s)`; the status bar's bars changing with the
+distance.
+
+Not done or not known (2026-11-23): not booted on the phone yet; host-tested only. iOS's own log of that session
+could not be read (`phone pull-log` wrote 20 bytes: an empty text), so DNS, the captive check and iOS's TCP
+retransmits are not seen. The guest's transport (UniXNU-droidvm's `DroidVMVirtioNet.c`) passes only broadcast and
+frames to its own address: multicast is dropped there (its comment says so), so iOS gets no IPv6 router
+advertisement and no mDNS; IPv4 is not affected. [I: not a cause of the slow pages.]
 
 ### en0 late: two minutes before iOS turns Wi-Fi on (fix-wifi-late, 2026-11-13)
 

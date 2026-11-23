@@ -17,6 +17,7 @@ use super::p2p::{Radios, OUI_GOOGLE};
 use super::proto::*;
 use super::station::{Bss, Link, Radio, Station};
 use super::supplicant::{Event, Supplicant};
+use super::traffic::{self, Counts, Traffic};
 use super::wonder::WonderOps;
 use super::{CONTROL_TYPE, FRAME};
 use crate::hal::binder::{last_errno, strerror};
@@ -25,7 +26,7 @@ use crate::{br_error, br_info, br_log};
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -71,6 +72,11 @@ const ATTR_WIPHY_BANDS: u16 = 22;
 const ATTR_REG_ALPHA2: u16 = 33;
 const ATTR_WIPHY_FREQ: u16 = 38;
 const ATTR_SCAN_SSIDS: u16 = 45;
+const ATTR_SCAN_FLAGS: u16 = 158;
+/// NL80211_SCAN_FLAG_LOW_PRIORITY: the driver may cut the scan short or pause it for traffic; LOW_SPAN: fewer or
+/// shorter dwells off the home channel (the wiphy says which it takes; cfg80211 refuses the others: EOPNOTSUPP)
+const SCAN_FLAG_LOW_PRIORITY: u32 = 1 << 0;
+const SCAN_FLAG_LOW_SPAN: u32 = 1 << 8;
 const ATTR_BSS: u16 = 47;
 const ATTR_SPLIT_WIPHY_DUMP: u16 = 174;
 const ATTR_VENDOR_ID: u16 = 195;
@@ -109,6 +115,11 @@ const CT_QUEUE: usize = 32;
 const JOIN_TIMEOUT_MS: u64 = 25000; // the guest's driver gives up at 30 s
 const SCAN_TIMEOUT_MS: u64 = 8000; // the guest's at 10 s
 const LINK_POLL_MS: u64 = 2000;
+const TRAFFIC_REPORT_S: u64 = 60; // the `wifi: 60 s:` line
+/// The AF_PACKET socket's receive buffer: what comes from wlan0 while the guest's ring is full waits here
+/// (devices::virtio_net waits for the guest's buffers). The default (rmem_default, about 200 KiB) holds about 80
+/// coalesced-and-cut frames; 4 MiB holds a TCP window of a fast link.
+const PACKET_RCVBUF: i32 = 4 << 20;
 
 fn socket(domain: i32, kind: i32, protocol: i32) -> Result<OwnedFd, i32> {
     // SAFETY: a new socket, owned below.
@@ -356,13 +367,33 @@ fn dump_scan(nl: &mut Nl80211, ifindex: u32, mut each: impl FnMut(&OwBss, &[u8])
     Ok(count)
 }
 
-/// An active scan of every channel the driver scans by default: one wildcard SSID, as wificond asks.
-fn trigger_scan(nl: &mut Nl80211, ifindex: u32) -> Result<(), i32> {
+/// An active scan of every channel the driver scans by default: one wildcard SSID, as wificond asks. `flags`: the
+/// scan's NL80211_ATTR_SCAN_FLAGS (0: none).
+fn trigger_scan(nl: &mut Nl80211, ifindex: u32, flags: u32) -> Result<(), i32> {
     let mut wildcard = nl::Writer::new(8);
     wildcard.flag(1);
-    let mut w = nl::Writer::new(32);
+    let mut w = nl::Writer::new(40);
     w.u32(ATTR_IFINDEX, ifindex).attr(ATTR_SCAN_SSIDS, wildcard.finish().unwrap_or_default());
+    if flags != 0 {
+        w.u32(ATTR_SCAN_FLAGS, flags);
+    }
     nl.call(CMD_TRIGGER_SCAN, NLM_F_ACK, w.finish().unwrap_or_default(), |_| {})
+}
+
+/// The flags of a scan while joined, best first: low priority and low span, low priority, none. The radio of the
+/// session's network goes off its channel for each channel scanned; iOS's wifid asks a full scan about every 35 s
+/// while joined (the phone, 2026-11-23: `sets 10`, then `event 10` 5 s later with 29 networks, each time), and a
+/// low-priority scan is one the driver may pause or cut short for the link's traffic.
+pub(crate) const JOINED_SCAN_FLAGS: [u32; 3] = [SCAN_FLAG_LOW_PRIORITY | SCAN_FLAG_LOW_SPAN, SCAN_FLAG_LOW_PRIORITY, 0];
+
+/// The flags to try from `start` on (an index of [`JOINED_SCAN_FLAGS`]) after the driver answered `rc`: the next
+/// index when it refused the flags (cfg80211 answers a flag the wiphy does not offer with EOPNOTSUPP, an older
+/// kernel an unknown attribute with EINVAL), None when that answer is final.
+pub(crate) fn joined_scan_next(at: usize, rc: Result<(), i32>) -> Option<usize> {
+    match rc {
+        Err(e) if (e == -libc::EOPNOTSUPP || e == -libc::EINVAL) && at + 1 < JOINED_SCAN_FLAGS.len() => Some(at + 1),
+        _ => None,
+    }
 }
 
 /// A station entry's fields (a station's only peer is its access point): its address, signal and rate.
@@ -451,6 +482,8 @@ struct Control {
     joined_rx: u64, // the counters at the join, for the report 10 s after it
     joined_tx: u64,
     report_at: Option<Instant>,
+    traffic_at: Option<Instant>, // the next `wifi: 60 s:` line
+    traffic_last: Counts,        // the counts at the last one
 }
 
 /// The session's Wi-Fi: everything the three threads and the guest's sends share.
@@ -472,14 +505,11 @@ struct Wlan {
     // callbacks only put a message here, so none of them waits on netlink, on binder or on the guest's queues.
     queue: Mutex<VecDeque<Ct>>,
     more: Condvar,
-    rx_frames: AtomicU64,
-    tx_frames: AtomicU64,
-    rx_dropped: AtomicU64,
-    segmented: AtomicU64,
-    tx_refused: AtomicU64,
+    traffic: Traffic,
     control_dropped: AtomicU64,
-    dhcp_said: AtomicU32,   // iOS's DHCP messages logged since the last join (the first of them)
-    dhcp_others: AtomicU32, // other stations' DHCP messages seen since the last join (the first is logged)
+    joined_scan_flags: AtomicUsize, // the index in JOINED_SCAN_FLAGS of the flags the driver took last
+    dhcp_said: AtomicU32,           // iOS's DHCP messages logged since the last join (the first of them)
+    dhcp_others: AtomicU32,         // other stations' DHCP messages seen since the last join (the first is logged)
 }
 
 impl Wlan {
@@ -493,10 +523,9 @@ impl Wlan {
         }
     }
 
-    fn deliver(&self, frame: &[u8]) {
-        if let Some(rx) = self.rx.get() {
-            rx(frame)
-        }
+    /// A frame for the guest: true when it took it (false: its receive ring stayed full, or no device yet).
+    fn deliver(&self, frame: &[u8]) -> bool {
+        self.rx.get().is_some_and(|rx| rx(frame))
     }
 
     fn finish_scan(&self, error: i32) {
@@ -528,8 +557,8 @@ impl Wlan {
                     c.joining = false;
                     c.joined = true;
                     c.reason = 0;
-                    c.joined_rx = self.rx_frames.load(Ordering::Relaxed);
-                    c.joined_tx = self.tx_frames.load(Ordering::Relaxed);
+                    c.joined_rx = self.traffic.rx_frames.load(Ordering::Relaxed);
+                    c.joined_tx = self.traffic.tx_frames.load(Ordering::Relaxed);
                     c.report_at = Some(Instant::now() + Duration::from_secs(10));
                 }
                 self.dhcp_said.store(0, Ordering::Relaxed);
@@ -651,15 +680,33 @@ impl Wlan {
                 }
             };
             if let Some((tx, rx)) = report {
+                let t = self.traffic.read();
                 br_info!(
                     "wifi: 10 s after the join: {} frames from iOS, {} to it; {} DHCP messages of other stations",
-                    self.tx_frames.load(Ordering::Relaxed) - tx,
-                    self.rx_frames.load(Ordering::Relaxed) - rx,
+                    t.tx_frames - tx,
+                    t.rx_frames - rx,
                     self.dhcp_others.load(Ordering::Relaxed)
                 );
             }
+            self.traffic_report(now);
         }
         lock(&self.supplicant).take(); // leaves the network, drops what it added
+    }
+
+    /// The `wifi: 60 s:` line (traffic::line), on the control thread's periodic wake: none while nothing moved.
+    fn traffic_report(&self, now: Instant) {
+        let mut c = lock(&self.ctl);
+        let at = *c.traffic_at.get_or_insert(now + Duration::from_secs(TRAFFIC_REPORT_S));
+        if now < at {
+            return;
+        }
+        c.traffic_at = Some(now + Duration::from_secs(TRAFFIC_REPORT_S));
+        let counts = self.traffic.read();
+        let ring = crate::devices::virtio_net::take_ring_waits();
+        if let Some(line) = traffic::line(TRAFFIC_REPORT_S, &c.traffic_last, &counts, ring) {
+            br_info!("{line}");
+        }
+        c.traffic_last = counts;
     }
 
     /// The scan event group: NEW_SCAN_RESULTS (ours or anyone's) and SCAN_ABORTED, for our interface.
@@ -719,7 +766,15 @@ impl Wlan {
             }
             let got = match recv(self.packet.as_raw_fd(), &mut buffer, libc::MSG_DONTWAIT) {
                 Ok(n) if n >= VNET_HDR + 14 => n,
-                _ => continue,
+                Ok(_) => continue,
+                Err(rc) if rc == -libc::EAGAIN || rc == -libc::EINTR => continue,
+                Err(rc) => {
+                    // e.g. EINVAL: the kernel could not describe a coalesced frame in a virtio_net_hdr (its GSO
+                    // type is not TCP), and the frame is lost; counted for the 60 s line
+                    Traffic::add(&self.traffic.rx_errors, 1);
+                    self.traffic.rx_last_errno.store(-rc, Ordering::Relaxed);
+                    continue;
+                }
             };
             let (flags, gso_type, gso_size) = (buffer[0], buffer[1], u16::from_ne_bytes([buffer[4], buffer[5]]));
             let frame = &buffer[VNET_HDR..got];
@@ -730,15 +785,24 @@ impl Wlan {
             // A frame the receive path coalesced (GRO was on, or came back on) has no checksum of its own any more.
             let coalesced = gso_type != VIRTIO_NET_HDR_GSO_NONE || flags & VIRTIO_NET_HDR_F_NEEDS_CSUM != 0;
             let mss = if gso_type != VIRTIO_NET_HDR_GSO_NONE { gso_size } else { 1448 };
-            let n = frames::segment(frame, mss, coalesced, |f| self.deliver(f));
-            if n == 0 {
-                self.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            } else {
-                self.rx_frames.fetch_add(n as u64, Ordering::Relaxed);
-                if n > 1 {
-                    self.segmented.fetch_add(1, Ordering::Relaxed);
+            let (mut taken, mut bytes, mut full) = (0u64, 0u64, 0u64);
+            let n = frames::segment(frame, mss, coalesced, |f| {
+                if self.deliver(f) {
+                    taken += 1;
+                    bytes += f.len() as u64;
+                } else {
+                    full += 1;
                 }
+            });
+            let t = &self.traffic;
+            if n == 0 {
+                Traffic::add(&t.rx_too_long, 1);
+            } else if n > 1 {
+                Traffic::add(&t.rx_cut, 1);
             }
+            Traffic::add(&t.rx_frames, taken);
+            Traffic::add(&t.rx_bytes, bytes);
+            Traffic::add(&t.rx_ring_full, full);
         }
     }
 
@@ -751,8 +815,9 @@ impl Wlan {
             self.post(Ct::Guest(frame.to_vec()));
             return Ok(());
         }
+        let t = &self.traffic;
         if !frames::to_radio(frame, &self.mac) {
-            self.tx_refused.fetch_add(1, Ordering::Relaxed);
+            Traffic::add(&t.tx_refused, 1);
             return Err(libc::EINVAL);
         }
         self.say_dhcp(frame, true);
@@ -761,9 +826,13 @@ impl Wlan {
         let n = VNET_HDR + frame.len();
         // SAFETY: our socket and buffer.
         if unsafe { libc::send(self.packet.as_raw_fd(), packet.as_ptr().cast(), n, libc::MSG_DONTWAIT) } < 0 {
-            return Err(-last_errno());
+            let rc = -last_errno();
+            Traffic::add(&t.tx_failed, 1);
+            t.tx_last_errno.store(rc, Ordering::Relaxed);
+            return Err(rc);
         }
-        self.tx_frames.fetch_add(1, Ordering::Relaxed);
+        Traffic::add(&t.tx_frames, 1);
+        Traffic::add(&t.tx_bytes, frame.len() as u64);
         Ok(())
     }
 }
@@ -774,8 +843,32 @@ struct WlanRadio(Weak<Wlan>);
 impl Radio for WlanRadio {
     fn scan(&self, _st: &Station) -> Result<(), i32> {
         let Some(w) = self.0.upgrade() else { return Err(-libc::ENODEV) };
+        // While joined: a low-priority scan, with the flags the driver took the last time (JOINED_SCAN_FLAGS).
+        let joined = lock(&w.ctl).joined;
+        let rc = if joined {
+            let mut at = w.joined_scan_flags.load(Ordering::Relaxed);
+            let mut nl = lock(&w.nl);
+            let rc = loop {
+                let rc = trigger_scan(&mut nl, w.ifindex, JOINED_SCAN_FLAGS[at]);
+                match joined_scan_next(at, rc) {
+                    Some(next) => at = next,
+                    None => break rc,
+                }
+            };
+            drop(nl);
+            if w.joined_scan_flags.swap(at, Ordering::Relaxed) != at
+                || w.traffic.joined_scans.load(Ordering::Relaxed) == 0
+            {
+                br_info!("wifi: scans while joined: flags 0x{:x} (low priority 0x1, low span 0x100; the ones the driver takes)", JOINED_SCAN_FLAGS[at]);
+            }
+            Traffic::add(&w.traffic.joined_scans, 1);
+            w.traffic.joined_scan_flags.store(u64::from(JOINED_SCAN_FLAGS[at]), Ordering::Relaxed);
+            rc
+        } else {
+            trigger_scan(&mut lock(&w.nl), w.ifindex, 0)
+        };
         // Busy: a scan of the supplicant's (or the driver's) runs; its results come with NEW_SCAN_RESULTS all the same.
-        match trigger_scan(&mut lock(&w.nl), w.ifindex) {
+        match rc {
             Ok(()) => {}
             Err(rc) if rc == -libc::EBUSY => {}
             Err(rc) => {
@@ -977,6 +1070,15 @@ fn packet_open(ifname: &str, ifindex: u32) -> Result<OwnedFd, i32> {
         }
     }
     bind_packet(&fd, ifindex)?;
+    // A deep receive buffer (PACKET_RCVBUF): SO_RCVBUFFORCE as root, past rmem_max; SO_RCVBUF (capped) otherwise.
+    for opt in [libc::SO_RCVBUFFORCE, libc::SO_RCVBUF] {
+        // SAFETY: an int option of our socket.
+        if unsafe { libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, opt, (&PACKET_RCVBUF as *const i32).cast(), 4) }
+            == 0
+        {
+            break;
+        }
+    }
     // Every multicast group: iOS's IPv6 neighbour discovery (its solicited-node group) and mDNS are groups Linux has
     // not joined on wlan0, and the driver passes up only the groups of the interface's list. The membership is the
     // socket's: it ends when the socket closes, also after a kill.
@@ -1063,7 +1165,7 @@ pub fn prepare(ifname: &str, session_dir: Option<&str>) -> Option<(NetOpen, [u8;
                 None,
                 Box::new(move |f: &[u8]| {
                     if let Some(w) = deliver.upgrade() {
-                        w.deliver(f)
+                        let _ = w.deliver(f);
                     }
                 }),
             ),
@@ -1081,12 +1183,9 @@ pub fn prepare(ifname: &str, session_dir: Option<&str>) -> Option<(NetOpen, [u8;
             supplicant: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
             more: Condvar::new(),
-            rx_frames: AtomicU64::new(0),
-            tx_frames: AtomicU64::new(0),
-            rx_dropped: AtomicU64::new(0),
-            segmented: AtomicU64::new(0),
-            tx_refused: AtomicU64::new(0),
+            traffic: Traffic::default(),
             control_dropped: AtomicU64::new(0),
+            joined_scan_flags: AtomicUsize::new(0),
             dhcp_said: AtomicU32::new(0),
             dhcp_others: AtomicU32::new(0),
         }
@@ -1141,13 +1240,19 @@ pub fn close() {
     if let Some(path) = &w.state_path {
         let _ = restore(path);
     }
+    let t = w.traffic.read();
     br_info!(
-        "wifi: closed ({} frames to the guest, {} from it, {} cut from coalesced frames, {} dropped, {} of the guest's refused)",
-        w.rx_frames.load(Ordering::Relaxed),
-        w.tx_frames.load(Ordering::Relaxed),
-        w.segmented.load(Ordering::Relaxed),
-        w.rx_dropped.load(Ordering::Relaxed),
-        w.tx_refused.load(Ordering::Relaxed)
+        "wifi: closed ({} frames to the guest ({} bytes), {} from it ({} bytes), {} cut from coalesced frames; dropped: {} with the guest's ring full, {} too long, {} receive errors; {} of the guest's refused, {} sends failed)",
+        t.rx_frames,
+        t.rx_bytes,
+        t.tx_frames,
+        t.tx_bytes,
+        t.rx_cut,
+        t.rx_ring_full,
+        t.rx_too_long,
+        t.rx_errors,
+        t.tx_refused,
+        t.tx_failed
     );
     // the Wlan stays while the device holds its backend: a vCPU may still be inside send (the process ends next)
 }
@@ -1155,7 +1260,7 @@ pub fn close() {
 /// One scan on the interface, for the tool: `each` gets each network. The number of networks.
 pub fn scan_once(ifname: &str, wait_ms: u32, each: impl FnMut(&OwBss, &[u8])) -> Result<usize, i32> {
     let (ifname, ifindex, _, mut nl, events) = open_interface(ifname).ok_or(-libc::ENODEV)?;
-    match trigger_scan(&mut nl, ifindex) {
+    match trigger_scan(&mut nl, ifindex, 0) {
         Err(rc) if rc != -libc::EBUSY => {
             br_error!(
                 "wifi: nl80211 TRIGGER_SCAN on {ifname}: {} (the networks the driver has are listed)",
@@ -1361,6 +1466,8 @@ mod tests {
             ("NL80211_ATTR_IFTYPE", v(ATTR_IFTYPE)), ("NL80211_ATTR_MAC", v(ATTR_MAC)), ("NL80211_ATTR_STA_INFO", v(ATTR_STA_INFO)),
             ("NL80211_ATTR_WIPHY_BANDS", v(ATTR_WIPHY_BANDS)), ("NL80211_ATTR_REG_ALPHA2", v(ATTR_REG_ALPHA2)),
             ("NL80211_ATTR_WIPHY_FREQ", v(ATTR_WIPHY_FREQ)), ("NL80211_ATTR_SCAN_SSIDS", v(ATTR_SCAN_SSIDS)),
+            ("NL80211_ATTR_SCAN_FLAGS", v(ATTR_SCAN_FLAGS)), ("NL80211_SCAN_FLAG_LOW_PRIORITY", SCAN_FLAG_LOW_PRIORITY.into()),
+            ("NL80211_SCAN_FLAG_LOW_SPAN", SCAN_FLAG_LOW_SPAN.into()),
             ("NL80211_ATTR_BSS", v(ATTR_BSS)), ("NL80211_ATTR_SPLIT_WIPHY_DUMP", v(ATTR_SPLIT_WIPHY_DUMP)),
             ("NL80211_ATTR_VENDOR_ID", v(ATTR_VENDOR_ID)), ("NL80211_ATTR_VENDOR_SUBCMD", v(ATTR_VENDOR_SUBCMD)),
             ("NL80211_ATTR_VENDOR_DATA", v(ATTR_VENDOR_DATA)),
@@ -1404,6 +1511,17 @@ mod tests {
             ],
             pairs,
         );
+    }
+
+    /// A scan while joined tries low priority and low span, then low priority, then none, as the driver refuses.
+    #[test]
+    fn joined_scan_flags_fall_back() {
+        assert_eq!(JOINED_SCAN_FLAGS, [0x101, 0x1, 0]);
+        assert_eq!(joined_scan_next(0, Err(-libc::EOPNOTSUPP)), Some(1));
+        assert_eq!(joined_scan_next(1, Err(-libc::EINVAL)), Some(2));
+        assert_eq!(joined_scan_next(2, Err(-libc::EOPNOTSUPP)), None); // nothing left to drop
+        assert_eq!(joined_scan_next(0, Ok(())), None);
+        assert_eq!(joined_scan_next(0, Err(-libc::EBUSY)), None); // busy is an answer, not a refusal of the flags
     }
 
     #[test]

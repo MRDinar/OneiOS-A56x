@@ -270,7 +270,13 @@ fn join(args: &[String]) -> i32 {
     let Some((open, mac)) = wlan::prepare("wlan0", Some("/data/local/tmp")) else { return 1 }; // /data/local/tmp/wifi.state
     let seen = Arc::new(Seen::default());
     let s2 = seen.clone();
-    let Some(net) = open(&NetConfig::default(), Arc::new(move |f: &[u8]| s2.host_frame(f))) else {
+    let Some(net) = open(
+        &NetConfig::default(),
+        Arc::new(move |f: &[u8]| {
+            s2.host_frame(f);
+            true
+        }),
+    ) else {
         wlan::close();
         return 1;
     };

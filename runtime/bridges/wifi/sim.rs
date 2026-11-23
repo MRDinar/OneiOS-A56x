@@ -141,7 +141,7 @@ pub fn prepare(mac: [u8; 6]) -> Option<NetOpen> {
         Some(*b"XX"),
         Box::new(move |f: &[u8]| {
             if let Some(rx) = to.get() {
-                rx(f)
+                let _ = rx(f);
             }
         }),
     ));
@@ -175,7 +175,14 @@ mod tests {
         let s: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
         let t = s.clone();
         let open = prepare(MAC).unwrap();
-        let net = open(&NetConfig::default(), Arc::new(move |f: &[u8]| t.lock().unwrap().push(f.to_vec()))).unwrap();
+        let net = open(
+            &NetConfig::default(),
+            Arc::new(move |f: &[u8]| {
+                t.lock().unwrap().push(f.to_vec());
+                true
+            }),
+        )
+        .unwrap();
         let send = |kind, payload: &[u8]| net.send(&guest_frame(&MAC, kind, payload));
         assert!(send(OW_HELLO, &OwHello { version: OW_VERSION }.to_bytes()).is_ok());
         assert!(s.lock().unwrap().len() == 2 && host_message(&s, 0).0 == OW_STATE);

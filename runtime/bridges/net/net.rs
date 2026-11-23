@@ -52,8 +52,9 @@ impl Default for NetConfig {
     }
 }
 
-/// Gets each frame for the guest (from the bridge's receive thread, or from send for a DHCP answer).
-pub type RxFn = Arc<dyn Fn(&[u8]) + Send + Sync>;
+/// Gets each frame for the guest (from the bridge's receive thread, or from send for a DHCP answer): true when the
+/// guest took it, false when it was dropped (its receive ring stayed full: devices::virtio_net).
+pub type RxFn = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
 
 /// A frame sink for the guest's en0: net's tap or fd backend, the phone's Wi-Fi (wifi::wlan), the stand-in radio.
 /// Errors are positive errnos.
@@ -222,7 +223,7 @@ fn receiver(fd: Arc<OwnedFd>, wake: OwnedFd, running: Arc<AtomicBool>, rx: RxFn)
         // SAFETY: `frame` is a writable buffer of its length.
         let got = unsafe { libc::read(fd.as_raw_fd(), frame.as_mut_ptr().cast(), frame.len()) };
         if got > 0 {
-            rx(&frame[..got as usize]);
+            let _ = rx(&frame[..got as usize]);
         } else if got == 0 || !matches!(errno(), libc::EINTR | libc::EAGAIN) {
             break;
         }
@@ -293,7 +294,7 @@ impl NetBackend for Net {
         }
         if self.config.dhcp {
             if let Some(reply) = dhcp_reply(&self.config, frame) {
-                (self.rx)(&reply);
+                let _ = (self.rx)(&reply);
                 return Ok(());
             }
         }

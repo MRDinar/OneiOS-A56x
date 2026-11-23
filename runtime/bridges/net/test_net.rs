@@ -81,7 +81,7 @@ fn net() {
     let (mine, wire) = socketpair(libc::SOCK_DGRAM);
     let (tx, got) = mpsc::channel::<Vec<u8>>();
     let tx = std::sync::Mutex::new(tx);
-    let net = Net::open_fd(&c, mine, Arc::new(move |f: &[u8]| tx.lock().unwrap().send(f.to_vec()).unwrap())).unwrap();
+    let net = Net::open_fd(&c, mine, Arc::new(move |f: &[u8]| tx.lock().unwrap().send(f.to_vec()).is_ok())).unwrap();
     let mut ping = [0u8; 64];
     ping[..14].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0x08, 0x06]);
     assert_eq!(net.send(&ping), Ok(()));

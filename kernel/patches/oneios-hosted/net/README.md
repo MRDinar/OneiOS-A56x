@@ -98,16 +98,17 @@ the naming, `enable (IFF_UP)`, the first `Apple80211 request`, `power on`, the f
 request`: who, when, and IOKit's busy count then; busy 1 at the naming means it did not wait for driverkitd, which
 only a known address or the reserved unit allows; busy 0 says nothing by itself: compare the time with `KextLog:
 driverkitd is active`), `the interface is enabled (en0 is up)`, `event N for en0, M bytes -> error` (the
-first 24 events posted to the daemon, and any that fails: 10 is SCAN_DONE, 9 ASSOC_DONE, 4 LINK_CHANGED), `NAME[PID] gets|sets N: len .. val .. ->
+first 24 events posted to the daemon, and any that fails: 10 is SCAN_DONE, 9 ASSOC_DONE, 4 LINK_CHANGED, 39 RSSI_CHANGED), `NAME[PID] gets|sets N: len .. val .. ->
 error` (each Apple80211 request with the process that made it, for the first 150, then a type's first, and every
 scan, join and leave), `NAME[PID]: interface request 0x..` (the first 24 other requests on en0), `NAME[PID] asks the
 interface for a user client of type 0x.. -> 0x..` (the first 8), `scan
 done: N networks`, `join: layout 656, authentication lower 0x.. upper 0x.., key of N bytes of kind K` (the request's
 length, 656 on 24A446, picks its layout), `join: a network name of N bytes, a passphrase|a PSK|open`, `join done:
-joined` or `join failed (status S, 802.11 code C)`, `link down (reason R)`, `power 0|1` (each change; `power 1 (as it was: no
+joined` or `join failed (status S, 802.11 code C)`, `link down (reason R)`, `signal: N dBm, noise N, N Mb/s: RSSI_CHANGED
+record posted (592 B)` (the first six: "The signal" below), `power 0|1` (each change; `power 1 (as it was: no
 event)` for the first four sets that change nothing), and once a minute while anything happened `60 s: events 10xN ...;
 scans asked N (started, reused, joined, refused), done N (M networks), timed out N; records N; power sets N (changed N); by NAME
-scans/records ...` (the events posted by code, and who asked: the rate of iOS's requests). An `off: ...` line names what was missing. For a debugger:
+scans/records ...; signal records N (last N dBm, N Mb/s)` (the events posted by code, and who asked: the rate of iOS's requests; the signal part only when a record was posted). An `off: ...` line names what was missing. For a debugger:
 `oneios_wifi_stage` (1 the family loaded, 2 the classes are the bound ones, 3 registered, 4 the controller
 started), `oneios_wifi_requests`, `oneios_wifi_refused`, `oneios_wifi_rx`, `oneios_wifi_tx`, `oneios_wifi_dropped`.
 
@@ -150,3 +151,22 @@ phone yet.
 IPConfiguration gets to its service (49 s later on the phone of 8644ae9). `oneios-wifi-up=0` leaves it to configd. Line:
 `en0 brought up by the driver when attached, +S s after the driver's start -> E`, or `en0 is up already (by configd)`.
 Why and what the open source says: `docs/hardware.md` 3, "Wi-Fi off for three minutes".
+
+## The signal (wifi-signal, 2026-11-23)
+
+wifid follows the signal of the joined network by APPLE80211_M_RSSI_CHANGED (39), not by the RSSI request (16),
+which it reads once at the join (24A446's `/usr/sbin/wifid`: `monitoring APPLE80211_M_RSSI_CHANGED failed`,
+`Initializing lqm value: rawRssi %d, scaledRssi %f, ...`). Until then the driver posted only the join's LINK_CHANGED,
+and the status bar's bars kept that signal for the whole session (the phone, 2026-11-23 18:24). Now `joined()` posts a
+first record after LINK_CHANGED, and each `OW_STATE` of the host (every 2 s while joined) posts one when its RSSI is
+3 dB or more from the last record's, or its transmit rate a quarter or more from it (`signal_due_locked`); a leave
+starts again at the next join. The record is 592 bytes (`kLqmSize`), as 24A446's CoreWiFi reads event 39
+(`CWFXPCRequestProxy`'s event handler refuses a shorter one: `Unexpected event payload length for
+APPLE80211_M_RSSI_CHANGED`; the `CWFLinkQualityMetric` getters): RSSI valid at 0x00 and the RSSI (int32, dBm) at 0x04,
+noise valid at 0x0e and the noise (int16) at 0x10, the transmit and receive rate in kb/s at 0x90 and 0x98 (the host
+knows the transmit rate only: both get it). The event buffer of `post_event` is 16 + 592 bytes; hosted 0049 lets an
+IEEE 802.11 event fill an mbuf cluster. Log lines: `signal: -56 dBm, noise -95, 433 Mb/s: RSSI_CHANGED record posted
+(592 B)` for the first six records, then the `60 s:` line's `signal records N (last -60 dBm, 433 Mb/s)` (the events
+show as `15+xN` there: codes above 14 share that slot). Built and prelinked with 0093 (`kernel.kc` `40eb1263...`); not
+booted yet (docs/hardware.md 3,
+"After the join").
