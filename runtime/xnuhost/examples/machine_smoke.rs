@@ -56,6 +56,7 @@ mod smoke {
         pc: AtomicU64,
         far: AtomicU64,
         access: AtomicU64,
+        esr: AtomicU64, // the fault's syndrome as the host reported it (0: none)
         x0: AtomicU64,
     }
 
@@ -112,6 +113,7 @@ mod smoke {
                 XH_TRAP_FAULT => {
                     t.far.store(trap.far, Relaxed);
                     t.access.store(u64::from(trap.access), Relaxed);
+                    t.esr.store(trap.esr, Relaxed);
                     // the kernel fills the fault: the data page, then the same instruction again
                     let rc =
                         call!(task_map, task, DATA_VA, PAGE, XH_PROT_READ | XH_PROT_WRITE, t.data_phys.load(Relaxed));
@@ -348,7 +350,7 @@ mod smoke {
         let kinds: Vec<u64> = t.kinds.iter().map(|k| k.load(Acquire)).collect();
         println!(
             "machine-smoke: tasks: {} (seccomp {}), text_fixup {}, failed at {} (rc {}), traps {:?}: svc 0x{:x} x16 {} pc 0x{:x}; \
-             far 0x{:x} access {}; x0 0x{:x}",
+             far 0x{:x} access {} esr 0x{:x}; x0 0x{:x}",
             if task::available() { "available" } else { "not available" },
             task::seccomp(),
             t.fixups.load(Acquire),
@@ -360,6 +362,7 @@ mod smoke {
             t.pc.load(Acquire),
             t.far.load(Acquire),
             t.access.load(Acquire),
+            t.esr.load(Acquire),
             t.x0.load(Acquire)
         );
         if t.failed_at.load(Acquire) != 0 {
@@ -371,7 +374,12 @@ mod smoke {
         if t.svc.load(Acquire) != 0x80 || t.x16.load(Acquire) != 42 || t.pc.load(Acquire) != USER_VA + 8 {
             failed.push("the system call's trap");
         }
-        if t.far.load(Acquire) != DATA_VA || t.access.load(Acquire) != u64::from(XH_PROT_READ) {
+        // A load: READ from its syndrome. A host that gives no syndrome (qemu-user before it wrote esr_context: CI's
+        // Ubuntu qemu) gives 0, "unknown", as the stub has always answered then (xnuhost_abi::fault_access); the
+        // phone's Linux always gives one.
+        let access = t.access.load(Acquire);
+        let access_ok = access == u64::from(XH_PROT_READ) || (access == 0 && t.esr.load(Acquire) == 0);
+        if t.far.load(Acquire) != DATA_VA || !access_ok {
             failed.push("the fault's trap");
         }
         if t.x0.load(Acquire) != 0x77_6f72_6b73 {
