@@ -217,6 +217,7 @@ static bool gKeyed;                    // the last join had a key
 static int32_t gRssi = -127, gNoise = -95;
 static uint32_t gRate;
 static bool gSignalSent;                // an RSSI_CHANGED record went out for this join: its values below
+static bool gSignalOn = true;           // oneios-wifi-rssi=0 (OneiOS docs/switches.md): no RSSI_CHANGED records (before cbf97ea)
 static int32_t gSignalRssi;
 static uint32_t gSignalRate;
 static char gCountry[3] = "XX";
@@ -505,7 +506,7 @@ static void leave() {
 // reads the request once at the join ("Initializing lqm value") and then follows the event, showed the join's bars
 // for the whole session. With gLock held: whether a record is due now (`first`: the join's own); it is taken as sent.
 static bool signal_due_locked(bool first) {
-    if (gState != kStaUp) return false;
+    if (gState != kStaUp || !gSignalOn) return false;
     const int32_t step = gRssi > gSignalRssi ? gRssi - gSignalRssi : gSignalRssi - gRssi;
     const uint32_t moved = gRate > gSignalRate ? gRate - gSignalRate : gSignalRate - gRate;
     const bool due = first || !gSignalSent || step >= kRssiStepDb || (gSignalRate ? moved * 4 >= gSignalRate : gRate != 0);
@@ -945,6 +946,10 @@ static bool station_init() {
     gJoinTimeout = thread_call_allocate(join_timeout, nullptr);
     gRateCall = thread_call_allocate(rate_line, nullptr);
     gRateLock = IOLockAlloc();   // last: tally() counts nothing until the call it arms exists
+    uint32_t rssi = 1;
+    PE_parse_boot_argn("oneios-wifi-rssi", &rssi, sizeof rssi);
+    gSignalOn = rssi != 0;
+    if (!gSignalOn) log("oneios-wifi-rssi=0: no RSSI_CHANGED records; wifid reads the signal at the join only (as before 2026-11-23)");
     return gLock && gScan && gFill && gScanTimeout && gJoinTimeout && gScanReuse && gRateCall && gRateLock;
 }
 

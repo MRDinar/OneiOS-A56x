@@ -169,4 +169,5 @@ IEEE 802.11 event fill an mbuf cluster. Log lines: `signal: -56 dBm, noise -95, 
 (592 B)` for the first six records, then the `60 s:` line's `signal records N (last -60 dBm, 433 Mb/s)` (the events
 show as `15+xN` there: codes above 14 share that slot). Built and prelinked with 0093 (`kernel.kc` `40eb1263...`); not
 booted yet (docs/hardware.md 3,
-"After the join").
+"After the join"). Boot-arg `oneios-wifi-rssi=0` (2026-11-23, docs/switches.md) posts no record at all: the behaviour before this
+change, read once at the driver's start, with the line `oneios-wifi-rssi=0: no RSSI_CHANGED records; ...`.

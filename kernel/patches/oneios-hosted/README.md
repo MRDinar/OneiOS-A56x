@@ -2047,3 +2047,20 @@ blocks), the longest callout's CPU. Name an address with `oneios-tool sym kernel
 --slide 0 ADDR` (the address is unslid). Cost: two clock reads and four atomic adds per callout. Tested: `git apply
 --check` on the patched tree; built and prelinked with the series (below). **Watch in its first boot:** the line every
 30 s; the function behind `thread call high #2`, then a fix of that cause.
+
+## 0096-telemetry-jobs-switch.patch (integration-switches, 2026-11-23)
+
+**Why.** The owner (2026-11-23): every change of a test boot has a switch, so a fault can be pinned by turning one
+off (`docs/switches.md`). 0093 and 0094 change which jobs run; their only way back was a full `oneios-disable-jobs=`
+list, and that leaves a store that 0093 changed with the telemetry jobs still disabled (0092's enable list no longer has
+them).
+
+**What.** Boot-arg `oneios-telemetry-jobs=1` (in the image's `xnuhost.conf`: `boot-args-add=oneios-telemetry-jobs=1`):
+`oneios_jobs_disable` starts from 0053's three loops instead of 0093's list, and `oneios_jobs_enable` (0092) gets
+the telemetry labels after its own (0093's list less the loops, read from it: one list to keep). One line:
+`oneios-jobs: oneios-telemetry-jobs=1: the telemetry group is enabled (0093 and 0094 off)`. Default 0: 0093 and 0094 as
+they are. An explicit `oneios-disable-jobs=` still replaces the disable list. The enable list with the telemetry labels
+is 3.5 KiB of its 4 KiB buffer; a cut list says so (`the enable list is cut at 4096 bytes (0096)`).
+
+Tested: `git apply --check` after 0095 on the patched tree; built and prelinked with the series (docs/switches.md has
+the build). Not booted with `oneios-telemetry-jobs=1`.

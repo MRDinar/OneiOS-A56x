@@ -1,0 +1,82 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -9078,13 +9078,23 @@ static const char oneios_jobs_enable_default[] =
+ 	"com.apple.fairplayd.H2"
+ ;
+ static void
+-oneios_jobs_enable(void)
++oneios_jobs_enable(const char *more)                                    /* 0096: more labels, or NULL */
+ {
+ 	static const char path[] = "/private/var/db/com.apple.xpc.launchd/disabled.plist";
+ 	static char labels[4096];                                               /* 0092: the default is 3.4 KiB */
+ 	strlcpy(labels, oneios_jobs_enable_default, sizeof(labels));
+ 	vfs_context_t ctx = vfs_context_current();
+ 	(void)PE_parse_boot_argn("oneios-enable-jobs", labels, sizeof(labels));
++	if (more != NULL && *more) {                                          /* 0096: oneios-telemetry-jobs=1 */
++		if (labels[0] == 0 || !strcmp(labels, "-")) {
++			labels[0] = 0;
++		} else {
++			(void)strlcat(labels, ",", sizeof(labels));
++		}
++		if (strlcat(labels, more, sizeof(labels)) >= sizeof(labels)) {
++			printf("oneios-jobs: the enable list is cut at %zu bytes (0096)\n", sizeof(labels));
++		}
++	}
+ 	if (labels[0] == 0 || !strcmp(labels, "-")) {
+ 		return;
+ 	}
+@@ -9204,6 +9214,33 @@ static const char oneios_jobs_disable_default[] =
+ 	"com.apple.wifianalyticsd,"
+ 	"com.apple.wirelessinsightsd"
+ ;
++/*
++ * OneiOS hosted (0096, 2026-11-23): the switch for 0093 and 0094 (OneiOS docs/switches.md). Boot-arg
++ * oneios-telemetry-jobs=1 (in the image's xnuhost.conf: boot-args-add=oneios-telemetry-jobs=1) gives the telemetry
++ * group back: the disable list is 0053's loops only, and the enable pass (0092) enables the telemetry labels too, so a
++ * Data store that a boot with 0093 changed gets them back. Default 0: 0093 and 0094 as they are. An explicit
++ * oneios-disable-jobs= still replaces the disable list. One line says the switch is on:
++ *   oneios-jobs: oneios-telemetry-jobs=1: the telemetry group is enabled (0093 and 0094 off)
++ */
++static const char oneios_jobs_loops[] = "com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd";
++static bool
++oneios_telemetry_jobs(void)
++{
++	uint32_t on = 0;
++	(void)PE_parse_boot_argn("oneios-telemetry-jobs", &on, sizeof(on));
++	return on != 0;
++}
++/* The telemetry group: the default disable list after 0053's loops (NULL when the list does not start with them). */
++static const char *
++oneios_jobs_telemetry(void)
++{
++	const size_t n = sizeof(oneios_jobs_loops) - 1;
++	if (strncmp(oneios_jobs_disable_default, oneios_jobs_loops, n) || oneios_jobs_disable_default[n] != ',') {
++		printf("oneios-jobs: the default disable list does not start with the loops: oneios-telemetry-jobs ignored\n");
++		return NULL;
++	}
++	return oneios_jobs_disable_default + n + 1;
++}
+ static void
+ oneios_jobs_disable(void)
+ {
+@@ -9213,6 +9250,10 @@ oneios_jobs_disable(void)
+ 	    "<plist version=\"1.0\">\n<dict>\n</dict>\n</plist>\n";
+ 	static char labels[1024];                                               /* 0093: the default is 0.6 KiB */
+ 	strlcpy(labels, oneios_jobs_disable_default, sizeof(labels));
++	if (oneios_telemetry_jobs() && oneios_jobs_telemetry() != NULL) {      /* 0096 */
++		strlcpy(labels, oneios_jobs_loops, sizeof(labels));
++		printf("oneios-jobs: oneios-telemetry-jobs=1: the telemetry group is enabled (0093 and 0094 off)\n");
++	}
+ 	vfs_context_t ctx = vfs_context_current();
+ 	(void)PE_parse_boot_argn("oneios-disable-jobs", labels, sizeof(labels));
+ 	if (labels[0] == 0 || !strcmp(labels, "-")) {
+@@ -10422,7 +10463,7 @@ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+ 	oneios_icon_store_refresh(p, scratch);        /* 0036 */
+ 	oneios_lsd_first_boot_done(p, scratch);       /* 0037 */
+ 	oneios_store_report(p, scratch);              /* 0060 */
+-	oneios_jobs_enable();                         /* 0044 */
++	oneios_jobs_enable(oneios_telemetry_jobs() ? oneios_jobs_telemetry() : NULL); /* 0044; 0096 */
+ 	oneios_feature_flags_off(p, scratch);         /* 0048 */
+ 	oneios_jobs_disable();                        /* 0053 */
+ 	oneios_swap_folder();                         /* 0057 */

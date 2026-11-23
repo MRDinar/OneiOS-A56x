@@ -309,6 +309,8 @@
 # quarter: wifid follows the signal by that event, and the bars kept the join's RSSI for the whole session. One line
 # `ONEIOS WIFI: signal: -56 dBm, noise -95, 433 Mb/s: RSSI_CHANGED record posted` for the first six, then the 60 s
 # line's `signal records N (last ... dBm, ... Mb/s)` (net/README.md, "The signal").
+# wifi-rssi switch (2026-11-23, integration-switches): boot-arg oneios-wifi-rssi=0 posts no RSSI_CHANGED record (the
+# behaviour before wifi-signal; docs/switches.md); default 1. One line at the driver's start when it is 0.
 # fix-dyld-objc (2026-11-15): the shared region and dyld's protects. pmap_protect flushes (host unmaps) only the entries
 # whose host mapping changed (vm_map_protect asks for "minus write" when it adds write: dyld's protected memory, made
 # writable and read-only again around its work on a device without TPRO, was unmapped and faulted in again each time);
@@ -459,3 +461,10 @@
 # per callout (recount and mach_absolute_time), counters in 256 lock-free slots by function, no allocation. README.md,
 # "0095". Applies after 0094 (thread_call.c is no other patch's; hosted_user.c after 0091's report call).
 0095-thread-call-cpu.patch
+# telemetry-jobs-switch (2026-11-23, integration-switches): the switch for 0093 and 0094 (docs/switches.md). Boot-arg
+# oneios-telemetry-jobs=1 (the image's xnuhost.conf: boot-args-add=oneios-telemetry-jobs=1): the disable list is 0053's
+# loops only and 0092's enable pass enables the telemetry labels too (a store that 0093 changed gets them back); line
+# "oneios-jobs: oneios-telemetry-jobs=1: the telemetry group is enabled (0093 and 0094 off)". Default 0: 0093 and 0094
+# as they are. The telemetry labels are 0093's list after the loops (read, not copied: one list). README.md, "0096".
+# Applies after 0095 (git apply --check on the patched tree).
+0096-telemetry-jobs-switch.patch
