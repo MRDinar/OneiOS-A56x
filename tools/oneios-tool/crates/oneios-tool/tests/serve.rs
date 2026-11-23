@@ -711,7 +711,7 @@ fn stand_in_root(dir: &Path) {
     put("System/Library/CoreServices/SystemVersion.plist", &dumps_xml(&d(vec![("ProductBuildVersion", P::Str("24A999".into())), ("ProductName", P::Str("iPhone OS".into())), ("ProductVersion", P::Str("27.0.1".into()))])).unwrap());
     put("sbin/launchd", b"not a real launchd\n");
     let job = |label: &str| d(vec![("Label", P::Str(label.into())), ("ProgramArguments", P::Array(vec![P::Str("/usr/libexec/x".into())]))]);
-    let daemons = d(["com.apple.nfcd", "com.apple.SpringBoard", "com.apple.OTATaskingAgent"].iter().map(|l| (*l, job(l))).collect());
+    let daemons = d(["com.apple.watchdogd", "com.apple.SpringBoard", "com.apple.OTATaskingAgent"].iter().map(|l| (*l, job(l))).collect());
     put("System/Library/xpc/launchd.plist", &dumps_binary(&d(vec![("LaunchDaemons", daemons)])).unwrap());
     let over = d(vec![("com.apple.OTATaskingAgent", d(vec![("DisableAllowed", P::Bool(false))]))]);
     put("System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist", &dumps_binary(&d(vec![("Version4", d(vec![("Daemon", d(vec![("Override", over)]))]))])).unwrap());
