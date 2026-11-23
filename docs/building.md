@@ -957,7 +957,10 @@ git -C app switch oneios                   # to work on the fork in app/: a bran
 
 `--remote` moves only your `app/`; `git status` then shows `app` as modified. The commit OneiOS records for
 `app/` moves forward only in a commit made to pin it (`git commit -m "app: pin the fork at <sha>" --
-app`). Recorded now: `6e3e387` (2026-11-23, for v0.1.19: the switch reads system_server's watchdog nodes with one `ls -l`
+app`). Recorded now: `bd4bbf2` (2026-11-23, after v0.1.19: the switch's inner shell waits for xnuhost and records how it ended,
+`exit N` or `killed by signal S`, in its log and `session/xnuhost.exit`; the watcher copies it into `return.log` with what the
+host saw right after (dmesg, lmkd, logcat, the memory pressure); the app's log view names it (`killed by SIGKILL`); Gradle
+tests on the build laptop (`./gradlew test`): 719, 0 failures) on `6e3e387` (2026-11-23, for v0.1.19: the switch reads system_server's watchdog nodes with one `ls -l`
 per process, not one `readlink` per fd (`6437eef`: 1522 fds took 48 s on the phone, past the watcher's 60 s), and root's
 switch verb hands the app's versionCode to xnuhost's `versions:` line (`ONEIOS_APP_VERSION_CODE`); app 0.5.80 (209);
 Gradle tests on the build laptop (`./gradlew test`): 717, 0 failures) on `4416d6f` (issue 75: Make iOS image names
