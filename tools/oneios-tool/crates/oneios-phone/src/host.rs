@@ -20,6 +20,8 @@ pub struct HostDevice {
     pub config: &'static [&'static str],
     /// environment defaults NAME=VALUE for the bridges (a variable already set wins)
     pub env: &'static [&'static str],
+    /// session-mode=takeover (the opt-in Android takeover) is allowed on this phone (the C entry's `.takeover = true`)
+    pub takeover: bool,
 }
 
 pub const TABLE: &[HostDevice] = &[
@@ -32,6 +34,7 @@ pub const TABLE: &[HostDevice] = &[
         platforms: &["pineapple"],
         config: &[],
         env: &[],
+        takeover: true,
     },
     HostDevice {
         name: "galaxy-s25-ultra",
@@ -42,6 +45,7 @@ pub const TABLE: &[HostDevice] = &[
         platforms: &["sun"],
         config: &[],
         env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
+        takeover: false,
     },
     HostDevice {
         name: "galaxy-s25",
@@ -52,6 +56,7 @@ pub const TABLE: &[HostDevice] = &[
         platforms: &["sun"],
         config: &["panel-fallback=1080x2340@120"],
         env: &["ONEIOS_THERMAL_SOC_TRIPS=1", "ONEIOS_THERMAL_SOC_SAMPLES=3"],
+        takeover: false,
     },
     HostDevice {
         name: "galaxy-s26-ultra",
@@ -62,6 +67,7 @@ pub const TABLE: &[HostDevice] = &[
         platforms: &["canoe"],
         config: &[],
         env: &["ONEIOS_BRIGHT_MAX=2300"],
+        takeover: true,
     },
     HostDevice {
         name: "galaxy-a56",
@@ -72,6 +78,7 @@ pub const TABLE: &[HostDevice] = &[
         platforms: &["s5e8855"],
         config: &["gpu=2d", "panel-fallback=1080x2340@120"],
         env: &[],
+        takeover: false,
     },
 ];
 
@@ -276,6 +283,7 @@ mod tests {
             ] {
                 assert_eq!(rs_list(b, field), ours.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "{}: {field}", r.name);
             }
+            assert_eq!(c.contains(".takeover = true"), r.takeover, "{}: .takeover", r.name);
         }
     }
 }

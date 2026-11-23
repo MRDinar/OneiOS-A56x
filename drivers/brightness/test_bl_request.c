@@ -92,6 +92,16 @@ int main(void)
   struct obl_published p = { 0 };
   CHECK(obl_publish_wanted(&p, 100, 5000) && !obl_publish_wanted(&p, 100, 5000) && obl_publish_wanted(&p, 100, 5001) && obl_publish_wanted(&p, 101, 5001));
 
+  // Which key sets the level (2026-11-23): the slider position until a brightness-nits came, then brightness-nits only.
+  struct obl_sources src = { 0 };
+  CHECK(obl_slider_used(&src) && obl_slider_used(&src) && src.slider_ignored == 0);
+  obl_nits_came(&src);
+  CHECK(!obl_slider_used(&src) && !obl_slider_used(&src) && src.slider_ignored == 2 && src.nits_seen);
+
+  // The product luminances, 16.16 nits as CoreBrightness reads them (it printed the whole number 125 as 125/65536).
+  CHECK(obl_product_nits16(125) == 0x7d0000 && obl_product_nits16(1) == 0x10000 && obl_product_nits16(0) == 0x10000);
+  CHECK(obl_product_nits16(10) == 0xa0000 && obl_product_nits16(3000) == 0xbb80000 && obl_product_nits16(40000) == 32767u << 16);
+
   printf("bl request: %d checks, %d failed\n", checks, failures);
   return failures != 0;
 }

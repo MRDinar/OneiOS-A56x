@@ -337,6 +337,17 @@ tools up to v0.1.13 was over). A runtime's `bin/oneios-tool` reads format 2 when
 without `fileset_match.py`). So an APK of format 2 goes with a runtime release after v0.1.13: with an older staged
 runtime, Update the kernel stops with "get the latest OneiOS runtime" and Make iOS image stages the newest one.
 
+Make iOS image and the packed profiles (issue 75, 2026-11-23): a runtime packs every file of `profiles/` in
+`lib/profiles/` (v0.1.13 ... v0.1.15: four, v0.1.16: five, two of them host records). The app's `make-image` up to fork
+`ff2e4a6` (APK 0.5.68 of v0.1.16 and the CI prereleases up to 0.5.74) named no `profile`, and the tools up to v0.1.16
+take a default only from a folder of one file: every Make iOS image was refused `usage` ("holds 5 profiles: give
+\"profile\"") before its download, which the app says as "OneOS and the runtime don't agree". The fork names the
+profile since `62a2383`, so an APK with it works with the v0.1.16 runtime as it is; the tool after v0.1.16 also
+chooses it itself (the staged kernel's iOS for iPhone18,2; `tools/oneios-tool/README.md` `make-image`). The same
+screen showed "oneios-tool 0.1.0 · 8 threads": `hello`'s `tool` was the crate's version in every release up to
+v0.1.16. runtime/package.sh now builds the phone's tool with `ONEIOS_VERSION=VERSION`, and its hello says the
+release's version.
+
 The kernel is not built in CI. A build machine builds it (`kernel/README.md`), and:
 
 1. `kernel/publish.sh` packs a kernel folder (`xnu.macho`, its build record `xnu.macho.build.json`, the series

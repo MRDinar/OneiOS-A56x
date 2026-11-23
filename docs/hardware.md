@@ -2143,6 +2143,50 @@ plays (a toggle in Settings, a long press on an icon); then `ONEIOS HAPTIC: coun
 Settings > Sounds & Haptics > Keyboard Feedback > Haptic on (iOS's default is off). If the strip is visible and the
 Actuator still gets silence, the next reading is VirtualAudio's DSP set-up lines for `[vzzz]` in the same log.
 
+### The boot of 2026-11-23: no haptic was asked for (fix-haptics-waveform, 2026-11-23)
+
+**What the boot was read as:** main `44d9c49` with 0086 on the phone, `ONEIOS HAPTIC: counters: Actuator 1 opens ...
+(1 StartIO, 1 StopIO ...), 2689 periods (13445 ms), 0 with samples, 0 loud`, so "the Actuator still plays silence".
+
+**What iOS's log of that boot says [F, `ioslog haptics` on its `phone pull-log` text]:** 0086 works, and the boot
+played no haptic at all.
+- The chain is there and well formed: no `Cannot find strips file`, then `DSPChainConfig:d42_actuator_general ...
+  [dpio] {2, 1} ... [dprt]: 1751216240` (`happ`, AUHapticsProtection, 2 channels to 1) and `[dpio] {1, 1} ... [dprp]
+  {[64002]: 1} ... [dprt]: 1987013737` (`voli`, AUVolumeForHaptics), `Instantiated DSP Processor type 'happ'` and
+  `'voli'`, the mapping `0v: 32/48000/2` to `0a: 16/48000/1`.
+- The one I/O run is SpringBoard's prewarm: `prewarm engine <_UIFeedbackCoreHapticsHapticsOnlyEngine>` at 21:59:52,
+  `Starting prewarm on cold client ID`, `StartIOProcID: 79 Actuator` at 21:59:52.94, `Stopping prewarmed client` and
+  `StopIOProcID` at 22:00:06.39: the 13445 ms. A prewarm plays nothing, so its periods are zero by design.
+- No haptic was sent: `engine: made 1, prewarm 1, start 0, events 0`, `server: start 0`. The one feedback of the boot
+  (`UINotificationFeedbackGenerator`, the power-connected sound, SSID 1106) went to `_UIFeedbackSystemSoundEngine`,
+  and MediaExperience gave it `Vibration = 0` (`mShouldVibe 0`). The session had 28 touch contacts and SpringBoard
+  logged no feedback after 22:00:06. The keyboard says `Haptics: supported. Haptics: disabled` (iOS's default).
+
+So the waveform's path after the synth (the chain, the device's copy, the bridge) is **not tested yet on the phone**.
+[U] whether AUHapticsProtection gives a level without the iPhone's actuator calibration: the graph form of the chain
+(`AID8022/VAD/actuator_general.dspg`) wires two properties from the host into the units (`hprt` to
+AUHapticsProtection 88000, `acst` to AUVolumeForHaptics 64003) that the strip form does not set, and `/product/haptics
+controller-coeff-cal "syscfg/CLCL"` names a calibration the guest does not have. AUVolumeForHaptics' preset has `_swv`
+0, `volt` 3, `volv` 3; `failed to fetch software volume command ... port pact` is logged once at the route's set-up
+(its effect is not known).
+
+**The lasting tool:** `oneios-tool ioslog haptics` (`tools/oneios-tool/README.md` "haptics"; `phone pull-log` writes
+`ioslog-haptics.txt`): one line per step of the path, each step's count shown, so the first 0 is where a haptic stops.
+
+**The phone check (the test this boot did not make):** in the session, press an icon on the Home Screen long (the
+context menu's haptic), move a switch in Settings, and with Settings > Sounds & Haptics > Keyboard Feedback > Haptic
+on, type. Then `oneios-tool phone pull-log DIR` and read `DIR/ioslog-haptics.txt`:
+- `feedback: ... core haptics N` and `engine: ... events N` with N > 0: a haptic was sent (else nothing was asked);
+- then `device: ... stopped with requests N`, `ONEIOS HAPTIC: counters: ... N with samples, N loud ... N requests to
+  the motor` and xnuhost's `haptics: 60 s: ... +N played` with N > 0: the path works;
+- `events` above 0 with `level: silent N` and `device: stopped silent` only: the chain gives silence. The next fix is
+  then our own strip for `oneios,xnuhost/VAD/d42_actuator_general` without AUHapticsProtection (0086's folder of
+  links can hold a file of ours in place of the link), not a third reading of the same logs.
+
+Not done here: a boot on the PC with a scripted long press (`haptics=sim`, 2026-11-23) was stopped at the owner's
+word before SpringBoard had made its engine (a first boot on a new Data store: 38 minutes, audiomxd had opened the
+Actuator, `server: up 1`, `chain: made 1`, no feedback asked yet).
+
 ### The bridge (`runtime/bridges/haptics/haptic.rs`)
 
 - Two backends since 2026-11-15 (section 7e): samsung, the evdev device below (the default, unchanged); treble, the
@@ -3027,6 +3071,14 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
   Period}`, read in 24A446's CoreBrightness): taken as the slider's level when its value is unambiguous (a float's bits,
   data or text; not the integers 0 and 1), and logged with what it held (`drivers/brightness/README.md`,
   "DisplayBrightness"). Host-tested decoder; not run.
+- **Every level the dimmest (fix-brightness-path, 2026-11-23).** Phone, 2026-11-23: CoreBrightness used
+  frame-synchronous brightness (`UseSyncBrightnessTransactionForDisplay: 1`), which goes to CoreAnimation, and QuartzCore
+  has no brightness handler here (`Display 1, no brightness handler registered`); the service got only a truncated
+  float and slider positions of 0. Fixed, not booted: backboardd's `useSyncBrightnessTransactionForDisplay:` answers NO
+  (`BacklightMode.inc`; `oneios-bl-sync=1` keeps iOS's answer), so CoreBrightness sets `brightness-nits`; `LmidProduct`
+  and `LminProduct` are 16.16 nits (CoreBrightness read the whole numbers as 1/65536 of them); `brightness-nits`, once
+  it came, wins over the slider position. Read in 24A446's CoreBrightness with the addresses:
+  `drivers/brightness/README.md`, "Why every level was the dimmest".
 - **The slider, nits 0 and the touch IC (fix-brightness-touch, 2026-11-14).** Phone, 2026-11-13 (main 9f6dc38): iOS
   sent `brightness-nits` 0 with its display on; the panel went to its floor and the bridge slept the touch IC (dead
   touch until woken by hand); Control Center's slider sent only `DisplayBrightnessSliderPosition` and
@@ -3361,7 +3413,10 @@ policy but ours. **The OneOS fork now saves and lifts them** (branch `oneios`, `
 `cpuinfo_max_freq`, the top of the GPU tables) and logs each node `old -> new` in `switch.log`; the return writes One
 UI's values back before Gate A and zygote, on every way back but the reboot (a SIGKILL of xnuhost does not skip the
 return), and logs them in `return.log`. The kernel's thermal zones, trips and cooling devices and `/sys/power` are not
-written: the kernel's junction trips, LMh and xnuhost's thermal step are the session's caps. Tested against a fake
+written: the kernel's junction trips, LMh and xnuhost's thermal step are the session's caps. In the opt-in Android takeover
+(`session-mode=takeover`, [oneos/interface.md](../oneos/interface.md) 4a) the fork adds one of its own: its CPU cap lowers
+each policy's `scaling_max_freq` from the case at 46 C (80 %, 60 % at 48 C; a return at 50 C), and the same return
+puts One UI's values back. Tested against a fake
 sysfs (`OneiosScriptTest`). The first phone run (prelink's session of 10:28) lifted the GPU (`gpu_max_clock` 500 -> 1000,
 `thermal_pwrlevel` 0) but not the CPUs: `scaling_max_freq` still read 1689600/2035200 after the write. The holder is
 Samsung's `cpufreq_limit` driver (`drivers/cpufreq/cpufreq_limit.c` of the SM8650 kernel, read at 809f7ed): SSRM writes
@@ -3911,14 +3966,14 @@ environment variable that is set) > the table's default > the built-in default.
 | `host-props=FILE` (`ONEIOS_HOST_PROPS`) | a getprop dump | read instead of the property area: `adb shell getprop` lines (`[key]: [value]`) or `key=value` (build.prop). Host tests; a PC replaying a phone. A file that cannot be read is refused |
 | `host-root=DIR` (`ONEIOS_HOST_ROOT`) | a folder | stands for `/` for the sysfs and proc fallbacks (tests) |
 
-**The table** (each entry holds only settings that already exist as options; marks as in `docs/s25.md`):
+**The table** (each entry holds only settings that already exist as options; marks as in `docs/s25.md`); `.takeover = true` marks the rows that allow `session-mode=takeover`, the S24 Ultra's and the S26 Ultra's only, and `xnuhost --host-info` prints it (`takeover=yes|no`):
 
 | Name | Matched by | Defaults it changes | Why, and what is not set |
 |---|---|---|---|
-| `galaxy-s24-ultra` | `SM-S928*` (every S24 Ultra model number: below), `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s) |
+| `galaxy-s24-ultra` | `SM-S928*` (every S24 Ultra model number: below), `e3q`, SoC `SM8650`, platform `pineapple` | none | the home device: today's behaviour, byte for byte (host-tested: its finished config equals `host-device=none`'s). `.takeover = true`: `session-mode=takeover` is allowed (the opt-in Android takeover, [booter.md](booter.md) 2.9d; not a default, not run on the phone yet) |
 | `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.c`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
 | `galaxy-s25` | `SM-S931*`, `pa1q`, `SM8750`, `sun` [F] (the `S931BXXUCDZIF` vendor_boot DT compatible list) | `panel-fallback=1080x2340@120`, `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] a 1080x2340 panel (xaxaapple/s25ver's device profile and `xnuhost.h`), and the shipped dtbo names it `PA1_S6E3FAE_AMB616FL03` with modes at 120/80/60/48/30/24/10 Hz: only the mode assumed where the panel cannot be read, a panel that is read still wins; without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush (port-forks-gap). The same dtbo has the touch (`stm,stm_ts_spi`, `samsung,ss_touch`) and haptics (`cirrus,cs40l26a`) nodes [F]. Otherwise as the S25 Ultra; its runtime node names and Bluetooth HAL (HIDL or AIDL) are [U]. The SoC rule as the S25 Ultra's [I] (same SM8750): the thresholds come from this phone's own trips, read at the start and logged |
-| `galaxy-s26-ultra` | `SM-S948*`, `m3q`, SoC `SM8850`, platform `canoe` [F] (YMGPwcca/OneiOS: the fork's SM-S948B, `S948BXXS4BZIG`; codename and platform since 2026-11-23, `docs/s26.md`) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/tests.rs`, `sm8850_manual_brightness_cap`; the C's `test_brightness.c`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. Not set: `touch-exclusive` (bench only, refused in a takeover); the native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
+| `galaxy-s26-ultra` | `SM-S948*`, `m3q`, SoC `SM8850`, platform `canoe` [F] (YMGPwcca/OneiOS: the fork's SM-S948B, `S948BXXS4BZIG`; codename and platform since 2026-11-23, `docs/s26.md`) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/tests.rs`, `sm8850_manual_brightness_cap`; the C's `test_brightness.c`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. `.takeover = true` (2026-11-23): `session-mode=takeover` is allowed, where their root-only Framework-takeover experiment ran with the touchscreen grabbed ([booter.md](booter.md) 2.9d); `touch-exclusive` itself is not a default (that mode turns it on). The native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
 | `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d`, `panel-fallback=1080x2340@120` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). The panel: 1080x2340 [F] (the fork's `docs/a56-guide.md`), as for the S25. Touch, haptics, battery and thermal names [U]: samsung stays |
 
 **The S24 Ultra's models.** One entry for every model number, matched by `ro.product.model`'s prefix (record: `profiles/host-galaxy-s24-ultra-sm8650.toml`; host-tested for

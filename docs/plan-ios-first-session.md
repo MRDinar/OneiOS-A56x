@@ -4,7 +4,8 @@ Goal (the owner): while a session runs, iOS is the phone's main system. One UI's
 iOS gets the CPU, the RAM and the GPU as directly as this design allows. The Linux kernel stays the hardware layer.
 
 **Research and design. Nothing here ran on the phone.** Built and tested in this step: stage 1, `oneios-tool phone
-procs` (section 6). Marks: **[F]** read in this repository, in the fork's scripts at `43fc1b3`, or in a session log;
+procs` (section 6). Built since (2026-11-23, host-tested): the session setting the later stages go behind,
+`session-mode=takeover` (section 5a). Marks: **[F]** read in this repository, in the fork's scripts at `43fc1b3`, or in a session log;
 **[I]** inference; **[U]** unknown until measured or tried on the phone; **[guess]** a number with no measurement.
 
 ## 0. The limits (the owner, 2026-11-22)
@@ -264,6 +265,29 @@ so each candidate needs the same "nobody calls it" proof as a stop.
 Stage 2 and stage 3b need changes in the fork (`akshaynexus/OneOS`, branch `oneios`) and then lines in
 `oneos/interface.md` (a session setting the switch reads, e.g. the image's `xnuhost.conf` `display=` and a stop
 list). Nothing of that ABI is changed by this step.
+
+## 5a. The vehicle: `session-mode=takeover`, the opt-in Android takeover (2026-11-23)
+
+The owner (2026-11-23): "port this as an option we can use ... as we need to get better speeds later it would be part
+of the iOS hosted session / Android takeover option we have". Built (port-opt-in-takeover-session, host-tested only,
+**not run on a phone**): the session setting the stages above asked for. `oneos/interface.md` 4a has the contract,
+`docs/booter.md` 2.9d xnuhost's side, the fork's `docs/oneios.md` "Android takeover" its side.
+
+- `session-mode=hosted` (the default) is today's session and stays the one stages 2-4 compare against: nothing of the
+  stages runs in it.
+- `session-mode=takeover` (the app's box on the Switch sheet, or the image's `xnuhost.conf`; the host table's S24 Ultra
+  and S26 Ultra rows only) is where each stage goes in, behind the same switch: today it holds what YMGPwcca/OneOS's S26
+  experiment had that fits the way-back rules: iOS gets the touchscreen alone (`EVIOCGRAB` of `sec_touchscreen`, never a
+  key), and a CPU cap of the switch's own replaces One UI's case policy (SSRM, gone with system_server) from the case at
+  46 C, put back by the return. Its way back is section 4's: the chord and the in-place return first, the restart only
+  when the in-place return cannot put One UI back.
+- Next in this mode, in the order of section 5: **2a** (the stop loop without 15 `getprop` a second; for both modes,
+  as it costs only); **2b** (the stop list: `control/base/stopped`, the return's starts) as `takeover`'s first own stops;
+  **3b/3c** (`display=drm`: surfaceflinger and the composer stopped) only with `session-mode=takeover`; **4** (the RAM
+  headroom from the measured floor) as the mode's own `ram-session-reserve`. Each stage adds its line to the table of
+  `oneos/interface.md` 4a ("What the mode changes, and how each is put back") in the same commit.
+- Not taken from the experiment, and why: section 0 and `docs/s26.md` (a restart as the only way back, the fixed
+  deadline, lowered OOM scores, the 40 % cap from the start, the S26-only watchdog path).
 
 ## 6. Stage 1 as built: `oneios-tool phone procs`
 

@@ -327,6 +327,24 @@ pub fn fetch(profile: &str, indir: &str, jobs: usize, only: Option<&str>, source
     ipsw::fetch(profile, indir, jobs, only, source, keep_parts)
 }
 
+/// The `[os]` table of an IPSW profile, as `image profile` reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfileOs {
+    pub name: String,
+    pub version: String,
+    pub build: String,
+    pub device: String,
+}
+
+/// The `[os]` of the IPSW profile at `path`, or None when `image profile` does not read the file (a host profile
+/// `profiles/host-*.toml`, another schema, not TOML). For `serve`'s `make-image`, which chooses among a runtime's
+/// `lib/profiles/`.
+pub fn profile_os(path: &str) -> Option<ProfileOs> {
+    let p = profile::load_profile(path).ok()?;
+    let text = |key: &str| p.text("os", key).to_string();
+    Some(ProfileOs { name: text("name"), version: text("version"), build: text("build"), device: text("device") })
+}
+
 /// The SHA-256 of a file, read in blocks (`serve`'s `sums`: a stop of the request ends the pass).
 pub fn sha256_of(path: &str) -> Result<String, Fail> {
     hashes::sha256_file(path)

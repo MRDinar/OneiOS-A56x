@@ -2,7 +2,7 @@
 
 Owner: oneos. The fork is `akshaynexus/OneOS`, branch `oneios` (`/home/akshay/Documents/GitHub/OneOS`), and the
 submodule `app/` of this repository (`.gitmodules`: `branch = oneios`; CI builds the head of that branch, not the
-recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `ff2e4a6` (2026-11-23: fork branch `sm8850-support` on `5568231`, for `oneios`: the tribalfs packages from their three GitHub Packages registries with the environment's token first, JitPack never asked for them (YMGPwcca/OneOS `ab28274`, `590b4a6`); an early return writes the shmem THP mode back too, which the switch now writes only under its stop lock (part of their `403d8b4`); the Galaxy S26 Ultra warned with what is known, not refused (their refusal not taken: `docs/s26.md`); Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 706, 0 failures) on `5568231` (2026-11-23: fork branch `s928w-support` on `726b66a`, for `oneios`: every S24 Ultra model number, the Canadian SM-S928W with its US bootloader and vendor model too, gets the SM-S928B's iOS 27 card, gate and switch, host-tested in `OneiosTest`, `ProfilesTest` and `OneiosScriptTest`; Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 703, 0 failures) on `726b66a` (2026-11-23: fork `oneios` with `0cd45ad`, the boot screen's bar, and `2ef79b6`, CI signs with the shared key, merged into the upstream merge; the merged tree's Gradle tests on the build laptop: 701, 0 failures) on `6abbf5b`, 2026-11-22: upstream OneOS 0.5.32 to 0.5.35 merged (no change to session ABI 1 or the stage layout); before it `43fc1b3`:
+recorded commit: `docs/building.md` section 7, `docs/releases.md` "CI and releases"; recorded: `0d8fdf5` (2026-11-23: fork branch `takeover-session` on `ff2e4a6`, not merged into `oneios`: the opt-in Android takeover, section 4a; Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 715, 0 failures) on `ff2e4a6` (2026-11-23: fork branch `sm8850-support` on `5568231`, for `oneios`: the tribalfs packages from their three GitHub Packages registries with the environment's token first, JitPack never asked for them (YMGPwcca/OneOS `ab28274`, `590b4a6`); an early return writes the shmem THP mode back too, which the switch now writes only under its stop lock (part of their `403d8b4`); the Galaxy S26 Ultra warned with what is known, not refused (their refusal not taken: `docs/s26.md`); Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 706, 0 failures) on `5568231` (2026-11-23: fork branch `s928w-support` on `726b66a`, for `oneios`: every S24 Ultra model number, the Canadian SM-S928W with its US bootloader and vendor model too, gets the SM-S928B's iOS 27 card, gate and switch, host-tested in `OneiosTest`, `ProfilesTest` and `OneiosScriptTest`; Gradle tests on the build laptop (:core:model:test :core:safety:test :core:root:testDebugUnitTest): 703, 0 failures) on `726b66a` (2026-11-23: fork `oneios` with `0cd45ad`, the boot screen's bar, and `2ef79b6`, CI signs with the shared key, merged into the upstream merge; the merged tree's Gradle tests on the build laptop: 701, 0 failures) on `6abbf5b`, 2026-11-22: upstream OneOS 0.5.32 to 0.5.35 merged (no change to session ABI 1 or the stage layout); before it `43fc1b3`:
 upstream OneOS 0.5.31 merged, the on-phone kernel update with Apple's kernelcache fetched by the phone, Make iOS image
 with `make-image` on a fresh phone, the pairing files of kb format 2 (no Python; `hello`'s `kb`), the shared debug key, a quick status (by the files' ids; the switch still hashes) and the setup steps on iOS 27's page, no change to session ABI 1).
 Its side of this is `docs/oneios.md`, `switcher/assets/oneios_switch.sh`, `switcher/assets/oneios_return.sh`
@@ -145,6 +145,8 @@ SELinux stays as One UI had it, usually Enforcing), detached, in a **new mount n
     --runtime /data/runtime --image /data/image --data /data/data --session /data/session
 ```
 
+  In the opt-in Android takeover (section 4a) the switch adds `--set session-mode=takeover` at the end; the default
+  session's command line is the one above.
   The same values are in the environment: `ONEIOS_SESSION_ABI`, `ONEIOS_MODE`, `ONEIOS_RUNTIME`,
   `ONEIOS_IMAGE`, `ONEIOS_DATA`, `ONEIOS_SESSION`, and `TMPDIR=/data/session/tmp`.
   The binary named by `runtime.json`'s `xnuhost` is what runs (the path above is the usual one).
@@ -192,6 +194,51 @@ Both are written whole (a temporary file, then `mv`) and only when they change, 
 removes them. The twelve steps, the log line that begins each and their measured lengths are in the fork's
 `docs/oneios.md`, "Boot screen"; the lines are listed in section 8 here. `oneios-tool phone status` prints both
 (`boot screen: step N of 12, P%, next: ...`).
+
+## 4a. The session mode: hosted, or the opt-in Android takeover (2026-11-23)
+
+The owner (2026-11-23): YMGPwcca/OneOS's Framework-takeover experiment as an option, the "Android takeover" that the
+iOS-first plan grows ([docs/plan-ios-first-session.md](../docs/plan-ios-first-session.md) section 5a). Off by default.
+The fork's side: its `docs/oneios.md`, "Android takeover" (fork branch `takeover-session`). **Not run on a phone yet.**
+
+**The setting the switch reads.** `session-mode=hosted|takeover`:
+
+1. root's `switch <versionCode> <ack> takeover` (the iOS 27 card's Switch sheet, its "Android takeover (faster,
+   experimental)" box, offered on the S24 Ultra and S26 Ultra profiles only) passes `ONEIOS_SESSION_MODE=takeover`;
+   without the third word nothing is passed;
+2. else the last `session-mode=` line of the staged image's `xnuhost.conf`, then `overlay/userland/xnuhost.conf`;
+3. else `hosted`.
+
+`hosted` is the session of sections 4 to 6 exactly as it was: no file, no line, no step, the same xnuhost command line.
+Another word is refused by the preflight (`session-mode 'X' ... is not hosted or takeover`).
+
+**`takeover`, before anything changes** (the switch's preflight; each a `PREFLIGHT REFUSED` line, One UI untouched):
+xnuhost of the staged runtime is asked, `runtime/bin/xnuhost --host-info [--config <each image xnuhost.conf>]`
+([docs/booter.md](../docs/booter.md) 2.9d); its line must say `takeover=yes` (the host table's S24 Ultra and S26 Ultra
+rows); a runtime without `--host-info` (from before 2026-11-23) is refused; at least one cpufreq policy and the cell's
+temperature must be readable. The preflight then prints `Session mode: Android takeover (session-mode=takeover, from
+the app|the image's xnuhost.conf; host-info's line): ...`.
+
+**What the mode changes, and how each is put back:**
+
+| What | Who | Put back |
+|---|---|---|
+| xnuhost's command line: section 4's, plus `--set session-mode=takeover` (`--inner`, from `control/base/mode`) | the switch | - |
+| `EVIOCGRAB` of the native touchscreen `sec_touchscreen` (never a key device: the chord's devices are read as always) | xnuhost | the kernel, when xnuhost's file closes: every exit, a SIGKILL, the return's kill of the namespace |
+| `scaling_max_freq` of each cpufreq policy that `clocks_save` saved, lowered by the CPU cap (`oneios_switch.sh --cpu-cap`, in init's namespace, root cgroup, no OOM score or nice of its own): level 1 (80 % of the policy's top) at the case (`lrp`, else `sec-ap-thermistor`) 46 C or the cell 46 C, level 2 (60 %) at 48 C / 47 C, level 3 (60 %, and `session/return.request` `thermal: ...`) at 50 C / 48 C; down one level when both are 2 C under it for 3 readings (2 s each). Never `scaling_min_freq`, a thermal node, a GPU node, `/sys/power` | the switch's cap | the return: `control/cpu-cap.off`, the cap killed and waited for (2 s), then section 4's clock restore writes One UI's saved values (on every path that stopped One UI, a killed xnuhost's too) |
+| `control/base/mode` (`takeover`), `control/cpu-cap.{pid,level,log,off,ended}` | the switch, the cap | the next switch removes `control/` |
+
+Nothing else: the same zygote stop, stop loop, watchdog feeder, wakelock, USB watcher, display helper and boot screen
+as `hosted`. What the experiment had and this mode does not ([docs/s26.md](../docs/s26.md)): a restart as the only way
+back, a fixed 60-600 s deadline, `oom_score_adj -1000` on its workers, a 40 % cap from the first second, KEYCODE_WAKEUP
+pulses, the S26-only watchdog path, the one-shot APFS clone.
+
+**The way back** is section 6's, unchanged: the chord and the in-place return first. In this mode the return adds two
+reasons for its failsafe restart, both where the in-place return cannot put One UI back: the cap still running 2 s
+after it was killed (`FAILSAFE: the Android takeover's CPU cap (PID) could not be ended`), and a policy's
+`scaling_max_freq` that cannot be written back while the cap was at level 1 or more (`FAILSAFE: the Android takeover's
+CPU cap is still in force: NODE could not be written back`). At level 0 a node that cannot be written back is logged
+only, as in `hosted`. `return.log` says `Android takeover: its CPU cap ended at level N (...)`.
 
 ## 5. What xnuhost must do for the switch
 
@@ -377,7 +424,9 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   `exec`s `nice -n 10 runtime/bin/oneios-tool serve --stage /data/local/tmp/oneios` with `TMPDIR=<stage>/tool`, on
   the app's pipe. From there the lines are the tool's protocol (`tools/oneios-tool/README.md`, "serve": protocol 1,
   one JSON object a line; the fork's `OneiosTool.kt` reads them). The fork reads `hello`'s `proto` and refuses
-  another one. `hello`'s `kb` (2 since 2026-11-22; absent in runtimes up to 0.1.13, which read 1) is the format of
+  another one. `hello`'s `tool` is the release's version (runtime/package.sh builds with `ONEIOS_VERSION`; up to
+  v0.1.16 every release said the crate's `0.1.0`, which the app shows as "0.1.0 · 8 threads": issue 75); the fork
+  only shows it. `hello`'s `kb` (2 since 2026-11-22; absent in runtimes up to 0.1.13, which read 1) is the format of
   the pairing files the tool's prelink reads, the fork's `kb.json` `kb`: format 2 is `match/` with the reviewed
   fixtures alone, format 1 also had XnuPrelink's three Python sources. With a tool below the app's format, Update
   the kernel stops before any request ("get the latest OneiOS runtime") and Make iOS image counts the tool as one
@@ -389,8 +438,8 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
 - What the fork sends (`OneiosToolJob.kt`): `sums` of `runtime/` and `image/` against `runtime.sha256` and
   `image.sha256` (`strict`), `cpu`, `log-list` and `log` (`file` `xnuhost`), `ioslog-boots` and `ioslog-show`
   (`source` `<stage>/data/data.img`, `boot` `last`), and for Make iOS image root's `begin image`, then
-  `make-image` with `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`, `ids_list`
-  `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
+  `make-image` with `profile` `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, `out` `<stage>/image.new`,
+  `sums_list` `<stage>/image.new.sha256`, `ids_list` `<stage>/image.new.ids` and `work` `<stage>/make`, then root's `finish image <files> <format> <version> <build>`
   with those four fields of `make-image`'s `ok`.
   **`make-image` is in the tool since 2026-11-21** (`tools/oneios-tool/README.md`, "serve" (the commands) and
   "image build"): the request the app sends is taken as it is, no key of it changed. It fetches the profile's
@@ -417,7 +466,12 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   need not send it, `make-image` runs it.
   `"tweaks": false` makes a set without the root tweaks (as `build.sh --no-hook`; whether such a set boots was not
   tried, the tweaks turn off launchd jobs the guest is known to need off): for tests only, the app should not send
-  it. Optional keys the app need not send: `profile` (default: the runtime's `lib/profiles/` when it holds one),
+  it. `profile`: the app sends `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` (fork `62a2383`, 2026-11-23:
+  issue 75). Without it, a tool up to v0.1.16 takes a default only from a `lib/profiles/` of one file, and every
+  released runtime packs four or more (v0.1.16: five), so it refused `usage` ("holds 5 profiles: give \"profile\"") and the app said
+  "OneOS and the runtime don't agree"; the tool after v0.1.16 takes, of the IPSW profiles there (host profiles are
+  not), the staged kernel's iOS build (`runtime.json` `kernel.profile`) for iPhone18,2. Optional keys the app need
+  not send:
   `xnu`, `kb`, `kernelcache`, `kc`, `no_kernel`, `fetch`, `source`, `keep_work`, and the tweaks' `helpers`,
   `metal_plugin`, `camera_plugin`, `scale`, `tweaks_config`, `tweak_args`.
 - Make iOS image (fork `7e34fa4`, not run on a phone; no PC needed): root's `status`; when the staged runtime has no
@@ -425,8 +479,9 @@ the phone": why there and not in the APK). The fork runs it for one flow at a ti
   downloaded when the latest is the staged version); root's `kbinput` ×9; `begin image`; `tool work`. When `hello`'s
   `cmds` lack `make-image`, the tool is closed, the latest runtime staged once and the tool opened again. Then one
   `make-image` with `indir` `<stage>/make/inputs`, `out` `<stage>/image.new`, `sums_list` `<stage>/image.new.sha256`,
-  `ids_list` `<stage>/image.new.ids`, `work` `<stage>/make`, `resume` true, and nothing else (the profile, `xnu`, `kb`
-  and `tweaks` are the tool's defaults), then root's `finish image <files> <format> <version> <build>` with those four
+  `ids_list` `<stage>/image.new.ids`, `work` `<stage>/make`, `resume` true, `profile`
+  `<stage>/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` (since fork `62a2383`; before, none: issue 75), and nothing
+  else (`xnu`, `kb` and `tweaks` are the tool's defaults), then root's `finish image <files> <format> <version> <build>` with those four
   fields of its `ok`. No `fetch` before it (it would download about 11 GB before `make-image`'s room check) and no
   `tweaks` after it. The fork relies on: those keys; the `start` step list; one `space` event with `need` and `free`;
   the refusal codes `space`, `auth`, `mismatch`, `audit`, `not-ported`, `not-found`, `usage`, `exists`; `ok`'s

@@ -522,6 +522,21 @@ for, in order:
    This is the largest CPU cost per frame in these lines. Next: find which mappings it makes and drops per frame
    (`oneios-tool log stacks`, the 0080 `oneios-top` line; an IOSurface mapped and unmapped per frame is a guess) and keep
    them mapped.
+   **Read from the same session's `oneios-top` lines (2026-11-23, build laptop; not a fix yet).** The guess of a
+   per-frame IOSurface map is not what the lines show. backboardd's top calls in that 30 s: `-47` (mach_msg2) 41,409,
+   `478` (bsdthread_ctl) 37,218, **`75` (madvise) 32,255**, `-18` (mach_port_deallocate) 20,313; no mach_vm_map or
+   munmap among the six. Idle (17-18% CPU) it is 7,380 madvise calls, 16,363 faults and 32,782 own unmaps per 30 s.
+   The faults follow the madvise calls at about 0.5 per own unmap, and the kernel's `oneios-perf` rows count nearly
+   every vm_fault as `refilled` (a page that was there before). That fits libmalloc giving back freed pages with
+   `madvise(MADV_FREE_REUSABLE)` [guess: the advice is not logged]. XNU then clears the pages' referenced and modified
+   bits (`deactivate_pages_in_object`, `DEACTIVATE_KILL`: `pmap_clear_refmod_options`). On an iPhone that costs one
+   cheap access-flag fault at the next touch. In the hosted pmap, clearing the bits flushes the host mapping
+   (`task_unmap`, counted as "own unmaps"), so the next touch is a full fault of 30-40 us. What is left to do: (a) a
+   lasting count of madvise by advice in the `oneios-top` line, to prove the guess; (b) in the hosted pmap, a clear of
+   the referenced bit alone that keeps the host mapping (the page counts as referenced: only the pageout's LRU order
+   loses precision), and a clear of the modified bit that write-protects the host page instead of unmapping it, so
+   reads after the madvise do not fault. The modified bit must stay exact: a clean internal page with no compressor
+   copy is freed by the pageout, so a write that leaves no fault would lose data.
 5. **The host's CPU time.** With 0085 and 0089 all eight vCPUs carry iOS's work, so the display helper and xnuhost's
    GPU threads share the cores with it; at 711% and a 95 C SoC the phone also slows its clocks. Hosted `0091` and
    xnuhost's direct kick (`docs/booter.md` 2.6a, "The kick") remove the host work of the thread moves and of the
@@ -1177,8 +1192,12 @@ The steps are the kernel base's own scripts (`build-turnip-darwin.py`, `build-ad
 and the stubs), `codesign` is `oneios-tool ios codesign` (over `ios sign`), `strip` and `nm` are the linker's siblings; on macOS every
 other `xcrun` question, and any about another SDK (rustc's `--sdk macosx` for the crates' build scripts), goes to
 Xcode's `xcrun`, and `SDKROOT` is left unset so those build scripts link for the Mac. The staged copies differ from
-upstream in the lines `stage` prints: meson's build-machine compiler, ninja's job count, a longer limit for the Rust
-build, no `TurnipReplay.h` (it is recorded by a Mac-only host simulation; the plug-in includes it only when it
+upstream in the lines `stage` prints: meson's build-machine compiler, ninja's job count, `-D_DARWIN_C_SOURCE` in Mesa's
+cross `c_args`, `cpp_args` and `objc_args` (flex 2.6.10, on the build laptop since 2026-11, writes `#define
+_POSIX_C_SOURCE 1` into each scanner it makes, and Darwin's `dlfcn.h` then hides the `Dl_info` that `ir3_lexer.c` gets from
+`disk_cache.h`; macOS's flex 2.6.4 writes no such line, so the Mac never saw it; a file that sets no POSIX level of
+its own is at Darwin's full level already, so the define changes nothing for it), a longer limit for the Rust build,
+no `TurnipReplay.h` (it is recorded by a Mac-only host simulation; the plug-in includes it only when it
 exists, so the prefix-replay diagnostic is absent), and, only when the compiler knows the warning (clang 23 on the
 Linux PC, not Xcode 27.2's clang 21), `-Wno-error=unused-but-set-global`. Also not made:
 `build/prime-list.txt` (the image's `.metallib` paths for shader priming; the plug-in primes nothing without it).

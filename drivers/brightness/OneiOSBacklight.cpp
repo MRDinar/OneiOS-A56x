@@ -86,6 +86,7 @@ private:
 	bool fHasAls;
 	struct obl_sent fSent;          /* the last level sent to the host (oneios_bl_request.h: only a change goes on) */
 	struct obl_published fPublished;
+	struct obl_sources fSources;    /* brightness-nits, once it came, wins over the slider position (oneios_bl_request.h) */
 	uint32_t nits16For(uint32_t value) const;
 	void publish(uint32_t value, uint32_t nits16);
 	void sendSet(const struct ob_bright_set *set);
@@ -289,11 +290,12 @@ OneiOSBacklight::calibration()
 		ok = setProperty("backlight-marketing-table", t) && setProperty("backlight-calibration-parameters", d);
 	}
 	/* iOS 27's BrightnessControl reads the product luminances from their own properties: LmaxProduct as 4 bytes of 16.16
-	 * (at zero every slider position means the maximum), LmidProduct and LminProduct as numbers in nits (as data they
-	 * would be read as a float) [UniXNU-sheng]. LminProduct: the lowest level rounded up to 1 nit, as min-nits. */
+	 * (at zero every slider position means the maximum), LmidProduct and LminProduct as numbers, also 16.16 nits
+	 * (obl_product_nits16: CoreBrightness printed the whole nits published before, 125 and 1, as 125/65536 and 1/65536;
+	 * UniXNU-sheng's note "numbers in nits" was wrong for these). LminProduct: the lowest level rounded up to 1 nit. */
 	OSData *lmax = OSData::withBytes(&table[OBL_TABLE_POINTS - 1], sizeof(table[0]));
-	OSNumber *lmid = OSNumber::withNumber((uint64_t)(table[(OBL_TABLE_POINTS - 1) / 2] >> 16), 32);
-	OSNumber *lmin = OSNumber::withNumber((uint64_t)((fMinNits16 + 0xffff) >> 16), 32);
+	OSNumber *lmid = OSNumber::withNumber((uint64_t)obl_product_nits16(table[(OBL_TABLE_POINTS - 1) / 2] >> 16), 32);
+	OSNumber *lmin = OSNumber::withNumber((uint64_t)obl_product_nits16((fMinNits16 + 0xffff) >> 16), 32);
 	ok = ok && lmax != NULL && lmid != NULL && lmin != NULL && setProperty("LmaxProduct", lmax) && setProperty("LmidProduct", lmid) &&
 	    setProperty("LminProduct", lmin);
 	OSSafeReleaseNULL(lmax);
@@ -426,6 +428,16 @@ OneiOSBacklight::setProperties(OSObject *properties)
 		 * SInt32 (oneios_bl_request.h). Of the slider, as `brightness` (the host's curve squares it). Control Center's
 		 * slider sends this and DisplayBrightness only (phone, 2026-11-13: about 550 of each in a 1 s drag). */
 		int32_t fraction = obl_fixed16_fraction(slider->unsigned64BitValue());
+		if (fraction >= 0 && !obl_slider_used(&fSources)) {
+			/* brightness-nits sets the level (it came): the slider position is not sent. */
+			if (fSources.slider_ignored <= 4 || fSources.slider_ignored % 1024 == 0) {
+				IOLog("ONEIOS BACKLIGHT: DisplayBrightnessSliderPosition 0x%llx (%u bits, slider %d of 65535) not used: brightness-nits "
+				    "sets the level (%llu positions not used)\n", slider->unsigned64BitValue(), slider->numberOfBits(), (int)fraction,
+				    fSources.slider_ignored);
+			}
+			fRequests++;
+			return kIOReturnSuccess;
+		}
 		if (fraction >= 0) {
 			set.level = (uint32_t)fraction * OBL_FULL / OBL_FRACTION_FULL;
 			set.flags = 0;
@@ -463,6 +475,11 @@ OneiOSBacklight::setProperties(OSObject *properties)
 			    "off only when its framebuffer asks\n", (uint32_t)signed16);
 			return kIOReturnSuccess;
 		}
+		if (!fSources.nits_seen) {
+			IOLog("ONEIOS BACKLIGHT: brightness-nits 0x%x came: it sets the level from now on, a slider position no more\n",
+			    (uint32_t)signed16);
+		}
+		obl_nits_came(&fSources);
 		uint64_t n16 = (uint64_t)lit * ((uint64_t)fNits << 16) / OBL_FRACTION_FULL;
 		set.level = (uint32_t)lit * OBL_FULL / OBL_FRACTION_FULL;
 		set.flags = OB_BRIGHT_LINEAR;

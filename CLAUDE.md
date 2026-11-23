@@ -86,7 +86,7 @@ runtime|runtime-asis|image`, `manifest DIR --stage`, `sums`, `log [--follow] [--
 no command yet (say so, and add the command).
 
 - **Logs:** `oneios-tool phone pull-log DIR` (iOS's log of a boot in seconds, beside an open session, with
-  `ioslog health` and `ioslog keyboard`); `phone log --save FILE` for `xnuhost.log`; then `oneios-tool log summary`,
+  `ioslog health`, `ioslog keyboard` and `ioslog haptics`); `phone log --save FILE` for `xnuhost.log`; then `oneios-tool log summary`,
   `log stacks`, `log gpu|cpu|display|perf|pen`. `phone pull-data` (the whole store) only when the store itself is needed.
 - **A test boot:** stage the runtime (`phone stage runtime-asis DIR` for a copy of the phone's runtime with new
   binaries) and the image's changed files (`phone manifest DIR --stage`, e.g. `kernel.kc`, `kernel.kc.hashes`,
