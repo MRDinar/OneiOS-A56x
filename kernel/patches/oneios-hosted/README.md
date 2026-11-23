@@ -1941,3 +1941,33 @@ the stub, 0 failures; `prelink stubs-check`: 666 good, 0 bad. The loader's hash 
 Not run on the phone yet. Rebased on 0083 (2026-11-23): the camera helper made it on a tree without 0083, so it did not
 apply on main (`patch failed: bsd/kern/kern_exec.c:9710`); now its function comes after 0083's `oneios_dictation_status`,
 the same code, and 0085 and 0086 apply after it.
+
+## 0092-enable-jobs-policy.patch (enable-jobs, 2026-11-23)
+
+**Why.** The daemon policy (`userland/config/daemons.toml`) disabled vphone's lists: the groups base (126 jobs),
+extra (4) and signin (2), and fairplayd.H2. On the phone's Rust-runtime boot of 2026-11-23 "Add New Wallpaper" loaded
+forever: PosterBoard's `ATXFaceSuggestionClient` looks up `com.apple.proactive.FaceSuggestions.xpc` (duetexpertd's),
+launchd answers `No such process`, PosterBoard logs `_pushFaceGalleryConfigurationUpdate: no gallery received? Erroring
+out` (07:38:51 UTC) and never asks again. The same boot's other failed lookups were the same kind: `kvsd` (syncdefaultsd)
+50 times, `replicatorservices` 30, `mobilemail.services.xpc` 27, `proactive.infoSuggestion.xpc` 10, `nfcd.hwmanager` 127.
+The owner asked for every job but the crash loops. Since then the three groups are off by default, duetexpertd is in
+`[keep]` and fairplayd.H2 left the hardware group; a new seed disables only the replace jobs, aned and the loops.
+
+**What.** A Data store made from an older seed still has those 134 jobs in its `disabled.plist`. 0044's
+`oneios_jobs_enable` gets a built-in default list (`oneios_jobs_enable_default`: analyticsd and navd as before, then the
+134, 3.4 KiB; the buffer is a static 4096 bytes, since the function runs once before launchd's exec). `oneios-enable-jobs=`
+still replaces the list (`-` for none). It logs one line per job it enables and one summary line, not one line per label:
+
+```text
+oneios-jobs: com.apple.duetexpertd: enabled in disabled.plist (it was disabled)
+oneios-jobs: 134 of 136 labels enabled in disabled.plist, 2 not disabled there (0092)
+```
+
+The next boot after that shows `0 of 136 ... 136 not disabled there`. 0053's disable list runs after it, so the
+crash loops stay off. `tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs`
+(`policy_the_kernels_enable_list_is_what_the_policy_runs_again`) checks that the list is the policy's.
+
+**Watch in its first boot:** fairplayd.H2 (droidvm saw its services hang lockdownd and accountsd on the iPad without the
+FairPlayIOKit kext; this kernel does not carry it either), and `oneios-cpu` / `oneios-mem` for the jobs that run again.
+A job that loops goes back with `boot-args-add=oneios-disable-jobs=` (0053's list and it) and then into the policy's
+loops group.
