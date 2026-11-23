@@ -36,7 +36,7 @@ Long jobs run in tmux via `scripts/bg.sh NAME COMMAND...`; check them with `scri
 | Haptics | The haptic server starts (0078); the Actuator then played silence (no DSP chain): hosted 0086 merged, phone proof pending | Host-tested | [docs/hardware.md](docs/hardware.md) §5 |
 | Interrupts / Mach RPC | — | Verified: 41k host-call IPIs vs 110 trapped | `oneios-perf` `rpc:`/`0081:` lines |
 | Return to One UI | Yes — chord, SIGKILL backstop | n/a | Never touches side keys, realtime, or `/sys/power` |
-| Host test suites | n/a | All green: the Rust runtime's `cargo test --workspace` and clippy, the test kernel's three boots under qemu (`runtime/xnuhost/check-arm64.sh`); the prelink audit 0 failures | `runtime/host-tests.sh`, [runtime/RUST.md](runtime/RUST.md) |
+| Host test suites | n/a | All green: the Rust runtime's `cargo test --workspace` and clippy, the test kernel's four boots under qemu (`runtime/xnuhost/check-arm64.sh`); the prelink audit 0 failures | `runtime/host-tests.sh`, [runtime/RUST.md](runtime/RUST.md) |
 
 ## Known issues
 

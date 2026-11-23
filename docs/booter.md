@@ -17,7 +17,7 @@ and offset; and the GPU's renderer (virglrenderer's drm2kgsl, pinned, built by `
 with a small C glue). Function names below are the Rust ones (`module::function`) where the text names code; a record
 of a test or a measurement keeps the names of the tree it was made on. **The Rust xnuhost first booted iOS on the
 phone on 2026-11-23** (section 2.6a, "On the phone, Rust against C"); it also passes the host tests and boots the test
-kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`, the three boots). Every other phone measurement
+kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`, the four boots: the last one, xnuhost's last words on a SIGUSR1 from outside). Every other phone measurement
 below was made with the C xnuhost.
 
 xnuhost boots a source-built XNU **as a Linux process** on One UI's kernel: it loads the kernel collection
@@ -37,7 +37,7 @@ runtime/build.sh --test       # = runtime/host-tests.sh
 runtime/host-tests.sh         # every host test of the runtime (workspace, lint, boot, port, links, package); on a Mac
                               # in an arm64 Linux container, where the binary boots the test kernel as it is (no qemu)
 cd runtime && cargo test -p xnuloader -p xnuhost   # the loader's and xnuhost's unit tests alone
-runtime/xnuhost/check-arm64.sh smoke check         # the vCPU machinery alone, then the test kernel's three boots
+runtime/xnuhost/check-arm64.sh smoke check         # the vCPU machinery alone, then the test kernel's four boots
                               # (the static Android xnuhost under qemu-aarch64 on a PC; natively on arm64 Linux)
 runtime/xnuhost/check-arm64.sh bench|parallel|rpc|ab   # the trap path's costs, the parallel test, the Mach RPC
                               # round trip, two binaries compared (sections 2.6a, 2.6b, 2.6d; the script's header)
@@ -147,6 +147,30 @@ too: if `host MemAvailable` runs low in a session, lower `ram-percent` or raise 
 
 Log: standard error (the switch appends it to `session/xnuhost.log`). Lines `xnuhost I/E/D` are the host's,
 `guest` lines are the kernel's console, `xnuhost !!` lines come from signal context.
+
+**How xnuhost ended, always in the log (2026-11-23).** On the phone at 19:06 that day xnuhost ended with no line at
+all: no `stopping:`, no panic, no `xnuhost !!` (`out/session-logs/2026-11-23-mac-s1904/`). Two lasting lines now
+say how it ended, whatever it was:
+- **xnuhost's last words (the runtime after v0.1.19, `cpu.rs` `last_words`, `xh_core::log::fatal_line`).** A signal whose
+  default action ends the process and that xnuhost takes nowhere else (SIGABRT: bionic's abort, Rust's
+  `panic=abort`, the allocator; SIGSYS; SIGUSR1, SIGUSR2, SIGALRM, SIGVTALRM, SIGPROF, SIGXCPU, SIGXFSZ, SIGSTKFLT,
+  SIGIO, SIGPWR; each only where it still has its default action) goes through the vCPU signal entry (the host's
+  TPIDR_EL0 and x18 first) to a handler that writes, async-signal-safe (fixed buffers, `write(2)`, no lock):
+  `xnuhost !! fatal signal 6 (SIGABRT) on thread 'NAME' (tid T): code C, sent by pid P uid U` (si_code <= 0: a
+  process sent it; for abort() that is xnuhost's own pid) or `..., address 0x...` (one the kernel raised), then
+  `xnuhost !!   pc, sp`, `  x30, esr`, and xnuhost's own frame records (`  host frame: fp, lr`, 16 at most; on a vCPU
+  in kernel code `  in the kernel: cpu, pc` instead). The faults on a host thread or in a host call (`fault on a host
+  thread: signal, address`, `fault inside a host call: ...`) write the same `fatal signal` line and frames after
+  their own three. Then xnuhost dies of the signal itself (its default action, the signal unblocked, raised on that
+  thread): the inner shell below sees the signal, not an exit code (the faults ended with `_exit(5)` before, because
+  the raise stayed blocked in the handler). SIGKILL cannot be caught: for it there is only the line below.
+- **The inner shell's record (the OneOS app after 0.5.80; `oneos/interface.md` 4).** The switch's inner shell waits for
+  xnuhost and writes `oneios inner: DATE TIME xnuhost PID ended: exit N` or `... ended: killed by signal 9 (SIGKILL)`
+  as the log's last line, and `session/xnuhost.exit`. The watcher copies the record into `return.log` with what the
+  host saw right after (the OOM killer's and lmkd's lines that name xnuhost, xnuhost's own logcat lines, the memory
+  pressure, the session cgroup's `memory.events`), lines `watcher: after xnuhost's end: ...`. `oneios-tool log
+  summary` prints the record as its row `how xnuhost ended`, and its `the end` row is the head line of the last
+  `xnuhost !!` group (the `fatal signal` line), not its last indented line.
 
 Stop: `SIGTERM`, `SIGINT` or `SIGHUP`: tasks are killed, the Data store is synced, exit 0.
 
@@ -1948,7 +1972,7 @@ The Rust runtime (2026-11-23, branch `rust-runtime`; every C test was ported wit
 | `cd runtime && cargo test -p xnuloader` (`runtime/loader/tests/loader.rs`) | PC | every case of the C `test_loader.c` (193 checks) in 11 tests, plus the Makefile's `xnuloader-inspect` checks and a `mkkernel` run, pass; against the C loader on two refused kernelcaches the output and exit codes were byte-identical |
 | `cd runtime && cargo test -p xnuhost` (unit tests beside each module: `src/*/tests.rs`, `#[cfg(test)]`) | PC (x86_64; `cpu.rs` and `task.rs` with their stand-ins) | 73 pass (commit `8c56fa5`); the 3D renderer's stand-in-KGSL scenarios need `external/virglrenderer` and the memory ones `/dev/udmabuf` |
 | `cd runtime && cargo test -p xnuhost-abi` (`runtime/abi/tests/headers.rs`) | PC | the Rust mirrors of `hostcall.h`, `free_report.h`, `free_report_runs.h` agree with the C headers (every constant, size and offset), and the kernel's copies are the same files |
-| `runtime/xnuhost/check-arm64.sh smoke check` | the static Android xnuhost under `qemu-aarch64` (natively on arm64 Linux) | `smoke`: the vCPU machinery alone passes; `check`: the Rust test kernel's three boots pass (`TESTKERNEL: all passed` with 3 vCPUs and 256 MiB, `ram=auto` 1024 MiB held, the restart loop's exit 3 after 9 starts) |
+| `runtime/xnuhost/check-arm64.sh smoke check` | the static Android xnuhost under `qemu-aarch64` (natively on arm64 Linux) | `smoke`: the vCPU machinery alone passes; `check`: the Rust test kernel's four boots pass (`TESTKERNEL: all passed` with 3 vCPUs and 256 MiB, `ram=auto` 1024 MiB held, the restart loop's exit 3 after 9 starts, and a SIGUSR1 from outside in `testkernel-hold`: the `xnuhost !! fatal signal 10 (SIGUSR1)` line and status 138; not SIGABRT, which qemu-aarch64 11 takes itself) |
 | `runtime/xnuhost/check-arm64.sh ab` | the same, two binaries pinned and alternated | the Rust xnuhost level with the C on every BENCH line before the stub's word copy, faster after (section 2.6a) |
 | `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` | PC; clippy also for `aarch64-linux-android` | clean |
 | the phone | - | **not run yet** with the Rust runtime |

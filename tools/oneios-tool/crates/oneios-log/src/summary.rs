@@ -185,19 +185,41 @@ pub fn stages(recs: &[Rec]) -> Vec<Stage<'_>> {
     out
 }
 
+/// How xnuhost ended as the fork's inner shell saw it (`oneios inner: DATE TIME xnuhost PID ended: exit N` or `killed
+/// by signal S (NAME)`, the OneOS app after 0.5.80, docs/booter.md 2.9): the record and its words after "ended: ".
+fn inner_end(recs: &[Rec]) -> Option<(&Rec, &str)> {
+    recs.iter().rev().find_map(|r| match r.src {
+        Src::Raw if r.text.starts_with("oneios inner:") && r.text.contains(" xnuhost ") => {
+            r.text.split_once(" ended: ").map(|(_, how)| (r, how))
+        }
+        _ => None,
+    })
+}
+
 /// How the boot ended: the record and what it says, or None (the log stops while the session ran, or was cut).
 fn ending(recs: &[Rec]) -> Option<(&Rec, String)> {
-    recs.iter().rev().find_map(|r| {
+    let signal = |r: &Rec| r.src == Src::Raw && r.text.starts_with("xnuhost !!");
+    let i = recs.iter().rposition(|r| {
         let t = r.text.as_str();
         match r.src {
-            Src::Host(_) if t.starts_with("exit ") || t.starts_with("stopping: ") || t.starts_with("the guest asked for a restart") => {
-                Some((r, t.to_string()))
-            }
-            Src::Guest if t.starts_with("panic(") || oneios_common::panic_head(t).is_some() => Some((r, format!("PANIC: {}", short(t, 90)))),
-            Src::Raw if t.starts_with("xnuhost !!") => Some((r, short(t, 90))),
-            _ => None,
+            Src::Host(_) => t.starts_with("exit ") || t.starts_with("stopping: ") || t.starts_with("the guest asked for a restart"),
+            Src::Guest => t.starts_with("panic(") || oneios_common::panic_head(t).is_some(),
+            Src::Raw => signal(r),
         }
-    })
+    })?;
+    let r = &recs[i];
+    match r.src {
+        Src::Host(_) => Some((r, r.text.clone())),
+        Src::Guest => Some((r, format!("PANIC: {}", short(&r.text, 90)))),
+        // Signal context writes a head line and indented ones after it (pc, sp, frames): the head of the last group.
+        Src::Raw => {
+            let mut h = i;
+            while h > 0 && signal(&recs[h - 1]) && recs[h].text.starts_with("xnuhost !!  ") {
+                h -= 1;
+            }
+            Some((&recs[h], short(&recs[h].text, 90)))
+        }
+    }
 }
 
 #[derive(Default)]
@@ -268,6 +290,9 @@ pub fn report(log: &Log, window: Window, all: bool) -> String {
             None => {
                 let _ = writeln!(out, "  {:<34} {:>10}  (no stop line: the session still ran, or xnuhost was killed)", "the end", at(Some(end)));
             }
+        }
+        if let Some((r, how)) = inner_end(recs) {
+            let _ = writeln!(out, "  {:<34} {:>10}  line {:>6}  {}", "how xnuhost ended", at(r.time), r.line, short(how, 70));
         }
         let stage_time = |name: &str| stages.iter().find(|s| s.name == name).and_then(|s| s.rec).and_then(|r| r.time);
         if let (Some(first), Some(ready)) = (stage_time("the guest's first frame"), stage_time("guest ready")) {

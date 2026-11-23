@@ -132,6 +132,18 @@ pub fn health_line(now: &TaskCounts, before: &TaskCounts, seconds: u64) -> Optio
     ))
 }
 
+/// SIGKILL to an iOS task's Linux process, only to a pid of one (> 0): kill(0, ...) is the caller's own process
+/// group (from xnuhost: xnuhost itself, without a word), and kill(-1, ...) as root every process of the phone. The
+/// task table's pid is 0 while a slot is being made again, so a stale order read there would be that (a race: not
+/// seen in a log; the phone's session of 2026-11-23 19:06 ended by a signal nothing logged). Returns whether it sent.
+pub fn kill_task(pid: i32, kill: impl FnOnce(i32)) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    kill(pid);
+    true
+}
+
 /// uclamp.min and uclamp.max of a Linux thread (sched_setattr(2), Linux 5.3): `flags` says which are set; the policy
 /// and nice kept (KEEP_POLICY | KEEP_PARAMS in flags), SCHED_OTHER stays SCHED_OTHER (never a realtime policy:
 /// CLAUDE.md, the way back to One UI). 0, or -1 with errno.
@@ -482,7 +494,10 @@ mod machine {
                         };
                         send(sock, &r);
                     } else if got == size as isize && m.kind == M_KILL {
-                        libc::kill(m.pid, libc::SIGKILL);
+                        // Never 0 (the factory's group: every task) or -1 (every process of the phone).
+                        kill_task(m.pid, |p| {
+                            libc::kill(p, libc::SIGKILL);
+                        });
                     }
                 }
                 let mut status = 0;
@@ -1090,16 +1105,24 @@ mod machine {
 
     pub fn destroy(handle: u64) -> i64 {
         let Some(t) = task_of(handle) else { return neg(libc::ESRCH) };
+        // One read of the pid for every use below (kill_task: never 0 or below).
+        let pid = t.pid();
+        if pid <= 0 {
+            loge!("tasks: destroy of handle {} with no process (pid {}): nothing killed", handle, pid);
+            return neg(libc::ESRCH);
+        }
         {
             let mut tb = tables();
             t.killing.store(true, Relaxed);
             tb.counts.ended += 1;
         }
         if !t.dead() {
-            send(SOCK.load(Relaxed), &Message { kind: M_KILL, pid: t.pid(), slot: 0, status: 0 });
-            // SAFETY: a signal to the task's process: at once; the factory's report (the reader marks it dead) is what
-            // is waited for.
-            unsafe { libc::kill(t.pid(), libc::SIGKILL) };
+            send(SOCK.load(Relaxed), &Message { kind: M_KILL, pid, slot: 0, status: 0 });
+            // At once; the factory's report (the reader marks it dead) is what is waited for.
+            kill_task(pid, |p| {
+                // SAFETY: a signal to the task's process (p > 0).
+                unsafe { libc::kill(p, libc::SIGKILL) };
+            });
             // By the clock: a sleep returns early whenever a signal arrives, and the vCPU threads get them all the time.
             let began = Instant::now();
             while !t.dead() && began.elapsed() < Duration::from_secs(20) {
@@ -1876,6 +1899,19 @@ mod tests {
             }
         }
         0xdead
+    }
+
+    /// No kill of pid 0 (xnuhost's or the factory's own group) or below (-1: every process); a task's pid is killed.
+    #[test]
+    fn a_task_kill_never_names_a_group() {
+        for pid in [0, -1, i32::MIN] {
+            let mut sent = None;
+            assert!(!kill_task(pid, |p| sent = Some(p)), "{pid}");
+            assert_eq!(sent, None);
+        }
+        let mut sent = None;
+        assert!(kill_task(4242, |p| sent = Some(p)));
+        assert_eq!(sent, Some(4242));
     }
 
     #[test]

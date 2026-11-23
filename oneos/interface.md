@@ -109,7 +109,7 @@ A tool the package lacks is shown as "Not in this runtime", not as a failure.
 | `image/` | the unpacked image set, `manifest.json` included; read-only in a session | app, as root |
 | `image.sha256`, `image.ids` | `sha256sum` list of `image/`; `dev:inode:size:mtime` of each file | root at staging |
 | `data/` | the guest's writable state (Data store, anything xnuhost keeps). Survives a new runtime or image | xnuhost |
-| `session/` | this session: `xnuhost.pid`, `xnuhost.log`, `ready`, `return.request`, `tmp/`, the baseline | switch, xnuhost |
+| `session/` | this session: `xnuhost.pid`, `xnuhost.log`, `xnuhost.exit` (how xnuhost ended, the inner shell's record, section 4), `ready`, `return.request`, `tmp/`, the baseline | switch, xnuhost |
 | `logs/` | earlier sessions' `xnuhost-<epoch>.log` (the last 5; the next switch moves `session/xnuhost.log` there, so the epoch is that switch's time and the file's own time is its session's last line) | switch |
 | `switch.log`, `return.log`, `return.outcome`, `control/display.log`, `control/watchdog_feeder.log`, `control/usb.log` | the fork's own logs: the switch, the return with the watcher and the key readers, how the last return ended, the display helper's output, the watchdog feeder, the session's USB watcher (section 6a) | switch, return |
 | `tool/` | `TMPDIR` of `runtime/bin/oneios-tool serve` (section 9) | root's `tool` |
@@ -151,6 +151,18 @@ SELinux stays as One UI had it, usually Enforcing), detached, in a **new mount n
   `ONEIOS_IMAGE`, `ONEIOS_DATA`, `ONEIOS_SESSION`, and `TMPDIR=/data/session/tmp`.
   The binary named by `runtime.json`'s `xnuhost` is what runs (the path above is the usual one).
 - Must be runnable there: static, or linked only against `/system` and `/apex` libraries.
+- **Who waits for it (the OneOS app after 0.5.80, fork branch `fix/xnuhost-end-record`, 2026-11-23).** The switch's inner
+  shell (`oneios_switch.sh --inner`) starts xnuhost in the foreground and waits for it: a shell of its own writes its
+  pid to `/data/session/xnuhost.pid` and `exec`s xnuhost, so that file holds xnuhost's own pid as before (xnuhost
+  writes it again itself). xnuhost's parent is the inner shell, not init. Started in the foreground, xnuhost gets
+  SIGINT and SIGQUIT at their default (a shell without job control starts a `&` command with both ignored). When
+  xnuhost ends, the shell writes `oneios inner: DATE TIME xnuhost PID ended: exit N` or `... ended: killed by signal S
+  (NAME)` (a wait status of 128 + S) to the log, and `pid PID exit N` or `pid PID signal S` to
+  `/data/session/xnuhost.exit`, then exits with the same status. Up to the app 0.5.80 the shell `exec`'d xnuhost and nothing
+  recorded how it ended (the phone, 2026-11-23 19:06: the log just stops). The watcher reads the record into
+  `return.log` (section 5), and so does the return (`xnuhost's end, as its inner shell recorded it: ...`), which
+  ends the inner shell only after xnuhost's stop. Nothing for xnuhost to do: an exit code below 128 is still how it
+  says why (the codes of `docs/booter.md`).
 
 What is running around it: One UI's kernel, init, vendor HALs, **surfaceflinger and the vendor composer**
 (left running for a root SurfaceControl layer, plan section 5.5), audioserver, netd, vold, keystore2, the
@@ -256,7 +268,17 @@ only, as in `hosted`. `return.log` says `Android takeover: its CPU cap ended at 
   marks where the rule before 2026-11-15 was ready. Until then the switch's dead-man timer runs: no
   `ready` after `ONEIOS_RETURN_MAX` seconds (600) means an automatic return to One UI.
 - **Exit means return.** When the xnuhost process ends for any reason, the watcher returns to One UI.
-  Exit code 0 = the guest shut down; anything else is logged as a failure.
+  Exit code 0 = the guest shut down; anything else is logged as a failure. Since the OneOS app after 0.5.80 the watcher's
+  line says how it ended, from the inner shell's record (section 4): `watcher: xnuhost PID ended: exit N (last log
+  lines: ...)`, `... ended: killed by signal 9 (SIGKILL) (...)`, or `... ended: how is not recorded (...)` (an older
+  switch, or a record of another pid). Before that line it writes, at once (the kernel's ring and logcat's are
+  overwritten within minutes), `watcher: after xnuhost's end: kernel: ...` (dmesg lines of the OOM killer, `Killed
+  process`, `lowmemorykiller`, or naming xnuhost or its pid; at most 6), `lmkd: ...` (logcat's `lowmemorykiller` and
+  `killinfo` lines naming xnuhost or its pid; at most 3), `logcat of pid PID: ...` (xnuhost's own logcat lines, where
+  bionic's and the allocator's fatal messages go; at most 4), `host memory now: MemAvailable ..., SwapTotal ...,
+  SwapFree ...; pressure: <the lines of /proc/pressure/memory>` and the session cgroup's `memory.events` (or that it
+  has none: no memory controller there). The boot screen then says `xnuhost ended: killed by signal 9 (SIGKILL)`
+  where xnuhost's own log says nothing.
 - **A guest restart is not an exit.** When the guest restarts itself (iOS's own restart, or the kernel starting the
   Data volume over for a new image set's seed), xnuhost starts again in place: same pid, cgroup and namespace
   (`exec` of itself), so the watcher sees nothing and `ready` stays as it was. Only a guest that restarts 8 times in
@@ -408,7 +430,11 @@ same files, redacted. It reads these lines and nothing else, so change one only 
   `XH_HALT_*`; `xnuhost I exit N` with the exit codes of `docs/booter.md`; `xnuhost I the guest asked for a
   restart: starting again`; `xnuhost E the guest restarted N times without getting ready`;
   `xnuhost !! fault inside a host call: signal, address` and `fault on a host thread: signal, address` (the first
-  value is the signal); `xnuhost !! kernel fault with no exception upcall`.
+  value is the signal); `xnuhost !! kernel fault with no exception upcall`; `xnuhost !! fatal signal N (NAME) on
+  thread 'T' (tid N): code C, sent by pid P uid U` or `..., address 0x...` (the runtime after v0.1.19: an abort, a bad
+  system call, a timer or another process's signal, and after the two fault lines above; `docs/booter.md`, "Log");
+  the inner shell's `oneios inner: DATE TIME xnuhost PID ended: exit N | killed by signal S (NAME)` (section 4),
+  the last line of every log from the OneOS app after 0.5.80.
 
 An exit with code 2 (setup) has no line of its own: the fork shows the last `xnuhost E` line of a log that never
 entered the kernel. A line that said so (`exit 2`) would be better, and the fork would read it as it is.

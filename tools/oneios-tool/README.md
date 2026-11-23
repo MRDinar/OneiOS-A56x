@@ -1825,7 +1825,10 @@ v0.1.19 says `versions: no line`. A tail of a log has it too (xnuhost writes it 
 the log's last boot (`--all`: every boot) it
 prints the boot's stages with their time after the boot's start and their line (xnuhost starts, the RAM held, the
 kernel, BSD root, launchd loaded and its first line, the first virtio driver up, SpringBoard and backboardd first
-seen, backboardd's framebuffer, the first swap, the guest's first frame, guest ready, the first gesture, the end),
+seen, backboardd's framebuffer, the first swap, the guest's first frame, guest ready, the first gesture, the end: xnuhost's
+last record, or the head line of its last `xnuhost !!` group such as `fatal signal 6 (SIGABRT) on thread ...`; and,
+from the OneOS app after 0.5.80, the row `how xnuhost ended` with the inner shell's `exit N` or `killed by signal S
+(NAME)`, the one row a SIGKILL leaves, docs/booter.md "Log"),
 then one row per part (start, memory, disks, virtio, tasks, cpu, perf, thermal, display, gpu, input, brightness,
 haptics, battery, bluetooth, wifi, audio, camera, encoder (with the guest's `ONEIOS CODEC:` lines), usb, return, and iOS's own report lines: launchd, memory,
 cpu, gpu, display, hid, wifi, iokit): how many lines it wrote, the problems among them (`xnuhost E` lines, and lines

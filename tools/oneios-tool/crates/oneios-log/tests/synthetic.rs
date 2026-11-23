@@ -714,3 +714,30 @@ fn pen_report() {
     let text = f.run(&["pen", &log]);
     assert!(text.contains("== pen stages"), "{text}");
 }
+
+/// `log summary`'s "how xnuhost ended": the fork's inner shell's record (the OneOS app after 0.5.80), beside xnuhost's
+/// own last words (a fatal signal's line), and on its own where xnuhost had none (a SIGKILL: the phone, 2026-11-23 19:06).
+#[test]
+fn summary_says_how_xnuhost_ended() {
+    let f = Fixture::new("inner-end");
+    let mut t = String::new();
+    t += "oneios inner: 2026-11-23 19:02:50 starting /data/runtime/bin/xnuhost\n";
+    t += "[   100.000] xnuhost I xnuhost: session ABI 1, mode takeover, pid 1043\n";
+    t += "[   101.000] xnuhost I cpu0: entering the kernel at 0x2003dbb488\n";
+    t += "[   300.000] guest     ONEIOS CODEC: counters: service opened 5 closed 3\n";
+    let killed = format!("{t}oneios inner: 2026-11-23 19:06:31 xnuhost 1043 ended: killed by signal 9 (SIGKILL)\n");
+    let out = f.run(&["summary", &f.log("killed.log", &killed)]);
+    let row = |out: &str, what: &str| out.lines().find(|l| l.contains(what)).unwrap_or_else(|| panic!("no {what:?} in\n{out}")).to_string();
+    assert!(row(&out, "the end").contains("no stop line"), "{out}");
+    assert!(row(&out, "how xnuhost ended").ends_with("line      5  killed by signal 9 (SIGKILL)"), "{out}");
+    let abort = format!(
+        "{t}xnuhost !! fatal signal 6 (SIGABRT) on thread 'gpu-3d' (tid 1050): code -6, sent by pid 1043 uid 0\n\
+         xnuhost !!   pc, sp 0x0000000000001234 0x0000000000005678\n\
+         oneios inner: 2026-11-23 19:06:31 xnuhost 1043 ended: killed by signal 6 (SIGABRT)\n"
+    );
+    let out = f.run(&["summary", &f.log("abort.log", &abort)]);
+    assert!(row(&out, "the end").contains("xnuhost !! fatal signal 6 (SIGABRT) on thread 'gpu-3d'"), "{out}");
+    assert!(row(&out, "how xnuhost ended").ends_with("killed by signal 6 (SIGABRT)"), "{out}");
+    // A log of an app up to 0.5.80 has no such line, and no row.
+    assert!(!f.run(&["summary", &f.log("old.log", &t)]).contains("how xnuhost ended"));
+}

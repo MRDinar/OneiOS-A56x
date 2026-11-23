@@ -282,6 +282,136 @@ fn format_signal_line(text: &str, a: u64, b: u64) -> SignalLine {
     line
 }
 
+/// A signal's name (`SIGSEGV`), "signal" for one this table does not have.
+pub fn signal_name(signo: i32) -> &'static str {
+    match signo {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        5 => "SIGTRAP",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        10 => "SIGUSR1",
+        11 => "SIGSEGV",
+        12 => "SIGUSR2",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        16 => "SIGSTKFLT",
+        24 => "SIGXCPU",
+        25 => "SIGXFSZ",
+        26 => "SIGVTALRM",
+        27 => "SIGPROF",
+        29 => "SIGIO",
+        30 => "SIGPWR",
+        31 => "SIGSYS",
+        _ => "signal",
+    }
+}
+
+/// What a fatal signal's siginfo says: its code, and who sent it (a signal from a process: kill, tgkill, abort) or the
+/// address (one the kernel raised for an instruction: a fault, a trap).
+#[derive(Clone, Copy, Debug)]
+pub struct FatalSignal<'a> {
+    pub signo: i32,
+    pub code: i32,
+    /// prctl(PR_GET_NAME): the thread's name, up to its NUL
+    pub thread: &'a [u8],
+    pub tid: i32,
+    /// si_pid and si_uid where si_code says a process sent it (SI_USER, SI_TKILL, SI_QUEUE: code <= 0)
+    pub sender: Option<(i32, u32)>,
+    pub addr: u64,
+}
+
+/// A line built in signal context: a fixed buffer, no allocation, no lock.
+pub struct SigLine {
+    buf: [u8; 256],
+    len: usize,
+}
+
+impl SigLine {
+    const ROOM: usize = 255; // one byte stays for the newline
+
+    fn new() -> SigLine {
+        let mut l = SigLine { buf: [0; 256], len: 0 };
+        l.text(b"xnuhost !! ");
+        l
+    }
+
+    fn text(&mut self, s: &[u8]) -> &mut SigLine {
+        for &c in s {
+            if self.len >= Self::ROOM {
+                break;
+            }
+            // Printable ASCII only: a thread's name is whatever the process set.
+            self.buf[self.len] = if (0x20..0x7f).contains(&c) { c } else { b'?' };
+            self.len += 1;
+        }
+        self
+    }
+
+    fn dec(&mut self, v: i64) -> &mut SigLine {
+        let mut digits = [0u8; 20];
+        let mut n = v.unsigned_abs();
+        let mut i = digits.len();
+        loop {
+            i -= 1;
+            digits[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        if v < 0 {
+            self.text(b"-");
+        }
+        self.text(&digits[i..])
+    }
+
+    fn hex(&mut self, v: u64) -> &mut SigLine {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut digits = [0u8; 16];
+        let mut n = v;
+        let mut i = digits.len();
+        loop {
+            i -= 1;
+            digits[i] = HEX[(n & 15) as usize];
+            n >>= 4;
+            if n == 0 {
+                break;
+            }
+        }
+        self.text(b"0x").text(&digits[i..])
+    }
+
+    /// The line's bytes, with its newline.
+    pub fn bytes(&mut self) -> &[u8] {
+        self.buf[self.len] = b'\n';
+        &self.buf[..self.len + 1]
+    }
+}
+
+/// `xnuhost !! fatal signal 6 (SIGABRT) on thread 'NAME' (tid T): code C, sent by pid P uid U` (or `, address 0x..`
+/// for one the kernel raised for an instruction).
+pub fn format_fatal_line(f: &FatalSignal) -> SigLine {
+    let mut l = SigLine::new();
+    l.text(b"fatal signal ").dec(f.signo.into()).text(b" (").text(signal_name(f.signo).as_bytes());
+    l.text(b") on thread '").text(f.thread).text(b"' (tid ").dec(f.tid.into()).text(b"): code ").dec(f.code.into());
+    match f.sender {
+        Some((pid, uid)) => l.text(b", sent by pid ").dec(pid.into()).text(b" uid ").dec(uid.into()),
+        None => l.text(b", address ").hex(f.addr),
+    };
+    l
+}
+
+/// The fatal signal's line, straight to the log descriptor (async-signal-safe).
+pub fn fatal_line(f: &FatalSignal) {
+    write_fd(format_fatal_line(f).bytes());
+}
+
 static CAPTURE: Mutex<()> = Mutex::new(());
 
 /// The lines logged (from any thread) while it lives: a test's view of the log. Captures are serialized (one at a
@@ -449,5 +579,32 @@ mod tests {
         let long = "x".repeat(200);
         let l = format_signal_line(&long, 0, 0);
         assert_eq!(l.len, 96 + 2 * 19 + 1);
+    }
+
+    #[test]
+    fn fatal_line_text() {
+        let abort = FatalSignal { signo: 6, code: -6, thread: b"gpu-3d", tid: 1050, sender: Some((1043, 0)), addr: 0 };
+        assert_eq!(
+            format_fatal_line(&abort).bytes(),
+            b"xnuhost !! fatal signal 6 (SIGABRT) on thread 'gpu-3d' (tid 1050): code -6, sent by pid 1043 uid 0\n"
+        );
+        let segv = FatalSignal { signo: 11, code: 1, thread: b"xnuhost", tid: 7, sender: None, addr: 0x1084485e4 };
+        assert_eq!(
+            format_fatal_line(&segv).bytes(),
+            b"xnuhost !! fatal signal 11 (SIGSEGV) on thread 'xnuhost' (tid 7): code 1, address 0x1084485e4\n"
+        );
+        let odd = FatalSignal { signo: 40, code: i32::MIN, thread: b"a\nb\x01", tid: 0, sender: None, addr: 0 };
+        assert_eq!(
+            format_fatal_line(&odd).bytes(),
+            b"xnuhost !! fatal signal 40 (signal) on thread 'a?b?' (tid 0): code -2147483648, address 0x0\n"
+        );
+        // A name that would not fit is cut; the line keeps its newline.
+        let long = [b'n'; 400];
+        let mut l = format_fatal_line(&FatalSignal { thread: &long, ..segv });
+        let b = l.bytes();
+        assert_eq!(b.len(), 256);
+        assert_eq!(b[255], b'\n');
+        assert_eq!(signal_name(31), "SIGSYS");
+        assert_eq!(signal_name(9), "SIGKILL");
     }
 }

@@ -737,11 +737,80 @@ mod machine {
         signal_line(what, signo as u64, info.si_addr);
         signal_line("  pc, sp", uc.uc_mcontext.pc, uc.uc_mcontext.sp);
         signal_line("  x30, esr", uc.uc_mcontext.regs[30], esr_of(uc));
-        // SAFETY: the default action for the signal, then the signal again: the process dies of it.
+        fatal_line(signo, info);
+        // xnuhost's own frame records: which code of ours (symbolize against the xnuhost binary).
+        frames(uc.uc_mcontext.regs[29], 16, |_| true, "  host frame: fp, lr");
+        die_of(signo)
+    }
+
+    /// Signals whose default action ends xnuhost and that nothing of ours takes (the faults have host_fault, the
+    /// stop signals the main loop): an abort (bionic's, Rust's panic=abort, the allocator's), a seccomp or bad system
+    /// call, a timer or a signal some other process sent. Each ends xnuhost as before, with a line first: until
+    /// 2026-11-23 they ended it without a word (the phone, 19:06: xnuhost.log just stops).
+    pub(crate) const LAST_WORDS: [i32; 12] = [
+        libc::SIGABRT,
+        libc::SIGSYS,
+        libc::SIGUSR1,
+        libc::SIGUSR2,
+        libc::SIGALRM,
+        libc::SIGVTALRM,
+        libc::SIGPROF,
+        libc::SIGXCPU,
+        libc::SIGXFSZ,
+        libc::SIGSTKFLT,
+        libc::SIGIO,
+        libc::SIGPWR,
+    ];
+
+    /// One of LAST_WORDS: the line, where it was (on a host thread or in a host call, xnuhost's frames), then the
+    /// signal's own death.
+    fn last_words(signo: i32, info: &SigInfo, uc: &UContext, v: Option<&Vcpu>) -> ! {
+        fatal_line(signo, info);
+        signal_line("  pc, sp", uc.uc_mcontext.pc, uc.uc_mcontext.sp);
+        signal_line("  x30, esr", uc.uc_mcontext.regs[30], esr_of(uc));
+        match v {
+            Some(v) if v.cpu.in_host.load(Relaxed) == 0 => {
+                signal_line("  in the kernel: cpu, pc", v.index() as u64, uc.uc_mcontext.pc)
+            }
+            _ => frames(uc.uc_mcontext.regs[29], 16, |_| true, "  host frame: fp, lr"),
+        }
+        die_of(signo)
+    }
+
+    /// `xnuhost !! fatal signal N (NAME) on thread 'T' (tid N): code C, sent by pid P uid U | address A`.
+    fn fatal_line(signo: i32, info: &SigInfo) {
+        let mut name = [0u8; 17];
+        // SAFETY: PR_GET_NAME writes at most 16 bytes, NUL included, into a buffer of 17; prctl is a system call.
+        unsafe { libc::prctl(libc::PR_GET_NAME, name.as_mut_ptr() as libc::c_ulong, 0, 0, 0) };
+        let len = name.iter().position(|&c| c == 0).unwrap_or(16);
+        // SAFETY: gettid has no preconditions.
+        let tid = unsafe { libc::gettid() };
+        // si_code <= 0: a process sent it (SI_USER, SI_TKILL, SI_QUEUE); its _kill record (si_pid, si_uid) is where a
+        // fault's si_addr is.
+        let sender = (info.si_code <= 0).then_some((info.si_addr as u32 as i32, (info.si_addr >> 32) as u32));
+        xh_core::log::fatal_line(&xh_core::log::FatalSignal {
+            signo,
+            code: info.si_code,
+            thread: &name[..len],
+            tid,
+            sender,
+            addr: info.si_addr,
+        });
+    }
+
+    /// Ends xnuhost of `signo` itself, so the switch's inner shell sees the signal (not an exit code): its default
+    /// action, unblocked (a handler runs with its signals blocked), raised on this thread.
+    fn die_of(signo: i32) -> ! {
+        // SAFETY: the default action, the signal unblocked on this thread, then the signal: the process ends of it.
+        // _exit is the backstop should it not.
         unsafe {
             libc::signal(signo, libc::SIG_DFL);
-            libc::raise(signo);
-            libc::_exit(5)
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, signo);
+            tgkill(getpid(), libc::gettid(), signo);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, ptr::null_mut());
+            libc::_exit(128 + signo)
         }
     }
 
@@ -822,6 +891,9 @@ mod machine {
             }
             maybe_interrupt(v, uc);
             return restore();
+        }
+        if LAST_WORDS.contains(&signo) {
+            last_words(signo, info, uc, v);
         }
         // A synchronous trap. In host context (ours or a non-vCPU thread's) it is a bug of xnuhost.
         let v = match v {
@@ -1104,6 +1176,14 @@ mod machine {
                 sig_dump(),
             ] {
                 libc::sigaction(sig, &sa, ptr::null_mut());
+            }
+            // The last words (LAST_WORDS), where the signal still has its default action: a handler someone else
+            // set (or SIG_IGN) stays.
+            for sig in LAST_WORDS {
+                let mut old: libc::sigaction = unsafe_zeroed();
+                if libc::sigaction(sig, ptr::null(), &mut old) == 0 && old.sa_sigaction == libc::SIG_DFL {
+                    libc::sigaction(sig, &sa, ptr::null_mut());
+                }
             }
         }
         Ok(())

@@ -1296,7 +1296,9 @@ the PC. The first run on the phone's store (2026-11-13) failed with `short read 
 A session's health on one screen (2026-11-22): first which runtime, kernel, image and app made the log
 (xnuhost's `versions:` line, v0.1.19 on; a tail of the log has it too), then the boot's stages and their times, then each part of xnuhost, the
 bridges and iOS's report lines with its count of lines, its last line and its first problem, the crashes and kills,
-the gestures and the `xnuhost E` lines (which line each part writes: [booter.md](booter.md) 2.9b; the output:
+the gestures and the `xnuhost E` lines, and how xnuhost ended (the row `how xnuhost ended`: the fork's inner shell's
+record, `exit N` or `killed by signal S (NAME)`, from the OneOS app after 0.5.80; booter.md "Log") (which line each
+part writes: [booter.md](booter.md) 2.9b; the output:
 tools/oneios-tool/README.md "log"):
 
 ```sh

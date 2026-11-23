@@ -1,11 +1,13 @@
 #!/bin/sh
-# runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK: the three boots of the Makefile's `make check-arm64`,
+# runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK: the four boots of the Makefile's `make check-arm64`,
 # for any xnuhost binary (the C one, the Rust one) and any test image (IMAGE/kernel.kc and IMAGE/os.img, as mkkernel
-# writes them from the test kernel's ELF). WORK holds the data store and the logs (check.log, ramauto.log,
+# writes them from the test kernel's ELF). WORK holds the data store and the logs (check.log, ramauto.log, lastwords.log,
 # restart.log). Under qemu-aarch64 on a PC, natively on an arm64 Linux host; QEMU=... names another qemu.
 #   1. the normal boot: 3 vCPUs, 256 MiB, ram-giveback=1: 'TESTKERNEL: all passed'
 #   2. ram=auto on a host of 4 GiB, 2.5 GiB available (ram-meminfo): 1024 or 1280 MiB, held and prefaulted
 #   3. a guest that keeps restarting: xnuhost starts again in place 8 times, then exit 3 (9 'TESTKERNEL: restart')
+#   4. the last words: SIGUSR1 from outside to xnuhost in the test kernel's hold (testkernel-hold): its line
+#      'xnuhost !! fatal signal 10 (SIGUSR1) ...: code 0, sent by pid <this shell>', then status 138 (it dies of the signal)
 set -u
 [ $# -eq 3 ] || { echo "usage: check-arm64.sh XNUHOST IMAGE WORK" >&2; exit 2; }
 xnuhost=$1 image=$2 work=$3
@@ -46,4 +48,33 @@ if [ "$code" != 3 ] || [ "$starts" != 9 ]; then
   echo "check-arm64: restart: exit $code"
   exit 1
 fi
-echo "check-arm64: all three boots passed"
+
+echo "check-arm64: last words: SIGUSR1 from outside to a running xnuhost: its fatal signal line, then it dies of SIGUSR1"
+# (SIGUSR1, not SIGABRT: qemu-aarch64 11 ends itself on a SIGABRT from outside, before the guest's handler runs.
+# An abort inside xnuhost and SIGUSR1 take the same handler: cpu.rs LAST_WORDS.)
+rm -f "$work/testdata/data.img"
+# Not under timeout(1): the signal goes to xnuhost (or the qemu that runs it) itself. The hold is ended below.
+# shellcheck disable=SC2086
+$run "$xnuhost" $common --cpus 1 --ram 256M --boot-args testkernel-hold > "$work/lastwords.log" 2>&1 &
+pid=$!
+n=0
+while [ $n -lt 600 ] && kill -0 "$pid" 2>/dev/null && ! grep -q 'TESTKERNEL: holding' "$work/lastwords.log"; do
+  sleep 0.1; n=$((n + 1))
+done
+if ! grep -q 'TESTKERNEL: holding' "$work/lastwords.log"; then
+  kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  tail -5 "$work/lastwords.log"
+  echo "check-arm64: last words: the test kernel did not get to its hold"
+  exit 1
+fi
+kill -USR1 "$pid"
+wait "$pid"
+code=$?
+if [ "$code" != 138 ] ||
+   ! grep -Eq "^xnuhost !! fatal signal 10 \(SIGUSR1\) on thread '[^']*' \(tid [0-9]+\): code 0, sent by pid $$ uid [0-9]+$" "$work/lastwords.log"; then
+  grep -E 'xnuhost !!|TESTKERNEL' "$work/lastwords.log" | tail -8
+  echo "check-arm64: last words: status $code (138: killed by SIGUSR1), or no fatal signal line"
+  exit 1
+fi
+grep 'fatal signal' "$work/lastwords.log"
+echo "check-arm64: all four boots passed"

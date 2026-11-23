@@ -10,7 +10,8 @@
 //! thread (its signal handlers) may use it, as the hosted kernel, built for iOS, leaves it alone.
 //!
 //! The boot-args it reads: testkernel-restart, testkernel-parallel[=SCALE], testkernel-rpc[=SCALE] with
-//! testkernel-rpc-mode=N, testkernel-bench[=SCALE] (the Makefile's check-arm64, bench-arm64, parallel-arm64, rpc-arm64).
+//! testkernel-rpc-mode=N, testkernel-bench[=SCALE] (the Makefile's check-arm64, bench-arm64, parallel-arm64, rpc-arm64),
+//! testkernel-hold (idle for good: check-arm64.sh signals xnuhost from outside).
 #![no_std]
 #![no_main]
 
@@ -504,6 +505,15 @@ unsafe extern "C" fn kernel_main(args: *const BootArgs, vector: *const XhVector,
     if (0..len).any(|c| word_at(line, c, b"testkernel-restart").is_some()) {
         put("TESTKERNEL: restart\n");
         halt(cpu, XH_HALT_RESTART, 0);
+    }
+    // boot-args "testkernel-hold": idle for good, for a check that signals xnuhost from outside (check-arm64.sh, the
+    // last words: its line, then the death of that signal). The check's own time limit ends a hold nothing ended.
+    if (0..len).any(|c| word_at(line, c, b"testkernel-hold").is_some()) {
+        put("TESTKERNEL: holding\n");
+        loop {
+            host!(timer_set(cpu, now() + info().timebase_hz));
+            host!(cpu_idle(cpu));
+        }
     }
     // boot-args "testkernel-parallel[=SCALE]": only the parallel test (any number of vCPUs), then off.
     if let Some(i) = (0..len).find_map(|c| word_at(line, c, b"testkernel-parallel")) {

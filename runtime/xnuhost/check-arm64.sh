@@ -4,8 +4,9 @@
 # argument: check. Under qemu-aarch64 on a PC (the times are qemu's: compare runs on the same host only), natively on
 # an arm64 Linux host.
 #   smoke     the vCPU machinery alone (examples/machine_smoke.rs): no kernel image, no session; seconds
-#   check     the three boots of testkernel/check-arm64.sh: the normal boot ('TESTKERNEL: all passed'), ram=auto with
-#             a made-up meminfo, the restart loop (exit 3 after 9 'TESTKERNEL: restart')
+#   check     the four boots of testkernel/check-arm64.sh: the normal boot ('TESTKERNEL: all passed'), ram=auto with
+#             a made-up meminfo, the restart loop (exit 3 after 9 'TESTKERNEL: restart'), the last words (a
+#             SIGUSR1 from outside: its 'fatal signal' line, status 138)
 #   bench     the trap path's costs (docs/booter.md 2.6a): the test kernel's benchmarks, then xnuhost's "perf:" report
 #   parallel  N threads of one task, one per vCPU (docs/booter.md 2.6b): the speed-up for 1, 2, 4 and 8 threads
 #   rpc       the Mach RPC round trip (docs/booter.md 2.6d), once per interrupt path (RPC_MODES)
