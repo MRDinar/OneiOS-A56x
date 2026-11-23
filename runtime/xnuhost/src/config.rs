@@ -480,6 +480,7 @@ const GIVEN_KEYS: &[&str] = &[
     "uclamp-rule",
     "task-trim",
     "task-trim-idle",
+    "timer-coalesce",
     "ram-tasks-awake",
     "ram-task-idle-cost",
 ];
@@ -690,6 +691,8 @@ pub struct Config {
     pub task_trim: bool,
     /// task-trim-idle=SECONDS (30): no release for this long and a task is trimmed
     pub task_trim_idle: u32,
+    /// timer-coalesce (on): a later deadline or a cancel leaves the vCPU's host timer armed (cpu::TIMER_COALESCE)
+    pub timer_coalesce: bool,
     pub selftest: bool,
     /// runtime/bridges devices (network, sound, haptics, Bluetooth, CPU placement); by mode unless given
     pub bridges: bool,
@@ -922,6 +925,7 @@ impl Config {
             uclamp_rule: UclampRule::Work,
             task_trim: true,
             task_trim_idle: TASK_TRIM_IDLE,
+            timer_coalesce: true,
             selftest: false,
             bridges: true,
             clusters: String::new(),
@@ -1126,6 +1130,7 @@ impl Config {
             "uclamp-rule" => self.uclamp_rule = named(UclampRule::parse(value))?,
             "task-trim" => self.task_trim = flag(value)?,
             "task-trim-idle" => self.task_trim_idle = number(value, 1, 86400)?,
+            "timer-coalesce" => self.timer_coalesce = flag(value)?,
             "ram-tasks-awake" => self.ram_tasks_awake = number(value, 0, 4096)?,
             "ram-task-idle-cost" => self.ram_task_idle_cost = size_below_tib(value)?,
             // hw-backend, hw-backend-<bridge>, hw-backend-fallback (onebridges::hw)
@@ -1361,6 +1366,7 @@ impl Config {
         take!(self, image, "uclamp-rule", uclamp_rule);
         take!(self, image, "task-trim", task_trim);
         take!(self, image, "task-trim-idle", task_trim_idle);
+        take!(self, image, "timer-coalesce", timer_coalesce);
         take!(self, image, "cpu-pin", cpu_pin);
         self.hw.merge(&image.hw); // each hw-backend setting: the command line's, else the image set's,
         self.hw.merge(&device.hw); // else the host phone's
@@ -2129,6 +2135,7 @@ impl Config {
             ("takeover-reclaim", on(self.takeover_reclaim).to_string(), "1"),
             ("takeover-swappiness", self.takeover_swappiness.map_or("keep".to_string(), |n| n.to_string()), "keep"),
             ("task-trim", on(self.task_trim).to_string(), "1"),
+            ("timer-coalesce", on(self.timer_coalesce).to_string(), "1"),
             ("ram-fit-terms", (if self.ram_fit_terms_old { "old" } else { "tasks" }).to_string(), "tasks"),
             ("ram-ondemand", on(self.ram_ondemand).to_string(), "0"),
             ("uclamp-rule", self.uclamp_rule.as_str().to_string(), "work"),
@@ -2146,6 +2153,9 @@ impl Config {
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),
             ("oneios-pressure-big", arg("oneios-pressure-big", "512"), "512"),
             ("oneios-disable-allowed", arg("oneios-disable-allowed", "1"), "1"),
+            ("oneios-nested-exact", arg("oneios-nested-exact", "1"), "1"),
+            ("oneios-upgrade-flush", arg("oneios-upgrade-flush", "0"), "0"),
+            ("oneios-fill-fast-fault", arg("oneios-fill-fast-fault", "1"), "1"),
             ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
             ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
             // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.

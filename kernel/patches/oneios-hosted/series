@@ -503,3 +503,18 @@
 # ended them. Numbered 0100: 0099 is left to the audio fix (fix/audio-late). README.md, "0100". kern_sig.c is no other
 # patch's; applies after 0098 (git apply --check on the patched tree).
 0100-kill-reason-line.patch
+# unmap-fanout (fix/unmap-fanout, 2026-11-24): the shared region's flushes and the reference faults. The phone
+# (2026-11-24 01:17-01:22, kernel.kc e79886d9) made 11-12 million user unmaps per 30 s against 0.85-1.0 million maps:
+# 37,000-42,500 shared-region flushes, each sent to the 240-290 tasks that had filled any page of its 32 MiB block
+# (0045), and 408,000-550,000 faults per 30 s through vm_fault's path at 90-120 us each. Three changes, each with a
+# boot-arg back: (1) oneios-nested-exact=1: a page bitmap per 32 MiB block per task (1 KiB, made before the fill takes
+# its locks); a flush goes only to the tasks that have a page of its range, and forgets those pages (0: 0045's blocks).
+# (2) oneios-upgrade-flush=0: an entry changed to the same page with no less access (arm_clear_fast_fault, pmap_enter of
+# the same page again) keeps the tasks' host mappings, which have at most the old access (1: the flush, as before).
+# (3) oneios-fill-fast-fault=1: a fault whose entry waits for its reference or modified fault is resolved on the fill
+# path by arm_fast_fault and filled at once, not through sleh and vm_fault's path and the refill (0: as before).
+# Lasting lines: "oneios-perf:   0101: flushes/task unmaps: <cause> F/U ..." (remove, protect, page_protect, refmod;
+# upgrade, enter, tables, other), "kept mapped", "fast fills N (not M)", "nested exact=1: K KiB". README.md, "0101".
+# Numbered 0101: 0098 and 0100 are on main (launchd DisableAllowed, the kill reason), 0099 is left to fix/audio-late. Applies
+# after 0100 (git apply --check on the patched tree; pmap.c, hosted_pmap.h, hosted_user.c are not theirs).
+0101-unmap-fanout.patch
