@@ -10,7 +10,7 @@ was tested: `docs/hardware.md` section 3.
    -> IO80211Interface / IO80211Controller / OneiOSWifiController        OneiOSWifi.cpp, this archive
       under the collection's IOEthernetInterface / IOEthernetController  Apple's IONetworkingFamily, unchanged, in kernel.kc
    -> DroidVMVirtioNet.c (staged)                                         the transport, in the kernel
-   -> virtio-net (/arm-io/net)                                            runtime/bridges/devices/virtio_net.c
+   -> virtio-net (/arm-io/net)                                            runtime/bridges/devices/virtio_net.rs
    -> runtime/bridges/wifi: frames to and from wlan0, the station's messages to nl80211 and the vendor's supplicant
 ```
 

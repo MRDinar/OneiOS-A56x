@@ -1,4 +1,4 @@
-# Typing on the PC (xnuhost --input-script FILE; format: src/input_script.c): after the boot, go Home, open Search (a
+# Typing on the PC (xnuhost --input-script FILE; format: src/input_script.rs): after the boot, go Home, open Search (a
 # swipe down in the middle of the Home Screen, which brings up the keyboard), then tap keys of the keyboard's top two
 # rows and the space bar: 100 keys, 1.4 a second (70 s); then the same again from Home. For a before and an after
 # run of a fix that is about typing (kbd's and the search's process in the oneios-cpu, oneios-perf and oneios-top

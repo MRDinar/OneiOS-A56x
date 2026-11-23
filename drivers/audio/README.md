@@ -7,7 +7,7 @@ They are built into the hosted kernel by its audio archive, `oneios-tool kernel 
 `DroidVMAudio.cpp` staged with boot arguments for its UIDs and its output latency, and `OneiOSAudio.c`, the start
 that `oneios_drivers_start` calls.
 
-The device it drives is `runtime/bridges/devices/virtio_snd.c` at `/arm-io/virtio-snd` (`droidvm,virtio-snd`),
+The device it drives is `runtime/bridges/devices/virtio_snd.rs` at `/arm-io/virtio-snd` (`droidvm,virtio-snd`),
 backed by the AAudio helper `oneios-audio`. Everything else (boot arguments, log lines, measurements):
 `docs/hardware.md` section 6.
 

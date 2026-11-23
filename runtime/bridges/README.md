@@ -1,78 +1,92 @@
 # runtime/bridges: the host side of OneiOS's hardware
 
-Owner: the bridges agent. What each device is, on the phone and for iOS: `docs/hardware.md`. The kernel side:
-`drivers/`.
+The crate `onebridges` (Rust, in the runtime's workspace `runtime/Cargo.toml`; `runtime/RUST.md`). What each device
+is, on the phone and for iOS: `docs/hardware.md`. The kernel side (C, built into the hosted kernel): `drivers/`. The
+camera (`camera/`, crate `onecamera`) and the video encoder (`encoder/`, crate `oneencoder`) are crates of their own
+in this folder, with their own READMEs. The bridges were C until 2026-11-23 (branch `rust-runtime`): every C file
+became a Rust module of the same name, every C test a Rust test with the same cases, every log line kept byte for
+byte. **No phone run of the Rust bridges yet**: every phone result quoted below is of the C build.
 
 ```sh
-make test          # host unit tests (ASan, UBSan); no phone, no Apple files
-make               # build/android/libonebridges.a, oneios-audio, bridgectl, wifictl   (NDK r28c)
-tests/host.sh      # both; CI runs it (Linux only: on a Mac, runtime/host-tests.sh runs it in Apple's container)
+cd runtime
+cargo test -p onebridges                 # host tests; no phone, no Apple files (the binder ones need a binderfs, below)
+cargo test -p onebridges --test hal_binder --test test_hidl_binder --test test_aidl_binder   # the binder tests alone
+cargo run -p onebridges --bin bridgectl -- host                # a host tool on the PC (ONEIOS_HOST_PROPS=FILE: another phone)
+tests/host.sh                            # the whole workspace, fmt, clippy, the qemu boots: CI runs it
+./build.sh STAGE                         # the phone's binaries in STAGE/bin (NDK r28c; docs/building.md 4)
+CARGO_TARGET_DIR=target/android-static cargo build --release --target aarch64-linux-android -p onebridges --bin brightctl \
+  --config 'target.aarch64-linux-android.rustflags=["-C","target-feature=+crt-static"]'   # one tool alone, static, as build.sh
+                                         # builds it: target/android-static/aarch64-linux-android/release/brightctl
 ```
 
-| Folder | What |
+Binaries (`Cargo.toml`): `bridgectl`, `wifictl`, `brightctl`, `batteryctl`, `thermalctl` (static, as `runtime/build.sh`
+stages them), `oneios-audio` (dynamic: the NDK's libaaudio), `fake-hal` (the stand-in HALs of the tests and of
+`tools/oneios-tool/tests/phone/hw-backend.sh`; host only).
+
+| Module | What |
 |---|---|
-| `include/bridges/bridges.h` | every bridge's C API, with no dependency on xnuhost |
-| `include/bridges/devices.h` | the virtio devices on xnuhost's transport (`runtime/xnuhost/src/xnuhost.h`) |
-| `include/bridges/hw_backend.h`, `hw/` | the backend layer: `hw-backend=samsung\|treble`, `hw-backend-<bridge>`, `hw-backend-fallback` (`hw_backend.c`, pure: the settings, the choice; `hw_log.c`: the `hw: <bridge>: backend ...` and `... treble: missing: ...` lines); `test_hw_backend.c` (in `make test`). `docs/hardware.md` 7e: the audit table |
-| `include/bridges/host_device.h`, `hw/host_device.c` | the host phone and its defaults (`docs/hardware.md` 7h): the one table of known phones (S24 Ultra, S25 Ultra, S25, S26 Ultra, A56; an entry holds only existing options), detection from `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (soc0 and the device tree as fallbacks; a getprop dump and a root folder for tests), the `host: ...` line; xnuhost's `host-device=auto\|none\|NAME` and the ctl tools' `ONEIOS_HOST_DEVICE`, `ONEIOS_HOST_PROPS`, `ONEIOS_HOST_ROOT`. Every ctl tool says the host first and takes the entry's environment defaults (`ONEIOS_BRIGHT_MAX` on the S26 Ultra; a set variable wins); tested in `test_hw_backend.c` |
-| `hal/` | the treble backend's HAL client (`hal.c`: a HAL by name from servicemanager on `/dev/binder`, its descriptor checked, the calls; the Wi-Fi bridge's `aidl_binder.c` underneath) and the HALs' parcels both ways (`HealthInfo`, `Temperature[]`); `tests/fake_hal.c` (`build/host/fake-hal DIR`: a fake servicemanager with fake health, thermal and vibrator HALs whose values are files of DIR) and `tests/test_hal_binder.c` (`make test-binder`: the treble bridges against it on a real binder driver) |
-| `cpu/` | host topology from sysfs, the vCPU plan (E first, then P), thread placement, the cpufreq register window |
-| `haptics/` | evdev force feedback (`sec_vibrator_inputff`) or, with `hw-backend-haptics=treble`, the vibrator HAL (`br_haptic_open_as`), a worker thread, the iOS-to-effect mapping, the counters (`haptics: effect N played`, `haptics: counters:`) and the stand-in actuator of xnuhost's `haptics=sim` (a boot with no vibrator). Native impacts (off by default): with `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` and TICK/CLICK/HEAVY_CLICK presets advertised, an explicit `OB_HAPTIC_IMPACT` plays the matching `IVibrator.perform()` preset (`docs/hardware.md` 5); the guest opts in with `oneios_native_impacts=1`; xnuhost's `haptics-native-impacts=1` turns on both halves for a session (`br_haptic_set_native_impacts`, docs/booter.md section 1) |
-| `net/` | the old route, only with xnuhost's `wifi=tap`: tap back end, the built-in DHCP answer, `oneios-net.sh` (routing and NAT, root) |
-| `wifi/` | the phone's Wi-Fi for iOS (`docs/hardware.md` section 3): wlan0 is the guest's en0. `frames.c` (which frames cross, coalesced frames cut), `station.c` (the guest driver's station messages, `drivers/net/oneios_wifi_proto.h`), `sim.c` (a made-up radio, xnuhost's `wifi=sim`), `wlan.c` (AF_PACKET, nl80211 scans and signal, wlan0's settings kept and given back; three threads), `supplicant.c` (joins through the vendor's wpa_supplicant), `aidl_parcel.c` + `aidl_binder.c` (stable AIDL over `/dev/binder` without Android libraries) |
-| `bt/` | the Bluetooth HAL (HIDL 1.0/1.1) over `/dev/hwbinder` without Android libraries (two threads: one answers the HAL's callbacks, one makes the calls from a queue, so a vCPU never waits on the HAL); packet checks; `br_hci_hidl_probe` for xnuhost's start; `hci_sim.c`: the stand-in controller of `bluetooth=sim` (a boot with no phone): Command Complete with a 5.4 controller's return parameters for every command (Command Status for the ones answered that way), Unknown HCI Command for vendor commands, one made-up device ("OneiOS sim") heard by an LE scan, data dropped; `test_bridges.c` checks its answers |
-| `audio/` | the back end xnuhost links (`backend.c`) and the AAudio helper process (`aaudio_helper.c` -> `oneios-audio`) |
-| `brightness/` | the panel's backlight (sysfs, the curve, fades, restore), the light sensor `als_rear`, `brightctl` (the phone test); its own `README.md` and `Makefile` |
-| `battery/` | the phone's battery for iOS: Android's `power_supply` nodes read every 3 s, normalized, changes sent to the guest; `batteryctl` (the phone test); its own `README.md` and `Makefile` |
-| `camera/` | the camera (fable-camera): the helper process `oneios-camera`, the frame ring, xnuhost's end (`libonecamera.a`) and `camctl`; its own `Makefile` and `README.md` |
-| `devices/` | `bridge_dev.c` (`oneios,bridge`), `virtio_net.c` (`droidvm,net`; a frame of the Wi-Fi station's own type waits up to 50 ms for a guest buffer, any other is dropped when there is none), `virtio_snd.c` (`droidvm,virtio-snd`) |
-| `tools/bridgectl.c` | tries each bridge on the phone without xnuhost (root) |
-| `tools/wifictl.c` | the Wi-Fi bridge on the phone without xnuhost (root): `status`, `scan`, `join`, `restore`, `p2p` (every radio's peer-to-peer paths and Google's Wonder radio: `wifi/p2p.c`), `wonder` (a session on Wonder's raw 802.11 path beside wlan0, AWDL's frames counted: `wifi/wonder.c`) |
-| `tests/` | `test_bridges.c`, `host.sh`; `test_hidl_binder.c` (`make test-binder`, part of `make test`): the HAL client against a fake hwservicemanager and IBluetoothHci on a real binder driver, a binderfs mounted in a user namespace (the PC kernel's `CONFIG_ANDROID_BINDERFS`; no root; skipped without it). A kernel whose `CONFIG_ANDROID_BINDER_DEVICES` is empty (Ubuntu's; the Mac's container kernel) mounts a binderfs with only `binder-control`: the test asks it for `hwbinder` (`BINDER_CTL_ADD`). The fake HAL retries `BINDER_SET_CONTEXT_MGR` while the last scenario's killed HAL still holds it (`EBUSY`, up to 2 s). On a Mac: `runtime/host-tests.sh`, in Apple's `container` with a kernel built with binderfs ([building.md](../../docs/building.md) section 4); `test_wifi.c` (in `make test`): the Wi-Fi bridge's frames, the nl80211 channel list reader, the DHCP reader (the REQUEST forms of RFC 2131 4.3.2, iOS's and another station's, and their log lines), station, parcels, join plan and callbacks; `test_aidl_binder.c` (`make test-binder`): the supplicant client against a fake service manager and supplicant on the same binderfs |
+| `lib.rs` | the crate: one `pub mod` per folder; no dependency on xnuhost (xnuhost depends on it) |
+| `log.rs` | the bridges' log (`br_log!`, `br_error!`/`br_info!`/`br_debug!`, 511-byte lines) on `xh_core::log`: one log, one sink xnuhost sets (`set_sink`), `Capture` for tests |
+| `proto/` | the Rust mirrors of `drivers/bridge/oneios_bridge_proto.h` (`proto/bridge.rs`) and `drivers/haptics/oneios_actuator.h` (`proto/actuator.rs`); `proto/cheader.rs` reads the C headers and the tests check every constant, size and offset |
+| `devices/` | the virtio devices on `xh_core::virtio`: `bridge_dev.rs` (`oneios,bridge`), `virtio_net.rs` (`droidvm,net`; a frame of the Wi-Fi station's own type waits up to 50 ms for a guest buffer, any other is dropped when there is none), `virtio_snd.rs` (`droidvm,virtio-snd`); `test_devices.rs` |
+| `hw/` | the backend layer: `hw-backend=samsung\|treble`, `hw-backend-<bridge>`, `hw-backend-fallback` (`hw_backend.rs`, pure: the settings, the choice; `hw_log.rs`: the `hw: <bridge>: backend ...` and `... treble: missing: ...` lines); `test_hw_backend.rs`. `docs/hardware.md` 7e: the audit table |
+| `hw/host_device.rs` | the host phone and its defaults (`docs/hardware.md` 7h): the one table of known phones (S24 Ultra, S25 Ultra, S25, S26 Ultra, A56; an entry holds only existing options), detection from `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (soc0 and the device tree as fallbacks; a getprop dump and a root folder for tests), the `host: ...` line; xnuhost's `host-device=auto\|none\|NAME` and the ctl tools' `ONEIOS_HOST_DEVICE`, `ONEIOS_HOST_PROPS`, `ONEIOS_HOST_ROOT`. Every ctl tool says the host first and takes the entry's environment defaults (`ONEIOS_BRIGHT_MAX` on the S26 Ultra; a set variable wins); tested in `test_hw_backend.rs` |
+| `hal/` | the treble backend's HAL client (`mod.rs`: a HAL by name from servicemanager on `/dev/binder`, its descriptor checked, the calls) on one binder layer for AIDL and HIDL (`binder.rs`, `aidl.rs`, `hidl.rs`; no Android library), the HALs' parcels both ways (`HealthInfo`, `Temperature[]`), `fake.rs` (a fake servicemanager with fake health, thermal and vibrator HALs whose values are files of a folder; the bin `fake-hal DIR`), `binderfs.rs` (a private binderfs in a user namespace for the binder tests) |
+| `cpu/` | `topology.rs`: host topology from sysfs, the vCPU plan (E first, then P), thread placement, the cpufreq register window (`Cpufreq`, an `MmioDevice`) |
+| `haptics/` | evdev force feedback (`sec_vibrator_inputff`) or, with `hw-backend-haptics=treble`, the vibrator HAL (`vibrator.rs`, `Haptic::open_as`), a worker thread, the iOS-to-effect mapping, the counters (`haptics: effect N played`, `haptics: counters:`) and the stand-in actuator of xnuhost's `haptics=sim` (`Haptic::open_sim`: a boot with no vibrator). Native impacts (off by default): with `ONEIOS_HAPTIC_NATIVE_IMPACTS=1` and TICK/CLICK/HEAVY_CLICK presets advertised, an explicit `OB_HAPTIC_IMPACT` plays the matching `IVibrator.perform()` preset (`docs/hardware.md` 5); the guest opts in with `oneios_native_impacts=1`; xnuhost's `haptics-native-impacts=1` turns on both halves for a session (`haptics::set_native_impacts`, docs/booter.md section 1) |
+| `net/` | the old route, only with xnuhost's `wifi=tap`: `net.rs` (the tap back end, the built-in DHCP answer, the `NetBackend` trait the virtio-net device and the Wi-Fi bridge share), `oneios-net.sh` (routing and NAT, root; a shell script) |
+| `wifi/` | the phone's Wi-Fi for iOS (`docs/hardware.md` section 3): wlan0 is the guest's en0. `frames.rs` (which frames cross, coalesced frames cut), `station.rs` (the guest driver's station messages; `proto.rs` mirrors `drivers/net/oneios_wifi_proto.h`), `sim.rs` (a made-up radio, xnuhost's `wifi=sim`), `wlan.rs` (AF_PACKET, nl80211 scans and signal, wlan0's settings kept and given back; three threads), `supplicant.rs` (joins through the vendor's wpa_supplicant over `hal::aidl`), `p2p.rs` and `wonder.rs` (`wifictl p2p`, `wifictl wonder`), `nl.rs` (the netlink attribute loops) |
+| `bt/` | the Bluetooth HAL (HIDL 1.0/1.1) over `/dev/hwbinder` without Android libraries (`hci_hidl.rs`, `hidl_parcel.rs`; two threads: one answers the HAL's callbacks, one makes the calls from a queue, so a vCPU never waits on the HAL); packet checks (`hci.rs`); `hci_hidl::probe` for xnuhost's start; `hci_sim.rs`: the stand-in controller of `bluetooth=sim` (a boot with no phone): Command Complete with a 5.4 controller's return parameters for every command (Command Status for the ones answered that way), Unknown HCI Command for vendor commands, one made-up device ("OneiOS sim") heard by an LE scan, data dropped; its tests check its answers; `le_scan.rs` |
+| `audio/` | the back end xnuhost uses (`backend.rs`: the `AudioBackend` trait, `AudioHelper::spawn`, `NullAudio`), the helper's protocol (`proto.rs`) and the AAudio helper process (`aaudio_helper.rs` behind AAudio traits, the bin `oneios_audio.rs` -> `oneios-audio`); `test_audio_helper.rs` against a fake AAudio |
+| `brightness/` | the panel's backlight (sysfs, the curve, fades, restore), the light sensor `als_rear`, `brightctl` (the phone test); its own `README.md` |
+| `battery/` | the phone's battery for iOS: Android's `power_supply` nodes read every 3 s, normalized, changes sent to the guest; `batteryctl` (the phone test); its own `README.md` |
+| `thermal/` | temperatures and thermal steps, `thermalctl`; its own `README.md` |
+| `camera/` | the camera (fable-camera), crate `onecamera`: the helper process `oneios-camera`, the frame ring, xnuhost's end and `camctl`; its own `README.md` |
+| `encoder/` | the video encoder, crate `oneencoder`: `oneios-encoder`, `encctl`; its own `README.md` |
+| `tools/bridgectl.rs` | tries each bridge on the phone without xnuhost (root) |
+| `tools/wifictl.rs` | the Wi-Fi bridge on the phone without xnuhost (root): `status`, `scan`, `join`, `restore`, `p2p` (every radio's peer-to-peer paths and Google's Wonder radio: `wifi/p2p.rs`), `wonder` (a session on Wonder's raw 802.11 path beside wlan0, AWDL's frames counted: `wifi/wonder.rs`) |
+| `tests/` | the binder tests (`harness = false`), each on a binderfs mounted in a user namespace (`hal/binderfs.rs`; the PC kernel's `CONFIG_ANDROID_BINDERFS`; no root; skipped with a printed reason without it): `test_hidl_binder.rs` (the Bluetooth HAL client against a fake hwservicemanager and IBluetoothHci), `hal_binder.rs` (battery, thermal and haptics' treble backends against `fake-hal`), `test_aidl_binder.rs` (the supplicant client against a fake service manager and supplicant). A kernel whose `CONFIG_ANDROID_BINDER_DEVICES` is empty (Ubuntu's; the Mac's container kernel) mounts a binderfs with only `binder-control`: the tests ask it for the device by name (`BINDER_CTL_ADD`). The fake HAL retries `BINDER_SET_CONTEXT_MGR` while the last scenario's killed HAL still holds it (`EBUSY`, up to 2 s). On a Mac: `runtime/host-tests.sh`, in Apple's `container` with a kernel built with binderfs ([building.md](../../docs/building.md) section 4). The other tests sit beside their modules (`#[cfg(test)]`): the Wi-Fi bridge's frames, the nl80211 channel list reader, the DHCP reader (the REQUEST forms of RFC 2131 4.3.2, iOS's and another station's, and their log lines), station, parcels, join plan and callbacks, the Wonder session (`wifi/test_wonder.rs`) |
 
 ## Into xnuhost (bridges -> booter)
 
-Link `build/android/libonebridges.a` (static, no library beyond libc) and add `-I runtime/bridges/include
--I drivers/bridge`. Ship `build/android/oneios-audio` as `bin/oneios-audio` (0755), `net/oneios-net.sh` as
-`bin/oneios-net.sh` and `build/android/wifictl` as `bin/wifictl` in the runtime package.
+xnuhost depends on the crate (`runtime/xnuhost/Cargo.toml`) and makes the bridges in `runtime/xnuhost/src/session/
+bridges.rs`; `runtime/build.sh` ships `oneios-audio`, `net/oneios-net.sh`, `wifictl` and the other ctl tools in the
+runtime package's `bin/`. The calls, in the order the session makes them:
 
-```c
-#include "bridges/devices.h"
-
-br_log_sink = xnuhost_log;                              // optional: (int level, const char *line)
+```rust
+onebridges::log::set_sink(...);                           // optional: the bridges' lines into xnuhost's log
 
 // CPU, before the device tree is made and the vCPUs start
-br_cpu_topology host; br_cpu_plan plan;
-br_cpu_read("/sys", &host);
-br_cpu_plan_make(&host, config.ncpu, false, &plan);     // machine.cpu_cluster[i] = plan.v[i].type
-br_cpufreq *cpufreq = br_cpufreq_create(&plan, tid_of_vcpu);
-xh_mmio_add(&(xh_mmio_region){ .base = CPUFREQ_BASE, .size = plan.nvcpu * BR_CPUFREQ_WINDOW, .name = "cpufreq",
-                               .opaque = cpufreq, .read = cpufreq_read, .write = cpufreq_write });   // thin wrappers
-// in each vCPU thread:            br_cpu_place(0, &plan, index);
-// when a vCPU runs an iOS thread: br_cpu_place(tid, &plan, index); br_cpu_request(tid, &plan, index, br_cpufreq_requested(cpufreq, index));
+let host = cpu::Topology::read("/sys")?;
+let plan = cpu::CpuPlan::make(&host, ncpu, false)?;      // machine.cpu_cluster[i] from plan.v[i].kind
+let cpufreq = Arc::new(cpu::Cpufreq::new(&plan, Some(Box::new(vcpu_tid))));
+xh_core::mmio::bus().add(BOARD_CPUFREQ, ncpu * cpu::CPUFREQ_WINDOW, "cpufreq", cpufreq.clone())?;
+// each vCPU thread and the iOS thread it runs: cpu::set_affinity(tid, mask); the clamp from plan.util_for(vcpu, cpufreq.requested(vcpu))
 
-// One window and SPI each, as for xh_virtio_blk_create
-br_bridge_config bridge = { .haptic = br_haptic_open(NULL), .hci_factory = br_hci_open_hidl };
-br_bridge_create(base0, spi0, &bridge);                 // device tree: /arm-io/bridge, "oneios,bridge"
+// One window and SPI each, as for the block device
+let bridge = BridgeConfig { haptic: Haptic::open(None).map(Arc::new), hci_factory: Some(Box::new(hci_hidl::open_hidl)),
+                            bt_address_path: None, brightness, battery, thermal };   // each an Option
+devices::bridge_dev::create(base0, spi0, bridge);        // device tree: /arm-io/bridge, "oneios,bridge"
 
-br_net_config net; br_net_config_defaults(&net);        // set net.guest_mac to en0's address
-br_virtio_net_create(base1, spi1, &net, br_net_open_tap);   // /arm-io/net; then run bin/oneios-net.sh up
+let (open, mac) = wifi::wlan::prepare("wlan0", Some(session_dir))?;   // or wifi::sim::prepare, or a tap (net::Net)
+devices::virtio_net::create(base1, spi1, &net, Some(open));          // /arm-io/net
 
-void *audio_ctx;
-const br_audio_backend *audio = br_audio_helper("/data/runtime/bin/oneios-audio", &audio_ctx);
-if (!audio) audio = br_audio_null(&audio_ctx);
-br_virtio_snd_create(base2, spi2, audio, audio_ctx);    // /arm-io/virtio-snd
+let audio: Arc<dyn AudioBackend> = match AudioHelper::spawn("/data/runtime/bin/oneios-audio") { Some(h) => Arc::new(h), None => Arc::new(NullAudio) };
+devices::virtio_snd::create(base2, spi2, audio);         // /arm-io/virtio-snd
 ```
 
-- Every create returns NULL (with a log line saying why) when its Linux side is missing; a missing device only
-  turns that feature off. `br_haptic_open` and `br_hci_open_hidl` returning NULL are fine to pass on.
+- Every create and open returns `None` (with a log line saying why) when its Linux side is missing; a missing device
+  only turns that feature off. A `None` haptic or HCI factory is fine to pass on.
 - Threads: each bridge has its own (haptic worker, tap receiver, binder looper, sound capture). They take the
-  device's lock with `xh_virtio_lock`, as `input.c` does. None of them uses signals.
-- The network: `br_wlan_prepare("wlan0", session_dir, net.guest_mac)` then `br_virtio_net_create_backend(base, spi,
-  &net, the returned open, br_wlan_send)`; `br_wlan_close()` at the stop (the network left, the supplicant as it
-  was found, wlan0's two settings back from `session_dir/wifi.state`).
-- Stop: on `SIGTERM`, `br_haptic_close()` (stops the motor), `br_wlan_close()` (and `oneios-net.sh down` with
-  `wifi=tap`); closing the descriptors does the rest (the kernel erases a closed file's force-feedback effects; the audio helper exits when its socket closes).
+  device's lock through `xh_core::virtio`, as xnuhost's input device does. None of them uses signals.
+- The network: `wifi::wlan::prepare("wlan0", session_dir)` returns the back end's open and the guest's address;
+  `wifi::wlan::close()` at the stop (the network left, the supplicant as it was found, wlan0's two settings back from
+  `session_dir/wifi.state`).
+- Stop: on `SIGTERM`, `Haptic::shutdown()` (the counters' line, the motor stopped), `Bright::shutdown()` (One UI's
+  backlight level again, the touch and pen ICs awake, the light sensor as it was), `wifi::wlan::close()` (and
+  `oneios-net.sh down` with `wifi=tap`). These are explicit calls, idempotent, because xnuhost's stop ends the process
+  without dropping the bridge device that holds them (24b642e); closing the descriptors does the rest (the kernel
+  erases a closed file's force-feedback effects; the audio helper exits when its socket closes).
 - Everything is under `/dev`, `/sys`, `/proc/sys/net` and the session's own files: nothing of One UI's `/data` is
   touched. System state changed: wlan0's GRO and `disable_ipv6` and its IPv4 addresses, and the supplicant's
   networks (`docs/hardware.md` section 3, "Return": what is left after a kill, and why it does not break One UI's
@@ -80,8 +94,12 @@ br_virtio_snd_create(base2, spi2, audio, audio_ctx);    // /arm-io/virtio-snd
 
 ## On the phone
 
+The passes quoted in this section were runs of the C tools (the same commands and the same lines); the Rust tools
+have not been run on a phone yet.
+
 ```sh
-adb push build/android/bridgectl build/android/oneios-audio /data/local/tmp/
+runtime/build.sh STAGE                                       # from the checkout's root: STAGE/bin/bridgectl, oneios-audio, ...
+adb push STAGE/bin/bridgectl STAGE/bin/oneios-audio /data/local/tmp/
 adb shell su -c '/data/local/tmp/bridgectl host'           # read only: the properties, the table entry xnuhost would take, the table
 adb shell su -c '/data/local/tmp/bridgectl cpu'
 adb shell su -c '/data/local/tmp/bridgectl haptic-inspect'          # read only: the FF devices' name, bits, slots
@@ -125,7 +143,7 @@ is not cut). Stand-in phone: `tools/oneios-tool/tests/phone/hw-backend.sh` (the 
 the read-only commands must leave the log empty). The fork's results on the S26 Ultra (its README, not repeated here):
 `FF_SINE` upload `EINVAL`, HAL v3 capabilities `0x3c`, one `HEAVY_CLICK STRONG` felt as a clear tick. Not run on the S24.
 
-**Wi-Fi** (`build/android/wifictl`, `bin/wifictl` in the runtime package):
+**Wi-Fi** (`STAGE/bin/wifictl` of `runtime/build.sh`, `bin/wifictl` in the runtime package):
 
 ```sh
 adb shell su -c '/data/local/tmp/oneios/runtime/bin/wifictl status'    # read only
@@ -155,7 +173,7 @@ its subcommands by name, the version they imply (1 to 5 only: Wonder 1.4 or 1.5;
 holds it now (an interface on its wiphy, a `wondertap*` vdev). Then the verdicts for wlan0's radio, and Wonder's
 module, platform driver, `.ko` files and `mosey_server` (named paths, `present` or `none`).
 `wonder [--seconds N] [--freq 2437|5220|5745] [--country CC]` (root, One UI running; default 30 s on 2437 MHz) is a
-session on Wonder's raw path beside wlan0, in Samsung's Wonder 1.5 order (`wifi/wonder.c`): wlan0's link read; the
+session on Wonder's raw path beside wlan0, in Samsung's Wonder 1.5 order (`wifi/wonder.rs`): wlan0's link read; the
 refusals (no Wonder; Wonder in use: another interface on its wiphy or a `wondertap*` vdev up; no wlan0; the
 driver's country not known or another than `--country`: Wonder's init sets the driver's country to the one given);
 a monitor interface `wondermon0` on Wonder's wiphy; `SET_REGULATORY` (the driver's own country), `SET_FREQUENCY`
@@ -165,7 +183,7 @@ frames by subtype, AWDL's data frames, the peers' addresses and best signal, fra
 in reverse, also after any failed step or Ctrl-C: the socket closed, down (the provider's deinit), the interface
 removed; last wlan0's link against its link before (waited for up to 10 s; `-ENOLINK` when it was associated and is
 not). Each step is a `wonder:` line with its result. A killed `wonder` leaves `wondermon0`: the next one removes it
-first. Host-tested on a stand-in nl80211 (`tests/test_wifi.c` `test_wonder_session`); **not run on the phone**.
+first. Host-tested on a stand-in nl80211 (`wifi/test_wonder.rs` `wonder_session`, the port of `tests/test_wifi.c`'s `test_wonder_session`); **not run on the phone**.
 `oneios-tool phone wifi p2p|wonder` runs both from the Mac (docs/hardware.md 4a has the phone checks).
 
 `audio` plays a 440 Hz tone at -30 dBFS (quiet at any media volume) for S seconds, then 0.5 s later a 660 Hz one

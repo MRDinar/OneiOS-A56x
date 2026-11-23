@@ -233,12 +233,12 @@ MobileGestalt reads them from `/product`. Without an identity tree the guest's `
   the CoreUI lines went from 117 to 0. The storm, and the keyboard that waits for Spotlight's busy main thread, are
   still open (the next boot names the files with `oneios-sysfail-enoent=1`).
 
-The loader (`runtime/loader/src/machine.c`, `xl_machine_tree`) now writes, without an identity, the values of 24A446's
+The loader (`runtime/loader/src/machine.rs`, `Machine::tree`; `machine.c`'s `xl_machine_tree` when this was written) now writes, without an identity, the values of 24A446's
 V54 device tree (`out/kernel-inputs/24A446/devicetree.bin`, read with `xnuloader-inspect adt`): `artwork-device-idiom`
 "phone", `artwork-device-subtype` 2868, `artwork-dynamic-displaymode` "0", `graphics-featureset-class` "APPLE10",
 `graphics-featureset-fallbacks` "APPLE9:APPLE8:APPLE7:APPLE6:APPLE5:APPLE4:APPLE3:APPLE3v1:APPLE1:GLES2,0" (APPLE2
 taken out, as with an identity), and `artwork-display-gamut` "sRGB" (the device tree has P3; the display helper tags the
-frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). MobileGestalt's cache
+frames sRGB). Test: `runtime/loader/tests/test_loader.c` (177 checks, the C loader; its cases are in `runtime/loader/tests/loader.rs` since the Rust port). On the phone (2026-11-22 21:28, a fresh Data store from the seed): 0 `couldn't get 'kMGArtwork...'` lines in iOS's log (117 the session before). MobileGestalt's cache
 (`containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`,
 `CacheVersion` 24A446) pulled at 21:22, before that boot, held `ArtworkTraits = {ArtworkDeviceScaleFactor = 3}` (key
 `oPeik/9e8lQWMszEjbPzng`): the answers of the tree of its own boot. **Correction (2026-11-22, enable-camera-app):** an
@@ -253,7 +253,7 @@ phone's boot of 2026-11-22 17:01 has `Could not open .../com.apple.MobileGestalt
 144 processes between 17:01:39.6 and 17:01:47.6 (271 in 21 s at 16:30, 48 on the fresh store at 15:59), one line each
 process; each then worked out its answers itself [I: IOKit lookups and XPC to MobileGestaltHelper, whose `platform fast
 path elided` lines number 189]. Now xnuhost's loader writes `/chosen oneios-identity`, a hash of what MobileGestalt can
-read that stays the same from boot to boot (`xl_machine_identity`, [booter.md](booter.md) "machine.c"), and the kernel,
+read that stays the same from boot to boot (`machine::identity` in `runtime/loader/src/machine.rs`, C: `xl_machine_identity`; [booter.md](booter.md), the loader), and the kernel,
 before launchd, compares it with the marker `/private/var/oneios/mobilegestalt-identity` (16 hex digits). When they
 differ, or there is no marker (every store from before 0084), it removes the cache and writes the marker: the next
 answers are worked out from this tree, so a device-tree change (the camera nodes of `docs/hardware.md` 7) reaches an

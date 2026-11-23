@@ -8,6 +8,6 @@ stack). Shared by both ends, so it is here and not beside either.
 The driver is not built by `oneios-tool kernel drivers` (`drivers/sources.txt`): it subclasses the kernel collection's own `IOEthernetController`
 and `IOEthernetInterface`, so it is an archive of the hosted kernel, `kernel/patches/oneios-hosted/net`
 (`OneiOSWifi.cpp`, its README), with UniXNU-droidvm's transport `package/DroidVMVirtioNet.c` (f9121cd). The host's
-side: `runtime/bridges/wifi` and `runtime/bridges/devices/virtio_net.c` at `/arm-io/net` (`droidvm,net`; the
+side: `runtime/bridges/wifi` and `runtime/bridges/devices/virtio_net.rs` at `/arm-io/net` (`droidvm,net`; the
 transport reads its interrupt from the node's `droidvm,intid`). The design and what was tested: `docs/hardware.md`
 section 3.

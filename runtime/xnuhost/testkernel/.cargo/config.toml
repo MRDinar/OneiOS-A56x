@@ -1,0 +1,9 @@
+# `cargo build` / `cargo clippy` here build the test kernel as build.sh does: its one target, and x18 left alone (the
+# C's -ffixed-x18: the host's code that runs on a vCPU's thread may use it). rustc 1.99 warns that +reserve-x18 is
+# going away in favour of -Zfixed-x18 (unstable); it still reserves the register, and build.sh refuses a kernel whose
+# code uses x18 anywhere but the frame_resume test's save of it, so the day the flag stops working the build says so.
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = ["-C", "target-feature=+reserve-x18"]

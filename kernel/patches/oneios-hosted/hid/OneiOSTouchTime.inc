@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // OneiOS: the scan time of each touch frame, appended to the staged DroidVMVirtioInput.c by build-oneios-hid.py.
 //
-// xnuhost (runtime/xnuhost/src/input.c) puts EV_MSC / MSC_TIMESTAMP before each touch frame's SYN_REPORT: the low 32
+// xnuhost (runtime/xnuhost/src/input.rs) puts EV_MSC / MSC_TIMESTAMP before each touch frame's SYN_REPORT: the low 32
 // bits of the time the host's kernel stamped the frame with, in ticks of the counter mach_absolute_time reads (the
 // guest reads the host's CNTVCT_EL0 itself, so the two clocks are one). Here that time is rebuilt to 64 bits, against
 // the counter now, and:

@@ -11,10 +11,16 @@ screen (`drivers/battery/README.md`, "The charging chime"). The nodes were also 
 (`docs/hardware.md` 7c) and are a test case here; `batteryctl` below has not run there.
 
 ```sh
-make test          # 96 checks: the sysfs parse, the mapping, the change test, sessions on a fake sysfs (one on the
-                   # charger), and the base S25's tree (max77775 gauge + cps4038 `wireless`, microamps, battery_cycle)
-make               # build/android/batteryctl
+cd runtime
+cargo test -p onebridges battery::  # 11 tests (the C's 96 checks, every one ported): the sysfs parse, the mapping, the
+                                    # change test, sessions on a fake sysfs (one on the charger), and the base S25's tree
+                                    # (max77775 gauge + cps4038 `wireless`, microamps, battery_cycle)
+ONEIOS_BATTERY_DIR=DIR cargo run -p onebridges --bin batteryctl   # on the PC, against a folder laid out as the class
+./build.sh STAGE                    # STAGE/bin/batteryctl for the phone, static (with every other runtime binary)
 ```
+
+The bridge is Rust (`mod.rs`, `session.rs`, `batteryctl.rs`, `tests.rs`), a port of the C `battery.c`, `batteryctl.c`
+and `test_battery.c` (2026-11-23); the phone lines quoted here are the C build's, with the same text.
 
 ## What it reads
 
@@ -32,13 +38,13 @@ Units are normalized, because drivers disagree. On the owner's phone (2026-11-11
 
 ## The two backends (hw-backend-battery, 2026-11-15)
 
-`hw-backend=samsung|treble` or `hw-backend-battery=...` (`bridges/hw_backend.h`, `docs/hardware.md` 7e);
+`hw-backend=samsung|treble` or `hw-backend-battery=...` (`hw/hw_backend.rs`, `docs/hardware.md` 7e);
 `br_battery_options.backend` forces one (tests), `br_battery_backend()` says which runs. The open logs
 `hw: battery: backend X (why)`.
 
 - **samsung** (the default): the nodes above, unchanged.
 - **treble**: the health HAL, `android.hardware.health.IHealth/default`, asked for by name from servicemanager on
-  `/dev/binder` (`hal/hal.c`: the Wi-Fi supplicant's binder client, no Android library), its descriptor checked and
+  `/dev/binder` (`hal/`: the binder layer the Wi-Fi supplicant's client uses too, no Android library), its descriptor checked and
   its version logged. Each read is one `getHealthInfo()` (code 12 of the frozen `IHealth.aidl`) and its
   `HealthInfo` (`hal_health_decode`: the fields up to `batteryFullChargeDesignCapacityUah`; an older HAL's shorter
   parcelable leaves the rest 0, a newer one's extra fields are skipped) becomes what the nodes would have said
@@ -52,9 +58,9 @@ Units are normalized, because drivers disagree. On the owner's phone (2026-11-11
 
 `batteryctl` takes `ONEIOS_HW_BACKEND`, `ONEIOS_HW_BACKEND_BATTERY`, `ONEIOS_HW_FALLBACK`, and off the phone
 `ONEIOS_BATTERY_DIR` (the class folder) and `ONEIOS_BINDER`; it prints `backend: samsung|treble`. Tests:
-`test_battery.c` `test_health` (the parcel both ways, an older HAL's, a bad one, the mapping), `tests/test_hal_binder.c`
+`tests.rs` `health` (the parcel both ways, an older HAL's, a bad one, the mapping), `tests/hal_binder.rs`
 (the bridge against a fake servicemanager and health HAL on a real binder driver: a read, a change, the HAL's death,
-not registered, the fallback; `make test-binder`), and the stand-in phone (`tools/oneios-tool/tests/phone/
+not registered, the fallback; `cargo test -p onebridges --test hal_binder`), and the stand-in phone (`tools/oneios-tool/tests/phone/
 hw-backend.sh`: `batteryctl` on the S24's nodes and through the fake health HAL, on a phone with only the HAL).
 [I] until run on a phone: the code of `getHealthInfo` and the field order are AOSP's frozen AIDL; the open's
 descriptor check refuses any other object.
@@ -73,9 +79,9 @@ Environment (xnuhost's): `ONEIOS_BATTERY_SUPPLIES=usb,ac,...`, `ONEIOS_BATTERY_M
 
 ## Into xnuhost
 
-Done in `runtime/xnuhost/src/main.c`: `br_battery_open(NULL)`, `.battery` in `br_bridge_config`, `br_battery_close`
-at the stop. `devices/bridge_dev.c` serves `OB_CH_BATTERY`: the hello's bit, `OB_BATTERY_QUERY` -> `OB_BATTERY_STATE`,
-then changes until a reset.
+Done in `runtime/xnuhost/src/session/bridges.rs`: `Battery::open(&battery::Options::from_env())`, `battery` in
+`BridgeConfig`; read only, so the stop (`Bridges::close`) has nothing to put back. `devices/bridge_dev.rs` serves
+`OB_CH_BATTERY`: the hello's bit, `OB_BATTERY_QUERY` -> `OB_BATTERY_STATE`, then changes until a reset.
 
 Needed in the session's namespace: `/sys/class/power_supply/` readable. It grabs no input device, has no realtime
 thread, writes nothing under `/sys/power`, starts no process.
@@ -85,8 +91,8 @@ thread, writes nothing under `/sys/power`, starts no process.
 As root, One UI running. Reads only.
 
 ```sh
-make -C runtime/bridges/battery
-adb push runtime/bridges/battery/build/android/batteryctl /data/local/tmp/batteryctl
+runtime/build.sh STAGE        # or the one tool: runtime/bridges/README.md
+adb push STAGE/bin/batteryctl /data/local/tmp/batteryctl
 adb shell su -c 'chmod 0755 /data/local/tmp/batteryctl'
 adb shell su -c '/data/local/tmp/batteryctl'            # one sample: last line "batteryctl: ok"
 adb shell su -c '/data/local/tmp/batteryctl watch 60'   # plug and unplug in that minute: a line for each change

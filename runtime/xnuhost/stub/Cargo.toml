@@ -1,0 +1,45 @@
+# The task stub (stub.c in Rust): a bare-metal blob that runs inside every iOS task process. Its own workspace (the
+# runtime's excludes it): it builds for aarch64-unknown-none only, through build.sh, which links it with stub.ld and
+# writes the flat stub.bin that xnuhost includes.
+[package]
+name = "xnuhost-stub"
+description = "The task stub: the only Linux code inside an iOS task process (a flat, position-independent blob)"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+build = "build.rs"
+
+[[bin]]
+name = "stub"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+xnuhost-abi = { path = "../../abi" }
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+debug = false
+overflow-checks = false
+
+# The runtime workspace's lints (runtime/Cargo.toml), which this workspace of its own does not inherit.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"

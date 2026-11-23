@@ -1,0 +1,43 @@
+[package]
+name = "onecamera"
+description = "The camera bridge: the oneios,camera device, the helper's socket and ring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+build = "build.rs"
+
+[lib]
+path = "lib.rs"
+
+# bin/oneios-camera of the runtime package: the helper process (dynamic on Android: build.rs).
+[[bin]]
+name = "oneios-camera"
+path = "bin/oneios-camera.rs"
+
+# bin/camctl: the phone test (dynamic on Android, as the helper).
+[[bin]]
+name = "camctl"
+path = "bin/camctl.rs"
+
+# The helper process through xnuhost's end of it, and the virtio device on xh-core's transport (the C test_camera.c's cases).
+[[test]]
+name = "camera"
+path = "tests/camera.rs"
+
+# The Rust mirrors of drivers/camera/oneios_camera_proto.h and oneios_camera_abi.h against the C headers.
+[[test]]
+name = "headers"
+path = "tests/headers.rs"
+
+[dependencies]
+libc.workspace = true
+xh-core.workspace = true
+
+[lints]
+workspace = true

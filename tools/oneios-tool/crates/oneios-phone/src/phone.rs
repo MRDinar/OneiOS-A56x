@@ -47,7 +47,7 @@ pub fn status(adb: &Adb) -> Result<()> {
     println!("phone: {}", adb.serial);
     adb.need_root()?;
     println!("root: yes");
-    // the phone xnuhost will find at its start (runtime/bridges/hw/host_device.c's table): getprop and two sysfs files
+    // the phone xnuhost will find at its start (runtime/bridges/hw/host_device.rs's table): getprop and two sysfs files
     println!("{}", crate::host::line(&crate::host::read(adb)?));
     match installed_app(adb, APP_ID)? {
         Some((code, name)) => println!("app: {APP_ID} {name} (versionCode {code})"),

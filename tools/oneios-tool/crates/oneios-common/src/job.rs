@@ -8,7 +8,7 @@
 //!
 //! The phone's rules this keeps: never a realtime class (`set_nice` also leaves one the process was started with),
 //! and the heat and battery state is read from **named files only**, the thermal bridge's own
-//! (`runtime/bridges/thermal/thermal.c`: `battery/lrp`, `sec-ap-thermistor/temperature`, `battery/temp`), never from a
+//! (`runtime/bridges/thermal/mod.rs`: `battery/lrp`, `sec-ap-thermistor/temperature`, `battery/temp`), never from a
 //! folder list or a walk of /sys or /proc (a root tree walk panicked the phone's kernel on 2026-11-12).
 
 use std::path::{Path, PathBuf};

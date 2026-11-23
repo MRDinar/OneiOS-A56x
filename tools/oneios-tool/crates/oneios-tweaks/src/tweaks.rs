@@ -833,7 +833,7 @@ fn kernel_features(cx: &mut Context) -> Result<()> {
     ];
     let list = Value::List(features.iter().map(|(n, u, w)| dict(vec![("name", (*n).into()), ("unixnu", (*u).into()), ("what", (*w).into())])).collect());
     cx.contract.set("kernel_features", list);
-    let note = "-[CADisplayMode preferredScale] (QuartzCore, read in 24A446's dyld_shared_cache_arm64e.01 at 0x40b1758; the cache is the one the iPad has) returns the mode's own preferred scale when it has one; else, in a virtual device, 2 or the mode's native scale field if that is more; else 2 for a mode taller than 1080 pixels and 1 otherwise. /chosen display-scale is not read there. So @2x is what it answers unchanged, and for @3x xnuhost adds two text fixups (config.c xh_scale_fixups) that make both answers 3. Not verified in a running guest: no frame of SpringBoard's has been rendered yet.";
+    let note = "-[CADisplayMode preferredScale] (QuartzCore, read in 24A446's dyld_shared_cache_arm64e.01 at 0x40b1758; the cache is the one the iPad has) returns the mode's own preferred scale when it has one; else, in a virtual device, 2 or the mode's native scale field if that is more; else 2 for a mode taller than 1080 pixels and 1 otherwise. /chosen display-scale is not read there. So @2x is what it answers unchanged, and for @3x xnuhost adds two text fixups (runtime/xnuhost/src/config.rs scale_fixups) that make both answers 3. Not verified in a running guest: no frame of SpringBoard's has been rendered yet.";
     match cx.contract.get_mut("display") {
         Some(d @ Value::Dict(_)) => d.set("scale_note", note),
         _ => bail!("kernel-features: no display in the contract (identity runs first)"),

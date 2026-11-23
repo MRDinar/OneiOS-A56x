@@ -3,7 +3,7 @@
 // The hosted kernel's speaker and microphone: oneios_audio_start, called once by oneios_drivers_start
 // (drivers/bridge/OneiOSBridge.c; a weak default there for a kernel without this archive). It starts
 // UniXNU-droidvm's virtio-snd transport (DroidVMVirtioSnd.c: xnuhost's /arm-io/virtio-snd, runtime/bridges/devices/
-// virtio_snd.c), which publishes the two IOAudio2Devices of DroidVMAudio.cpp, says what attached, and starts a
+// virtio_snd.rs), which publishes the two IOAudio2Devices of DroidVMAudio.cpp, says what attached, and starts a
 // report thread: every 30 s while the counters move, one line of each side's counters (what an underrun, a late
 // engine period or a refused selector looks like from inside the guest), and while the speaker plays one line of its
 // engine's timing (`speaker engine: ...`: how late it took its periods, how far ahead the HAL wrote: iOS's I/O buffer

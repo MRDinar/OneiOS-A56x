@@ -31,8 +31,8 @@ window) around a ustar archive of regular files, `runtime.json` first, no top fo
 | In the package | What |
 |---|---|
 | `runtime.json` | manifest, below |
-| `bin/xnuhost`, other `bin/*` | the booter and its helpers, arm64 Android, built by `runtime/build.sh` with NDK 28.2.13676358. Until that script exists: a 968-byte placeholder that prints `xnuhost: not built yet ...` and exits 2 |
-| `bin/gpuctl`, `bin/bridgectl`, `bin/wifictl`, `bin/brightctl`, `bin/batteryctl`, `bin/displayctl`, `bin/camctl` | the phone checks, each a tool of its own that runs as root with One UI up (`docs/gpu.md`, `runtime/bridges/README.md`, `runtime/bridges/brightness/README.md`, `runtime/bridges/battery/README.md`, `runtime/display/README.md`, `runtime/bridges/camera/README.md`). The fork's **Hardware checks** screen runs them from the staged runtime (`oneios_root.sh check <id>`, the fork's `docs/oneios.md`) |
+| `bin/xnuhost`, other `bin/*` | the booter and its helpers, arm64 Android, built from the Rust workspace `runtime/Cargo.toml` by `runtime/build.sh` (cargo, linked by NDK 28.2.13676358's clang; [runtime/RUST.md](../runtime/RUST.md)). Without that script: a placeholder (`runtime/package/placeholder-xnuhost.rs`, built by rustc alone, 1104 bytes; the C one was 968) that prints `xnuhost: not built yet ...` and exits 2 |
+| `bin/gpuctl`, `bin/bridgectl`, `bin/wifictl`, `bin/brightctl`, `bin/batteryctl`, `bin/thermalctl`, `bin/displayctl`, `bin/camctl`, `bin/encctl` | the phone checks, each a tool of its own that runs as root with One UI up (`docs/gpu.md`, `runtime/bridges/README.md`, `runtime/bridges/brightness/README.md`, `runtime/bridges/battery/README.md`, `runtime/bridges/thermal/README.md`, `runtime/display/README.md`, `runtime/bridges/camera/README.md`, `runtime/bridges/encoder/README.md`). The fork's **Hardware checks** screen runs them from the staged runtime (`oneios_root.sh check <id>`, the fork's `docs/oneios.md`) |
 | `bin/oneios-tool` | the Rust tools (`tools/oneios-tool`) for `aarch64-linux-android`, linked for API 30 by the NDK's clang and stripped (`runtime/package.sh` step 1b, [building.md](building.md) section 4). The OneOS app runs it as root from the staged runtime, one `oneios-tool serve` per flow (`oneios_root.sh tool`, [../oneos/interface.md](../oneos/interface.md) section 9) |
 | `lib/profiles/*.toml` | this repository's IPSW profiles (`profiles/`: the members' names, sizes and hashes, no Apple file), and its host records (`profiles/host-*.toml`: what is known of each host phone, read by no code; the S24 Ultra's names every model number, the SM-S928W too), for the phone's `oneios-tool serve` `fetch`: the OneOS app's Make iOS image fetches the IPSW's members with `$STAGE/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml` (a package path has no comma; `runtime/package.sh` step 1c) |
 | `scripts/*` | `runtime/scripts/*`, when there are any |
@@ -108,8 +108,8 @@ package: refused: Android cannot load a file of the package (the lines above; ru
 That is the library of `1f7dd1f` (PR #15): it linked, and the phone could not load it (2026-11-14: the display helper
 ended with `UnsatisfiedLinkError`, the panel stayed on the OneOS splash). No tagged release has that commit
 (`git tag --contains 1f7dd1f` is empty; the last tag is v0.1.8); the phone ran a build of `main`.
-`runtime/package/test.sh` makes such a library (`runtime/package/elf-fault.c`, linked `-landroid -lm` without
-`-z defs`), puts it in the display helper's place and expects the refusal. The check reads the files only: what it
+`runtime/package/test.sh` makes such a library (`runtime/package/elf-fault.rs`, built by rustc as a cdylib with the
+NDK's clang, without `-z defs` and without `libnativewindow`), puts it in the display helper's place and expects the refusal. The check reads the files only: what it
 cannot see is in [building.md](building.md) section 4.
 
 ## runtime.json
@@ -154,7 +154,7 @@ placeholder), `kernel` (null without one). `files` lists every file except `runt
 
 `runtime/package.sh` runs on a Linux x86_64 PC (as CI does) and on a Mac. On a Mac it takes the NDK from
 `$HOME/Library/Android/sdk/ndk/28.2.13676358` (the revision is checked as on Linux) and builds with its
-`darwin-x86_64` tools (`runtime/host.mk`). macOS's `tar` is bsdtar, so the archive is written by
+`darwin-x86_64` tools (`runtime/build.sh` and cargo's linker `runtime/ndk-cc` choose them by `uname -s`). macOS's `tar` is bsdtar, so the archive is written by
 `oneios-tool package archive` (then `pack.py archive`): the same ustar layout, owner 0:0, time `SOURCE_DATE_EPOCH`; for the same files its
 bytes equal GNU tar 1.35's (checked 2026-11-12). The `.sha256` is `sha256sum`'s, or `shasum -a 256`'s where there is
 no `sha256sum`: the same line. The Apple-file checks are the same `package check`; `runtime/package/test.sh` passed
@@ -204,12 +204,17 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   tests only.
 - **runtime**: what `ci.yml` and the old `release.yml` did, on every build. `app/` must be an empty submodule
   folder (this job never checks the fork out); no firmware and no Python in git (`check-tracked-files.sh`: a
-  tracked `*.py`, or an executable with a python shebang, fails it since 2026-11-21); `bash -n`, `shellcheck -S error`; NDK 28.2.13676358, the `aarch64-linux-android` Rust target and
-  **oneios-tool** (`.github/scripts/setup-build.sh`: a current stable Rust, `cargo build --release --manifest-path
-  tools/oneios-tool/Cargo.toml`, a few minutes); Droid-VM's virglrenderer (below); the host tests
+  tracked `*.py`, or an executable with a python shebang, fails it since 2026-11-21); `bash -n`, `shellcheck -S error`; NDK 28.2.13676358, Rust and
+  **oneios-tool** (`.github/scripts/setup-build.sh`: a current stable Rust with `rustfmt` and `clippy`, the targets
+  `aarch64-linux-android` (the runtime and oneios-tool for the phone) and `aarch64-unknown-none` (the task stub and
+  the test kernel), `qemu-user` (the test kernel's boots), `cargo build --release --manifest-path
+  tools/oneios-tool/Cargo.toml`, a few minutes; `runtime/target` is cached with the toolchain, keyed on both
+  `Cargo.lock` files); Droid-VM's virglrenderer (below); the host tests
   (`runtime/package/elf-check-test.sh`: the link rule of shared objects and the NEEDED and symbol check, above;
   `runtime/package/test.sh`; `kernel/tests/host.sh`, which runs `kernel series-check` and `kernel build-record
-  --self-test`; every executable `*/tests/host.sh` of another area); the pinned kernel when
+  --self-test`; every executable `*/tests/host.sh` of another area, among them `runtime/tests/host.sh`: the Rust
+  workspace's `cargo test`, `cargo fmt --check`, `cargo clippy -D warnings` and `runtime/xnuhost/check-arm64.sh smoke
+  check`); the pinned kernel when
   `kernel/release-kernel.txt` names one; `runtime/package.sh <version>` (the Apple-file refusal and the elf-check of
   the stage, and `bin/oneios-tool` built for the phone); the drm2kgsl check and `runtime/package/elf-check.sh` on
   the unpacked archive; the members check (above); `.github/scripts/check-phone-tool.sh <version>` ("oneios-tool for
@@ -236,7 +241,8 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   with Homebrew's folders taken off `PATH`, so that core:root's script tests use the harness's stand-ins over
   macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). Every test's start and end is in the
   log (`--init-script .github/scripts/gradle-test-events.gradle`, failures with their whole exception). A watchdog
-  stops Gradle after 30 minutes and first prints the processes and the test JVMs' threads (`jstack`), so a hung
+  stops Gradle after 45 minutes (30 until 2026-11-23: a good run takes about 29 on main, and slower runners were
+  still passing tests at 30) and first prints the processes and the test JVMs' threads (`jstack`), so a hung
   test is named and the reports still come out. On a failure the job summary lists the failed tests; the reports
   and results are the artifact `oneos-tests-macos`. Not a gate of the release. The macOS results are in
   "macOS: the fork's unit tests" below.

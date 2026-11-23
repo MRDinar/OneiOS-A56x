@@ -1,4 +1,4 @@
-# An app load for memory checks on the PC (xnuhost --input-script FILE; format: src/input_script.c): after the boot,
+# An app load for memory checks on the PC (xnuhost --input-script FILE; format: src/input_script.rs): after the boot,
 # tap each place of the Home Screen's first page, give the app time to open under qemu, go Home, and the next one.
 # The same load for a before and an after run. The axes are input-demo.script's (a 1440 x 3120 panel); the places
 # are a 4 x 6 grid and the dock at the proportions of iOS's Home Screen on a 6.9-inch iPhone (not measured on a

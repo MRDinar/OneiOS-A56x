@@ -365,7 +365,7 @@ session's log view. The fork's own scripts keep their Samsung paths (the backlig
 
 Since 2026-11-21 xnuhost also finds the host phone itself (`docs/hardware.md` 7h): it reads `ro.product.model`,
 `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` and takes that phone's defaults from one
-table (`runtime/bridges/hw/host_device.c`), under every setting the fork passes. Nothing changes for the fork: on the
+table (`runtime/bridges/hw/host_device.rs`), under every setting the fork passes. Nothing changes for the fork: on the
 S24 Ultra the entry holds no defaults, and the session's command line is unchanged. A device profile may pass
 `--host-device NAME` (force a row) or `--host-device none` (today's defaults on any phone); a name that is not in the
 table ends xnuhost at start (exit 2) with `xnuhost: host-device=NAME is not a known phone (...)`. xnuhost's log says
@@ -383,7 +383,7 @@ far the boot got, the kernel panic, the processes that died, how the session end
 same files, redacted. It reads these lines and nothing else, so change one only together with the fork's
 `OneiosLogs.kt` and `OneiosLogsTest`. A line it does not find is simply not in the summary.
 
-- **The framing** of `runtime/xnuhost/src/log.c`: `[seconds.millis] xnuhost I|E|D text`, `[seconds.millis] guest
+- **The framing** of xnuhost's log (`runtime/core/src/log.rs`, xh-core): `[seconds.millis] xnuhost I|E|D text`, `[seconds.millis] guest
   text` (the tag is `guest` padded to nine characters), and `xnuhost !! text 0x<16 hex> 0x<16 hex>` with no time.
   Its chips are E (`xnuhost E`), !! (`xnuhost !!`), guest, and the word `panic`.
 - **Stages**, in this order, the furthest one seen being "how far the boot got":

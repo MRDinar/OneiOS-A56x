@@ -1,9 +1,9 @@
 //! The host phone in `oneios-tool phone status`: the same properties and files xnuhost reads at its start
-//! (runtime/bridges/include/bridges/host_device.h), read through `adb shell`, matched against the same table, in the
+//! (runtime/bridges/hw/host_device.rs), read through `adb shell`, matched against the same table, in the
 //! same order (a model prefix, a codename, the SoC, soc0's machine, the platform, the device tree's compatible list).
 //!
-//! The table is the C one's (runtime/bridges/hw/host_device.c, the source of truth): [`TABLE`] mirrors it, and the
-//! test `table_matches_the_c_source` reads that file and fails when the two differ, so a phone added there must be
+//! The table is the bridges' (runtime/bridges/hw/host_device.rs, the source of truth): [`TABLE`] mirrors it, and the
+//! test `table_matches_the_bridges` reads that file and fails when the two differ, so a phone added there must be
 //! added here in the same commit.
 
 use crate::adb::Adb;
@@ -20,7 +20,7 @@ pub struct HostDevice {
     pub config: &'static [&'static str],
     /// environment defaults NAME=VALUE for the bridges (a variable already set wins)
     pub env: &'static [&'static str],
-    /// session-mode=takeover (the opt-in Android takeover) is allowed on this phone (the C entry's `.takeover = true`)
+    /// session-mode=takeover (the opt-in Android takeover) is allowed on this phone (host_device.rs's `takeover: true`)
     pub takeover: bool,
 }
 
@@ -128,13 +128,13 @@ pub fn read(adb: &Adb) -> Result<Facts> {
     Ok(parse(&adb.shell(READ_SCRIPT)?.out))
 }
 
-/// A compatible entry "vendor,NAME" whose NAME is `name`, any case (host_device.c's compatible_has).
+/// A compatible entry "vendor,NAME" whose NAME is `name`, any case (host_device.rs's compatible_has).
 fn compatible_has(list: &str, name: &str) -> bool {
     let parts: Vec<&str> = list.split(',').collect();
     parts.chunks(2).any(|pair| pair.len() == 2 && pair[1].eq_ignore_ascii_case(name))
 }
 
-/// The entry the facts match, in host_device.c's order, and the fact that matched it.
+/// The entry the facts match, in host_device.rs's order, and the fact that matched it.
 pub fn matched(f: &Facts) -> Option<(&'static HostDevice, String)> {
     if !f.model.is_empty() {
         if let Some(e) = TABLE.iter().find(|e| e.models.iter().any(|m| f.model.starts_with(m))) {
@@ -169,7 +169,7 @@ pub fn matched(f: &Facts) -> Option<(&'static HostDevice, String)> {
     None
 }
 
-/// "ro.product.model=SM-S928B ro.product.device=e3q ..." (host_device.c's br_host_describe).
+/// "ro.product.model=SM-S928B ro.product.device=e3q ..." (host_device.rs's host_describe).
 pub fn describe(f: &Facts) -> String {
     let values = [&f.model, &f.device, &f.platform, &f.soc_model, &f.soc_manufacturer];
     let mut out: Vec<String> =
@@ -246,34 +246,33 @@ mod tests {
         );
     }
 
-    /// The strings of `.field = { "a", "b" }` in one C entry.
-    fn c_list(entry: &str, field: &str) -> Vec<String> {
-        let key = format!(".{field} = {{");
+    /// The strings of `field: &["a", "b"],` (or `field: NONE,`) in one entry of the bridges' Rust table.
+    fn rs_list(entry: &str, field: &str) -> Vec<String> {
+        let key = format!("{field}: &[");
         let Some(at) = entry.find(&key) else { return Vec::new() };
         let rest = &entry[at + key.len()..];
-        let body = &rest[..rest.find('}').expect("a closing brace")];
+        let body = &rest[..rest.find(']').expect("a closing bracket")];
         body.split('"').skip(1).step_by(2).map(str::to_string).collect()
     }
 
-    fn c_string(entry: &str, field: &str) -> String {
-        let key = format!(".{field} = \"");
-        let at = entry.find(&key).unwrap_or_else(|| panic!("no .{field} in {entry}")) + key.len();
+    fn rs_string(entry: &str, field: &str) -> String {
+        let key = format!("{field}: \"");
+        let at = entry.find(&key).unwrap_or_else(|| panic!("no {field} in {entry}")) + key.len();
         entry[at..at + entry[at..].find('"').unwrap()].to_string()
     }
 
     #[test]
-    fn table_matches_the_c_source() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../runtime/bridges/hw/host_device.c");
-        let source = std::fs::read_to_string(path).expect("runtime/bridges/hw/host_device.c");
-        let start = source.find("static const br_host_device table[] = {").expect("the table");
-        let body = &source[start..start + source[start..].find("\n};").expect("the table's end")];
-        let code: String = body.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
-        let entries: Vec<&str> = code.split("{ .name").skip(1).collect();
-        assert_eq!(entries.len(), TABLE.len(), "host_device.c has {} entries, host.rs {}", entries.len(), TABLE.len());
-        for (c, r) in entries.iter().zip(TABLE) {
-            let c = format!(".name{c}");
-            assert_eq!(c_string(&c, "name"), r.name);
-            assert_eq!(c_string(&c, "label"), r.label);
+    fn table_matches_the_bridges() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../runtime/bridges/hw/host_device.rs");
+        let source = std::fs::read_to_string(path).expect("runtime/bridges/hw/host_device.rs");
+        let start = source.find("static TABLE: [HostDevice; ").expect("the table");
+        let body = &source[start..start + source[start..].find("\n];").expect("the table's end")];
+        let code: String = body.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let entries: Vec<&str> = code.split("HostDevice {").skip(1).collect();
+        assert_eq!(entries.len(), TABLE.len(), "host_device.rs has {} entries, host.rs {}", entries.len(), TABLE.len());
+        for (b, r) in entries.iter().zip(TABLE) {
+            assert_eq!(rs_string(b, "name"), r.name);
+            assert_eq!(rs_string(b, "label"), r.label);
             for (field, ours) in [
                 ("models", r.models),
                 ("devices", r.devices),
@@ -282,9 +281,9 @@ mod tests {
                 ("config", r.config),
                 ("env", r.env),
             ] {
-                assert_eq!(c_list(&c, field), ours.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "{}: .{field}", r.name);
+                assert_eq!(rs_list(b, field), ours.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "{}: {field}", r.name);
             }
-            assert_eq!(c.contains(".takeover = true"), r.takeover, "{}: .takeover", r.name);
+            assert_eq!(b.contains("takeover: true"), r.takeover, "{}: takeover", r.name);
         }
     }
 }

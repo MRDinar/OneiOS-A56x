@@ -2,7 +2,7 @@
 # wonder` against a stand-in phone of their own ($W/wifiphone) whose staged runtime has a stand-in wifictl
 # (runtime/bin/wifictl: a shell script that notes its arguments in .fake/wifictl.log and prints what the phone's
 # wifictl prints: the p2p report of a phone with Wonder 1.5, a Wonder session's lines; with .fake/wifictl-fail it
-# fails as wifictl does). The real wifictl's steps are host-tested in runtime/bridges/tests/test_wifi.c.
+# fails as wifictl does). The real wifictl's steps are host-tested in runtime/bridges/wifi (cargo test -p onebridges wifi).
 # Checked: root asked for first; no wifictl staged; the arguments refused before anything reaches the phone (a
 # station name with shell characters, a frequency that is no AWDL channel, --seconds out of range, a country that is
 # not two letters); p2p's report passed through, its summary, --save, --station; a p2p that fails; wonder's lines

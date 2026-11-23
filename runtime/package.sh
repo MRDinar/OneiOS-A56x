@@ -18,10 +18,11 @@
 # Nothing that Android cannot load goes in either: runtime/package/elf-check.sh reads every dynamic ELF file of the
 # stage (the display helper's library, the dynamic helpers) and the package is refused (exit 3) when one needs a
 # library that is no API 30 stub of the NDK, or has an undefined symbol that none of its NEEDED libraries defines.
-# Build hosts: Linux x86_64 and macOS (runtime/host.mk). Needs Rust (cargo) for oneios-tool, which is built when it
-# is missing or older than its sources (scripts/lib/oneios-tool.sh; ONEIOS_TOOL=PATH names another binary), and
-# the Rust target aarch64-linux-android for the phone's bin/oneios-tool (ONEIOS_TOOL_ANDROID=PATH names a binary
-# built elsewhere; CARGO_TARGET_DIR is honoured).
+# Build hosts: Linux x86_64 and macOS (runtime/build.sh and runtime/ndk-cc pick the NDK's tools by uname -s). Needs
+# Rust (cargo) for the runtime (runtime/build.sh, runtime/RUST.md) and for oneios-tool, which is built when it is
+# missing or older than its sources (scripts/lib/oneios-tool.sh; ONEIOS_TOOL=PATH names another binary), and the Rust
+# targets aarch64-linux-android (the runtime, the phone's bin/oneios-tool) and aarch64-unknown-none (the task stub)
+# (ONEIOS_TOOL_ANDROID=PATH names a phone oneios-tool built elsewhere; CARGO_TARGET_DIR is honoured).
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release), SOURCE_DATE_EPOCH (default: the commit time),
@@ -75,8 +76,10 @@ if [ -x "$ROOT/runtime/build.sh" ]; then
 else
   echo "package: no runtime/build.sh yet: placeholder xnuhost"
   PLACEHOLDER=1
-  "$CC_aarch64_linux_android" -O2 -static -nostdlib -ffreestanding -fno-stack-protector \
-    -Wl,-e,_start -Wl,--build-id=none -Wl,-s -o "$STAGE/bin/xnuhost" "$ROOT/runtime/package/placeholder-xnuhost.c"
+  rustc --edition 2021 --target aarch64-linux-android -C opt-level=s -C panic=abort -C relocation-model=static \
+    -C linker="$CC_aarch64_linux_android" -C link-arg=-nostdlib -C link-arg=-static -C link-arg=-Wl,-e,_start \
+    -C link-arg=-Wl,--build-id=none -C strip=symbols -A linker_messages \
+    -o "$STAGE/bin/xnuhost" "$ROOT/runtime/package/placeholder-xnuhost.rs"
 fi
 # 1b. oneios-tool for the phone (tools/oneios-tool, Rust, aarch64-linux-android): bin/oneios-tool, which the OneOS
 # app runs as root from the staged runtime (`oneios_root.sh tool`, oneos/interface.md section 9), and the same file

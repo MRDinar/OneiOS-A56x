@@ -1,48 +1,47 @@
 #!/bin/bash
 # The runtime's whole host test suite with one command, on a Linux PC or on a Mac.
 #   runtime/host-tests.sh          Linux: the suite here.
-#                                  macOS: builds the Android parts here with the Mac's NDK (runtime/host.mk), then runs
-#                                  the suite in an arm64 Ubuntu 24.04 container of Apple's `container` tool (its own
+#                                  macOS: builds the Android parts here with the Mac's NDK (cargo, runtime/ndk-cc), then
+#                                  runs the suite in an arm64 Ubuntu 24.04 container of Apple's `container` tool (its own
 #                                  small VM, booted with the kernel below) with the checkout mounted at its own path,
 #                                  then runtime/package/elf-check-test.sh and runtime/package/test.sh here (they need
 #                                  the NDK).
 #   runtime/host-tests.sh --kernel macOS: (re)build that kernel only, then stop
 #   runtime/host-tests.sh --suite  the suite alone, where it is (the container runs this, with STRICT=1 and PREBUILT=1:
-#                                  the Android xnuhost and test kernel are the Mac's and are never remade there)
-# The suite, one line each at the end (pass, FAIL or skipped):
-#   loader    make -C runtime/loader test
-#   xnuhost   make -C runtime/xnuhost test: the unit tests, drm2kgsl and its leak test (LeakSanitizer) when
-#             external/virglrenderer is there (both need /dev/udmabuf; without it drm2kgsl runs only its GPU policy
-#             scenarios, on a stand-in), and the Android xnuhost booting the test kernel
-#             (under qemu-aarch64 on an x86_64 PC; as it is on an arm64 host, the container on a Mac)
-#   display   make -C runtime/display test
-#   bridges   runtime/bridges/tests/host.sh: the unit tests, test-binder (a binderfs in a user namespace: it says
-#             "skipped" when the kernel has no binderfs), brightness, battery; the Android build when the NDK is there
-#   camera    runtime/bridges/camera/tests/host.sh
-#   encoder   runtime/bridges/encoder/tests/host.sh: the video encoder device over the real transport through the
-#             oneios-encoder helper (stand-in encoder); the Android build when the NDK is there
+#                                  the Android xnuhost and test image are the Mac's and are never remade there)
+# The suite, one line each at the end (pass, FAIL or skipped). The runtime is the Rust workspace runtime/Cargo.toml
+# (runtime/RUST.md):
+#   workspace cargo test --workspace --locked: every crate's tests (xh-core, the loader, xnuhost with drm2kgsl and its
+#             stand-in KGSL scenarios when external/virglrenderer is there (the memory ones need /dev/udmabuf), the display
+#             helper, the bridges (the binder tests on a binderfs in a user namespace: they say "skipped" when the kernel
+#             has no binderfs), the camera, the encoder (its stand-in streams decoded by ffmpeg when it is there)
+#   lint      cargo fmt --check and cargo clippy --workspace --all-targets -D warnings, on the host and (with the NDK) for
+#             aarch64-linux-android
+#   boot      runtime/xnuhost/check-arm64.sh smoke check: the vCPU machinery alone, then the static Android xnuhost
+#             booting the Rust test kernel three times (the normal boot, ram=auto, the restart loop) under qemu-aarch64 on
+#             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
 #             Ultra, S25, S26 Ultra, A56, and refusals)
 #   links     runtime/package/elf-check-test.sh, when the NDK is there (on a Mac: on the Mac, after the container): the
-#             link rule of Android shared objects (-z defs, runtime/host.mk) and runtime/package/elf-check.sh, on the
-#             display helper's library as 1f7dd1f linked it (both must fail) and on a stage of runtime/build.sh
+#             link rule of Android shared objects (-z defs) and runtime/package/elf-check.sh, on a library linked without
+#             it (must fail) and on a stage of runtime/build.sh
 #   package   runtime/package/test.sh, when the NDK is there (on a Mac it runs on the Mac, after the container)
 # The kernel (macOS): the default kernel of `container` has neither binderfs nor udmabuf and loads no modules. The first
 # run builds, once, Linux $KVER (kernel.org, SHA-256 checked) with the default kernel's own configuration
 # (/proc/config.gz) plus ANDROID_BINDER_IPC, ANDROID_BINDERFS (no default devices) and UDMABUF, in a container, into
 # out/host-tests/vmlinux-$KVER-oneios (about 15 minutes on an M4). Only this script's containers boot it (`container run --kernel`);
-# the system's default kernel is not changed. On this path a skipped test-binder or a missing /dev/udmabuf is a FAIL.
-# Capabilities: none but CAP_SETFCAP (--cap-drop ALL --cap-add SETFCAP). test-binder's `unshare -Urm` maps uid 0, which
-# the kernel allows only with CAP_SETFCAP; the binderfs mount in that namespace and LeakSanitizer's ptrace of its own
-# threads need nothing more (there is no seccomp filter). Nothing else of the Mac is mounted.
-# Env: IMAGE (oneios-hosttests:3, built from the Containerfile below when missing), NDK (host.mk's default),
-#      JOBS (parallel make jobs and the container's CPUs; default: the Mac's CPUs), MEMORY (the container's, 8G),
-#      KERNEL (another kernel file for the container).
+# the system's default kernel is not changed. On this path a binder test skipped for want of a binderfs, or a missing
+# /dev/udmabuf, is a FAIL (the lines the harness-less binder tests print; a library test's skip line is captured by cargo).
+# Capabilities: none but CAP_SETFCAP (--cap-drop ALL --cap-add SETFCAP). The binder tests re-run themselves in a user
+# namespace (runtime/bridges/hal/binderfs.rs) that maps uid 0, which the kernel allows only with CAP_SETFCAP; the binderfs
+# mount in that namespace needs nothing more (there is no seccomp filter). Nothing else of the Mac is mounted.
+# Env: IMAGE (oneios-hosttests:4, built from the Containerfile below when missing), NDK (the SDK's ndk/28.2.13676358),
+#      JOBS (the container's CPUs; default: the Mac's CPUs), MEMORY (the container's, 8G), CARGO_TARGET_DIR
+#      (runtime/target/host-tests), KERNEL (another kernel file for the container).
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN)}
-export MAKEFLAGS="${MAKEFLAGS:--j$JOBS}"
 
 ndk_ok() { # the NDK's Android compiler for this build host
   local host=linux-x86_64 ndk
@@ -50,6 +49,11 @@ ndk_ok() { # the NDK's Android compiler for this build host
   ndk=${NDK:-$( [ "$host" = darwin-x86_64 ] && echo "$HOME/Library/Android/sdk/ndk/28.2.13676358" || echo "$HOME/Android/Sdk/ndk/28.2.13676358")}
   [ -x "$ndk/toolchains/llvm/prebuilt/$host/bin/aarch64-linux-android30-clang" ]
 }
+[ -d "$HOME/.cargo/bin" ] && PATH=$HOME/.cargo/bin:$PATH
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/runtime/target/host-tests}
+# What the Mac builds for the container (PREBUILT=1): the static xnuhost and the test image, under out/host-tests.
+PREBUILT_XNUHOST=$ROOT/out/host-tests/xnuhost
+PREBUILT_IMAGE=$ROOT/out/host-tests/testimage
 
 results=()
 part() { # NAME COMMAND...: run one part, keep its result, go on
@@ -59,8 +63,8 @@ part() { # NAME COMMAND...: run one part, keep its result, go on
   log=$(mktemp)
   "$@" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
   if [ "$rc" = 0 ]; then
-    if [ "${STRICT:-0}" = 1 ] && grep -q 'test-binder: skipped\|no /dev/udmabuf' "$log"; then
-      results+=("$name: FAIL (required here): $(grep -m1 'test-binder: skipped\|no /dev/udmabuf' "$log" | cut -c1-100)")
+    if [ "${STRICT:-0}" = 1 ] && grep -q 'skipped (no binderfs\|no /dev/udmabuf' "$log"; then
+      results+=("$name: FAIL (required here): $(grep -m1 'skipped (no binderfs\|no /dev/udmabuf' "$log" | cut -c1-100)")
     elif grep -q 'skipped' "$log"; then results+=("$name: pass ($(grep -m1 'skipped' "$log" | cut -c1-100))")
     else results+=("$name: pass"); fi
   else
@@ -77,31 +81,18 @@ summary() {
 }
 
 suite() {
-  part loader make -s -C runtime/loader test
-  # PREBUILT=1 (the Mac's container): the Mac built the Android binary and the test kernel with its NDK just before,
-  # and the container has no NDK. make -o keeps them as they are and never walks their prerequisites (the bridges'
-  # and camera's sub-makes, the gpu3d stamp): with a source that looked newer than its object over the mount, make
-  # called the NDK's clang here ("aarch64-linux-android30-clang: No such file", error 127 on build/android/gpu3d.o).
-  local xn=(make -s -C runtime/xnuhost)
+  part workspace sh -c 'cd runtime && cargo test --workspace --locked'
+  part lint sh -c 'cd runtime && cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings'
+  if ndk_ok; then part lint-android sh -c 'cd runtime && cargo clippy --workspace --all-targets --locked --target aarch64-linux-android -- -D warnings'; fi
+  # PREBUILT=1 (the Mac's container): the Mac built the static xnuhost and the test image with its NDK just before, and
+  # the container has no NDK: check-arm64.sh boots those as they are and builds nothing.
   if [ "${PREBUILT:-0}" = 1 ]; then
-    xn+=(-o build/android/xnuhost -o build/android/testkernel.elf)
-    for f in runtime/xnuhost/build/android/xnuhost runtime/xnuhost/build/android/testkernel.elf; do
-      [ -f "$f" ] || xn=(sh -c "echo 'host-tests: no $f: the Mac builds it before the container (runtime/host-tests.sh)'; exit 1")
-    done
-    # -o makes testkernel.elf "old", so make never remade the test image from it: until 2026-11-23 check-arm64 booted a
-    # testimage/kernel.kc of 2026-11-12 (before irq_take was added to the vector: "FAIL host-call vector ABI"). An image
-    # that is not newer than the ELF is removed here; make then builds it again with build/host/mkkernel (a host tool).
-    local kc=runtime/xnuhost/build/android/testimage/kernel.kc
-    if [ -f "$kc" ] && ! [ "$kc" -nt runtime/xnuhost/build/android/testkernel.elf ]; then
-      echo "host-tests: $kc is older than testkernel.elf: removed, made again from it"
-      rm -f "$kc" runtime/xnuhost/build/android/testimage/os.img
-    fi
-  fi
-  part xnuhost "${xn[@]}" test
-  part display make -s -C runtime/display test
-  part bridges runtime/bridges/tests/host.sh
-  part camera runtime/bridges/camera/tests/host.sh
-  part encoder runtime/bridges/encoder/tests/host.sh
+    if [ -f "$PREBUILT_XNUHOST" ] && [ -f "$PREBUILT_IMAGE/kernel.kc" ]; then
+      part boot env XNUHOST="$PREBUILT_XNUHOST" IMAGE="$PREBUILT_IMAGE" runtime/xnuhost/check-arm64.sh check
+    else results+=("boot: FAIL: no $PREBUILT_XNUHOST or $PREBUILT_IMAGE: the Mac builds them before the container"); fi
+  elif ndk_ok; then
+    part boot runtime/xnuhost/check-arm64.sh smoke check
+  else results+=("boot: skipped (no NDK here: the static xnuhost and the test kernel need it)"); fi
   part port sh scripts/port/test-verify-host.sh
   if ndk_ok; then
     part links runtime/package/elf-check-test.sh
@@ -119,7 +110,7 @@ fi
 # ---- macOS: the Android parts here, the suite in an arm64 Linux container of Apple's `container` ----
 command -v container > /dev/null || { echo "host-tests: no container tool: brew install container && container system start" >&2; exit 1; }
 container system status > /dev/null 2>&1 || container system start --enable-kernel-install || exit 1
-IMAGE=${IMAGE:-oneios-hosttests:3}
+IMAGE=${IMAGE:-oneios-hosttests:4}
 MEMORY=${MEMORY:-8G}
 KVER=6.18.56
 KSHA=4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89
@@ -128,19 +119,22 @@ KERNEL=${KERNEL:-$KOUT/vmlinux-$KVER-oneios}
 if ! container image inspect "$IMAGE" > /dev/null 2>&1; then
   echo "host-tests: building $IMAGE"
   ctx=$(mktemp -d)
-  # the tests' tools, and what a kernel build needs (bc bison flex libelf-dev libssl-dev). No python3: the suite has
-  # no Python (image :2 had it, for runtime/package/test.sh's checks until 2026-11-21; :3 is the image without it).
+  # the tests' tools, Rust (rustup's stable toolchain, as docs/building.md section 0), and what a kernel build needs
+  # (bc bison flex libelf-dev libssl-dev). No python3: the suite has no Python. Image :4 adds Rust for the Rust runtime
+  # (2026-11-23); :3 had the C toolchain only.
   cat > "$ctx/Containerfile" <<'CONTAINERFILE'
 FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      build-essential clang lld make patch zstd openjdk-17-jdk-headless util-linux mount file ca-certificates \
-      bc bison flex libelf-dev libssl-dev xz-utils kmod cpio \
+      build-essential clang lld make patch zstd openjdk-17-jdk-headless util-linux mount file ca-certificates curl \
+      bc bison flex libelf-dev libssl-dev xz-utils kmod cpio ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --component rustfmt,clippy \
+    && chmod -R a+rwX /opt/cargo /opt/rustup
 CONTAINERFILE
   container build --platform linux/arm64 -t "$IMAGE" -f "$ctx/Containerfile" "$ctx" || { rm -rf "$ctx"; exit 1; }
   rm -rf "$ctx"
 fi
-
 if [ ! -f "$KERNEL" ] || [ "${1:-}" = --kernel ]; then
   echo "host-tests: building the container's kernel: Linux $KVER + binderfs + udmabuf -> $KERNEL"
   mkdir -p "$KOUT"
@@ -166,17 +160,25 @@ if [ ! -f "$KERNEL" ] || [ "${1:-}" = --kernel ]; then
   echo "host-tests: kernel $KERNEL"
   [ "${1:-}" = --kernel ] && exit 0
 fi
-ndk_ok || { echo "host-tests: no NDK (runtime/host.mk: NDK=...)" >&2; exit 1; }
+ndk_ok || { echo "host-tests: no NDK (NDK=...)" >&2; exit 1; }
 
-# The Android parts the Linux tests use (check-arm64 runs build/android/xnuhost; the test kernel is built with the
-# NDK's clang): built here, so the container needs no NDK. Nothing of build/host is made on the Mac.
-part android-build sh -c 'make -s -C runtime/loader android && make -s -C runtime/xnuhost all build/android/testkernel.elf &&
-  make -s -C runtime/bridges all && make -s -C runtime/bridges/camera all && make -s -C runtime/display all'
+# The Android parts the Linux tests use (check-arm64 boots the static xnuhost; the test kernel and the task stub are
+# bare-metal Rust, objcopied with the NDK's llvm-objcopy): built here, so the container needs no NDK. The container's
+# own cargo builds the host tests into a target dir of its own (a Linux one, never the Mac's).
+mkdir -p "$PREBUILT_IMAGE"
+part android-build sh -c '
+  cd runtime &&
+  CARGO_TARGET_DIR=target/host-tests-static cargo build --release --locked --target aarch64-linux-android -p xnuhost --bin xnuhost \
+    --config "target.aarch64-linux-android.rustflags=[\"-C\",\"target-feature=+crt-static\"]" &&
+  cp target/host-tests-static/aarch64-linux-android/release/xnuhost "$1" &&
+  sh xnuhost/testkernel/build.sh "$2/testkernel.elf" &&
+  cargo run --quiet --locked -p xnuloader --bin mkkernel -- "$2/testkernel.elf" "$2/kernel.kc" "$2/os.img"' \
+  sh "$PREBUILT_XNUHOST" "$PREBUILT_IMAGE"
 case "${results[*]}" in *FAIL*) summary; exit 1 ;; esac
 results=()
 
 container run --rm --progress none --cap-drop ALL --cap-add SETFCAP --kernel "$KERNEL" --cpus "$JOBS" --memory "$MEMORY" -e JOBS="$JOBS" -e STRICT=1 -e PREBUILT=1 \
-  -v "$ROOT:$ROOT" -w "$ROOT" "$IMAGE" runtime/host-tests.sh --suite
+  -e CARGO_TARGET_DIR="$ROOT/runtime/target/host-tests-linux" -v "$ROOT:$ROOT" -w "$ROOT" "$IMAGE" runtime/host-tests.sh --suite
 inside=$?
 part links runtime/package/elf-check-test.sh
 part package runtime/package/test.sh

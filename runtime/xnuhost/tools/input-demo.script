@@ -1,4 +1,4 @@
-# A stand-in for the phone's touchscreen and side keys (xnuhost --input-script FILE; format: src/input_script.c).
+# A stand-in for the phone's touchscreen and side keys (xnuhost --input-script FILE; format: src/input_script.rs).
 # The axes are a 1440 x 3120 panel's, as the S24 Ultra's touchscreen driver is expected to state them (not read
 # from the phone yet); the guest scales whatever range the device states to its screen.
 abs 0x2f 0 9             # ABS_MT_SLOT

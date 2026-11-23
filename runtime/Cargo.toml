@@ -1,0 +1,41 @@
+# The runtime in Rust: xnuhost, its loader, the host bridges and the display helper (docs/building.md, runtime/RUST.md).
+#   cargo test --workspace                         host tests (Linux x86_64 or arm64; no phone, no Apple files)
+#   cargo build --release --target aarch64-linux-android -p xnuhost   the phone's binaries (runtime/build.sh does this)
+# The task stub and the test kernel are bare-metal programs (aarch64-unknown-none): their own workspaces, excluded here.
+[workspace]
+resolver = "2"
+members = ["core", "abi", "loader", "bridges", "bridges/camera", "bridges/encoder", "display", "xnuhost", "xnuhost/drm2kgsl", "package"]
+exclude = ["xnuhost/stub", "xnuhost/testkernel"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+libc = "0.2"
+xh-core = { path = "core" }
+xnuhost-abi = { path = "abi" }
+xnuloader = { path = "loader" }
+onebridges = { path = "bridges" }
+onecamera = { path = "bridges/camera" }
+oneencoder = { path = "bridges/encoder" }
+oneios-display = { path = "display" }
+drm2kgsl-sys = { path = "xnuhost/drm2kgsl" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "allow"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+opt-level = 2
+debug = 1
+panic = "abort"
+codegen-units = 4
+
+[profile.dev]
+panic = "unwind"

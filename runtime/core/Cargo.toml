@@ -1,0 +1,21 @@
+[package]
+name = "xh-core"
+description = "xnuhost's shared base: the log, the virtio-mmio transport, the MMIO bus, interrupts, guest RAM, pixels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true

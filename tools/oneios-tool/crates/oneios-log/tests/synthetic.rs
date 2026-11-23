@@ -624,7 +624,7 @@ fn summary_of_a_boot() {
     assert!(run_inner(&args, f.loc(), &mut Vec::new()).is_err());
 }
 
-/// `log pen`: the S Pen's stages in the formats of xnuhost's pen.c and the guest's OneiOSHidInput.cpp (the lines of
+/// `log pen`: the S Pen's stages in the formats of xnuhost's pen.rs and the guest's OneiOSHidInput.cpp (the lines of
 /// the PC boot of 2026-11-15, docs/hardware.md 7f), a session without a pen, and a cut line.
 #[test]
 fn pen_report() {

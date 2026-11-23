@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The guest frame's pixel formats between xnuhost and the display helper (display.sock's hello, docs/booter.md 2.8),
-// and the conversions between them. Header-only: xnuhost (src/virtio_gpu.c) and the display helper (runtime/display)
-// both include it, so the two sides cannot disagree on what a format holds.
+// and the conversions between them. Header-only, kept for the kernel's C; xnuhost and the display helper use its
+// Rust mirror (runtime/core/src/pixels.rs), whose test checks it against this file, so the sides cannot disagree.
 //
 //   XH_PIXELS_BGRX8    1  bytes B,G,R,X: 8 bits a channel, sRGB-encoded, sRGB primaries. iOS's 'BGRA' framebuffer:
 //                         QuartzCore composites this display in sRGB (CA::WindowServer::IOMFBDisplay::

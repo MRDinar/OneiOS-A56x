@@ -33,17 +33,30 @@ back stay exactly OneOS-shaped.
 | Userland tweaks | `userland/` | The image hook: iOS 27 root and Data tweaks for this host (identity, daemon policy, preferences), applied to the Data seed and overlay; Apple's images stay unchanged. | [userland.md](userland.md) |
 | Kernel | `kernel/` | XNU 12377 from Droid-VM's UniXNU fork, built on Linux (`build-linux.sh`, the VM kernel; `build-hosted.sh`, the kernel for xnuhost with `kernel/patches/oneios-hosted/`). Every hosted change is under `XNU_HOSTED`: the kernel runs at `0x2000000000` (the S24's user VA ends at 2^39), with no MMU of its own, interrupts as host upcalls. Hardware the phone cannot give the guest is stood in for in software inside the kernel: the AES accelerator (`aes/`) and the key store (`keystore/`: the AppleKeyStore service with no passcode, class keys from a constant, key wrap in software; there is no Secure Enclave, and this is **not a security boundary**). | [kernel/README.md](../kernel/README.md), [hosted patches](../kernel/patches/oneios-hosted/README.md) |
 | Kernel collection | `kernel/prelink/` | `kernel.kc`: the hosted kernel prelinked with Apple's iPhone18,2 kexts (about 154; those for absent hardware are left out with a reason). Apple's kexts call Apple's kernel; the prelink pairs each called function with ours (matchers, a RELEASE reference build, vtables, reviewed records). Unpaired calls go to a panic stub. Built locally; never committed or released (Apple's kexts). | [kernel/prelink/README.md](../kernel/prelink/README.md) |
-| xnuhost | `runtime/xnuhost/`, `runtime/loader/` | The host: loads `kernel.kc` (DarwinBoot's loader, ported), builds the device tree and `boot_args`, runs vCPUs as host threads, emulates the interrupt controller, timer and privileged registers, serves the virtio devices, runs iOS tasks and hands their traps to XNU (`hostcall.h`, ABI 1). Checks every 1 MiB of the iOS images against the manifest as it is read. | [booter.md](booter.md) |
+| xnuhost | `runtime/xnuhost/`, `runtime/loader/` (Rust: [runtime/RUST.md](../runtime/RUST.md)) | The host: loads `kernel.kc` (DarwinBoot's loader, ported), builds the device tree and `boot_args`, runs vCPUs as host threads, emulates the interrupt controller, timer and privileged registers, serves the virtio devices, runs iOS tasks and hands their traps to XNU (`hostcall.h`, ABI 1). Checks every 1 MiB of the iOS images against the manifest as it is read. | [booter.md](booter.md) |
 | GPU | `runtime/xnuhost` (virtio-gpu 3D), `kernel/patches/oneios-hosted/gpu/` | DRM native context served by Droid-VM's drm2kgsl on the Adreno 750 through KGSL, guest pages shared by udmabuf; the 2D scanout where there is no renderer. In the kernel: the virtio-gpu 3D driver and NativeAdreno's `AGXAccelerator` (under the collection's `IOAcceleratorES`) with the user client the Metal plug-in opens. | [gpu.md](gpu.md) |
 | iOS user-space builds | `scripts/ios/`, `scripts/setup/ios-toolchain.sh`, `userland/metal/` | The cross toolchain on Linux (clang, the xtool SDK's headers, ld64, stubs made from the guest's own iOS 27 shared cache, an ad-hoc signer, a link check) and the build of the Metal plug-in `NativeAdrenoMetal.bundle` (NativeMetal, metal2vulkan, Turnip) for the iPhone18,2 cache. The image hook places the bundle and lists its CDHashes for the owner trust cache. | [building.md](building.md) section 9, [gpu.md](gpu.md) section 7 |
 | Display driver (guest) | `kernel/patches/oneios-hosted/display/` | iOS's framebuffer: UniXNU's NativeMobileDisplay as a subclass of the collection's original `IOMobileFramebufferLegacy`, started on the boot video (the phone panel's native mode, 1440x3120; `/chosen display-scale` 3 or 2), with a vsync tick at the panel's 120 Hz and the refresh properties of a 24 to 120 Hz panel; `backboardd`'s swaps go to xnuhost's virtio-gpu scanout surface by surface and from there to `session/display.sock`. | [display/README.md](../kernel/patches/oneios-hosted/display/README.md) |
 | Display | `runtime/display/` | `oneios-display`: on One UI's side, an `app_process` helper that puts xnuhost's frames (`session/display.sock`) on a full-screen surfaceflinger layer at the panel's mode, the buffers tagged with the frame's dataspace (8-bit sRGB by default; half floats, linear extended sRGB, with xnuhost's `display-format=rgba16f`). | [runtime/display/README.md](../runtime/display/README.md) |
-| Touch and buttons | `runtime/xnuhost/src/input.c`, `kernel/patches/oneios-hosted/hid/` | The touchscreen and the three side keys, read from evdev without a grab, through xnuhost's virtio-input device to two HID devices in the kernel (UniXNU's NativeHidInput under the collection's `IOHIDDevice`): a Digitizer / Touch Screen service and the buttons, which Apple's HID stack and backboardd take as an iPhone's. | [hardware.md](hardware.md) 7b, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) |
-| Touch and buttons | `runtime/xnuhost/src/input.c`, `kernel/patches/oneios-hosted/hid/` | The touchscreen and the three side keys, read from evdev without a grab, through xnuhost's virtio-input device to two HID devices in the kernel (UniXNU's NativeHidInput under the collection's `IOHIDDevice`): a Digitizer / Touch Screen service and the buttons, which Apple's HID stack hands to backboardd as an iPhone's. | [hardware.md](hardware.md) 7b, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) |
-| Pen (S Pen as an Apple Pencil; off by default) | `runtime/xnuhost/src/pen.c`, `kernel/patches/oneios-hosted/hid/` (`staged/hid_pen.rs` of `oneios-tool kernel gen hid`) | With `pen=auto`: the phone's pen digitizer (`sec_e-pen`), found by its bits through one replaceable lookup (`xh_pen_lookup`), read from evdev without a grab, as a second virtio-input device (`/arm-io/input-1`, fixed ranges) to a third NativeHidInput device, Digitizer / Stylus, which backboardd takes as its pencil digitizer and UIKit types as `UITouchTypePencil`; guest boot argument `oneios-pen=1` (xnuhost adds it). | [hardware.md](hardware.md) 7f, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) "Pen" |
+| Touch and buttons | `runtime/xnuhost/src/input.rs`, `kernel/patches/oneios-hosted/hid/` | The touchscreen and the three side keys, read from evdev without a grab, through xnuhost's virtio-input device to two HID devices in the kernel (UniXNU's NativeHidInput under the collection's `IOHIDDevice`): a Digitizer / Touch Screen service and the buttons, which Apple's HID stack and backboardd take as an iPhone's. | [hardware.md](hardware.md) 7b, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) |
+| Touch and buttons | `runtime/xnuhost/src/input.rs`, `kernel/patches/oneios-hosted/hid/` | The touchscreen and the three side keys, read from evdev without a grab, through xnuhost's virtio-input device to two HID devices in the kernel (UniXNU's NativeHidInput under the collection's `IOHIDDevice`): a Digitizer / Touch Screen service and the buttons, which Apple's HID stack hands to backboardd as an iPhone's. | [hardware.md](hardware.md) 7b, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) |
+| Pen (S Pen as an Apple Pencil; off by default) | `runtime/xnuhost/src/pen.rs`, `kernel/patches/oneios-hosted/hid/` (`staged/hid_pen.rs` of `oneios-tool kernel gen hid`) | With `pen=auto`: the phone's pen digitizer (`sec_e-pen`), found by its bits through one replaceable lookup (`pen::lookup`), read from evdev without a grab, as a second virtio-input device (`/arm-io/input-1`, fixed ranges) to a third NativeHidInput device, Digitizer / Stylus, which backboardd takes as its pencil digitizer and UIKit types as `UITouchTypePencil`; guest boot argument `oneios-pen=1` (xnuhost adds it). | [hardware.md](hardware.md) 7f, [the archive's README](../kernel/patches/oneios-hosted/hid/README.md) "Pen" |
 | Hardware bridges | `runtime/bridges/`, `drivers/` | Host halves (in xnuhost or small helpers) and iOS-side drivers for: CPU topology and clocks, network (`en0` over a tap with its own routing), Bluetooth (the HIDL HAL over hwbinder), haptics (the CS40L26 force-feedback device), audio (AAudio), brightness (backlight sysfs) and the light sensor, the battery (`power_supply` sysfs), camera (the camera provider HAL in a session, the NDK on One UI; in iOS, `AppleH9CamIn` and the capture plug-in `H9ISP.mediacapture` that CMCapture loads for it), and the video encoder (iOS's paravirtualized VideoToolbox over Android's MediaCodec, so CMPhoto writes HEIC: `runtime/bridges/encoder`, `kernel/patches/oneios-hosted/codec`). | [hardware.md](hardware.md) |
 | Runtime package | `runtime/package.sh`, `.github/workflows/` | `oneios-runtime-<ver>-arm64.tar.zst` with `runtime.json`: xnuhost, the helpers and the phone check tools. Published on GitHub releases. No kernel, nothing of Apple's. | [releases.md](releases.md) |
 | OneOS fork | `akshaynexus/OneOS`, branch `oneios` | The "iOS 27 (OneiOS)" card (S24 Ultra only): downloads the runtime, imports and verifies the image set, Hardware checks, and the session scripts: arm the way back, stop zygote, start xnuhost and the display helper, return in place or by reboot. | [oneos/interface.md](../oneos/interface.md), the fork's `docs/oneios.md` |
+
+## The runtime's code
+
+Everything that runs on One UI's side (xnuhost, the loader, the bridges and their helpers, the camera and encoder
+helpers, the display helper, the phone checks) is Rust, one Cargo workspace, `runtime/Cargo.toml` (ported from C on
+2026-11-23; it first booted iOS on the phone that day, docs/booter.md 2.6a). Its crates: `xh-core` (the log, the virtio-mmio transport, the
+MMIO bus, the shared helpers), `xnuhost-abi` (the host-call ABI), `xnuloader`, `xnuhost` (with `drm2kgsl-sys`, Droid-VM's
+renderer built from its pinned C), `onebridges`, `onecamera`, `oneencoder`, `oneios-display`; the task stub and the
+test kernel are bare-metal Rust programs of their own. What stays C is what the guest side or another project owns:
+the headers the hosted kernel and the guest drivers include (`runtime/xnuhost/include/xnuhost/*.h`,
+`drivers/*/*_proto.h`, each mirrored in Rust and checked against the header by a test), drm2kgsl and its glue, and
+`kernel/`, `drivers/`, `userland/`. The crate map, the conventions and the commands:
+[runtime/RUST.md](../runtime/RUST.md).
 
 ## The backend layer: samsung and treble
 
@@ -55,29 +68,29 @@ Each hardware bridge has two forms of its Linux or Android side, chosen at start
   (health, thermal, vibrator; the client is the Wi-Fi bridge's binder code, no Android library), evdev found by its
   capabilities, the standard sysfs classes by named paths.
 
-The choice lives in one place, `runtime/bridges/include/bridges/hw_backend.h` (`hw/hw_backend.c`, pure, and
-`hw/hw_log.c`), which xnuhost's `config.c` fills and `main.c` hands to the bridges (`br_hw_configure`) before any
-opens. Each bridge asks it once at open (`br_hw_select`: one log line with the backend and why) and builds its
-samsung or treble source behind the same API, so the bridge device, the drivers and iOS do not know which one runs.
-A treble interface that is missing is one line (`br_hw_missing`); the bridge then stays off, or with
+The choice lives in one place, `onebridges::hw` (`runtime/bridges/hw/hw_backend.rs`, pure, and `hw/hw_log.rs`),
+which xnuhost's `config.rs` fills and its session (`session/bridges.rs`) hands to the bridges (`hw::hw_configure`)
+before any opens. Each bridge asks it once at open (`hw::select`: one log line with the backend and why) and builds
+its samsung or treble source behind the same API, so the bridge device, the drivers and iOS do not know which one
+runs. A treble interface that is missing is one line (`hw::missing`); the bridge then stays off, or with
 `hw-backend-fallback=1` uses its samsung form. Touch and the side keys have one lookup for both (evdev by
 capabilities, never grabbed). The audit table of every path, and each bridge's status: [hardware.md](hardware.md) 7e.
 
 ## The host device table: one tree, many phones
 
-Which phone xnuhost runs on is found at its start, not built in: `runtime/bridges/hw/host_device.c` reads the
+Which phone xnuhost runs on is found at its start, not built in: `runtime/bridges/hw/host_device.rs` reads the
 properties `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`, `ro.soc.manufacturer` (and as
 fallbacks soc0's `machine` and the device tree's `compatible`) and matches them against one compiled-in table of known
 hosts: the Galaxy S24 Ultra (the home device, every `SM-S928*` model number: B, U, U1, W, N, 0; no defaults of its own:
 today's behaviour), S25 Ultra, S25, S26 Ultra and
-A56. An entry holds only settings that already exist as options (an xnuhost setting `config.c` merges as a device
+A56. An entry holds only settings that already exist as options (an xnuhost setting `config.rs` merges as a device
 default, or an environment variable a bridge reads), and goes under every explicit setting: the command line > the
 image set's `xnuhost.conf` > the table > the built-in default. `host-device=NAME` forces an entry, `host-device=none`
 turns detection off; an unknown phone keeps today's defaults. xnuhost logs one `host: ...` line at its start (the
 entry, the property that matched, each default taken or not); the bridges' ctl tools and `oneios-tool phone status`
-use the same table (the Rust copy is checked against the C one by a test). A new phone is a new table row plus its
+use the same table (oneios-tool's copy, `crates/oneios-phone/src/host.rs`, is checked against the bridges' by a test). A new phone is a new table row plus its
 record, never a fork: [hardware.md](hardware.md) 7h has the table, what is marked unverified per phone, and the tests.
-A row may also allow the opt-in Android takeover (`.takeover = true`: the S24 Ultra and the S26 Ultra), which
+A row may also allow the opt-in Android takeover (`takeover: true`: the S24 Ultra and the S26 Ultra), which
 `xnuhost --host-info` tells the OneOS switch before it stops anything.
 
 ## Two session modes: hosted (the default) and the opt-in Android takeover

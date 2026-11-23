@@ -1,0 +1,64 @@
+[package]
+name = "onebridges"
+description = "OneiOS's host bridges: network, sound, haptics, Bluetooth, Wi-Fi, CPU placement, brightness, battery, thermal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+libc.workspace = true
+xh-core.workspace = true
+
+[lints]
+workspace = true
+
+# bridges-power: brightness, battery, thermal
+[[bin]]
+name = "brightctl"
+path = "brightness/brightctl.rs"
+[[test]]
+name = "brightness_inspect"
+path = "brightness/test_inspect.rs"
+[[bin]]
+name = "batteryctl"
+path = "battery/batteryctl.rs"
+
+# bridges-net: wifi, bt, hal
+[[bin]]
+name = "fake-hal"
+path = "tests/fake_hal.rs"
+[[bin]]
+name = "thermalctl"
+path = "thermal/thermalctl.rs"
+[[test]]
+name = "test_hidl_binder"
+path = "tests/test_hidl_binder.rs"
+harness = false
+[[test]]
+name = "hal_binder"
+path = "tests/hal_binder.rs"
+harness = false
+
+# bridges-hw: bridgectl (static, as the other ctl tools), oneios-audio (dynamic: links the NDK's libaaudio)
+[[bin]]
+name = "bridgectl"
+path = "tools/bridgectl.rs"
+[[bin]]
+name = "oneios-audio"
+path = "audio/oneios_audio.rs"
+[[test]]
+name = "test_aidl_binder"
+path = "tests/test_aidl_binder.rs"
+harness = false
+[[bin]]
+name = "wifictl"
+path = "tools/wifictl.rs"

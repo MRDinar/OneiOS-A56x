@@ -50,7 +50,7 @@ pub struct Image {
     pub fileset: bool,
     pub uuid: Option<[u8; 16]>,
     /// The file's own (top-level) segments. Their lowest address is the link base, as xnuhost's loader takes it
-    /// (`runtime/loader/src/macho.c`: `k->base`).
+    /// (`runtime/loader/src/macho.rs`: `Kernel::base`).
     pub segments: Vec<Segment>,
     pub members: Vec<Member>,
 }
@@ -265,7 +265,7 @@ pub fn moves(kc_kernel: &Member, kernel: &Member) -> Vec<Moved> {
     out
 }
 
-/// The physical-aperture rule (docs/booter.md 2.2, `runtime/xnuhost/src/mem.c`, `runtime/loader/src/boot.c`):
+/// The physical-aperture rule (docs/booter.md 2.2, `runtime/xnuhost/src/mem.rs`, `runtime/loader/src/boot.rs`):
 /// xnuhost copies every segment of the collection to `RAM + (vmaddr - link base)` and the kernel runs there with
 /// physical address = virtual address. So a running kernel's address is the collection's address plus
 /// `slide = RAM - link base` (modulo 2^64; the log's `memory:` line prints both), and the collection's address

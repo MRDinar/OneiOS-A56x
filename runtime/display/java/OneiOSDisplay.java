@@ -4,7 +4,7 @@
 // Run by app_process through bin/oneios-display; only surfaceflinger has to be running.
 // Every android.* class is reached by reflection, so this compiles with a JDK alone and a method a
 // release renamed is a fallback here, not a build error. The socket, the mapped frame and the copy
-// into the layer's buffers are native (src/jni.c).
+// into the layer's buffers are native (src/jni.rs).
 
 import java.lang.reflect.Method;
 
@@ -14,13 +14,13 @@ public final class OneiOSDisplay {
     private static native int[] nInfo(long handle);                    // width, height, stride, format
     private static native int[] nFit(int sw, int sh, int dw, int dh);  // x, y, w, h
     private static native int[] nBuffer(int frameFormat);              // buffer format, dataspace
-    // ready: SESSION/ready with --session (the first post waits for it: src/xhd.h xhd_hold_first), null with --socket
+    // ready: SESSION/ready with --session (the first post waits for it: src/xhd/mod.rs hold_first), null with --socket
     private static native int nRun(long handle, Object surface, int format, int dataspace, String ready);
     private static native void nClose(long handle);
 
     private static final int RGBX_8888 = 2, BGRA_8888 = 5, RGBA_FP16 = 22;
-    private static final int FRAME_BGRX = 1, FRAME_RGBA16F = 2;        // the hello's formats (src/xhd.h)
-    // --dataspace's names and values (ADataSpace; src/xhd.h). -1: the frame format's own (auto).
+    private static final int FRAME_BGRX = 1, FRAME_RGBA16F = 2;        // the hello's formats (src/xhd/mod.rs)
+    // --dataspace's names and values (ADataSpace; src/xhd/mod.rs). -1: the frame format's own (auto).
     private static final String[] DATASPACE_NAMES = {"auto", "unknown", "srgb", "p3", "scrgb", "scrgb-linear"};
     private static final int[] DATASPACES = {-1, 0, 142671872, 143261696, 411107328, 406913024};
     private static final int TOP = Integer.MAX_VALUE - 1;

@@ -1,0 +1,45 @@
+[package]
+name = "xnuhost"
+description = "XNU as a process on Android's Linux kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+xh-core.workspace = true
+xnuhost-abi.workspace = true
+xnuloader.workspace = true
+onebridges.workspace = true
+onecamera.workspace = true
+oneencoder.workspace = true
+oneios-display.workspace = true
+drm2kgsl-sys.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xnuhost"
+path = "src/main.rs"
+
+# gpuctl: the GPU path alone, for a check on the phone (docs/gpu.md)
+[[bin]]
+name = "gpuctl"
+path = "tools/gpuctl.rs"
+
+# machine-smoke: the vCPU machinery alone, no kernel image (check-arm64.sh smoke)
+[[example]]
+name = "machine-smoke"
+path = "examples/machine_smoke.rs"

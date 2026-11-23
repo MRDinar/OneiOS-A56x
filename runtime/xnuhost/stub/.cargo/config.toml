@@ -1,0 +1,3 @@
+# `cargo build` / `cargo clippy` here build for the stub's one target (build.sh passes it too).
+[build]
+target = "aarch64-unknown-none"

@@ -2261,3 +2261,17 @@ persistent: a reboot costs a manual re-root.
   is `prelink_xml.rs` (kept: the kernel's XML parser has no `&quot;`). On 24A446: data.seed 5406d527... (same
   entries), kernel.kc 276aadac... unchanged, manifest.json a4c8bbd1...; old sets still verify; PC boot to SpringBoard
   and `guest ready`. tools/oneios-tool/todo_rust.md section 11.
+
+- 2026-11-23, rust-runtime (lead and helpers core, boot, machine, session, devices, display, bridges-net, bridges-hw,
+  media; docs by docs): the runtime is Rust. The Cargo workspace `runtime/Cargo.toml` (xh-core, xnuhost-abi,
+  xnuloader, xnuhost with drm2kgsl-sys, oneios-display, onebridges, onecamera, oneencoder, oneios-package-tools) and
+  the bare-metal task stub and test kernel replace every runtime `.c`/`.h`/`.S`, Makefile and `runtime/host.mk`, one C
+  file to one module, log lines byte for byte. Kept C: the guest headers in `runtime/xnuhost/include/xnuhost/`,
+  drm2kgsl's glue and headers, and `kernel/`, `drivers/`, `userland/`. Build `runtime/build.sh STAGE`; tests
+  `runtime/host-tests.sh` (workspace, lint, boot, port, links, package) and, in CI, `runtime/tests/host.sh`. Tested:
+  every workspace test, fmt and clippy clean, `runtime/xnuhost/check-arm64.sh check`'s three boots under qemu-aarch64,
+  the trap path against the C under qemu (`check-arm64.sh ab`; null system call 9.95 us C, 6.48 us Rust after the
+  stub's 8-byte register copy). **No phone run yet.** The guide: `runtime/RUST.md`; the docs (README, building,
+  booter, architecture, hardware, gpu, releases, the READMEs under runtime/) say the same. The kernel's, drivers'
+  and userland's comments that still name runtime C files are listed in the docs commit's report, not changed
+  (their sources are hashed into the build records).

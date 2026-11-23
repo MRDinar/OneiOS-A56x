@@ -100,14 +100,15 @@ jobs:
         with:
           path: /usr/local/lib/android/sdk/ndk/28.2.13676358
           key: ci-ndk-28.2.13676358
-      - name: Cache the Rust toolchain and cargo (the tool's warm build rides in the target dir)
+      - name: Cache the Rust toolchain and cargo (the warm builds of the tool and of the runtime ride in their target dirs)
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.rustup
             ~/.cargo
             tools/oneios-tool/target
-          key: ci-cargo-${{ runner.os }}-rust-stable-${{ hashFiles('tools/oneios-tool/**/Cargo.lock') }}
+            runtime/target
+          key: ci-cargo-${{ runner.os }}-rust-stable-${{ hashFiles('tools/oneios-tool/**/Cargo.lock', 'runtime/Cargo.lock') }}
           restore-keys: |
             ci-cargo-${{ runner.os }}-rust-stable-
       - name: The fork's tree is not in this checkout (app/ stays an empty submodule folder)
@@ -354,7 +355,10 @@ jobs:
       - name: Unit tests on macOS (./gradlew test, core:root's script tests among them)
         working-directory: app/app-android
         env:
-          WATCHDOG_MIN: 30
+          # 45, not 30 (2026-11-23): a good run of the fork's tests took 28 min 54 s on main (707 tests), and two runs
+          # on a slower macos-15 runner were still passing tests at 30 min (680 and 675 done, a different test each
+          # time) when the watchdog stopped them. The job's own limit is 60 min; setup takes about 8.
+          WATCHDOG_MIN: 45
         run: |
           set -euo pipefail
           PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -Ev '^(/opt/homebrew|/usr/local)(/|$)' | paste -sd: -)

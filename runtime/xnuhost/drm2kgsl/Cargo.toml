@@ -1,0 +1,23 @@
+[package]
+name = "drm2kgsl-sys"
+description = "Droid-VM's drm2kgsl renderer (external/virglrenderer, pinned, with drm2kgsl/patches) built from its C, and a safe Rust front"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+build = "build.rs"
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+xh-core.workspace = true
+
+[lints]
+workspace = true

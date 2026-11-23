@@ -12,8 +12,8 @@ index 0000000..be8461a
 + * pages, through the ram_discard host call (a hole punched in the RAM memfd: the page reads as zero when it is
 + * used again). XNU's free count, targets and memorystatus are not changed by this.
 + *
-+ * The same file is osfmk/arm64/hosted/free_report.h in the kernel (0058 adds it); runtime/xnuhost's host tests
-+ * check that the two are the same and test these functions (tests/test_xnuhost.c, "free report").
++ * The same file is osfmk/arm64/hosted/free_report.h in the kernel (0058 adds it); the runtime's host tests
++ * check that the two are the same (abi/tests/headers.rs) and test their Rust twin (abi/src/free_report.rs).
 + */
 +#ifndef XNUHOST_FREE_REPORT_H
 +#define XNUHOST_FREE_REPORT_H

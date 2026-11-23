@@ -6,7 +6,7 @@ start is called from `oneios_drivers_start` (`drivers/bridge/OneiOSBridge.c`, a 
 
 ```
  S24's evdev (event5 touch, event0/2/4 keys; read, never grabbed)
-   -> xnuhost input.c -> virtio-input (/arm-io/input-0)            runtime/xnuhost
+   -> xnuhost input.rs -> virtio-input (/arm-io/input-0)            runtime/xnuhost
    -> DroidVMVirtioInput.c (staged) + OneiOSSideKeys.inc           the transport, in the kernel
    -> NativeHidInput (staged) x 2, under the collection's IOHIDDevice
         "OneiOS touch screen"   Digitizer / Touch Screen, 10 fingers, Built-In, DisplayIntegrated
@@ -100,7 +100,7 @@ Two things differ from `aes/`, both because the collection runs slid under xnuho
 | 3 | Consumer / Volume Decrement | `KEY_VOLUMEDOWN` 114 | event4 |
 | 4 | Telephony / Ring Enable | `KEY_MUTE` 113 flips it; `oneios_hid_ringer_set()` | no ringer switch |
 
-xnuhost reads the keys' devices without `EVIOCGRAB` (`runtime/xnuhost/src/input.c`, `docs/booter.md` 2.9): the
+xnuhost reads the keys' devices without `EVIOCGRAB` (`runtime/xnuhost/src/input.rs`, `docs/booter.md` 2.9): the
 switch's Volume Up + Volume Down watcher sees every press too. iOS also sees both keys of that chord pressed.
 Whether iOS 27 takes Ring Enable = 1 as "ring" is a guess from older releases; nothing sets the bit on this phone.
 
@@ -142,12 +142,12 @@ backboardd was first. On the phone: the `N dropped` of the state line should sta
 
 The S Pen as iOS's pencil digitizer (`docs/hardware.md` 7f has what 24A446 needs and where it was read). Published only
 with the boot argument **`oneios-pen=1`** and when the transport found xnuhost's pen device (`/arm-io/input-1`, xnuhost
-`pen=auto`, which adds `oneios-pen=1` itself; `runtime/xnuhost/src/pen.c`). Otherwise one line says why not:
+`pen=auto`, which adds `oneios-pen=1` itself; `runtime/xnuhost/src/pen.rs`). Otherwise one line says why not:
 `oneios-hid: pen: xnuhost has a pen device; not published (oneios-pen=0)`, or `... oneios-pen=1, but xnuhost gave no pen
 device ...`.
 
 ```
- sec_e-pen (evdev, read only) -> xnuhost pen.c (fixed units) -> virtio-input /arm-io/input-1 "OneiOS pen"
+ sec_e-pen (evdev, read only) -> xnuhost pen.rs (fixed units) -> virtio-input /arm-io/input-1 "OneiOS pen"
    -> DroidVMVirtioInput.c KIND_PEN (UniXNU-droidvm, unchanged): flags, x, y, pressure, distance, tilt, altitude, azimuth
    -> NativeHidInput "OneiOS pen" (staged/hid_pen.rs): report 4, Digitizer / Stylus, Transport SPI
    -> IOHIDEventDriver (the SPI / Digitizer personality) -> the edge wrapper completes each stylus event -> backboardd
@@ -280,7 +280,7 @@ The path of one touch frame, and where each part is measured:
 | Step | Where | Measured by |
 |---|---|---|
 | The touch IC scans; Samsung's driver reports the frame; the kernel stamps it | the phone's kernel | the event time (`CLOCK_MONOTONIC`, xnuhost's file only) |
-| xnuhost's input thread reads it (`poll`, then `read` of up to 64 events) | `runtime/xnuhost/src/input.c` | `input: touch: ... read x/y/z us after the scan` (per gesture, at the last lift) |
+| xnuhost's input thread reads it (`poll`, then `read` of up to 64 events) | `runtime/xnuhost/src/input.rs` | `input: touch: ... read x/y/z us after the scan` (per gesture, at the last lift) |
 | At the frame's `SYN_REPORT` the events go into the guest's posted buffers and the device's SPI is raised | `virtio_input.c` | `... K frames waited for the guest's buffers` (none posted) |
 | The SPI wakes the transport's worker (`droidvm,intid`: it sleeps on the interrupt, no polling), which takes the frame | staged `DroidVMVirtioInput.c` | `oneios-hid: touch latency: ... the transport had each a/b/c us after its scan` |
 | The finger set is published and NativeHidInput's sink makes the HID report on the caller's thread (`runAction` on its work loop); Apple's IOHIDEventDriver turns it into digitizer events and queues them for backboardd inside that call | staged `NativeHidInput.cpp` | `... its HID report was with the event driver d/e/f us after it` |
@@ -335,7 +335,7 @@ edge and the three side keys, repeated), `docs/building.md` section 5:
 | Events | the script's frames become HID reports the family accepts (`last result 0x0`), and Apple's event driver queues its events for backboardd: `touch screen: 444 HID events queued for the service's client(s), 0 dropped`, `buttons: 66 HID events queued ..., 0 dropped` (the user clients' own `DebugState` counts), growing at the script's pace |
 | Edge contacts | `21 contacts begun (10 at an edge)`: the taps in the middle and the swipes from the bottom edge, the latter flagged |
 | The light sensor | `oneios-hid: light sensor: OneiOSALSDevice(IOHIDInterface(AppleUSBALSService))` |
-| xnuhost | `make -C runtime/xnuhost test`: 13190 checks, among them the script's parser and `xh_virtio_ready` |
+| xnuhost | `make -C runtime/xnuhost test` (the C runtime of that date; today `cargo test -p xnuhost` in runtime/): 13190 checks, among them the script's parser and `xh_virtio_ready` |
 
 Not shown: that backboardd or SpringBoard acts on an event (no user-space log was read; no frame is drawn yet).
 The two minutes before the kernel's driver takes over are spent waiting for the DriverKit driver's process;

@@ -1,6 +1,6 @@
 //! An xnuhost session log as records.
 //!
-//! The framing is `runtime/xnuhost/src/log.c`'s: `[seconds.millis] xnuhost I|E|D text`, `[seconds.millis] guest
+//! The framing is xh-core's (`runtime/core/src/log.rs`): `[seconds.millis] xnuhost I|E|D text`, `[seconds.millis] guest
 //! text` (the guest's console), and lines of the helpers and of the session's scripts with no time. Two writers
 //! share the guest's console, so a record can be cut and the next one appended to the same line, and a record
 //! can lose its first characters (`neios-ubt: ...`). `load` splits such lines into their records and marks which
