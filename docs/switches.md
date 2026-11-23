@@ -16,7 +16,7 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 xnuhost logs every switch once, after the `versions:` line:
 
 ```text
-switches: session-mode=hosted stop-loop=wait task-trim=1 ram-fit-terms=tasks uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 (docs/switches.md); all at their defaults
+switches: session-mode=hosted stop-loop=wait task-trim=1 ram-fit-terms=tasks uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 (docs/switches.md); all at their defaults
 ```
 
 When some are changed, the end says which: `not at the default: wifi-send-wait gpu-down`. Kernel switches are read
@@ -45,6 +45,7 @@ change (the default value), and whether one has run the other value.
 | `encoder-warmup` | `0\|1` | `1` | 1: the encoder helper starts at the guest's first virtio-media session and opens one HEVC encoder at once; 0: it starts at the first encode, no warm-up (its binder threads start either way: that is the fix of the hang, not a choice) | b3da193 + this build | no |
 | `boot-args-add=oneios-wifi-rssi=0` | `0\|1` | `1` | 1: the Wi-Fi driver posts RSSI_CHANGED records (the bars follow the signal); 0: none, wifid reads the signal at the join only (before cbf97ea). Kernel (net/OneiOSWifi.cpp) | cbf97ea + this build (db2eb42) | no |
 | `boot-args-add=oneios-telemetry-jobs=1` | `0\|1` | `0` | 0: 0093 and 0094 disable the telemetry group (osanalyticshelper and its agent job, 16 uploaders); 1: the disable list is 0053's loops only and the enable pass enables the telemetry labels again (a store 0093 changed gets them back). Kernel, hosted 0096 | bad88c3, 30bdea6 + 0096 | 0093 alone: 20:23 (osanalyticshelper still ran: 0094) |
+| `boot-args-add=oneios-pool-cut=0` | `0\|1` | `1` | 1: metal2vulkan releases a spare command pool that holds more than its last 10 s need plus 8 command buffers (the render server's small command-stream BOs go back); 0: the pools are kept as before (the plug-in sets `METAL2VULKAN_POOL_USE_WINDOW_S=0`). Metal plug-in only (the boot add-on), docs/gpu.md "Who keeps a blob" | 50873fe | no |
 
 Not switched, on purpose:
 
@@ -78,7 +79,7 @@ wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
 # kernel switches (boot-args-add appends to boot-args; one line, both words):
-# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0
+# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1
 ```
 
 ## Tests
@@ -89,7 +90,20 @@ encoder-warmup=1
   (`gpu-down=bottom` stays at the top in the phone's case), `cpu::tests::release_floor` (`uclamp-rule=all`'s floor).
 - Bridges: `switches::tests::words_and_defaults`, `wifi::uplink::tests::no_wait_when_switched_off`; the encoder's
   `switches::tests::words`.
+- Metal: metal2vulkan's `tests::spares` (12, fix/gpu-blobs); the plug-in of this build is made with the patch.
 - Kernel: 0096 applies after 0095; the kernel of this build has both boot-args (`strings`).
 - Fork: `OneiosScriptTest.theStopLoopLooksOnceASecondWithARuntimeFromBeforeThePropertyWait` (`stop-loop=poll`: no
   `--prop-wait` call, its line).
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").
+
+## Found while building the Metal plug-in (2026-11-23)
+
+- `userland/metal/patches/metal2vulkan/0101-0103` are copied into the staged tree as `90101-...` but **never applied**:
+  the base's `build-adreno-metal-bridge.py` applies a fixed list of names, not every `*.patch`. No plug-in built here
+  has them. Left so on purpose (they change shader translation and no phone has run them); applying them is a change
+  for its own commit, behind a switch. `userland/metal/build.sh` says so now (its comment and its `stage` line).
+- `build-turnip-darwin.py` re-uses an existing `build/mesa-tu-ios27` with `meson configure` (options only), so a
+  changed cross file never reached it (the helper of fix/gpu-blobs removed the directory by hand). `build.sh turnip`
+  now keeps the cross file's inputs (the SDK, the four tools `xcrun --find` gives, the script's `cksum`) in
+  `build/mesa-tu-ios27.cross-inputs` and removes the directory when they changed; a directory with no record is kept
+  and recorded.

@@ -70,13 +70,15 @@ stage() {
   rsync -a --delete "$BASE/scripts/" "$R/scripts/"
   rsync -a --delete "$BASE/patches/" "$R/patches/"
   # This project's extra metal2vulkan patches (userland/metal/patches/metal2vulkan: the Adreno-generic shader
-  # translation fixes of hakios-arm64e-dada, rebased on the pin): added after the base's own, numbered 9xxx so that
-  # they sort last. The base's build script is assumed to apply patches/metal2vulkan/*.patch in name order;
-  # `.github/workflows/gpu-patch-check.yml` checks that they apply to the pin, the build log shows if they did.
+  # translation fixes of hakios-arm64e-dada, rebased on the pin): copied as 9xxx. NOT APPLIED (found 2026-11-23,
+  # fix/gpu-blobs): the base's build-adreno-metal-bridge.py applies a fixed list of names, not *.patch, so these copies
+  # are in no list and no plug-in built here has them. Left so on purpose: applying them is a change to the shaders
+  # no phone has run, for its own commit with a switch (docs/switches.md). `.github/workflows/gpu-patch-check.yml`
+  # checks only that they apply to the pin.
   if ls "$HERE"/patches/metal2vulkan/*.patch >/dev/null 2>&1; then
     mkdir -p "$R/patches/metal2vulkan"
     for p in "$HERE"/patches/metal2vulkan/*.patch; do cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"; done
-    say "added $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx)"
+    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx: in no list of the base's script, not applied)"
   fi
   # Lasting debug tooling, off by default (each patch only logs when its environment variable is set:
   # ONEIOS_VK_INIT, ONEIOS_SURFACE_TRACE): the trace patches staged beside the base's own, applied by the
@@ -134,8 +136,25 @@ stage() {
   say "staged NativeAdrenoMetalPlugin.mm: userland/metal/CommandPoolRow.inc appended (the command pool row)"
 }
 
+# The base's build-turnip-darwin.py writes build/mesa-tu-ios27.cross each run, but an existing build directory only gets
+# `meson configure` with its options: a cross file is read at setup alone, so new cross-file values (the SDK, the
+# compilers, the c_args of the script) never reached an old directory (2026-11-23, fix/gpu-blobs: a stale
+# build/mesa-tu-ios27 had to be removed by hand). The inputs of that cross file are kept beside the directory; when they
+# differ the directory is removed and set up again. A directory with no record yet is kept, and recorded.
+turnip_cross_inputs() {
+  printf '%s\n' "$(xcrun --sdk iphoneos --show-sdk-path)"
+  for t in clang clang++ ar strip; do xcrun --sdk iphoneos --find "$t"; done
+  cksum < "$R/scripts/build-turnip-darwin.py"
+}
+
 turnip() {
-  (cd "$R" && python3 scripts/build-turnip-darwin.py --target ios27)
+  local dir=$R/build/mesa-tu-ios27 rec=$R/build/mesa-tu-ios27.cross-inputs now
+  now=$(turnip_cross_inputs)
+  if [ -f "$dir/build.ninja" ] && [ -f "$rec" ] && [ "$(cat "$rec")" != "$now" ]; then
+    say "turnip: the cross file's inputs changed since $dir was set up: removed, meson sets it up again"
+    rm -rf "$dir"
+  fi
+  (cd "$R" && python3 scripts/build-turnip-darwin.py --target ios27) && printf '%s\n' "$now" > "$rec"
 }
 
 plugin() {

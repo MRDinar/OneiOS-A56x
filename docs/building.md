@@ -1171,6 +1171,10 @@ oneios-tool ios tbd-diff A B                                               # two
   stubs itself (the script needed `llvm-nm`, `llvm-objdump` and PyYAML); its reports are the script's, line for line,
   on 11 of 11 cases (with both sets of stubs and the Metal bundle).
 
+**The Metal plug-in's build (2026-11-23).** `userland/metal/build.sh turnip` sets Turnip's build directory up again when
+the inputs of its cross file changed (record: `out/metal/root/build/mesa-tu-ios27.cross-inputs`); the copies of
+`userland/metal/patches/metal2vulkan` are not applied (docs/gpu.md section 7, "Build notes").
+
 **Trust.** The guest runs a binary whose CDHash is in a trust cache. Ours get there through the image hook: it reads
 the CDHash from each signed Mach-O it places and writes `overlay/userland/owner-trust.json` ([userland.md](userland.md)).
 The Metal plug-in's build also writes its CDHashes into `out/userland/NativeAdrenoMetal.build.json`, and the hook

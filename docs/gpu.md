@@ -1302,6 +1302,11 @@ member `AGXAccelerator::superClass` keeps the parent's unslid link address (noth
 
 ## 7. The Metal plug-in (`userland/metal`)
 
+**Build notes (2026-11-23, integration-switches; docs/switches.md "Found while building the Metal plug-in").**
+`build.sh turnip` removes `build/mesa-tu-ios27` when the inputs of its cross file changed (the SDK, the compilers,
+the base script), since an existing directory only gets `meson configure`. The `9xxx` copies of
+`patches/metal2vulkan` (0101-0103) are in no list of the base's bridge script and are not applied; `stage` says so.
+
 Built with the toolchain of [building.md](building.md) section 9: Xcode's on macOS, the cross toolchain on Linux. The
 same command on both; every link is against this guest's own iOS 27 stubs (`out/ios27-tbd`).
 
