@@ -3,7 +3,8 @@
 # whole suite with the port, link and package checks is runtime/host-tests.sh). No phone and no Apple files.
 #   cargo test --workspace: every crate's tests (the binder ones on a binderfs in a user namespace, skipped with a
 #     line where the kernel has none; drm2kgsl's when external/virglrenderer is there)
-#   cargo fmt --check, cargo clippy --workspace --all-targets -D warnings
+#   cargo fmt --check, cargo clippy --workspace --all-targets -D warnings on the host and, with the NDK, for
+#     aarch64-linux-android (the phone-only code: the Android back ends, JNI, the vCPU machinery)
 #   runtime/xnuhost/check-arm64.sh smoke check: the static Android xnuhost booting the Rust test kernel under qemu-aarch64
 #     (as it is on an arm64 Linux host), when the NDK and qemu-aarch64 are there; skipped with a line otherwise
 set -euo pipefail
@@ -16,6 +17,9 @@ export NDK=${NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/
 cargo test --workspace --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+if [ -x "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" ]; then
+  cargo clippy --workspace --all-targets --locked --target aarch64-linux-android -- -D warnings
+fi
 if [ ! -x "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" ]; then
   echo "runtime: no NDK at $NDK: the test kernel's boots skipped"
 elif [ "$(uname -m)" != aarch64 ] && ! command -v qemu-aarch64 > /dev/null; then

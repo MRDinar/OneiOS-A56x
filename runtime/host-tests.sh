@@ -15,7 +15,8 @@
 #             stand-in KGSL scenarios when external/virglrenderer is there (the memory ones need /dev/udmabuf), the display
 #             helper, the bridges (the binder tests on a binderfs in a user namespace: they say "skipped" when the kernel
 #             has no binderfs), the camera, the encoder (its stand-in streams decoded by ffmpeg when it is there)
-#   lint      cargo fmt --check and cargo clippy --workspace --all-targets -D warnings
+#   lint      cargo fmt --check and cargo clippy --workspace --all-targets -D warnings, on the host and (with the NDK) for
+#             aarch64-linux-android
 #   boot      runtime/xnuhost/check-arm64.sh smoke check: the vCPU machinery alone, then the static Android xnuhost
 #             booting the Rust test kernel three times (the normal boot, ram=auto, the restart loop) under qemu-aarch64 on
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
@@ -82,6 +83,7 @@ summary() {
 suite() {
   part workspace sh -c 'cd runtime && cargo test --workspace --locked'
   part lint sh -c 'cd runtime && cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings'
+  if ndk_ok; then part lint-android sh -c 'cd runtime && cargo clippy --workspace --all-targets --locked --target aarch64-linux-android -- -D warnings'; fi
   # PREBUILT=1 (the Mac's container): the Mac built the static xnuhost and the test image with its NDK just before, and
   # the container has no NDK: check-arm64.sh boots those as they are and builds nothing.
   if [ "${PREBUILT:-0}" = 1 ]; then

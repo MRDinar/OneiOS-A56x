@@ -1048,5 +1048,7 @@ pub fn open(
     }))
 }
 
-#[cfg(test)]
+// The tests run the renderer against a stand-in KGSL through drm2kgsl-sys's host-only open/ioctl table (and glibc's
+// mallinfo2 for the leak check): host builds only. On the phone the renderer meets the real KGSL (gpuctl).
+#[cfg(all(test, not(target_os = "android")))]
 mod tests;
