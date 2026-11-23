@@ -1014,6 +1014,7 @@ pool's first blocks are in the 4-32 MiB columns too.)
 | Core Animation (backboardd's render server) and the app | its `MTLTexture`s, `MTLBuffer`s, render targets, its own texture caches; the `IOSurface`s of every window it composites | its own policy: on memory pressure (iOS's, inside the guest), when the layer goes |
 | NativeMetal (`NativeBridgeMetalFrontend.mm`) | every imported IOSurface while anything in the process still retains it (`gHeldImports`) | the next import, a command buffer's completion, or a memory-pressure rise (`watchImportPressure`) |
 | metal2vulkan (`memory.rs` pools) | the blocks resources are placed in (dedicated allocations for large ones) and up to two empty blocks a pool | an empty block after 2 s (`watchIdleMemory`), every kept block on a pressure rise; never while placements live in it |
+| metal2vulkan (`spares.rs`) | spare command pools, each with every command buffer it made and, in Turnip, the last command stream BO of each of their streams (8-64 KiB each; Turnip's reset keeps it); spare descriptor pools (at most 256 of each list) | a pool spare for 20 s, all but the 8 newest (`watchIdleMemory`); all but 2 on a pressure rise; since 2026-11-23 also a pool given back that holds more than 8 command buffers past the most one command buffer used of it in the last 10 s (`userland/metal/m2v-spare-command-pools.patch`, below) |
 | Turnip (`tu_knl_darwin.cc`) | a freed BO until its fence is done (the retire queue), then in its BO cache: at most 16 MiB of BOs up to 1 MiB and 96 MiB of larger ones (`TU_DARWIN_BO_CACHE_SMALL_MB`, `TU_DARWIN_BO_CACHE_MB`) | past the budgets, oldest first: the close below |
 | the kernel (`DroidVMVirtioGpu3D.cpp`) | a closed blob while the client still has fenced work made before the close ("deferred", "waiting") | at the client's next method or fence wait once that work is done (`reapPending`); every blob at the connection's close |
 | xnuhost (`virtio_gpu.rs`, `gpu3d_kgsl.rs`, drm2kgsl) | the resource, its udmabufs and KGSL's import of them | at `RESOURCE_UNREF`: detached from every context (drm2kgsl unbinds and frees the GPU object), the chunks closed |
@@ -1043,6 +1044,38 @@ oneios-gpu-ages: backboardd <16K 600, <64K 300, <256K 200, <1M 92; age <10 s 120
   textures Core Animation keeps; "wired IOSurface" growing is surfaces kept imported; "held closed" with an oldest age of
   minutes is GPU work that never finishes (a fence lost). A burst that the next quiet 10 s returns ("gone" catching up with
   "made", the counts falling) is a busy UI, not a leak.
+
+**The command pools held the render server's small blobs (2026-11-23).** Sessions s1824, s1904 and s2023: backboardd
+held 2,149-3,391 blobs under 1 MiB (`oneios-gpu-sizes` `<1`), all "own task" and mappable, 1,432 of them under 16 KiB,
+1,077 under 64 KiB, most 1-10 minutes old, `held closed 0`. They grew by 200-630 in each 10 s an app opened (`made +632 gone
++13`) and stayed at idle; they fell by 500-660 at once only at a memory pressure rise (`made +4 gone +664`), which is the
+trim of the spare command pools to their 2 newest. Turnip's command buffers keep the last BO of each of their 7 streams
+across resets (`tu_cs_reset`, reset flags not read: 8 KiB tile-store and sub streams, 16 KiB and up the others), and
+metal2vulkan's spare pools keep every command buffer they made (a secondary for each pass of the largest command buffer
+they served), so each pool in the rotation kept its largest frame forever; the idle trim never reached the newest 8. Not
+measured per BO name (no such line yet): the sizes and the drops at the pressure trims are what tie them to the pools.
+The fix (`userland/metal/m2v-spare-command-pools.patch`, metal2vulkan `spares.rs`, applied after the trace patch by
+`ios metal-stage-edit`): a pool given back counts the most command buffers one command buffer used of it in a 10 s
+window; at the first give-back past the window, a pool holding more than that plus 8 is released (its BOs go to Turnip's
+cache, past its budget to the host) and the next taker makes one. A pool that serves the same command buffers each frame
+is never released, so a steady screen makes no pools. Host tests: the runtime's `tests::spares` (12, 4 new: the slack,
+the window, steady use, the census). Switch: the boot argument `oneios-pool-cut=0` (`boot-args-add=oneios-pool-cut=0` in
+the image set's `xnuhost.conf`) keeps the pools as before (the plug-in sets `METAL2VULKAN_POOL_USE_WINDOW_S=0`; the
+runtime reads 1-3600 s, default 10). The bytes are another matter: backboardd's 0.8-1.8 GiB were mostly 5-21 blobs of 64
+MiB and more (pooled blocks of its textures), which fell only when Core Animation let textures go at a pressure rise;
+this fix does not change them.
+
+A lasting line, each Metal client's command pools (`userland/metal/CommandPoolRow.inc`, appended to the plug-in), every
+60 s when the command buffers moved by 32 or more or a pool went:
+
+```
+oneios-gpu-text: backboardd[64] CP 9/120 cut +2/80 idle +1/12 tuc 11M
+```
+
+Live pools / the command buffers made from them; `cut`: pools released since the last row for holding past their use,
+/ their command buffers; `idle`: pools the idle trim released, / theirs; `tuc`: Turnip's cache of freed BOs now. With the
+fix, backboardd's command buffers should stay in the low hundreds at a still screen and its `<1` blobs should fall back
+after an app closes (the `oneios-gpu-kinds` `gone` moving without a pressure rise).
 
 The host's side, in xnuhost's log every 10 s while it changes (`virtio_gpu.rs`, the blob note): `gpu: 10 s: host blobs N (M
 MiB), made +A unref'd +B`. N against the guest's `oneios-gpu-memory` live count says whether the host keeps blobs the guest
