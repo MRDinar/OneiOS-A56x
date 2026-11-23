@@ -16,7 +16,7 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 xnuhost logs every switch once, after the `versions:` line:
 
 ```text
-switches: session-mode=hosted stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 ram-fit-terms=tasks ram-ondemand=0 uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 (docs/switches.md); all at their defaults
+switches: session-mode=hosted stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 ram-fit-terms=tasks ram-ondemand=0 uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 (docs/switches.md); all at their defaults
 ```
 
 When some are changed, the end says which: `not at the default: wifi-send-wait gpu-down`. Kernel switches are read
@@ -51,6 +51,8 @@ change (the default value), and whether one has run the other value.
 | `boot-args-add=oneios-pool-cut=0` | `0\|1` | `1` | 1: metal2vulkan releases a spare command pool that holds more than its last 10 s need plus 8 command buffers (the render server's small command-stream BOs go back); 0: the pools are kept as before (the plug-in sets `METAL2VULKAN_POOL_USE_WINDOW_S=0`). Metal plug-in only (the boot add-on), docs/gpu.md "Who keeps a blob" | 50873fe | no |
 | `boot-args-add=oneios-pressure-big=0` | `0\|MB` | `512` | 512: at a memory pressure rise a process of at least 512 MiB footprint not yet notified at that level is notified first, the largest first (the render server and the apps that draw hear of it in the first 250 ms steps, not after 150-300 smaller processes); 0: XNU's order (least important band first, 250 ms apart: the GPU clients last). Kernel, hosted 0097; its `oneios-wired` and `oneios-pressure` lines are logging (no switch) | 0097 (fix/wired-names) | no |
 | `boot-args-add=oneios-disable-allowed=0` | `0\|1\|NAME` | `1` | 1: before launchd the kernel renames the 19 `DisableAllowed` keys of the sealed `/System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist` (same length, nothing else changes) in a copy that 0031's union shows over LaunchDaemons, so launchd honours disabled.plist for every job (osanalyticshelper and its agent, diagnosticextensionsd, symptomsd-diag, OTATaskingAgent, softwareupdated ran although disabled); NAME: the plist of that product type; 0: no copy (an earlier boot's removed), launchd runs the marked jobs whatever disabled.plist says (before 0098). With `oneios-telemetry-jobs=1` the telemetry labels are enabled in disabled.plist, so they run either way. Kernel, hosted 0098; `oneios-kill` (0100) is logging (no switch) | 0098, 0100 (fix/disable-allowed) | no |
+| `boot-args-add=oneios-idle-spares=0` | `0\|1` | `1` | 1: the Metal plug-in's idle trim (every 2 s) also frees the images and buffers metal2vulkan's recyclers parked past their second and the spare dedicated image blocks past their 10 s (they went only as another object was parked, taken or returned, so a still process kept up to 128 + 64 MiB parked and every spare); 0: they age only as before (the plug-in sets `METAL2VULKAN_IDLE_SPARES=0`). Metal plug-in only (the boot add-on), `userland/metal/m2v-idle-memory.patch`, docs/gpu.md "The idle memory" | this build | no |
+| `boot-args-add=oneios-bo-cache-idle=0` | `0\|1` | `1` | 1: every 60 s the plug-in gives back the BOs in Turnip's cache of freed BOs that no allocation took for 30 s (`tu_darwin_bo_cache_trim_idle`); 0: the cache goes back only past its budgets or at a pressure rise, as before (the render server kept 78 MiB at a still screen). Metal plug-in only (the boot add-on), `userland/metal/turnip-idle-bo-cache.patch` | this build | no |
 
 Not switched, on purpose:
 
@@ -86,8 +88,8 @@ wifi-buffers=1
 wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
-# kernel switches (boot-args-add appends to boot-args; one line, all five words):
-# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1
+# kernel switches (boot-args-add appends to boot-args; one line, all seven words):
+# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-idle-spares=1 oneios-bo-cache-idle=1
 ```
 
 ## Tests
