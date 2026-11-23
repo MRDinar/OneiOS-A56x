@@ -1206,7 +1206,7 @@ fn session_mode() {
     );
     assert_eq!(
         c.takeover_line().unwrap(),
-        "session: Android takeover (session-mode=takeover; galaxy-s24-ultra allows it): the native touchscreen is grabbed for iOS; the side keys are read, never grabbed; the switch's CPU caps and the way back are the OneOS fork's"
+        "session: Android takeover (session-mode=takeover; galaxy-s24-ultra allows it): the native touchscreen is grabbed for iOS; the side keys are read, never grabbed; Android's services stopped by the switch: takeover-stops=default; the switch's CPU cap, its stops and the way back are the OneOS fork's"
     );
     let c = mode_finish(&rig, &s26, &takeover).unwrap();
     assert!(c.touch_exclusive && c.host == find("galaxy-s26-ultra"));
@@ -1253,6 +1253,33 @@ fn session_mode() {
     let c = mode_finish(&rig, &s24, &["--set", "session-mode=hosted"]).unwrap();
     assert!(c.session_mode == SessionMode::Hosted && !c.touch_exclusive);
     assert!(mode_finish(&rig, &s25u, &[]).is_err());
+    fs::remove_file(&conf).unwrap();
+
+    // takeover-stops=: the switch's stop list, checked here (default, none, or names of TAKEOVER_STOPPABLE, each once),
+    // named in the takeover line, from the image set or the command line; hosted accepts it and does nothing with it.
+    let mut c = Config::new();
+    for ok in
+        ["default", "none", "netd", "cameraserver,mediaextractor,mediametrics,media.tuner,perfmond,wificond,netd,media"]
+    {
+        assert!(c.set("takeover-stops", ok).is_ok() && c.takeover_stops == ok, "{ok}");
+    }
+    for bad in ["", "zygote", "netd,netd", "netd,", "vold", "surfaceflinger", "media,keystore2", "NETD"] {
+        assert!(c.set("takeover-stops", bad).is_err(), "{bad}");
+    }
+    assert_eq!(c.takeover_stops, TAKEOVER_STOPPABLE.join(","));
+    write(&conf, "session-mode=takeover\ntakeover-stops=cameraserver,netd\n");
+    let c = mode_finish(&rig, &s24, &[]).unwrap();
+    assert!(c
+        .takeover_line()
+        .unwrap()
+        .contains("; Android's services stopped by the switch: takeover-stops=cameraserver,netd; "));
+    let c = mode_finish(&rig, &s24, &["--set", "takeover-stops=none"]).unwrap();
+    assert!(c.takeover_line().unwrap().contains("takeover-stops=none; "));
+    write(&conf, "takeover-stops=netd\n");
+    let c = mode_finish(&rig, &s24, &[]).unwrap();
+    assert!(c.session_mode == SessionMode::Hosted && c.takeover_line().is_none());
+    write(&conf, "session-mode=takeover\ntakeover-stops=vold\n");
+    assert!(mode_finish(&rig, &s24, &[]).is_err());
     fs::remove_file(&conf).unwrap();
 
     // --host-info: one line, no image needed.

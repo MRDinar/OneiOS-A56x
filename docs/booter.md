@@ -103,6 +103,8 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--host-props FILE`, `--host-root DIR` (`host-props=`, `host-root=`) | the property area, `/` | a getprop dump read instead of the property area (`[key]: [value]` or `key=value` lines; an unreadable file is refused), and a folder for `/` of the sysfs and proc fallbacks: host tests, or a PC replaying a phone's `adb shell getprop` |
 | `--set session-mode=hosted\|takeover` (`session-mode=`, also in `xnuhost.conf`; 2026-11-23) | `hosted` | `takeover`: the opt-in Android takeover (section 2.9d): only with `mode=takeover`, `input=1` and a host-table row that allows it (the S24 Ultra, the S26 Ultra), else exit 2; it grabs the native touchscreen alone (`touch-exclusive` on unless given), the side keys read and never grabbed. `hosted`: the session as before, byte for byte |
 | `--host-info` | - | prints `host-info: device=NAME takeover=yes\|no (why)` for this phone and exits (section 2.9d); no image needed. The OneOS switch's preflight reads it |
+| `--set takeover-stops=default\|none\|NAME,...` (`takeover-stops=`, also in `xnuhost.conf`; 2026-11-23) | `default` | the Android services the OneOS switch stops in `session-mode=takeover` (section 2.9d): each NAME one of `cameraserver`, `mediaextractor`, `mediametrics`, `media.tuner`, `perfmond`, `wificond`, `netd`, `media`, once; anything else is a bad setting (exit 2). xnuhost only checks it and names it in the takeover line; the switch reads it from the image's `xnuhost.conf` and does the stops. Accepted and unused in `hosted` |
+| `--prop-wait SECONDS NAME=VALUE...` (first argument only) | - | waits until one of Android's properties NAME has VALUE (prints each such NAME, exit 0), or SECONDS (0 to 3600) pass (exit 1); 2 for a bad command line or a build without Android's property area (section 2.9d). The OneOS stop loop's wait; nothing of a session runs |
 | `--gpu auto\|3d\|2d` (`gpu=`, also in `xnuhost.conf` since 2026-11-21) | `auto` (the A56's entry: `2d`) | the GPU ([gpu.md](gpu.md) 2): `auto` 3D when KGSL opens, `3d` or do not start, `2d` the scanout only and no GPU pool. Before 2026-11-21 an image set's `gpu=` was read and dropped |
 | `--set usb-log=SECONDS` | 3 | how often the phone's USB gadget is read for its `usb:` line (section 2.9a), which is logged at the start, on every change and at the stop; 0 = off |
 | `--set ready-content-wait=SECONDS` | 120 | `session/ready` comes at the guest's first frame of its own that is not all black, or this long after its first frame of its own when all were black; 0 = at its first frame (the rule before 2026-11-15); 0 to 480 (section 2.8, "the ready rule") |
@@ -1690,6 +1692,7 @@ yet**; host-tested only (below).
 | Setting | Values | Default | Where |
 |---|---|---|---|
 | `session-mode` | `hosted` (the session as it always was), `takeover` (the opt-in Android takeover) | `hosted` | the command line (`--set session-mode=takeover`, which the OneOS switch adds in this mode only), or the image set's `xnuhost.conf` / `overlay/userland/xnuhost.conf` (the command line wins) |
+| `takeover-stops` (2026-11-23, takeover-stages) | `default` (the switch's six: `cameraserver`, `mediaextractor`, `mediametrics`, `media.tuner`, `perfmond`, `wificond`), `none`, or names of `TAKEOVER_STOPPABLE` (those six, `netd`, `media`) separated by commas, each once | `default` | the image set's `xnuhost.conf` (the switch reads the last line there, then in `overlay/userland/xnuhost.conf`); xnuhost checks the word (`config.rs` `takeover_stops_ok`: anything else is a bad setting, so `--host-info --config` refuses it too) and names it in the takeover line; the stops are the switch's ([oneos/interface.md](../oneos/interface.md) 4a) |
 
 What xnuhost does in `takeover` (the Rust runtime, rust-runtime 2026-11-23: `runtime/xnuhost/src/config.rs`
 `Config::finish_with`, `input.rs`, `session.rs` and `session/board.rs`; on `main`'s C runtime `config.c`
@@ -1713,8 +1716,11 @@ What xnuhost does in `takeover` (the Rust runtime, rust-runtime 2026-11-23: `run
   starts after the input began (the boot's, the first vCPU's), which the C left to the exit. A grab that the kernel
   refuses ends the start (`input: touch-exclusive: EVIOCGRAB ... refused`), which is a return like any exit.
 - Nothing else of xnuhost changes: the bridges, the CPU placement, the RAM, the display are the session's. The mode's
-  other parts are the fork's (the CPU cap from 46 C, the chord and the in-place return, the restart only where that
-  cannot work: [oneos/interface.md](../oneos/interface.md) 4a); xnuhost has nothing of them to put back.
+  other parts are the fork's (its stops of Android's services, the CPU cap from the cell at 50 C, the chord and the
+  in-place return, the restart only where that cannot work: [oneos/interface.md](../oneos/interface.md) 4a); xnuhost
+  has nothing of them to put back. The RAM the stops free is in `MemAvailable` when xnuhost starts (the switch waits
+  for each to end first), so `ram=auto` (2.2) gives the guest its share of it with no setting of its own; the
+  headroom (`ram-session-reserve`) stays the measured one (below, "The RAM").
 
 `xnuhost --host-info [--host-device ...] [--host-props FILE] [--config FILE]` prints one line and exits 0 (2 for a
 `host-device=` that names no row), without an image: `host-info: device=galaxy-s24-ultra takeover=yes (matched by
@@ -1724,10 +1730,37 @@ option (exit 2, `unknown or incomplete argument`), and the switch then refuses t
 
 Log lines (only in this mode; a hosted session's log has none of them): after the `host:` line `session: Android
 takeover (session-mode=takeover; galaxy-s24-ultra allows it): the native touchscreen is grabbed for iOS; the side keys
-are read, never grabbed; ...`; `hw: touch: ... exclusive touch requested (session-mode=takeover: sec_touchscreen grab,
+are read, never grabbed; Android's services stopped by the switch: takeover-stops=default; the switch's CPU cap, its
+stops and the way back are the OneOS fork's` (`takeover-stops=` as given, else `default`); `hw: touch: ... exclusive touch requested (session-mode=takeover: sec_touchscreen grab,
 the side keys read and never grabbed)`; `input: touch-exclusive: sec_touchscreen grabbed (session-mode=takeover; the side
 keys are read, never grabbed); Android input hidden until release`; at the stop `input: touch-exclusive: sec_touchscreen
 released to Android`. (The bench preview's grab line says `grabbed for the bench preview`.)
+
+**`xnuhost --prop-wait SECONDS NAME=VALUE...`** (takeover-stages, 2026-11-23; `runtime/xnuhost/src/propwait.rs`, run
+by `session::main` before anything of a session, in both modes). The OneOS stop loop's wait (stage 2a of the plan): it
+keeps zygote, zygote_secondary, the boot animation and the takeover's stops stopped, and until now ran three `getprop`
+every 0.2 s for the whole session, 15 processes a second. Now it runs this with `init.svc.NAME=running` for each of its
+names and 60 s: bionic's property area, read as `getprop` reads it (`__system_property_find`,
+`__system_property_read_callback`), and a futex wait on the area's serial (`__system_property_area_serial`,
+`__system_property_wait` with no prop_info), which init raises with every property it sets. So there is no process
+and no wakeup while no property changes; a change of any property wakes it for one look at its names, and a property
+set between the look and the wait ends the wait at once (the serial is read before the look). Exit 0 with each name
+that holds on stdout, 1 when the time passed, 2 for a bad command line (SECONDS 0-3600, 1-32 pairs, a name of
+letters, digits and `._-@:`, a value of at most 91 bytes) or a build without the property area (the host's). It sets
+nothing and signals nothing, and ends with the shell that started it (`PR_SET_PDEATHSIG` SIGKILL; it exits 1 at once if
+that shell is already gone). An xnuhost from before it exits 2 (`bad value for --prop-wait`): the loop then looks
+once a second.
+
+**The RAM in `takeover`** (stage 4 of the plan, judged 2026-11-23). The switch's stops come before xnuhost and it waits
+for each to end, so what they held is in `MemAvailable` when `ram=auto` reads it (2.2): each MiB adds about 0.93 MiB
+to the guest, through the same formula as `hosted` (no fork of it; the ram helpers keep changing its task terms on
+`main`). The headroom `ram-session-reserve` (1536 MiB with the lock) is not lowered for the mode: it is the host's
+swap-in floor measured on 2026-11-23 (31-42 MB/s of swap-in at 1077-1265 MiB available, under 0.2 MB/s from 1503 MiB
+up), and that working set is surfaceflinger, the composer, the display helper, xnuhost's code and the image's page
+cache, none of which the takeover's stops end. The stops are idle daemons (no working set to make room for). The
+headroom can go down with stage 3 (surfaceflinger, the composer and the helper gone), from a takeover session's own
+`memory:` lines. The proof lines: the switch's `Android takeover: stopped ...; host MemAvailable A -> B MiB`, then
+xnuhost's `memory: ram=auto: host MemTotal ... MemAvailable B' MiB; the guest gets N MiB`.
 
 Tests. The C runtime (`runtime/xnuhost/tests/test_xnuhost.c` `test_session_mode`, on `main`, on the build laptop,
 2026-11-23: 14325 checks, 0 failed): the table (only the two rows), hosted equal to no setting, takeover on both phones
@@ -1737,7 +1770,12 @@ and `--no-input`, the image set's setting and the command line over it, every `-
 those cases over, plus the refusals' texts, `touch-exclusive=0` after `session-mode=`, the bench preview's keys left
 out, the mode's lines and a property file that cannot be read for `--host-info`; `input::tests::the_grab_lines_and_one_release`
 checks both grab lines and that the release runs once. `oneios-tool`'s `host.rs` mirror checks each row's `takeover`
-against `host_device.rs` (`table_matches_the_bridges`). Not run on a phone.
+against `host_device.rs` (`table_matches_the_bridges`). Not run on a phone. takeover-stages (the build laptop,
+2026-11-23): `config::tests::session_mode` also checks `takeover-stops=` (the words it takes and refuses, the image set's
+line and the command line's, the takeover line naming it, `hosted` with it, a bad word in the image set refused), and
+`propwait::tests` (6) the command line, a property that holds at once, a wait that looks again only after a change, the
+time passing, a property that appears later, and the host build's exit 2. `--prop-wait` on bionic's area is **not run
+on a phone yet**.
 
 ### 2.9c A host call that does not come back, and a stop the main loop does not see (fix-debugger-crosscall-panic, 2026-11-23)
 

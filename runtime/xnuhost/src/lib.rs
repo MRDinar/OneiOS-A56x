@@ -35,6 +35,8 @@ pub mod mem;
 pub mod pen;
 /// The perf: report.
 pub mod perf;
+/// xnuhost --prop-wait: the OneOS stop loop's wait on Android's properties (docs/booter.md 2.9d)
+pub mod propwait;
 /// The guest's RAM held fixed.
 pub mod ramfix;
 /// When the guest is up.

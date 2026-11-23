@@ -225,11 +225,25 @@ The fork's side: its `docs/oneios.md`, "Android takeover" (fork branch `takeover
 Another word is refused by the preflight (`session-mode 'X' ... is not hosted or takeover`).
 
 **`takeover`, before anything changes** (the switch's preflight; each a `PREFLIGHT REFUSED` line, One UI untouched):
-xnuhost of the staged runtime is asked, `runtime/bin/xnuhost --host-info [--config <each image xnuhost.conf>]`
+the stop list `takeover-stops=` of the image's `xnuhost.conf` (below) must be `default`, `none` or names of the list,
+each once; xnuhost of the staged runtime is asked, `runtime/bin/xnuhost --host-info [--config <each image xnuhost.conf>]`
 ([docs/booter.md](../docs/booter.md) 2.9d); its line must say `takeover=yes` (the host table's S24 Ultra and S26 Ultra
-rows); a runtime without `--host-info` (from before 2026-11-23) is refused; at least one cpufreq policy and the cell's
-temperature must be readable. The preflight then prints `Session mode: Android takeover (session-mode=takeover, from
-the app|the image's xnuhost.conf; host-info's line): ...`.
+rows); a runtime without `--host-info` (from before 2026-11-23) is refused, and so is one from before `takeover-stops=`
+when the image names it (xnuhost then refuses the conf); at least one cpufreq policy and the cell's temperature must be
+readable. The preflight then prints `Session mode: Android takeover (session-mode=takeover, from the app|the image's
+xnuhost.conf; host-info's line): iOS gets the touchscreen alone; Android's services stopped for the session: NAMES
+(from the default list|the image's xnuhost.conf (takeover-stops=...)); a CPU cap from the cell's temperature (50 C
+up); ...`.
+
+**The stop list** (`takeover-stops=`, takeover-stages 2026-11-23; the plan's stage 2b): services of One UI's zygote's
+restart list that no bridge of a session uses. Every return restarts that list already (section 6), so a stop adds no
+new step to the way back. `default` (or no line): `cameraserver` (the camera bridge uses the provider HAL, not it),
+`mediaextractor`, `mediametrics`, `media.tuner`, `perfmond`, `wificond` (the Wi-Fi bridge scans by nl80211 itself).
+`netd` and `media` only when named (`takeover-stops=cameraserver,...,netd,media`): a Wi-Fi join and an encode without
+them are not yet checked on the phone. `none`: no stop. A service is stopped only when `init.svc.NAME` says `running`
+and an `.rc` file of `/system`, `/system_ext`, `/product`, `/vendor`, `/odm` or `/apex/*/etc` defines it without the
+`critical` option; otherwise it is named in the line as not stopped (`no such service`, `critical in its .rc`, `no .rc
+names it`). xnuhost checks the same word (`config.rs` `TAKEOVER_STOPPABLE`) and names it in its takeover line.
 
 **What the mode changes, and how each is put back:**
 
@@ -237,20 +251,43 @@ the app|the image's xnuhost.conf; host-info's line): ...`.
 |---|---|---|
 | xnuhost's command line: section 4's, plus `--set session-mode=takeover` (`--inner`, from `control/base/mode`) | the switch | - |
 | `EVIOCGRAB` of the native touchscreen `sec_touchscreen` (never a key device: the chord's devices are read as always) | xnuhost | the kernel, when xnuhost's file closes: every exit, a SIGKILL, the return's kill of the namespace |
-| `scaling_max_freq` of each cpufreq policy that `clocks_save` saved, lowered by the CPU cap (`oneios_switch.sh --cpu-cap`, in init's namespace, root cgroup, no OOM score or nice of its own): level 1 (80 % of the policy's top) at the case (`lrp`, else `sec-ap-thermistor`) 46 C or the cell 46 C, level 2 (60 %) at 48 C / 47 C, level 3 (60 %, and `session/return.request` `thermal: ...`) at 50 C / 48 C; down one level when both are 2 C under it for 3 readings (2 s each). Never `scaling_min_freq`, a thermal node, a GPU node, `/sys/power` | the switch's cap | the return: `control/cpu-cap.off`, the cap killed and waited for (2 s), then section 4's clock restore writes One UI's saved values (on every path that stopped One UI, a killed xnuhost's too) |
-| `control/base/mode` (`takeover`), `control/cpu-cap.{pid,level,log,off,ended}` | the switch, the cap | the next switch removes `control/` |
+| `setprop ctl.stop NAME` of each service of the stop list (`takeover_stops`, after zygote's stop, system_server's end and the cap's start, before the stop loop and xnuhost): each name written to `control/base/stopped` before its stop; then up to 5 s for init to say each is no longer running, so `ram=auto` sees the RAM they held. Line: `Android takeover: stopped NAMES (from ...; control/base/stopped)[; not stopped: NAME(why) ...][; still running after 5 s: ...]; host MemAvailable A -> B MiB`. Nothing persistent: a reboot brings each back | the switch | the stop loop keeps them stopped (another service's `onrestart` can start them); the return starts them with zygote's restart list in Gate B (`ctl.restart cameraserver`, `ctl.start media mediaextractor mediametrics`, `ctl.restart wificond`, `ctl.restart perfmond media.tuner` when they ran at the switch), then for each name of `control/base/stopped` (only names of the list) one more `ctl.start` if it does not run and up to 10 s for `init.svc.NAME=running`, before One UI's zygote; a stopped `netd` gets `ctl.start` instead of `ctl.restart` (init runs `onrestart` only for a running service) and zygote is started at once. `return.log`: `Android takeover: its stops run again: NAMES (control/base/stopped)` |
+| `scaling_max_freq` of each cpufreq policy that `clocks_save` saved, lowered by the CPU cap (`oneios_switch.sh --cpu-cap`, in init's namespace, root cgroup, no OOM score or nice of its own) from the cell (`power_supply/battery/temp`) only: level 1 (80 % of the policy's top) at 50 C, level 2 (60 %) at 52 C, level 3 (60 %, and `session/return.request` `thermal: the Android takeover's limit: cell ...`) at 55 C; down one level when the cell is 2 C under it for 3 readings (2 s each). The case (`lrp`, else `sec-ap-thermistor`) is read and logged (`?` when it cannot be read), never a level. Never `scaling_min_freq`, a thermal node, a GPU node, `/sys/power` | the switch's cap | the return: `control/cpu-cap.off`, the cap killed and waited for (2 s), then section 4's clock restore writes One UI's saved values (on every path that stopped One UI, a killed xnuhost's too) |
+| `control/base/mode` (`takeover`), `control/base/stopped`, `control/cpu-cap.{pid,level,log,off,ended}` | the switch, the cap | the next switch removes `control/` |
 
-Nothing else: the same zygote stop, stop loop, watchdog feeder, wakelock, USB watcher, display helper and boot screen
-as `hosted`. What the experiment had and this mode does not ([docs/s26.md](../docs/s26.md)): a restart as the only way
-back, a fixed 60-600 s deadline, `oom_score_adj -1000` on its workers, a 40 % cap from the first second, KEYCODE_WAKEUP
-pulses, the S26-only watchdog path, the one-shot APFS clone.
+**Why the cap acts on the cell only, from 50 C** (re-judged 2026-11-23). The first cap (the case at 46/48/50 C, the cell
+at 46/47/48 C) was a guess from YMGPwcca's limits. The hosted sessions of 2026-11-23 (`out/session-logs/2026-11-23-mac-*`)
+run with no cap of ours either (One UI's SSRM goes with system_server in both modes), on the kernel's own trips (the SoC
+at 92-95 C), with the case at 44-50.1 C and the cell up to 43.6 C: that cap would have cut the clocks at once and ended
+the session at the case's 50 C. The case is the skin, not the hardware, and the kernel's junction trips already protect
+the SoC. What nothing in a session guards is the cell while the SoC heats it (the kernel's battery driver stops charging
+and, far higher, shuts the phone down, but caps no CPU), so the cap keeps only that, above anything a hosted session
+reached and under the usual 60 C discharge limit of a Li-ion cell [a guess: Samsung's own battery limits were not read
+on the phone].
 
-**The way back** is section 6's, unchanged: the chord and the in-place return first. In this mode the return adds two
-reasons for its failsafe restart, both where the in-place return cannot put One UI back: the cap still running 2 s
-after it was killed (`FAILSAFE: the Android takeover's CPU cap (PID) could not be ended`), and a policy's
-`scaling_max_freq` that cannot be written back while the cap was at level 1 or more (`FAILSAFE: the Android takeover's
-CPU cap is still in force: NODE could not be written back`). At level 0 a node that cannot be written back is logged
-only, as in `hosted`. `return.log` says `Android takeover: its CPU cap ended at level N (...)`.
+**The stop loop, both modes** (stage 2a, takeover-stages 2026-11-23). `oneios_switch.sh --stop-loop XNUHOST` keeps
+zygote, zygote_secondary, `bootanim` and every name of `control/base/stopped` stopped. It runs `XNUHOST --prop-wait 60
+init.svc.NAME=running ...` ([docs/booter.md](../docs/booter.md) 2.9d), which sleeps on init's property area until one
+of them says running: no process while nothing starts (it was three `getprop` every 0.2 s, 15 processes a second). On
+a wake it stops what runs (`ctl.stop`) and looks again after 0.2 s. A runtime without `--prop-wait` (it answers 2):
+one look a second. `control/stop-loop.log`: how it waits, a line for each stop, `ends: N stops in the session`; the
+wait's pid in `control/stop-loop.wait.pid`. The return writes `control/stop-loop.off`, kills the wait by that pid (only
+a process whose command line is that wait), so the loop ends at once, and logs `stop loop: N stops of a service that
+ran again; keeps ... stopped: waits on ...`.
+
+Nothing else: the same zygote stop, watchdog feeder, wakelock, USB watcher, display helper and boot screen as `hosted`.
+What the experiment had and this mode does not ([docs/s26.md](../docs/s26.md)): a restart as the only way back, a fixed
+60-600 s deadline, `oom_score_adj -1000` on its workers, a 40 % cap from the first second, KEYCODE_WAKEUP pulses, the
+S26-only watchdog path, the one-shot APFS clone.
+
+**The way back** is section 6's, unchanged: the chord and the in-place return first. In this mode the return adds three
+reasons for its failsafe restart, each where the in-place return cannot put One UI back: a stopped service that does
+not run again (`FAILSAFE: the Android takeover stopped NAME for the session, and it does not run again
+(init.svc.NAME 'STATE')`, before One UI's framework starts), the cap still running 2 s after it was killed (`FAILSAFE:
+the Android takeover's CPU cap (PID) could not be ended`), and a policy's `scaling_max_freq` that cannot be written
+back while the cap was at level 1 or more (`FAILSAFE: the Android takeover's CPU cap is still in force: NODE could not
+be written back`). At level 0 a node that cannot be written back is logged only, as in `hosted`. `return.log` says
+`Android takeover: its CPU cap ended at level N (...)`.
 
 ## 5. What xnuhost must do for the switch
 

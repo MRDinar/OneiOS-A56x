@@ -5,7 +5,7 @@ iOS gets the CPU, the RAM and the GPU as directly as this design allows. The Lin
 
 **Research and design. Nothing here ran on the phone.** Built and tested in this step: stage 1, `oneios-tool phone
 procs` (section 6). Built since (2026-11-23, host-tested): the session setting the later stages go behind,
-`session-mode=takeover` (section 5a). Marks: **[F]** read in this repository, in the fork's scripts at `43fc1b3`, or in a session log;
+`session-mode=takeover` (section 5a), and in it stages 2a, 2b and 4 (section 5b, takeover-stages; not run on a phone). Marks: **[F]** read in this repository, in the fork's scripts at `43fc1b3`, or in a session log;
 **[I]** inference; **[U]** unknown until measured or tried on the phone; **[guess]** a number with no measurement.
 
 ## 0. The limits (the owner, 2026-11-22)
@@ -75,7 +75,8 @@ Session `out/session-logs/2026-11-22/kbd-debug/xnuhost-s9.log` (6 minutes, boot 
   then latches it at a later vsync.
 - **The fork's stop loop** (`oneios_switch.sh --stop-loop`, read in the script): three `getprop` every 0.2 s, for
   the whole session. That is 15 short processes a second [F]. Their cost is not in any log [U]; `phone procs`
-  counts it (the fork's group, with the children it waited for).
+  counts it (the fork's group, with the children it waited for). **Built (stage 2a, section 5b):** one wait on
+  init's property area (`xnuhost --prop-wait`), no process while nothing starts.
 - Session 4 of 2026-11-12 (`out/phone-baseline/2026-11-12/session4-survey.txt`): the load line's `5/3139`: 3,139
   threads existed on the host. No survey so far lists processes.
 
@@ -194,7 +195,8 @@ in 256 MiB steps (`docs/booter.md` 2.2). Today [F]: (8,618 - 2,048 - 256) / 1.08
 **Since 2026-11-23** the formula counts the tasks on their own (`docs/booter.md` 2.2, "The terms of 2026-11-23"):
 `(MemAvailable - 1536 MiB headroom - 256 MiB - 400 tasks * 4 MiB) / 1.07`, 4,608 MiB from 8,561; two sessions with
 5,632 MiB ran out of host memory. The paragraphs below are of the formula before that; a MiB freed before xnuhost
-starts now raises the guest by 0.93 (1 / 1.07) as before, and the headroom is the measured swap-in floor.
+starts now raises the guest by 0.93 (1 / 1.07) as before, and the headroom is the measured swap-in floor. Stage 4 as judged for the
+takeover (section 5b): the stops free their RAM before xnuhost starts; the headroom stays until stage 3.
 
 - Each MiB that a stopped process frees before xnuhost starts raises `MemAvailable at the start` by one, so the
   guest by 0.93. The size of that is [U] until `phone procs` runs. A bound: 2,466 MiB are not available at the
@@ -258,13 +260,13 @@ so each candidate needs the same "nobody calls it" proof as a stop.
 | Stage | What | Risk | Test | Undo |
 |---|---|---|---|---|
 | **1** (done here) | `oneios-tool phone procs`: the process list with CPU and RAM, read only | none: named files are read, nothing is written | unit tests, the stand-in phone; then the three captures of 1.3 on the phone | - |
-| **2a** | the fork's stop loop without 15 `getprop` a second: one long-lived wait on the three properties (a small `propwait` in the runtime: `__system_property_wait`, as `usb.c` reads serials), or the same loop at 1 s | a zygote that starts is stopped up to 1 s later | the fork's script tests; `phone procs`: the fork's group at about 0 % | the old loop |
-| **2b** | the switch stops zygote's restart list where no bridge uses it: `cameraserver`, `mediaextractor`, `mediametrics`, `media.tuner`, `perfmond`, `wificond`; then `netd` (after a session's Wi-Fi join without it) and `media` (after one HEIC encode without it) | a kept HAL waits for a stopped service and spins or blocks [U] | stand-in tests of the fork's scripts (the record, the return's starts); a session: `phone procs` before and after, Wi-Fi join, a sound, a photo tile, the return in place | the return starts them; take the name off the list |
+| **2a** (built, section 5b) | the fork's stop loop without 15 `getprop` a second: one long-lived wait on the three properties (a small `propwait` in the runtime: `__system_property_wait`, as `usb.c` reads serials), or the same loop at 1 s | a zygote that starts is stopped up to 1 s later | the fork's script tests; `phone procs`: the fork's group at about 0 % | the old loop |
+| **2b** (built for `session-mode=takeover`, section 5b) | the switch stops zygote's restart list where no bridge uses it: `cameraserver`, `mediaextractor`, `mediametrics`, `media.tuner`, `perfmond`, `wificond`; then `netd` (after a session's Wi-Fi join without it) and `media` (after one HEIC encode without it) | a kept HAL waits for a stopped service and spins or blocks [U] | stand-in tests of the fork's scripts (the record, the return's starts); a session: `phone procs` before and after, Wi-Fi join, a sound, a photo tile, the return in place | the return starts them; take the name off the list |
 | **3a** | `displayctl drm`: the read-only probe of 2.1 step 2, beside One UI | none: no master, nothing set | host test against a stand-in device; one run on the phone | - |
 | **3b** | the fork's part alone: a session with `display=none` in which the switch stops surfaceflinger and the composer, 60 s, automatic return | the panel stays dark for the session (the dead-man timer and the chord return); the composer or surfaceflinger does not come back: the failsafe reboot | the fork's script tests; one session: `return.log` shows the composer and surfaceflinger started, One UI's screen back | `display=shm` (today's path) stays the default |
 | **3c** | xnuhost's KMS back end as the probe says (atomic, two buffers, flips), `display=drm` | a dark or wrong picture: return by the chord or the timer; nothing persists | host tests against a stand-in DRM device (vkms in the Linux container [U]); a session: the Apple logo, touch to frame, `display:` lines | `display=shm` |
 | **3d** | panel power at display off, the real vsync, then the import of the guest's surface (no copy) | as 3c | as 3c, the `display: 10 s` line with 0 rows copied | the copy path |
-| **4** | the RAM that is now free: `ram-session-reserve` from the measured floor; any HAL that `phone procs` shows large and idle (rule 6, or park) | the host runs short: the valve, then the OOM kill of xnuhost, then the return (existing) | a long session with `memory:` lines; `phone procs` at the tightest moment | the image's `xnuhost.conf` |
+| **4** (judged, section 5b: no change of the headroom until stage 3) | the RAM that is now free: `ram-session-reserve` from the measured floor; any HAL that `phone procs` shows large and idle (rule 6, or park) | the host runs short: the valve, then the OOM kill of xnuhost, then the return (existing) | a long session with `memory:` lines; `phone procs` at the tightest moment | the image's `xnuhost.conf` |
 
 Stage 2 and stage 3b need changes in the fork (`akshaynexus/OneOS`, branch `oneios`) and then lines in
 `oneos/interface.md` (a session setting the switch reads, e.g. the image's `xnuhost.conf` `display=` and a stop
@@ -280,18 +282,86 @@ of the iOS hosted session / Android takeover option we have". Built (port-opt-in
 - `session-mode=hosted` (the default) is today's session and stays the one stages 2-4 compare against: nothing of the
   stages runs in it.
 - `session-mode=takeover` (the app's box on the Switch sheet, or the image's `xnuhost.conf`; the host table's S24 Ultra
-  and S26 Ultra rows only) is where each stage goes in, behind the same switch: today it holds what YMGPwcca/OneOS's S26
+  and S26 Ultra rows only) is where each stage goes in, behind the same switch. It holds what YMGPwcca/OneOS's S26
   experiment had that fits the way-back rules: iOS gets the touchscreen alone (`EVIOCGRAB` of `sec_touchscreen`, never a
-  key), and a CPU cap of the switch's own replaces One UI's case policy (SSRM, gone with system_server) from the case at
-  46 C, put back by the return. Its way back is section 4's: the chord and the in-place return first, the restart only
-  when the in-place return cannot put One UI back.
-- Next in this mode, in the order of section 5: **2a** (the stop loop without 15 `getprop` a second; for both modes,
-  as it costs only); **2b** (the stop list: `control/base/stopped`, the return's starts) as `takeover`'s first own stops;
-  **3b/3c** (`display=drm`: surfaceflinger and the composer stopped) only with `session-mode=takeover`; **4** (the RAM
-  headroom from the measured floor) as the mode's own `ram-session-reserve`. Each stage adds its line to the table of
+  key), and a CPU cap of the switch's own, put back by the return (since takeover-stages: from the cell at 50 C only,
+  section 5b). Since takeover-stages (2026-11-23) also stage 2b's stops (section 5b). Its way back is section 4's: the
+  chord and the in-place return first, the restart only when the in-place return cannot put One UI back.
+- Next in this mode, in the order of section 5: **3a** (`displayctl drm`, the read-only probe, beside One UI), then
+  **3b/3c** (`display=drm`: surfaceflinger and the composer stopped) only with `session-mode=takeover`, then the
+  headroom of stage 4 from a takeover session's own `memory:` lines. Each stage adds its line to the table of
   `oneos/interface.md` 4a ("What the mode changes, and how each is put back") in the same commit.
 - Not taken from the experiment, and why: section 0 and `docs/s26.md` (a restart as the only way back, the fixed
   deadline, lowered OOM scores, the 40 % cap from the start, the S26-only watchdog path).
+
+## 5b. Stages 2a, 2b and 4 as built (takeover-stages, 2026-11-23; host-tested, not run on a phone)
+
+The owner (2026-11-23 20:30): iOS is far too slow in the hosted session; build the plan's stages into the takeover.
+What the logs of that day say (`out/session-logs/2026-11-23-mac-*`, all hosted): `thermal: 30 s: host CPU` 640-735 %
+of 800 for the whole session, xnuhost 260-430 % of it; the SoC at 92-95 C (the kernel's trips), the case 44-50.1 C, the
+cell up to 43.6 C; `ram=auto` 4,608 MiB from MemAvailable 8,499 MiB (s2023, the formula of 2026-11-23), the host's
+lowest MemAvailable in that session 2,257 MiB; the owner's `phone procs`: "Android and the vendor" 150 processes,
+about 740 MiB swapped. No `phone procs` capture is in `out/` on the build laptop, so the stops' own sizes are not
+known yet [U]: the first takeover session measures them (below).
+
+**2a, both modes.** `oneios_switch.sh --stop-loop XNUHOST` (the switch passes the staged xnuhost) runs `XNUHOST
+--prop-wait 60 init.svc.zygote=running init.svc.zygote_secondary=running init.svc.bootanim=running [init.svc.NAME=running
+for each of control/base/stopped]` (`runtime/xnuhost/src/propwait.rs`, `docs/booter.md` 2.9d): a futex wait on init's
+property area, no process while nothing starts, woken by any property change for one look at its names. A name that
+runs is stopped at once (it was up to 0.2 s), and looked at again 0.2 s later. A runtime without `--prop-wait`
+answers 2 and the loop looks once a second (3 `getprop` a second instead of 15). `control/stop-loop.log` has a line for
+each stop; the return kills the wait by its pid file so the loop ends at once, and logs `stop loop: N stops of a
+service that ran again; keeps ... stopped: waits on ...`.
+
+**2b, takeover only.** After zygote's stop, system_server's end and the cap's start, before the stop loop and
+xnuhost, the switch's `takeover_stops` stops `takeover-stops=` of the image's `xnuhost.conf` (default `cameraserver
+mediaextractor mediametrics media.tuner perfmond wificond`; `netd` and `media` only when named, as section 5's table
+says: a Wi-Fi join and an encode without them are not yet checked; `none`). Rule 3 is checked on the phone: a service
+whose `.rc` (of `/system`, `/system_ext`, `/product`, `/vendor`, `/odm`, `/apex/*/etc`) has `critical`, or that no
+`.rc` names, is not stopped; nor one whose `init.svc` is not `running`. Rule 2: each name is written to
+`control/base/stopped` before its `ctl.stop`. Rule 4: the stop loop keeps them stopped. Rule 5: the return starts
+zygote's restart list as before, then each name of the file once more if it does not run, waits up to 10 s each, and
+fails safe (the restart) before One UI's framework starts if one does not run; a stopped `netd` gets `ctl.start`
+(init runs no `onrestart` for a stopped service) and zygote is started at once. Rule 6 does not apply: every name is
+on zygote's list. The switch's line: `Android takeover: stopped NAMES (from ...; control/base/stopped)[; not stopped:
+NAME(why) ...]; host MemAvailable A -> B MiB`; the return's: `Android takeover: its stops run again: NAMES`.
+
+**4, judged.** The stops come before xnuhost and the switch waits (5 s at most) for each to end, so their RAM is in
+`MemAvailable` when `ram=auto` reads it: 0.93 MiB of guest per MiB, through the formula on `main` (not forked: the
+RAM helpers keep changing its task terms). The headroom is not lowered for the mode: 1,536 MiB is the measured
+swap-in floor of 2026-11-23 (heavy swap-in at 1,077-1,265 MiB available, none from 1,503 MiB up), and that working set
+(surfaceflinger, the composer, the display helper, xnuhost's code, the page cache) is the same in a takeover until
+stage 3; the stopped daemons are idle. `docs/booter.md` 2.9d, "The RAM in `takeover`".
+
+**The CPU cap, re-judged.** The first cap (the case at 46/48/50 C, the cell at 46/47/48 C) would have cut the clocks at
+once in the sessions above and ended them at the case's 50 C. Hosted has no cap of ours either and runs on the
+kernel's trips; the case is the skin, the SoC has its junction trips. The cap now acts on the cell only: 80 % at
+50 C, 60 % at 52 C, a return at 55 C, above any hosted reading and under a Li-ion cell's usual 60 C [a guess];
+`oneos/interface.md` 4a.
+
+**Tests** (the build laptop, 2026-11-23): xnuhost `cargo test -p xnuhost` (`propwait::tests`, 6;
+`config::tests::session_mode` with `takeover-stops=`); the fork's `OneiosScriptTest` (the stop loop's wait and its
+fallback, the stops and their restore, a service that does not come back, the stop list's words, the cap on the
+cell, the hosted session unchanged). **Not tested:** anything on a phone: bionic's `__system_property_wait` under
+KernelSU, the `.rc` files' places on One UI 8, whether a kept HAL calls a stopped service and waits [U], the RAM the
+stops free, the CPU they cost (the fork's group in `phone procs`).
+
+**The first takeover session (the Mac).** Before: `oneios-tool phone procs --seconds 30 --raw > procs-oneui.raw`
+(One UI idle). In the session, 2 minutes after ready: `phone procs --seconds 30 --raw > procs-takeover-idle.raw`, then
+`phone procs --from procs-takeover-idle.raw --sort mem`: the stopped names must be absent, the fork's group about 0 %
+CPU. The lines: the switch's `Android takeover: stopped ...; host MemAvailable A -> B MiB` (`/data/local/tmp/oneios/switch.log`,
+or `oneios-tool cycle`'s `collect`), xnuhost's `memory: ram=auto: ... MemAvailable B' MiB; the guest gets N MiB` (compare with
+8,499 -> 4,608 of s2023), `thermal: 30 s: host CPU`, `control/cpu-cap.log`, and after the return `return.log`'s `stop
+loop: ...` and `Android takeover: its stops run again: ...`, then `getprop init.svc.NAME` = `running` for each name of
+`control/base/stopped`.
+
+**3b-3d: not built.** The exact next step is 3a, read only, beside One UI: `displayctl drm` (section 2.1 step 2: the
+driver's name and version, `DRM_CAP_DUMB_BUFFER`, connectors and modes, CRTCs, planes with types, formats and property
+names), one run on the phone, its output in this file. Then 3b, the fork's part alone: with `session-mode=takeover`
+and the image's `display=none`, the switch adds `surfaceflinger` and the composer (`init.svc` of its `COMPOSER_SVC`)
+to `control/base/stopped` after the boot screen ends, starts no display helper and no boot screen, and the return's
+existing composer and surfaceflinger restarts (Gate B) put them back; one 60 s session with the automatic return,
+`return.log` showing both started. 3c (xnuhost's KMS back end, atomic, two buffers) only after 3a's output.
 
 ## 6. Stage 1 as built: `oneios-tool phone procs`
 
@@ -322,6 +392,9 @@ without a session, root needed (the phone hides other users' `/proc` entries fro
 - [U] The whole process list of a session, and each cost: section 1.3.
 - [U] Which daemon, if any, spins or waits in a loop because system_server is gone.
 - [U] SDE's KMS interface on this panel: stage 3a.
-- [U] Whether MediaCodec in `oneios-encoder` needs mediaserver; whether a kept HAL calls netd.
+- [U] Whether MediaCodec in `oneios-encoder` needs mediaserver; whether a kept HAL calls netd. (Stage 2b stops neither by default; `takeover-stops=...,netd,media`
+  tries it in one session.)
+- [U] Whether a kept HAL calls a stopped service of stage 2b and waits for it; what each stop frees (`phone procs` in
+  the first takeover session, section 5b).
 - [U] What killed xnuhost on 2026-11-16 (lmkd or the kernel's OOM killer): `phone procs` in a tight moment, and
   `dmesg`'s kill line after such a return.

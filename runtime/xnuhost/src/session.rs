@@ -570,6 +570,10 @@ fn hostcalls_vector() -> u64 {
 /// The program (main.c's main): the exit code.
 pub fn main() -> i32 {
     let argv: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
+    // --prop-wait: the OneOS stop loop's wait on Android's properties (propwait.rs), before anything of a session.
+    if argv.get(1).map(String::as_str) == Some("--prop-wait") {
+        return crate::propwait::main(&argv[2..]);
+    }
     #[cfg(all(target_os = "android", target_arch = "aarch64"))]
     {
         // Before any thread exists: bionic gives each new thread of a program with target SDK >= 31 its own APIA key.

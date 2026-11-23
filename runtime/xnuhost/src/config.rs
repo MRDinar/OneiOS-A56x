@@ -395,6 +395,7 @@ const GIVEN_KEYS: &[&str] = &[
     "display-direct",
     "touch-exclusive",
     "session-mode",
+    "takeover-stops",
     "pen",
     "pen-rotate",
     "pen-mirror",
@@ -536,6 +537,11 @@ pub struct Config {
     /// docs/booter.md 2.9d: the host table must allow it, mode=takeover); given("session-mode"): the command line wins
     /// over the image set's
     pub session_mode: SessionMode,
+    /// takeover-stops=default|none|NAME,... : the services of Android the OneOS switch stops in session-mode=takeover
+    /// (docs/booter.md 2.9d, oneos/interface.md 4a). xnuhost only checks it (each name one of TAKEOVER_STOPPABLE) and
+    /// names it in the takeover line; the switch reads it from the image's xnuhost.conf and does the stops. "" = not
+    /// given (the switch's default list)
+    pub takeover_stops: String,
     /// --host-info: print the host table's answer for this phone (host-info: device=... takeover=...) and exit
     pub host_info: bool,
     /// touch-sleep=0: the brightness bridge never puts the touch IC to sleep (ONEIOS_TSP_OFF=0)
@@ -612,6 +618,23 @@ fn text(value: &str, size: usize) -> Result<String, BadSetting> {
     } else {
         Ok(value.to_owned())
     }
+}
+
+/// What the OneOS switch may stop in session-mode=takeover (takeover-stops=): One UI's zygote's restart list, which
+/// every return restarts already, less what a bridge uses (docs/plan-ios-first-session.md 4, stage 2b). The first six
+/// are the switch's default; netd and media only when named (a Wi-Fi join and an encode without them are not yet
+/// checked on the phone).
+pub const TAKEOVER_STOPPABLE: [&str; 8] =
+    ["cameraserver", "mediaextractor", "mediametrics", "media.tuner", "perfmond", "wificond", "netd", "media"];
+
+/// takeover-stops=: default, none, or names of TAKEOVER_STOPPABLE separated by commas, each once.
+fn takeover_stops_ok(value: &str) -> bool {
+    if value == "default" || value == "none" {
+        return true;
+    }
+    let names: Vec<&str> = value.split(',').collect();
+    names.iter().all(|n| TAKEOVER_STOPPABLE.contains(n))
+        && names.iter().enumerate().all(|(i, n)| !names[..i].contains(n))
 }
 
 /// camera-model=: 3 to 15 letters and digits that end in "AP" (CMCapture takes the name less "AP" as a folder name;
@@ -749,6 +772,7 @@ impl Config {
             display_direct: true,
             touch_exclusive: false, // the touchscreen grab: a bench preview, or session-mode=takeover (which turns it on)
             session_mode: SessionMode::Hosted, // the default session, byte for byte as before session-mode existed
+            takeover_stops: String::new(),
             host_info: false,
             touch_sleep: true,
             input_script: String::new(),
@@ -904,6 +928,9 @@ impl Config {
             "touch-exclusive" => self.touch_exclusive = flag(value)?,
             // hosted (the default) or takeover (docs/booter.md 2.9d): the finish checks the host table and the mode
             "session-mode" => self.session_mode = named(SessionMode::parse(value))?,
+            // the switch's stop list in session-mode=takeover: checked here, done by the switch
+            "takeover-stops" if takeover_stops_ok(value) => self.takeover_stops = value.to_owned(),
+            "takeover-stops" => return Err(BadSetting),
             "input-script" => self.input_script = text(value, 512)?,
             "tasks" => self.tasks = flag(value)?,
             "task-uid" => self.task_uid = u32::try_from(parse::atoi(value)).ok(),
@@ -1098,6 +1125,7 @@ impl Config {
         take!(self, image, "encoder", encoder);
         take!(self, image, "camera-vm", camera_vm);
         take!(self, image, "camera-model", camera_model);
+        take!(self, image, "takeover-stops", takeover_stops);
         // session-mode= of the image set (its overlay/userland/xnuhost.conf) when the command line has none.
         take!(self, image, "session-mode", session_mode);
         let takeover_mode = self.session_mode == SessionMode::Takeover;
@@ -1487,9 +1515,10 @@ impl Config {
     pub fn takeover_line(&self) -> Option<String> {
         (self.session_mode == SessionMode::Takeover).then(|| {
             format!(
-                "session: Android takeover (session-mode=takeover; {} allows it): the native touchscreen is grabbed for iOS{}; the side keys are read, never grabbed; the switch's CPU caps and the way back are the OneOS fork's",
+                "session: Android takeover (session-mode=takeover; {} allows it): the native touchscreen is grabbed for iOS{}; the side keys are read, never grabbed; Android's services stopped by the switch: takeover-stops={}; the switch's CPU cap, its stops and the way back are the OneOS fork's",
                 self.host.map_or("?", |h| h.0.name),
-                if self.touch_exclusive { "" } else { " (not: touch-exclusive=0 was given)" }
+                if self.touch_exclusive { "" } else { " (not: touch-exclusive=0 was given)" },
+                if self.takeover_stops.is_empty() { "default" } else { &self.takeover_stops }
             )
         })
     }
