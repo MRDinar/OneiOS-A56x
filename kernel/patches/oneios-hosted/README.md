@@ -2033,20 +2033,61 @@ of 2026-11-23 20:23 (`out/session-logs/2026-11-23-mac-s2023/`) the top of it was
 session), with every vCPU busy. The high group runs every `thread_call_allocate()`d callout: Mach timers (`mk_timer`),
 BSD `timeout()`, IOKit power management, the kexts' own calls. Nothing named the one that used the CPU.
 
-**What.** `thread_call_thread` (`osfmk/kern/thread_call.c`) takes the thread's CPU time (`recount_current_thread_time_mach`)
-and the wall time around each callout and adds them to the callout function's slot (256, open addressing on the unslid
-address, lock-free counters; `table full` in the line when a function found no slot). The oneios-perf report prints,
+**What.** `thread_call_thread` (`osfmk/kern/thread_call.c`) takes the thread's CPU time (`recount_current_thread_time_mach`,
+read with interrupts masked: `hosted_tc_cpu_now`) and the wall time around each callout and adds them to the callout
+function's slot (256, open addressing on the unslid address, lock-free counters; `table full` in the line when a function found no slot). The oneios-perf report prints,
 after 0051's line:
 
 ```text
 oneios-perf:   thread calls: 91234 callouts, 26553870 us of CPU (88% of a vCPU), 30 functions; most: 0xfffffff007a1b2c4 81234 x 310 us (wall 320, max 9000) ...
+oneios-perf:   thread calls, more: 0xfffffff00ac32420 21 x 124 us (wall 145, max 882) ...
 ```
 
-The 8 functions with the most CPU in the period: the count, the mean CPU, the mean wall (above the CPU: the callout
+Each line stays under 240 characters (the console copies a printf through a 256-byte buffer); the functions that do not
+fit go on `thread calls, more:` lines, 2 or 3 lines in all. The 8 functions with the most CPU in the period: the count, the mean CPU, the mean wall (above the CPU: the callout
 blocks), the longest callout's CPU. Name an address with `oneios-tool sym kernel --kc kernel.kc --kernel xnu.macho
---slide 0 ADDR` (the address is unslid). Cost: two clock reads and four atomic adds per callout. Tested: `git apply
---check` on the patched tree; built and prelinked with the series (below). **Watch in its first boot:** the line every
-30 s; the function behind `thread call high #2`, then a fix of that cause.
+--slide 0 ADDR` (the address is unslid). Cost: two clock reads, two masks of interrupts (a store to the hosted CPU's
+word each, no host call) and four atomic adds per callout. **Watch in its first boot:** the line every 30 s; the
+function behind `thread call high #2`, then a fix of that cause.
+
+**The panic of its first version (fixed 2026-11-23, fix/tc-recount-ints).** The first 0095 read the CPU time right
+after `enable_ints_and_unlock()`, and `recount_current_thread_time_mach()` asserts interrupts off (recount.c:753: an
+interrupt between its read of the thread's total and of the CPU's last snapshot makes the sum wrong). The phone,
+2026-11-23 22:16 (kernel.kc `72a3e56f`, the integration build, takeover mode), 7 s after xnuhost's start, on cpu0:
+`panic(cpu 0 caller 0xfffffff00b4e2bf8): recount.c:753 Assertion failed: ml_get_interrupts_enabled() == FALSE`;
+`oneios-tool sym kernel --return` on its frames: `recount_current_thread_time_mach+0x194 (recount.c:753)` called from
+`thread_call_thread+0x210 (thread_call.c:1921)`, 0095's first read. The same kernel under qemu-aarch64 (docs/building.md
+section 5) panicked the same way 1.8 s into the boot. The fix: `hosted_tc_cpu_now()` masks, reads and restores, as
+0066's `hosted_fr_cpu_now()` does. `kernel/tests/host.sh` now refuses an added line of any hosted patch that calls one
+of recount's current-thread readers (`_time_mach`, `_times`, `_usage`, `_perf_level_usage`, `_energy_nj`) without a
+mask in the 4 lines before it or `interrupts off` written on the line; it catches the first 0095.
+
+**The second fault, behind the first.** With the read masked, the same qemu boot stopped 1.6 s in: `PAC failure from
+kernel with IA key while authing x16` at `thread_call_thread+0x288` (`hosted_tc_count`, inlined). The first 0095 took
+the function's address with `ptrauth_strip(func, ptrauth_key_function_pointer)` on the typed `thread_call_func_t`:
+clang strips it (`xpaci`), then turns the result into an integer by authenticating it with the type's discriminator
+(`autia x16` with `0x73d8`), and a stripped pointer never authenticates. The fix: `ptrauth_strip(ptrauth_nop_cast(void *,
+func), ...)`, the raw bits then a strip; one `xpaci` and no authentication (the host clang with the kernel's PAC flags
+shows both code sequences). `kernel/tests/host.sh` also refuses an added `ptrauth_strip(..., ptrauth_key_function_pointer)`
+whose argument is neither `(void *)` nor `ptrauth_nop_cast(`; it catches the first 0095 too.
+
+**The cut line.** With both fixed, the qemu boot ran 25 minutes without a panic, and 25 of its 49 `thread calls:` lines
+ended at character 255 with no newline, the next `oneios-perf:   rpc:` line run into them. The console copies a
+printf through `SERIAL_CONS_BUF_SIZE` (256 bytes, osfmk/console/serial_protos.h), and the first 0095 printed up to
+900. Now the summary and the functions go out on lines under 240 characters (`thread calls, more:` for the rest).
+
+Tested (2026-11-23, the Linux PC): `kernel/tests/host.sh` (10 passed; both new checks fail on the first 0095);
+`kernel/build-hosted.sh` with `HOSTED_OUT=tcrec ONEIOS_CRYPTO=original` (`releasable`) and `oneios-tool prelink
+build` (`stubs: 666 good, 0 bad`; `audit: f4aa58e63c554784: 2711 paired, 93 functions on the stub, 9 data unpaired; 0
+failures`). Under qemu-aarch64 (docs/building.md section 5's command, a new Data volume, 8 vCPUs, 4 GiB, the runtime
+of the integration build): kernel.kc `72a3e56f` panics at recount.c:753 1.8 s in; `39bbcfb1` (the mask only) at the
+PAC failure 1.6 s in; `863495f2` (both) runs 25 minutes with no panic, its lines cut; `f4aa58e6` (all three) runs 25
+minutes with no panic: `hello, launchd` at +186 s, SpringBoard at +217 s, 49 `thread calls:` lines and 94 `thread
+calls, more:` lines, none over 254 characters. The busiest callouts there, named with `oneios-tool sym kernel --slide
+0`: `workq_add_new_threads_call` (top in 36 of 49 periods), `IOTimerEventSource::timeoutAndRelease`,
+`delayed_event_delivery`, `filt_timerexpire`; at most 2% of a vCPU. Logs: `out/session-logs/2026-11-23-pc-tcrec/`.
+Not tested: a phone boot (the takeover mode, the high group's 88% of a vCPU). Seen and not fixed: 0051's `kernel_task:`
+line is cut at 255 characters too when its threads' names are long, and the next line (0095's) then runs onto it.
 
 ## 0096-telemetry-jobs-switch.patch (integration-switches, 2026-11-23)
 

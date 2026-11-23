@@ -460,6 +460,13 @@
 # 26553870" us of 30 s in 0051's kernel_task line (88% of a vCPU) and nothing said which callout it ran. Two clock reads
 # per callout (recount and mach_absolute_time), counters in 256 lock-free slots by function, no allocation. README.md,
 # "0095". Applies after 0094 (thread_call.c is no other patch's; hosted_user.c after 0091's report call).
+# Fixed (fix/tc-recount-ints, 2026-11-23): the CPU read masks interrupts around recount_current_thread_time_mach()
+# (hosted_tc_cpu_now, as 0066's hosted_fr_cpu_now). It ran right after enable_ints_and_unlock(), and recount.c:753
+# asserts interrupts off: the phone (2026-11-23 22:16, kernel.kc 72a3e56f) and a qemu boot of the same kernel
+# panicked on the first callout, under 2 s into the boot. Behind it, a PAC failure in hosted_tc_count: the address
+# was ptrauth_strip(func, ...) on the typed pointer, which clang authenticates after the strip; now the raw bits
+# (ptrauth_nop_cast) then a strip. And the report printed up to 900 characters a line, which the console cuts at 255;
+# now lines under 240 ("thread calls, more:" for the rest). kernel/tests/host.sh now refuses the first two in any patch.
 0095-thread-call-cpu.patch
 # telemetry-jobs-switch (2026-11-23, integration-switches): the switch for 0093 and 0094 (docs/switches.md). Boot-arg
 # oneios-telemetry-jobs=1 (the image's xnuhost.conf: boot-args-add=oneios-telemetry-jobs=1): the disable list is 0053's
