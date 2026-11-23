@@ -7,7 +7,8 @@
 // report thread: every 30 s while the counters move, one line of each side's counters (what an underrun, a late
 // engine period or a refused selector looks like from inside the guest), and while the speaker plays one line of its
 // engine's timing (`speaker engine: ...`: how late it took its periods, how far ahead the HAL wrote: iOS's I/O buffer
-// and safety offset as used). oneios-audio-report=0 leaves it out.
+// and safety offset as used), and one line of the engines' late periods by device and size (`late periods: ...`,
+// fix-audio-late). oneios-audio-report=0 leaves it out.
 //
 // oneios-audio-selftest=SECONDS (1..10): 3 s after the start, a 1 kHz sine at -30 dBFS (quiet at any media volume)
 // straight into the transport, before iOS's audio server runs: the guest kernel -> virtio-snd -> oneios-audio ->
@@ -37,6 +38,11 @@ extern volatile int droidvm_audio_family_status, droidvm_audio_hog_owner;
 extern uint32_t oneios_speaker_ring;
 extern volatile uint64_t oneios_speaker_periods, oneios_speaker_late_sum, oneios_speaker_late_max, oneios_speaker_leads,
     oneios_speaker_lead_sum, oneios_speaker_lead_min, oneios_speaker_lead_max, oneios_speaker_lead_last, oneios_speaker_tight;
+// The engines' lateness by device and size, and their realtime policy (DroidVMAudio.cpp as staged, fix-audio-late).
+extern uint32_t oneios_audio_rt;
+extern volatile uint32_t oneios_audio_rt_set, oneios_audio_rt_refused;
+extern volatile uint64_t oneios_speaker_late_1ms, oneios_speaker_late_5ms, oneios_speaker_late_20ms, oneios_speaker_short,
+    oneios_actuator_late;
 
 // Since the last report, the speaker's engine: how late it took its periods, and how far ahead of each the HAL had
 // written (its write end: iOS's I/O buffer and the safety offset as used, so the guest's part of the latency from
@@ -77,6 +83,13 @@ static void oneios_audio_report(void *arg, wait_result_t result) {
                droidvm_audio_hog_owner, droidvm_audio_selectors, droidvm_audio_bad_selectors, droidvm_audio_last_selector,
                droidvm_audio_maps, droidvm_audio_periods, droidvm_audio_late, droidvm_audio_played, droidvm_audio_captured,
                droidvm_snd_tx_periods, droidvm_snd_tx_drops, droidvm_snd_rx_periods, droidvm_snd_rx_empty, droidvm_snd_errors);
+        // fix-audio-late: since boot, the speaker's periods by how late its engine took them (the line above counts
+        // only those over a period, the speaker's and the mic's), those the HAL had written only in part, the
+        // Actuator's over a period (counted apart since 2026-11-24), and the engines' realtime policy (oneios-audio-rt).
+        printf("ONEIOS AUDIO: late periods: speaker %llu over 1 ms, %llu over 5 ms, %llu over 20 ms of %llu, %llu written by the HAL "
+               "only in part; Actuator %llu over 5 ms; engine threads realtime %u, refused %u (oneios-audio-rt=%u)\n",
+               oneios_speaker_late_1ms, oneios_speaker_late_5ms, oneios_speaker_late_20ms, oneios_speaker_periods, oneios_speaker_short,
+               oneios_actuator_late, oneios_audio_rt_set, oneios_audio_rt_refused, oneios_audio_rt);
     }
 }
 

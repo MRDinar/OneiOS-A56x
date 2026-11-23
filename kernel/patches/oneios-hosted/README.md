@@ -658,6 +658,18 @@ whole number of 240-frame periods: a period read, zeroed or written up to 208 fr
 zero time stamp only every 245760 frames) and reports the speaker engine's timing (`ONEIOS AUDIO: speaker engine:`).
 `drivers/audio/README.md`, `docs/hardware.md` section 6 "Latency end to end".
 
+Since 2026-11-24 (fix-audio-late) every engine thread (speaker, mic, Actuator) is a time-constraint thread of the
+guest's scheduler (period and constraint 5 ms, computation 2.5 ms) and waits for its period with
+`TIMEOUT_URGENCY_SYS_CRITICAL` (no timer slop), behind the boot-arg `oneios-audio-rt` (default 1; 0: kernel priority
+81 and `clock_delay_until`, as before). Before, a kernel thread at 81 waited behind the VM's pageout and compressor
+threads (91) and the high thread calls (93), and `clock_delay_until`'s timer had the kernel tier's slop (up to 1 ms,
+more at a user idle level): on the phone (2026-11-24 01:17, kernel e79886d9) the speaker took its periods 1.4-1.6 ms
+late on average and up to 98 ms late while `VM_pageout_scan` used 14.7 s of CPU in those 30 s. The late counts are
+also split: the counter line's `late` no longer counts the Actuator's periods (its `periods` never did), and a new
+line `ONEIOS AUDIO: late periods: ...` counts the speaker's late periods by size, those the HAL had written only in
+part, the Actuator's, and the realtime policy's result. Built: `xnu.macho` `6d40f8e0`, `kernel.kc` `853068df`
+(`HOSTED_OUT=audiolate`, audit 0 failures, stubs 666 good); not booted. `docs/hardware.md` section 6, "Late periods".
+
 ### The Actuator device (media, 2026-11-12)
 
 The archive also stages a third IOAudio2Device into `DroidVMAudio.cpp`: UID `Actuator` (VirtualAudio's

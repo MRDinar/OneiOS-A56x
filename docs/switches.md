@@ -16,7 +16,7 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 xnuhost logs every switch once, after the `versions:` line:
 
 ```text
-switches: session-mode=hosted stop-loop=wait task-trim=1 ram-fit-terms=tasks uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 (docs/switches.md); all at their defaults
+switches: session-mode=hosted stop-loop=wait task-trim=1 ram-fit-terms=tasks uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-audio-rt=1 (docs/switches.md); all at their defaults
 ```
 
 When some are changed, the end says which: `not at the default: wifi-send-wait gpu-down`. Kernel switches are read
@@ -48,6 +48,7 @@ change (the default value), and whether one has run the other value.
 | `boot-args-add=oneios-pool-cut=0` | `0\|1` | `1` | 1: metal2vulkan releases a spare command pool that holds more than its last 10 s need plus 8 command buffers (the render server's small command-stream BOs go back); 0: the pools are kept as before (the plug-in sets `METAL2VULKAN_POOL_USE_WINDOW_S=0`). Metal plug-in only (the boot add-on), docs/gpu.md "Who keeps a blob" | 50873fe | no |
 | `boot-args-add=oneios-pressure-big=0` | `0\|MB` | `512` | 512: at a memory pressure rise a process of at least 512 MiB footprint not yet notified at that level is notified first, the largest first (the render server and the apps that draw hear of it in the first 250 ms steps, not after 150-300 smaller processes); 0: XNU's order (least important band first, 250 ms apart: the GPU clients last). Kernel, hosted 0097; its `oneios-wired` and `oneios-pressure` lines are logging (no switch) | 0097 (fix/wired-names) | no |
 | `boot-args-add=oneios-disable-allowed=0` | `0\|1\|NAME` | `1` | 1: before launchd the kernel renames the 19 `DisableAllowed` keys of the sealed `/System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist` (same length, nothing else changes) in a copy that 0031's union shows over LaunchDaemons, so launchd honours disabled.plist for every job (osanalyticshelper and its agent, diagnosticextensionsd, symptomsd-diag, OTATaskingAgent, softwareupdated ran although disabled); NAME: the plist of that product type; 0: no copy (an earlier boot's removed), launchd runs the marked jobs whatever disabled.plist says (before 0098). With `oneios-telemetry-jobs=1` the telemetry labels are enabled in disabled.plist, so they run either way. Kernel, hosted 0098; `oneios-kill` (0100) is logging (no switch) | 0098, 0100 (fix/disable-allowed) | no |
+| `boot-args-add=oneios-audio-rt=0` | `0\|1` | `1` | 1: each audio engine thread of the guest (speaker, mic, Actuator) is a time-constraint thread of the guest's scheduler (period and constraint 5 ms, computation 2.5 ms) and waits for its period with no timer slop (`TIMEOUT_URGENCY_SYS_CRITICAL`); no host thread is realtime. 0: kernel priority 81 and `clock_delay_until`, as before (the speaker's periods 1.4-1.6 ms late on average, up to 98 ms behind the VM's pageout threads, phone 2026-11-24 01:17). Kernel (the audio archive's staged `DroidVMAudio.cpp`); its `late periods:` line and the split late count are logging (no switch). docs/hardware.md 6, "Late periods" | fix/audio-late | no |
 
 Not switched, on purpose:
 
@@ -80,8 +81,8 @@ wifi-buffers=1
 wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
-# kernel switches (boot-args-add appends to boot-args; one line, all five words):
-# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1
+# kernel switches (boot-args-add appends to boot-args; one line, all six words):
+# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-audio-rt=1
 ```
 
 ## Tests
@@ -96,6 +97,7 @@ encoder-warmup=1
 - Kernel: 0096 applies after 0095; the kernel of this build has both boot-args (`strings`).
 - Kernel: 0097 applies after 0096 (`git apply --check` on the patched tree). Built on the laptop with `HOSTED_OUT=wired ONEIOS_CRYPTO=original` and the series less 0095 (its `recount.c:753` panic is fixed apart): `xnu.macho` `9a604844`, 412 s, releasable; prelinked to `out/kernel/24A446-wired/kernel.kc` `2890c098` (`.hashes` `cfd918a8`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 8 of 8. `config::tests::the_switches` has `oneios-pressure-big=0`. Merged after the fixed 0095 (2026-11-24) and built again with the whole series: `xnu.macho` `32f88a27` (182 patches, releasable), `kernel.kc` `e79886d9` (`.hashes` `e06b673d`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 10 of 10, `cargo test -p xnuhost config::` 16 passed. Under qemu-aarch64 (8 vCPUs, 4 GiB, the integration runtime) 20 minutes, no panic, SpringBoard at +247 s, `oneios-wired` and `oneios-pressure` every 60 s; no pressure rise there, so the default 512 itself is not exercised (kernel/patches/oneios-hosted/README.md, "0097").
 - Kernel: 0098 (`oneios-disable-allowed`) and 0100 (`oneios-kill`, logging) apply after 0097; `kernel/tests/host.sh` builds 0098's rename from the patch with a made-up plist (all 11 of host.sh pass), and the same rename of the real 24A446 plist leaves a plist plistutil reads, only the 19 keys changed. Built with `HOSTED_OUT=disallow ONEIOS_CRYPTO=original` (184 patches): `xnu.macho` `7ecd6622`, releasable; `kernel.kc` `a07f5426` (`.hashes` `80688378`), audit 0 failures, stubs-check 666 good 0 bad. `config::tests::the_switches` has `oneios-disable-allowed=0` (16 passed). Not booted.
+- Kernel: `oneios-audio-rt` (fix/audio-late): the audio archive built against `HOSTED_OUT=wired`'s tree (`oneios-tool kernel gen audio`, no warning); `cargo test -p oneios-kernel` (the edit list on the synthetic source, the staged hash); `config::tests::the_switches` has `oneios-audio-rt=0`. Then the kernel, built on the laptop with the whole series (`HOSTED_OUT=audiolate ONEIOS_CRYPTO=original`, 686 s, 182 patches, releasable): `xnu.macho` `6d40f8e0`; prelinked to `out/kernel/24A446-audiolate/kernel.kc` `853068df` (`.hashes` `fa7166ba`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 10 of 10. Not booted.
 - Fork: `OneiosScriptTest.theStopLoopLooksOnceASecondWithARuntimeFromBeforeThePropertyWait` (`stop-loop=poll`: no
   `--prop-wait` call, its line).
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").

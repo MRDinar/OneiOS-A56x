@@ -2089,6 +2089,7 @@ impl Config {
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),
             ("oneios-pressure-big", arg("oneios-pressure-big", "512"), "512"),
             ("oneios-disable-allowed", arg("oneios-disable-allowed", "1"), "1"),
+            ("oneios-audio-rt", arg("oneios-audio-rt", "1"), "1"),
         ];
         let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
         let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();
