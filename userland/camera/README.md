@@ -46,6 +46,32 @@ the plug-in over its own list at each create); `x420` and `x422` outputs; the ca
 (it was opened at every stream reservation, for nothing); the two Metal fixes (`docs/gpu.md`, "What the camera needs");
 the boot addon (hosted 0090, `oneios-tool ios addon`, `phone addon`).
 
+**2026-11-23 13:45 (boot-jobs, the plug-in by the boot addon; iOS's log `session-logs/boot-jobs/ioslog.txt` on the build
+laptop): cameracaptured lived, the plug-in's formats passed its own check (`29 of 29`), and the Camera app still showed
+nothing.** What the log shows: the `device: streams asked for (1)` at 08:17:26 and `streams given back (2)` at 08:17:28
+are the vendor publishing the device and its 2 s close timer (`Setting up timer to power off ISP ... in 2.00 seconds`),
+not a capture session. The Camera app (pid 289, 08:18:15) opened on the front camera (`Photo/FrontWide`), and `Can't add
+<AVCaptureDeviceInput: ... [Front Camera]> because the device does not support AVCaptureSessionPresetHigh`: its session
+had no input (`connections: count = 0`), so the graph never started a stream. The causes, each read in the 24A446 cache
+and the plists ("How CMCapture picks a stream format", "How CMCapture builds a companion"):
+- **Every format of the front devices failed** (`failed to resolve format 'Video-16x10-FES-30'`, ..., and the
+  `AVCaptureDeviceFormat '1080p30-16x9-422-10Bit' is derived from FigCaptureStreamFormat 'Video-16x10-FES-30', but that
+  format couldn't be found` lines): their named formats are in the devices' `deviceInfoBase` files, which the plug-in did
+  not read, and "Front Camera" (the plist's "Front Virtual Camera") resolves against the same stream. **Fix:** the front
+  stream has the formats of all three front devices with their bases. The 10-bit 4:2:2 (`x422`) output was there already.
+- **`failed to resolve format 'Photo[FESCompanionFormat]'`** and the two `[MidFrameSynchronizationOptimizedCompanionFormat]`:
+  CMCapture sets `FES` and `OptimizedForMidFrameSynchronization` in those companions itself. **Fix:** its companion table.
+- **`failed to copy WhiteBalanceGain (err=-12787)`**, both streams: asked with requireSupported for the source's
+  `DefaultWhiteBalanceGains` (`{RedGain, GreenGain, BlueGain}`, integers with 12 fraction bits). **Fix:** listed and
+  answered 4096 each (a gain of 1: the picture comes white-balanced).
+- **`Fig assert: "pixelFormatIsSupported"`**: the 11 ProRes RAW (`btp2`) device formats; expected, no change.
+- **`Failed to open streams for device Back Telephoto Camera`**: no telephoto stream, CMCapture disables that device and
+  the dual and triple ones by itself; expected, no change (`OneiOSCaptureDevice.c`, `known`, says why).
+Host-tested on the build laptop (`tests/host.sh`: 26 reader checks, 101 formats checks), built for iOS (`build.sh`);
+not run on the phone. Whether the Camera app then opens the back or the front camera, and why it chose the front
+(`Attempted to change to mode Portrait with an unsupported device (BackWide). Auto device for both positions
+unsupported`), is not known.
+
 ## Where the camera broke (iOS's own log, sessions of 2026-11-12)
 
 iOS's capture stack never touched our camera. Every start of `cameracaptured` (21 a session) logged, in order:
@@ -116,26 +142,61 @@ and nothing would have loaded it.
   | `OptimizedForMidFrameSynchronization` | the same name | equal |
   | `SecureSigningFaceIDSupported` | `SensorSigningEnabled` | equal |
 
-  Companions (`DepthCompanionFormat`, `FESCompanionFormats`, `UltraHighResCompanionFormat`, ...) name only what differs
-  from their format; the plug-in makes `NAME[Companion]` formats of the parent's keys with the companion's over them.
-  [I] how CMCapture builds a companion's parameters (that code was not read): the names of the AVCaptureDevice formats
-  (`1080p30` from `Video-FullSensor-FES-30`, ...) need only the main ones.
+  Companions are in "How CMCapture builds a companion" below.
 - **The pixel format.** `csu_createSourceFormatDictFromDeviceFormat` asks every output of the resolved stream format's
   `SupportedOutputs` for the device format's `PixelFormatType` (default `420v`; `420f` for some device types): V54's
-  device formats ask `x420` and `x422` (10-bit) and `btp2` (ProRes RAW, not given: those formats stay off).
+  device formats (and their `Variants`: `1080p30-422-10Bit`, ...) ask `x420` (36) and `x422` (27), both given, and `btp2`
+  (ProRes RAW, 16, not given: a Bayer raw picture cannot be made from the phone's finished frames). So each
+  non-experimental `btp2` format gives one `Fig assert: "pixelFormatIsSupported"` (FigCaptureSourceBackingsProvider.m:7470)
+  and stays off: 3 of the Back Camera, 8 of "Front Ultra Wide Camera" (11 in the boot of 2026-11-23 13:45, all of them).
+- **The devices of a port.** Every device of the plist whose port is a stream's resolves its own named formats against that
+  one stream (`Resolving formats for X, using N stream formats`): on the front port "Front Ultra Wide Camera", "Front
+  Camera" (the plist's "Front Virtual Camera") and "Front Ultra Wide Metadata Camera". V54's front devices keep their named
+  formats in `deviceInfoBase` files of the same folder (`FrontUltraWideCamera-DeviceInfoBase.plist`: 22;
+  `FrontVirtualCamera-DeviceInfoBase.plist`: 15; `FrontMetadataCamera-DeviceInfoBase.plist`: 1); the session plist's own
+  entry of "Front Ultra Wide Camera" has only its 8 ProRes RAW ones. CMCapture asks both (phone 2026-11-23: it failed the 22
+  base names, not the 8). The plug-in reads each device's base too and makes the front stream's formats of all three.
+
+## How CMCapture builds a companion [F, read in the 24A446 shared cache, 2026-11-23]
+
+`csu_createMultiStreamSourceFormatsArrayAndAddAVCompressionSettingsAttribute` (0x1b07b2f7c), after a named format resolved:
+a `mutableCopy` of the parent's entry, a few `setObject:forKeyedSubscript:` calls with the companion's entry, then the
+resolver with the name parent + `[...]`. "If there": the companion is asked first (a `cbz`); "take": its value is set as
+it is, so none removes the key. `oneios_camera_formats.c` has the table (`ocf_companion_rule`), the plug-in runs it on the
+plist's dictionaries and the host test on the keys the resolver reads:
+
+| Companion (key of the parent) | Name | Steps |
+|---|---|---|
+| `FESCompanionFormats` (an array, one each) | `[FESCompanionFormat]` | FES true; FESWidth, FESHeight, MaxFrameRate taken; CaptureStillsFromVideoStream false |
+| `NonSIFRCompanionFormat` | `[NonSIFRCompanionFormat]` | SIFREnabled false, SIFRBinningFactor removed; SensorWidth/Height if there; FES, FESWidth, FESHeight, MaxFrameRate taken |
+| `FullBinSIFRCompanionFormat` | `[FullBinSIFRCompanionFormat]` | SIFRBinningFactor 2 |
+| `MidFrameSynchronizationOptimizedCompanionFormat` (skipped when it has `Unsupported`) | `[MidFrame...CompanionFormat]` | SensorWidth/Height, FES, FESWidth/Height, SIFRBinningFactor if there; OptimizedForMidFrameSynchronization true |
+| `ActionCameraCompanionFormat` | `[ActionCameraCompanionFormat]` | SensorWidth/Height, SensorCropWidth/Height, SIFRBinningFactor if there; FES removed |
+| `DepthCompanionFormat`, `FSDNetCompanionFormat` | `[DepthCompanionFormat]`, `[FSDNetCompanionFormat]` | FESWidth, FESHeight taken; FES true; SensorWidth/Height, SIFRBinningFactor, MaxFrameRate if there |
+| `StereoVideoCompanionFormat` | `[StereoVideoCompanionFormat]` | SensorWidth/Height, SensorCropWidth/Height, SIFRBinningFactor, StereoVideoAEMaxGain if there; FES, FESWidth, FESHeight, CropWidthForFES, CropHeightForFES removed |
+| `FaceIDCompanionFormat` | `[FaceIDCompanionFormat]` | SecureSigningFaceIDSupported true |
+| `HasSensorHDRCompanionFormat` (a flag of the parent) | `[SensorHDRCompanionFormat]` | HDR true |
+
+`UltraHighResCompanionFormat` is not resolved there; the plug-in keeps a format for it made the old way (its keys over the
+parent's). Before this table the plug-in only laid the companion's keys over the parent's, which missed what CMCapture sets
+itself: `Photo[FESCompanionFormat]` (V54's companion names a size and a rate but no `FES`) and the two
+`[MidFrameSynchronizationOptimizedCompanionFormat]` (no `OptimizedForMidFrameSynchronization` in the plist) did not
+resolve on the phone. Checked on V54's own plists (out/, a scratch program over the library, nothing kept): the old way
+gives exactly those 3 failures of 28 asked on the back, CMCapture's way none; the front as it was (the 8 ProRes RAW
+formats) fails 41 of 49, the three devices with their bases none.
 
 ## Files
 
 | File | What |
 |---|---|
-| `OneiOSCaptureDevice.c` | `H9ISPCaptureDeviceCreate`: a FigCaptureDevice (CMCaptureDevice's class) with a stream for each of the back wide and the front camera that the kernel lists. Each stream's formats are the device's own `CMCapture.framework/V54/AVCaptureSession.plist` stream formats (`FigCaptureStreamFormats` of "Back Camera", read at the first create, every key kept, so that each AVCaptureDevice format of that file resolves). The HakiOS property set. Frames scaled into the pools the graph gives each output (420f, 420v, BGRA) and handed to its `PixelBufferHandler` |
-| `oneios_camera_formats.c`, `.h` | plain C: what a named stream format of the plist asks for, the keys of our stream format made from it, and CMCapture 24A446's rule for "this format is that name" (`csu_resolveFormatIndexForNamedStreamFormat`, "How CMCapture picks a stream format" below) |
+| `OneiOSCaptureDevice.c` | `H9ISPCaptureDeviceCreate`: a FigCaptureDevice (CMCaptureDevice's class) with a stream for each of the back wide and the front camera that the kernel lists. Each stream's formats are the device's own `CMCapture.framework/V54/AVCaptureSession.plist` stream formats (`FigCaptureStreamFormats` of every device on the stream's port: "Back Camera"; "Front Ultra Wide Camera", "Front Virtual Camera" and "Front Ultra Wide Metadata Camera", each with its `deviceInfoBase` file; read at the first create, every key kept, companions made as CMCapture makes them, so that each AVCaptureDevice format of those files resolves). The HakiOS property set, `ModuleInfo` and `WhiteBalanceGain`. Frames scaled into the pools the graph gives each output (420f, 420v, BGRA) and handed to its `PixelBufferHandler` |
+| `oneios_camera_formats.c`, `.h` | plain C: what a named stream format of the plist asks for, the keys of our stream format made from it, CMCapture 24A446's rule for "this format is that name" (`csu_resolveFormatIndexForNamedStreamFormat`, "How CMCapture picks a stream format" below), its companion table (`ocf_companion_rule`, "How CMCapture builds a companion") and `WhiteBalanceGain`'s fixed point |
 | `oneios_camera_scale.c` | plain C: the kernel's NV12 frame scaled into 420f/420v, x420/x422 (10-bit video range) or BGRA buffers (moved out of the device file on 2026-11-23, so the host test runs them) |
 | `OneiOSCamera.c`, `.h` | the log (`ONEIOS CAMERA: ios: <process>[pid]: ...` to the unified log, `/dev/console` and `/private/var/oneios/log/camera.log`, each where the sandbox lets it), the off switch, a line when it is loaded |
 | `oneios_camera_reader.c`, `.h` | the kernel's frames: AppleH9CamIn's user client (`-DONEIOS_CAMERA_IOKIT`, the iOS build) or `/dev/oneios-camera`; checks each header; copies the NV12 planes |
 | `build.sh` | `out/userland/camera/H9ISP.mediacapture` and `cdhashes.txt` |
-| `tests/host.sh` | CI: the reader against stand-ins (26 checks), the formats and scalers (`tests/test_formats.c`, 42 checks: V54's named formats resolve each to its own format, the 2026-11-23 formats do not, each compare of the rule), then `host-mac.sh` |
-| `tests/host-mac.sh`, `test_device_mac.m` | on a Mac, our create function under macOS 27's own CMCapture: the device is of `FigCaptureDeviceGetClassID`'s class; the stream answers (port, formats from a stand-in plist, pixel size, clock, supported properties); **macOS's `BWFigCaptureDeviceVendor` makes a `BWFigCaptureDevice` over ours with our function**; a frame from a stand-in node reaches the PrimaryScaler's handler, scaled into the test's pool (35 checks) |
+| `tests/host.sh` | CI: the reader against stand-ins (26 checks), the formats and scalers (`tests/test_formats.c`, 101 checks: V54's named formats resolve each to its own format, the 2026-11-23 formats do not, each compare of the rule; each companion of the table on V54's Back Camera numbers, the three that failed on the phone made the old way do not resolve and made CMCapture's way do; the three front devices' formats on one stream, each name to its own, and the 8 ProRes RAW formats alone resolve none of them; the white balance gain of 1), then `host-mac.sh` |
+| `tests/host-mac.sh`, `test_device_mac.m` | on a Mac, our create function under macOS 27's own CMCapture: the device is of `FigCaptureDeviceGetClassID`'s class; the stream answers (port, formats from a stand-in plist, pixel size, clock, supported properties); **macOS's `BWFigCaptureDeviceVendor` makes a `BWFigCaptureDevice` over ours with our function**; a frame from a stand-in node reaches the PrimaryScaler's handler, scaled into the test's pool (35 checks; since 2026-11-23 also a `deviceInfoBase` stand-in, an FES companion and `WhiteBalanceGain`, 40 checks: written on Linux, **not run**, it needs the Mac) |
 
 What the property names are worth: they are HakiOS's (iOS 16). Every property iOS 27 asks for that is not answered,
 and every one it sets that is not used, is logged once by name. That list, from the first session with the
@@ -211,10 +272,22 @@ over /System/Library/MediaCapture: stage 5, status 0`; with M above 0 also `onei
 /System/Library/Extensions: stage 5`, and `oneios-gpu-plugin: ... code signature of ...: error 0` (the CDHashes trusted).
 iOS's log (`phone pull-log`):
 1. `ONEIOS CAMERA: ios: cameracaptured[N]: .../V54/AVCaptureSession.plist: read; .../V54/CameraSetup.plist: read`.
-2. `stream Back Camera: M stream formats for 17 named formats and K companions of the plist; X of X resolve by
-   CMCapture's rule (all)`: the plug-in's own check (a name listed after "these do not" is a key to add).
-3. No `failed to copy ModuleInfo`, no `Unexpected sensor ID`, no `failed to resolve format`, no `Fig assert:
-   "streamFormatDict"`; `pixelFormatIsSupported` only for the ProRes RAW formats (`btp2`).
+2. `stream Back Camera: M stream formats for 17 named formats and K companions of the plist's Back Camera; X of X resolve
+   by CMCapture's rule (all)`: the plug-in's own check (a name listed after "these do not" is a key to add). Since
+   fix-camera-formats (2026-11-23): `.../V54/FrontUltraWideCamera-DeviceInfoBase.plist: read` (and the Virtual and Metadata
+   ones), then `stream Front Ultra Wide Camera: M stream formats for 46 named formats and K companions of the plist's Front
+   Ultra Wide Camera, Front Virtual Camera, Front Ultra Wide Metadata Camera; X of X resolve by CMCapture's rule (all)`
+   (2026-11-23 13:45: 8 named formats, of "Front Ultra Wide Camera" alone).
+3. No `failed to copy ModuleInfo`, no `failed to copy WhiteBalanceGain`, no `Unexpected sensor ID`, no `failed to resolve
+   format` (13:45 boot: `Photo[FESCompanionFormat]`, the two `[MidFrameSynchronizationOptimizedCompanionFormat]` of the
+   back, all 41 of the front), no `Fig assert: "streamFormatDict"` and no `... is derived from FigCaptureStreamFormat ...,
+   but that format couldn't be found` (`1080p30-16x9-422-10Bit` was a front format: its `Video-16x10-FES-30` is in the
+   front device info base); `pixelFormatIsSupported` 11 times per source lookup, the ProRes RAW (`btp2`) device formats
+   only. `Failed to open streams for device Back Telephoto Camera` (and Back Ultra Wide, Back Dual, Back Dual Wide, Back
+   Triple, Front Infrared, Front TrueDepth, Back Time of Flight, Back LiDAR, Desk View) stays: CMCapture disables the
+   devices whose port has no stream, which is V54's list without them (`OneiOSCaptureDevice.c`, `known`).
+   The Camera app: no `Can't add <AVCaptureDeviceInput: ... [Front Camera]> because the device does not support
+   AVCaptureSessionPresetHigh`, and its session's `building configuration: ... connections: count =` above 0.
 4. No `native-metal: heap refused`; at most one `native-metal: heap options 0x600200: bits 0x600000 are not Metal's known
    ones; made without them`; no `missing NBLibrary newFunctionWithName:constantValues:pipelineLibrary:error:`, no
    `function is nil`; no `exited due to SIGSEGV` for cameracaptured.
@@ -232,8 +305,9 @@ arguments: the kernel logs each exception's pc, lr, far and return addresses (gi
 1. Run in iOS. Whether the 27 capture graph takes this device as it is, what it asks that is missing (the log
    lists it), and whether it needs more of HakiOS's replaced methods (stabilisation, noise reduction, the portrait
    prewarm): not known.
-2. The front camera (needs the new plug-in, so a new seed): since 2026-11-23 the port `PortTypeFrontSuperWide` and "Front Ultra Wide Camera"'s formats (4896x4896
-   sensor formats of a square sensor; the phone's front camera gives 4:3 pictures up to 1920x1080, scaled). Not run.
+2. The front camera: since 2026-11-23 the port `PortTypeFrontSuperWide` and the formats of V54's three front devices
+   with their device info bases (4896x4896 sensor formats of a square sensor; the phone's front camera gives 4:3 pictures
+   up to 1920x1080, scaled). Not run with the bases (boot-jobs ran it with the 8 session formats only: no front format).
 3. The device tree nodes for MobileGestalt (`/arm-io/isp` `camera-rear`, `camera-front`, `/product/camera`,
    `/product unique-model`): added 2026-11-22 (the Camera icon was not there without them: Camera.app's `SBAppTags`
    is `still-camera`). iOSPlus10 saw the app hang with the nodes and no frames on iOS 16; on 27 the source list needs
@@ -248,5 +322,6 @@ arguments: the kernel logs each exception's pc, lr, far and return addresses (gi
    With each stream, its `/product/camera` flag (`rear-cam-superwide-capability`, `rear-cam-telephoto-capability`).
 6. ~~A way to put a new plug-in into the phone's Data store without a new seed~~: done 2026-11-23 (hosted 0090, `phone
    addon`); not run on the phone yet.
-7. `WhiteBalanceGain` (asked with requireSupported, -12787) and the companions' parameters ([I] above): what the next
-   log asks for.
+7. ~~`WhiteBalanceGain` and the companions' parameters~~: done 2026-11-23 (fix-camera-formats), not run on the phone.
+   `WhiteBalanceCalibrations` (asked without requireSupported, for the source's `WhiteBalanceCalibrations`) is not
+   answered; the next log says whether anything needs it.

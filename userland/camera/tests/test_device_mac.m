@@ -44,11 +44,17 @@ int main(void)
     CHECK(dlopen("/System/Library/PrivateFrameworks/CMCaptureDevice.framework/CMCaptureDevice", RTLD_NOW) != NULL);
     CHECK(dlopen("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture", RTLD_NOW) != NULL);
     const char *node = getenv("ONEIOS_TEST_NODE"), *plist = getenv("ONEIOS_TEST_PLIST");
-    // The stand-in plist: one back camera with two stream formats, as the device's own file names them.
-    NSDictionary *fmts = @{ @"Photo": @{ @"SensorWidth": @4224, @"SensorHeight": @3024, @"MaxFrameRate": @60 },
+    // The stand-in plist: one back camera with two stream formats, as the device's own file names them, one an FES companion
+    // (CMCapture's "Photo[FESCompanionFormat]"), and a third in the device's deviceInfoBase file beside it.
+    NSDictionary *fmts = @{ @"Photo": @{ @"SensorWidth": @4224, @"SensorHeight": @3024, @"MaxFrameRate": @60,
+                                         @"FESCompanionFormats": @[ @{ @"MaxFrameRate": @30, @"FESWidth": @2464, @"FESHeight": @1764 } ] },
                             @"Video-Binned-60": @{ @"Binned": @YES, @"SensorWidth": @2112, @"SensorHeight": @1512 } };
-    NSDictionary *root = @{ @"AVCaptureDevices": @[ @{ @"uniqueName": @"Back Camera", @"MultiStream": @{ @"FigCaptureStreamFormats": fmts } } ] };
+    NSDictionary *root = @{ @"AVCaptureDevices": @[ @{ @"uniqueName": @"Back Camera", @"deviceInfoBase": @"BackCamera-DeviceInfoBase.plist",
+                                                       @"MultiStream": @{ @"FigCaptureStreamFormats": fmts } } ] };
     CHECK([root writeToURL:[NSURL fileURLWithPath:@(plist)] error:nil]);
+    NSDictionary *base = @{ @"MultiStream": @{ @"FigCaptureStreamFormats": @{ @"Video-30": @{ @"SensorWidth": @4224, @"SensorHeight": @2376, @"MaxFrameRate": @30 } } } };
+    NSString *base_path = [[@(plist) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"BackCamera-DeviceInfoBase.plist"];
+    CHECK([base writeToURL:[NSURL fileURLWithPath:base_path] error:nil]);
     // One frame, 64x48, rows 80 bytes apart: luma = column * 4, chroma 128 (grey).
     enum { W = 64, H = 48, STRIDE = 80 };
     static uint8_t picture[STRIDE * H * 3 / 2];
@@ -76,15 +82,25 @@ int main(void)
     CFStringRef *back = dlsym(RTLD_DEFAULT, "kFigCapturePortType_BackFacingCamera");
     CHECK(port && back && CFEqual(port, *back));
     CFArrayRef formats = prop(stream, "SupportedFormatsArray");
-    CHECK(formats && CFArrayGetCount(formats) == 2);
-    if (formats && CFArrayGetCount(formats) == 2) {
+    // the named ones in name order (the base's Video-30 among them), then the companion
+    CHECK(formats && CFArrayGetCount(formats) == 4);
+    if (formats && CFArrayGetCount(formats) == 4) {
       NSDictionary *f0 = (__bridge NSDictionary *)CFArrayGetValueAtIndex(formats, 0), *f1 = (__bridge NSDictionary *)CFArrayGetValueAtIndex(formats, 1);
+      NSDictionary *f2 = (__bridge NSDictionary *)CFArrayGetValueAtIndex(formats, 2), *f3 = (__bridge NSDictionary *)CFArrayGetValueAtIndex(formats, 3);
       CHECK([f0[@"FormatName"] isEqual:@"Photo"] && [f0[@"SensorWidth"] intValue] == 4224 && [f0[@"VideoMaxFrameRate"] intValue] == 60);
-      CHECK([f1[@"FormatName"] isEqual:@"Video-Binned-60"] && [f1[@"VideoIsBinned"] boolValue] && [f1[@"VideoMaxFrameRate"] intValue] == 30);
+      CHECK([f1[@"FormatName"] isEqual:@"Video-30"] && [f1[@"SensorHeight"] intValue] == 2376);
+      CHECK([f2[@"FormatName"] isEqual:@"Video-Binned-60"] && [f2[@"VideoIsBinned"] boolValue] && [f2[@"VideoMaxFrameRate"] intValue] == 30);
+      CHECK([f3[@"FormatName"] isEqual:@"Photo[FESCompanionFormat]"] && [f3[@"FrontEndScalerOutputWidth"] intValue] == 2464 &&
+            [f3[@"VideoMaxFrameRate"] intValue] == 30 && [f3[@"FES"] boolValue]);
       CMFormatDescriptionRef fd = (__bridge CMFormatDescriptionRef)f0[@"FormatDescription"];
       CHECK(fd && CMVideoFormatDescriptionGetDimensions(fd).height == 3024);
     }
     CHECK(prop(stream, "PixelSize") != NULL && prop(stream, "Clock") != NULL && prop(stream, "SupportedPropertiesDictionary") != NULL);
+    // WhiteBalanceGain: listed (CMCapture asks it with requireSupported) and 1.0 each in 4.12 fixed point
+    NSDictionary *wb = (__bridge_transfer NSDictionary *)prop(stream, "WhiteBalanceGain");
+    CHECK(wb && [wb[@"RedGain"] intValue] == 4096 && [wb[@"GreenGain"] intValue] == 4096 && [wb[@"BlueGain"] intValue] == 4096);
+    NSDictionary *supported = (__bridge NSDictionary *)prop(stream, "SupportedPropertiesDictionary");
+    CHECK(supported[@"WhiteBalanceGain"] != nil);
     CHECK(prop(stream, "NoSuchProperty") == NULL);
     CHECK(prop(device, "SupportedPropertiesDictionary") != NULL);
 

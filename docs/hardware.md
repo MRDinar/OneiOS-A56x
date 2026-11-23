@@ -2841,6 +2841,31 @@ Then five faults, each traced to its cause [F, read in the 24A446 shared cache w
 The plug-in reaches the phone without a new seed since hosted 0090 (the boot addon, `oneios-tool phone addon`).
 Host-tested; the next boot's lines: `userland/camera/README.md`, "What the next session's logs must show".
 
+**The boot of 2026-11-23 13:45 (boot-jobs, the plug-in and the Metal plug-in by the boot addon): cameracaptured no
+longer crashed and the Camera app still showed nothing** (`docs/HANDOFF-2026-11-23.md` 4c). The streams asked for at
+08:17:26 and given back at 08:17:28 were the vendor publishing the device (its 2 s close timer), not a session. The
+Camera app opened on the front camera, and "Front Camera" had no format (`Can't add <AVCaptureDeviceInput: ... [Front
+Camera]> because the device does not support AVCaptureSessionPresetHigh`), so its session had no input. Causes [F, read
+in the 24A446 cache with `ipsw dyld disass` and in V54's plists]:
+1. Every named format of the front devices failed, and with them their device formats (`AVCaptureDeviceFormat
+   '1080p30-16x9-422-10Bit' is derived from FigCaptureStreamFormat 'Video-16x10-FES-30', but that format couldn't be
+   found`): V54's front devices keep their formats in `deviceInfoBase` files (`FrontUltraWideCamera-DeviceInfoBase.plist`,
+   ...), which the plug-in did not read, and three devices ("Front Ultra Wide Camera", "Front Camera" = the plist's
+   "Front Virtual Camera", "Front Ultra Wide Metadata Camera") resolve against the one front stream. **Fix:** the front
+   stream has all three devices' formats with their bases. The `x422` output was already there.
+2. `failed to resolve format 'Photo[FESCompanionFormat]'` and the two `[MidFrameSynchronizationOptimizedCompanionFormat]`
+   of the back: CMCapture makes a companion from a copy of its parent with fixed steps (an FES companion gets `FES` true,
+   a mid-frame one `OptimizedForMidFrameSynchronization` true, ...); the plug-in only laid the companion's keys over the
+   parent's. **Fix:** CMCapture's table in `oneios_camera_formats.c` (`userland/camera/README.md`, "How CMCapture builds a
+   companion"). On V54's own plists the old way gives exactly the phone's 3 back failures, the new way none.
+3. `failed to copy WhiteBalanceGain (err=-12787)`: asked with requireSupported for the source's DefaultWhiteBalanceGains
+   (`{RedGain, GreenGain, BlueGain}`, 4.12 fixed point). **Fix:** listed and answered 1.0 each.
+4. `Fig assert: "pixelFormatIsSupported"` (11): the ProRes RAW (`btp2`) device formats, which stay off. No change.
+5. `Failed to open streams for device Back Telephoto Camera, this device will be disabled` (and the ultra-wide, dual and
+   triple): no stream on those ports; CMCapture disables them and goes on, which is V54's device list without them. No
+   telephoto stream of the wide camera (it would publish a 4x lens that is not there). No change.
+Host-tested and built for iOS (fix-camera-formats); not run on the phone.
+
 ### The model name stopped all audio: `OneiOSAP` and a link to V54 (fix-audio-camera-model, hosted 0088, 2026-11-23)
 
 **The fault (the same v0.1.16 session, iOS's log `ioslog2/ioslog.txt`, 20:21:48):** no sound, no volume and no haptics
