@@ -78,7 +78,7 @@ wifi-buffers=1
 wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
-# kernel switches (boot-args-add appends to boot-args; one line, both words):
+# kernel switches (boot-args-add appends to boot-args; one line, all three words):
 # boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1
 ```
 
