@@ -168,7 +168,18 @@ lane_tests() {
 }
 
 declare -A PIDS=()
-start() { local n=$1; ( set -euo pipefail; "lane_$n" ) > "$LOGS/$n.log" 2>&1 & PIDS[$n]=$!; echo "release: $n started (log $LOGS/$n.log)"; }
+# Each lane with job control on (set -m): without it bash starts a background command with SIGINT and SIGQUIT
+# ignored, every process of the lane inherits that, and the fork's OneiosScriptTest (xnuhost's stand-in must not ignore
+# them) failed here and passes in CI's foreground steps (v0.1.20, 2026-11-23). Stdin is /dev/null: a lane in its own
+# process group never reads the terminal.
+start() {
+  local n=$1
+  set -m
+  ( set -euo pipefail; "lane_$n" ) < /dev/null > "$LOGS/$n.log" 2>&1 &
+  PIDS[$n]=$!
+  set +m
+  echo "release: $n started (log $LOGS/$n.log)"
+}
 [ "$RUNTIME" = 0 ] || start runtime
 [ "$APK" = 0 ] || start apk
 [ "$TESTS" = 0 ] || start tests
