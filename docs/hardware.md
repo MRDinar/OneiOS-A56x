@@ -2858,7 +2858,7 @@ in iOS's log no `Volume Mode is HardwareOnly but physical device does not suppor
 curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
 up to the phone's full loudness. Back in One UI: the media volume as it was.
 
-### Late periods: the engines realtime in the guest, their wait without timer slop (fix-audio-late, 2026-11-24; the archive built, not in a kernel build or on the phone)
+### Late periods: the engines realtime in the guest, their wait without timer slop (fix-audio-late, 2026-11-24; built and prelinked, not booted)
 
 The fault: iOS's audio late. The phone, 2026-11-24 01:17-01:25 (kernel `e79886d9` = main,
 `out/session-logs/2026-11-24-mac-gpumem/live.log`):
@@ -2926,8 +2926,8 @@ The lasting lines (logging, no switch):
 Tested: the archive built against `HOSTED_OUT=wired`'s tree with the change (`oneios-tool kernel gen audio`,
 `ONEIOS_AUDIO_OUT` elsewhere: no warning; `thread_policy_set`, `assert_wait_deadline_with_leeway`, `thread_block`
 undefined in `DroidVMAudio.late.o`, as the kernel defines them); `cargo test -p oneios-kernel` (the synthetic
-source has the three new anchors; the staged source's hash in `golden/staged.sha256`). Not tested: a kernel build
-with it, a qemu boot, the phone.
+source has the three new anchors; the staged source's hash in `golden/staged.sha256`). Then the kernel: built on the laptop with the whole series (`HOSTED_OUT=audiolate ONEIOS_CRYPTO=original`, 686 s, 182 patches, releasable): `xnu.macho` `6d40f8e0`; prelinked to `out/kernel/24A446-audiolate/kernel.kc` `853068df` (`.hashes` `fa7166ba`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 10 of 10.
+`runtime/host-tests.sh` (2026-11-24, after the rebase on 904809b): workspace, lint, lint-android, port, links and package pass, boot skipped. Not booted (no qemu boot, owner's rule of 2026-11-24; not on the phone yet).
 
 ### No audio at all in v0.1.16: VirtualAudio never started (fix-audio-camera-model, 2026-11-23; built, not on the phone)
 

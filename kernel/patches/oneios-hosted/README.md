@@ -667,8 +667,8 @@ more at a user idle level): on the phone (2026-11-24 01:17, kernel e79886d9) the
 late on average and up to 98 ms late while `VM_pageout_scan` used 14.7 s of CPU in those 30 s. The late counts are
 also split: the counter line's `late` no longer counts the Actuator's periods (its `periods` never did), and a new
 line `ONEIOS AUDIO: late periods: ...` counts the speaker's late periods by size, those the HAL had written only in
-part, the Actuator's, and the realtime policy's result. Built (the archive alone, against `HOSTED_OUT=wired`'s tree);
-not in a kernel build or on the phone yet. `docs/hardware.md` section 6, "Late periods".
+part, the Actuator's, and the realtime policy's result. Built: `xnu.macho` `6d40f8e0`, `kernel.kc` `853068df`
+(`HOSTED_OUT=audiolate`, audit 0 failures, stubs 666 good); not booted. `docs/hardware.md` section 6, "Late periods".
 
 ### The Actuator device (media, 2026-11-12)
 
