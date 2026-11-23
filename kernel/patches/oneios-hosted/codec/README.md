@@ -456,3 +456,26 @@ The host's side and its 60 s line: `runtime/bridges/encoder/README.md`, "The dec
 - `oneios-cpu`: com.apple.WebKit.Web, videocodecd and mediaplaybackd far below the 91-142 %, 15-26 % and 58 % of
   2026-11-24. The `thermal` lines cooler at the same brightness.
 - iOS's log (`phone pull-log`): no `ParavirtualizedVideoDecoder ... failed`.
+
+**Built and tested on the build laptop (2026-11-24, main b917889 plus this work). Not booted** (CLAUDE.md 2026-11-24:
+no qemu boots; the phone is the test).
+- **Kernel [F]:** `HOSTED_OUT=hwdec ONEIOS_CRYPTO=original kernel/build-hosted.sh`: `xnu.macho` `9e4bae00b86529e5...`
+  (24,688,976 bytes), releasable. The series runs to 0100. `build-oneios-codec: ... (4 objects ...)`, no compiler
+  warning. The staged `DroidVMVTHost.cpp` is `72bfaad0...` (112,882 bytes; `tests/kernelgen/golden/staged.sha256`).
+  `decoderCapabilities`, `acceptFormat`, `decoderCodecs` and `oneios_decode_*` are in the archive and the kernel.
+- **Prelinked [F]:** `KERNEL=out/kernel/current-hosted-hwdec/xnu.macho OUT=out/kernel/hwdec-24A446
+  kernel/prelink/build.sh`: `kernel.kc` `dfd8835e44f5c13ab2ac276a5c1c6334203d8998a9fbfcecd9261c72df51d930`
+  (96,288,768 bytes), `audit: 2711 paired, 93 functions on the stub, 9 data unpaired; 0 failures`; `oneios-tool
+  prelink stubs-check`: 666 good, 0 bad. `kernel.kc.hashes` is `5d21b2a3...`.
+- **Host tests [F]:**
+  - `kernel/tests/host.sh` 11 of 11.
+  - `cargo test -p oneios-kernel --test golden` 14 of 14 (the decoder's edit on the pinned source and the synthetic
+    one).
+  - `runtime/host-tests.sh`: workspace, lint, lint-android, port, links and package pass; the boot part is skipped.
+  - `compare-golden.sh`: the codec's hash is the new one. `oneios-net/report.json`, `DroidVMVirtioInput.c` and
+    the tree paths of `stdout.txt` differ as they did before this work.
+- **Runtime [F]:** `runtime/build.sh` (elf-check 0 failures): `bin/xnuhost` `ffb3ef6d...`, `bin/oneios-encoder`
+  `01e26ba6...`, `bin/encctl` `d678acfc...`. Both dynamic ones need `AMediaCodec_setAsyncNotifyCallback`,
+  `createDecoderByType`, `flush`, `getName` and `AMediaFormat_getRect`, all found in the NDK's API 30 stubs.
+- **Not tested:** anything on the phone. That covers MediaCodec's decoders in asynchronous ByteBuffer mode, whether
+  WebCore offers VP9 or AV1 after `dcap`, and the CPU and thermal effect.

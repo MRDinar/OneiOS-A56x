@@ -4188,7 +4188,9 @@ decoder"):
   sequence over the real transport, through the helper process with a memfd pool (VP9, H.264) and in-process (AV1,
   HEVC), and checks `decoder=off`. It also runs `encctl decode` on an IVF and an Annex-B file.
 - `cargo test -p oneios-kernel --test golden`: the edit on the pinned source.
-- The kernel build and prelink (`codec/README.md`), and `runtime/build.sh` (elf-check 0 failures).
+- The kernel build and prelink (`out/kernel/hwdec-24A446/kernel.kc` `dfd8835e...`, audit 0 failures, stubs 666 good;
+  `codec/README.md` has the hashes), and `runtime/build.sh` (elf-check 0 failures). Not booted (no qemu boots: the
+  phone is the test).
 
 **Guesses [I].**
 - That WebCore offers VP9 and AV1 to YouTube once `dcap` answers.
