@@ -1467,6 +1467,7 @@ fn the_switches() {
     assert!(c.wifi_ring_wait && c.wifi_send_wait && c.wifi_buffers && c.wifi_joined_scan == WifiJoinedScan::Cache);
     assert!(c.encoder_10bit == Encoder10::Main10 && c.encoder_warmup && c.gpu_down == GpuDown::Governor);
     assert!(c.gpu_blob_entries == 65532 && c.stop_loop == StopLoop::Wait);
+    assert!(!c.display_post_serial);
     for (k, v) in [
         ("wifi-ring-wait", "0"),
         ("wifi-send-wait", "0"),
@@ -1478,9 +1479,11 @@ fn the_switches() {
         ("gpu-down", "bottom"),
         ("stop-loop", "poll"),
         ("uclamp-rule", "all"),
+        ("display-post", "serial"),
     ] {
         assert!(c.set(k, v).is_ok(), "{k}={v}");
     }
+    assert!(c.display_post_serial);
     for (k, v) in [
         ("gpu-blob-entries", "65533"),
         ("gpu-blob-entries", "1024"),
@@ -1490,6 +1493,7 @@ fn the_switches() {
         ("stop-loop", "sleep"),
         ("uclamp-rule", "some"),
         ("wifi-buffers", "off"),
+        ("display-post", "1"),
     ] {
         assert!(c.set(k, v).is_err(), "{k}={v} refused");
     }
@@ -1505,7 +1509,7 @@ fn the_switches() {
     assert!(
         line.ends_with(
             "not at the default: stop-loop uclamp-rule gpu-down gpu-blob-entries wifi-ring-wait wifi-send-wait wifi-buffers \
-             wifi-joined-scan encoder-10bit encoder-warmup oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut \
+             wifi-joined-scan encoder-10bit encoder-warmup display-post oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut \
              oneios-pressure-big oneios-disable-allowed oneios-idle-spares oneios-bo-cache-idle"
         ),
         "{line}"
