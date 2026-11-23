@@ -303,12 +303,16 @@ fn policy_the_policy_does_not_contradict_itself() {
     assert!(!chosen.iter().any(|l| d.keep.contains(l)));
     assert!(!chosen.iter().any(|l| d.idle.iter().any(|(i, _)| i == l)));
     // vphone's base list of 134, less generativeexperiencesd (kept) and the four OTA jobs (replace)
-    assert_eq!(d.group("base").unwrap().labels.len(), 127); // analyticsd (2026-11-12) and navd (2026-11-22) went to keep
-    for label in ["com.apple.SpringBoard", "com.apple.backboardd", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.generativeexperiencesd", "com.apple.bluetoothd", "com.apple.locationd", "com.apple.navd"] {
+    assert_eq!(d.group("base").unwrap().labels.len(), 126); // analyticsd (2026-11-12), navd (2026-11-22) and duetexpertd (2026-11-23) went to keep
+    for label in ["com.apple.SpringBoard", "com.apple.backboardd", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.generativeexperiencesd", "com.apple.bluetoothd", "com.apple.locationd", "com.apple.navd", "com.apple.duetexpertd"] {
         assert!(d.keep.contains(label), "{label}");
     }
-    for label in ["com.apple.watchdogd", "com.apple.nfcd", "com.apple.seld", "com.apple.momentsd", "com.apple.fairplayd.H2", "com.apple.identityservicesd", "com.apple.accessoryupdaterd", "com.apple.aned"] {
+    // on by default: replace, hardware (aned) and the crash loops; base, extra and signin run since 2026-11-23
+    for label in ["com.apple.watchdogd", "com.apple.mobile.softwareupdated", "com.apple.aned", "com.apple.aonsensed", "com.apple.prngseedd"] {
         assert!(chosen.iter().any(|l| l == label), "{label}");
+    }
+    for label in ["com.apple.nfcd", "com.apple.seld", "com.apple.momentsd", "com.apple.coreduetd", "com.apple.fairplayd.H2", "com.apple.identityservicesd", "com.apple.weatherd", "com.apple.followupd"] {
+        assert!(!chosen.iter().any(|l| l == label), "{label}");
     }
     // what costs a feature is off unless asked for
     for label in ["com.apple.apsd", "com.apple.chronod", "com.apple.appstored"] {
@@ -316,9 +320,35 @@ fn policy_the_policy_does_not_contradict_itself() {
     }
     let has = |sel: Vec<(String, String)>, l: &str| sel.iter().any(|(x, _)| x == l);
     assert!(has(d.selected(&["fewest".into()], &[], &[]).unwrap(), "com.apple.apsd"));
-    assert!(!has(d.selected(&[], &["base".into()], &[]).unwrap(), "com.apple.nfcd"));
-    assert!(!has(d.selected(&[], &[], &["com.apple.weatherd".into()]).unwrap(), "com.apple.weatherd"));
+    assert!(has(d.selected(&["base".into()], &[], &[]).unwrap(), "com.apple.nfcd"));
+    assert!(!has(d.selected(&["base".into()], &[], &["com.apple.weatherd".into()]).unwrap(), "com.apple.weatherd"));
     assert!(d.selected(&["nonesuch".into()], &[], &[]).is_err());
+}
+
+#[test]
+fn policy_the_kernels_enable_list_is_what_the_policy_runs_again() {
+    // hosted 0092: a Data store from a seed made before 2026-11-23 has the groups base, extra and signin and
+    // fairplayd.H2 in its disabled.plist; the kernel's built-in list enables them again. It must be the policy's.
+    let patch = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../kernel/patches/oneios-hosted/0092-enable-jobs-policy.patch")).unwrap();
+    let start = patch.find("oneios_jobs_enable_default[] =").expect("the list in 0092");
+    let body = &patch[start..start + patch[start..].find("\n+;").expect("its end")];
+    let joined: String = body.lines().skip(1).filter_map(|l| l.split('"').nth(1)).collect();
+    let mut kernel: Vec<String> = joined.split(',').map(str::to_string).collect();
+    kernel.sort();
+    let d = config::daemons(None).unwrap();
+    let mut want: Vec<String> = ["base", "extra", "signin"].iter().flat_map(|g| d.group(g).unwrap().labels.clone()).collect();
+    for g in ["base", "extra", "signin"] {
+        assert!(!d.group(g).unwrap().default, "{g} is off by default");
+    }
+    // kept since the seeds that disabled them: analyticsd (0044), navd (0083), duetexpertd (0092); fairplayd.H2 left hardware
+    for label in ["com.apple.analyticsd", "com.apple.navd", "com.apple.duetexpertd", "com.apple.fairplayd.H2"] {
+        want.push(label.to_string());
+    }
+    want.sort();
+    assert_eq!(kernel, want);
+    let chosen: Vec<String> = d.selected(&[], &[], &[]).unwrap().into_iter().map(|(l, _)| l).collect();
+    assert!(!kernel.iter().any(|l| chosen.contains(l)), "the kernel enables a job the policy disables");
+    assert!(joined.len() < 4096, "0092's buffer is 4096 bytes");
 }
 
 #[test]
@@ -384,7 +414,8 @@ fn sealed_disabled_jobs_go_to_the_data_volume_as_roots_file() {
     let mut c = Case::new("disabled");
     c.apply(&[]);
     let disabled = read_plist(&c.data, "db/com.apple.xpc.launchd/disabled.plist");
-    let mut want = vec!["com.apple.watchdogd", "com.apple.mobile.softwareupdated", "com.apple.OTATaskingAgent", "com.apple.nfcd", "com.apple.seld", "com.apple.assistantd", "com.apple.nearbyd", "com.apple.momentsd", "com.apple.coreduetd"];
+    // the fake root's jobs that the default disables: the replace jobs (base and extra run since 2026-11-23)
+    let mut want = vec!["com.apple.watchdogd", "com.apple.mobile.softwareupdated", "com.apple.OTATaskingAgent"];
     want.sort();
     assert_eq!(keys(&disabled), want);
     assert!(disabled.items().iter().all(|(_, v)| matches!(v, P::Bool(true))));
@@ -402,10 +433,10 @@ fn sealed_disabled_jobs_go_to_the_data_volume_as_roots_file() {
     // labels the fake root does not have are reported, not written
     let r = c.read("report.json");
     let missing = r.get("results").unwrap().as_list().unwrap().iter().find(|r| str_of(r, "item") == "jobs not in this root").unwrap().clone();
-    assert!(strs(missing.get("labels").unwrap()).contains(&"com.apple.weatherd".to_string()));
-    assert!(disabled.get("com.apple.weatherd").is_none());
+    assert!(strs(missing.get("labels").unwrap()).contains(&"com.apple.aonsensed".to_string()));
+    assert!(disabled.get("com.apple.aonsensed").is_none());
     // nothing kept is disabled, and a job the policy does not know stays
-    for label in ["com.apple.SpringBoard", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.example.unknownd", "com.apple.generativeexperiencesd", "com.apple.biometrickitd"] {
+    for label in ["com.apple.SpringBoard", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.example.unknownd", "com.apple.generativeexperiencesd", "com.apple.biometrickitd", "com.apple.nfcd", "com.apple.coreduetd"] {
         assert!(disabled.get(label).is_none(), "{label}");
     }
 }
@@ -418,16 +449,18 @@ fn sealed_an_override_already_there_stays() {
     let disabled = read_plist(&c.data, "db/com.apple.xpc.launchd/disabled.plist");
     assert!(matches!(disabled.get("com.example.theirs"), Some(P::Bool(true))));
     assert!(matches!(disabled.get("com.example.on"), Some(P::Bool(false))));
-    assert!(matches!(disabled.get("com.apple.nfcd"), Some(P::Bool(true))));
+    assert!(matches!(disabled.get("com.apple.watchdogd"), Some(P::Bool(true))));
 }
 
 #[test]
 fn sealed_groups_keep_and_disable_by_hand() {
     let mut c = Case::new("groups");
-    c.apply(&["--no-group", "base", "--keep", "com.apple.momentsd", "--disable", "com.apple.CommCenter", "--disable", "com.apple.example.unknownd"]);
+    c.apply(&["--group", "extra", "--no-group", "replace", "--keep", "com.apple.momentsd", "--disable", "com.apple.CommCenter", "--disable", "com.apple.example.unknownd"]);
     let disabled = read_plist(&c.data, "db/com.apple.xpc.launchd/disabled.plist");
-    assert!(disabled.get("com.apple.nfcd").is_none());
-    assert!(disabled.get("com.apple.momentsd").is_none());
+    assert!(disabled.get("com.apple.watchdogd").is_none()); // --no-group replace
+    assert!(disabled.get("com.apple.nfcd").is_none()); // base is off by default
+    assert!(disabled.get("com.apple.coreduetd").is_some()); // --group extra
+    assert!(disabled.get("com.apple.momentsd").is_none()); // --keep wins over the group
     assert!(disabled.get("com.apple.CommCenter").is_some());
     assert!(disabled.get("com.apple.example.unknownd").is_some());
     assert!(c.states().contains_key("warning: com.apple.CommCenter"));

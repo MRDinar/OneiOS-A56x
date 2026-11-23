@@ -423,3 +423,11 @@
 # CPUs. Numbered 0091: 0090 is the camera helper's boot addon (t3/camera-preview-stream-fix); the two touch no file in common.
 # Applies after the camera 0090 (git apply --check). Built and prelinked (kernel.kc ca1606e5); not booted yet. README.md, "0091".
 0091-edge-no-pullback-ipi-counts.patch
+# enable-jobs-policy (2026-11-23): the daemon policy runs what vphone's lists disabled (userland/config/daemons.toml:
+# the groups base, extra and signin off by default, fairplayd.H2 out of hardware; still off: the crash loops, the
+# replace jobs and aned). A Data store from an older seed has those 134 jobs in its disabled.plist: 0044's enable list
+# gets them as its built-in default (3.4 KiB, a static buffer of 4096; oneios-enable-jobs= still replaces it, "-" for
+# none), one line per job enabled and one summary line ("oneios-jobs: N of M labels enabled ... (0092)"). Found:
+# "Add New Wallpaper" loaded forever, PosterBoard's gallery waits on duetexpertd's FaceSuggestions.xpc ("No such
+# process"). The roottweak test checks that the list is the policy's. README.md, "0092".
+0092-enable-jobs-policy.patch

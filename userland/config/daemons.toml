@@ -10,6 +10,12 @@
 #
 # Where a list was measured matters: only vphone's is from iOS 27 on an iPhone identity. The iPad lists
 # (UniXNU) and the iOS 16/26 lists (iOSPlus10) are named as such and are off unless stated.
+#
+# Since 2026-11-23 (the owner: "enable most of them apart from the ones that crash-looped") the groups base, extra and
+# signin are off by default: their jobs run, so iOS's features behind them work (vphone measured the list for memory and
+# idle CPU, and "no feature lost" was not true here: PosterBoard's wallpaper gallery waits on duetexpertd). On by
+# default still: replace, hardware (aned only) and loops (the crash loops measured on this phone). A Data store from an
+# older seed gets the 134 jobs enabled by the kernel (hosted 0092, through 0044's list). The groups stay, for --group.
 
 # ---- keep -------------------------------------------------------------------------------------------------
 [keep]
@@ -47,6 +53,8 @@ labels = [
   "com.apple.avconferenced",
   # the Maps widget reconnects to it with no back-off when it is missing
   "com.apple.navd",
+  # PosterBoard's wallpaper gallery is empty without it
+  "com.apple.duetexpertd",
 ]
 
 [keep.reasons]
@@ -60,6 +68,7 @@ labels = [
 "com.apple.bluetoothd" = "locationd calls it synchronously (vphone). iOSPlus10 dropped it on iOS 16 for a relaunch loop; on iOS 27 it stays and idles"
 "com.apple.analyticsd" = "without it backboardd spun at 217% CPU after a brightness change: CoreAnalytics::Client::retryXpcMessageHelper_sync makes a new connection for each retry of a synchronous send (__kernelrpc_mach_port_construct_trap in a loop) and the brightness never reached the panel (phone, 2026-11-12, oneios-ubt). vphone's base27 disables it; here the lookups found no service and the clients spun"
 "com.apple.navd" = "without it GeneralMapsWidget (MNNavigationServiceRemoteProxy) reconnects to com.apple.navigationService with no back-off: about 28000 `failed to do a bootstrap look-up: xpc_error=No such process` in the typing boot of 2026-11-22, the widget at 54-103% of a core with geod 30-46% and launchd 13-24% beside it, while Settings was typing (phone, xnuhost-s6.log). vphone's base27 disables it. A Data store made from an older seed gets it enabled by the kernel (hosted 0083, through 0044's list)"
+"com.apple.duetexpertd" = "PosterBoard's Add New Wallpaper gallery asks ATXFaceSuggestionClient (com.apple.proactive.FaceSuggestions.xpc, its service) for the gallery; without it launchd answers No such process, PosterBoard logs `_pushFaceGalleryConfigurationUpdate: no gallery received? Erroring out` and the gallery loads forever (phone, 2026-11-23 07:38 UTC, boot-rust). vphone's base27 disables it. A Data store made from an older seed gets it enabled by the kernel (hosted 0092)"
 "com.apple.security.cryptexd" = "needs /chosen/manifest-properties in the device tree, or it restarts every 10 s (iOSPlus10 notes 5167-5175)"
 
 # ---- idle -------------------------------------------------------------------------------------------------
@@ -90,8 +99,8 @@ default = true
 
 # ---- disable groups ---------------------------------------------------------------------------------------
 [group.base]
-default = true
-source = "vphone-cli 2.14.2 GuestServiceProfile.swift base27 (list version 3): measured on an iPhone guest, iOS 27.0 24A435; memory -29 %, idle CPU -26 %, idle writes -60 %, no feature of the guest lost. Less generativeexperiencesd (kept) and the OTA jobs (under replace)"
+default = false
+source = "off by default since 2026-11-23 (the header). vphone-cli 2.14.2 GuestServiceProfile.swift base27 (list version 3): measured on an iPhone guest, iOS 27.0 24A435; memory -29 %, idle CPU -26 %, idle writes -60 %, no feature of the guest lost. Less generativeexperiencesd (kept) and the OTA jobs (under replace)"
 labels = [
   "com.apple.CallHistorySyncHelper", "com.apple.Maps.mapspushd", "com.apple.Maps.mapssyncd",
   "com.apple.PerfPowerServicesExtended", "com.apple.PowerUIAgent", "com.apple.SafariBookmarksSyncAgent",
@@ -103,7 +112,7 @@ labels = [
   "com.apple.assistant_service", "com.apple.assistantd", "com.apple.audioanalyticsd",
   "com.apple.batteryintelligenced", "com.apple.biomesyncd", "com.apple.bookassetd", "com.apple.callintelligenced",
   "com.apple.carkitd", "com.apple.cdpd", "com.apple.cloudtelemetryd", "com.apple.cmfsyncagent", "com.apple.coreidvd",
-  "com.apple.corespeechd", "com.apple.diagnosticextensionsd", "com.apple.diagnosticspushd", "com.apple.duetexpertd",
+  "com.apple.corespeechd", "com.apple.diagnosticextensionsd", "com.apple.diagnosticspushd",
   "com.apple.ecosystemanalyticsd", "com.apple.email.maild", "com.apple.eyereliefd", "com.apple.familycircled",
   "com.apple.findmy.findmybeaconingd", "com.apple.findmy.findmylocated", "com.apple.finhealthd",
   "com.apple.fitnesscoachingd", "com.apple.fitnessintelligenced", "com.apple.gamed", "com.apple.geoanalyticsd",
@@ -132,20 +141,21 @@ labels = [
 ]
 
 [group.extra]
-default = true
-source = "vphone-android android/vphone-native/src/services.rs TRIMMED_EXTRA: momentsd used 0.67 of a guest CPU at rest in the 0.6.0 log; coreduetd, modelcatalogd and mstreamd are UniXNU-sheng's BootWatchdogPolicy labels from iPadOS 27.0.1 (coreduetd held half a core through the boot)"
+default = false
+source = "off by default since 2026-11-23 (the header). vphone-android android/vphone-native/src/services.rs TRIMMED_EXTRA: momentsd used 0.67 of a guest CPU at rest in the 0.6.0 log; coreduetd, modelcatalogd and mstreamd are UniXNU-sheng's BootWatchdogPolicy labels from iPadOS 27.0.1 (coreduetd held half a core through the boot)"
 labels = ["com.apple.momentsd", "com.apple.coreduetd", "com.apple.modelcatalogd", "com.apple.mediastream.mstreamd"]
 
 [group.signin]
-default = true
-source = "vphone-cli signin_followup: the Apple Account follow-up prompts; a guest whose Setup was skipped has none to show"
+default = false
+source = "off by default since 2026-11-23 (the header). vphone-cli signin_followup: the Apple Account follow-up prompts; a guest whose Setup was skipped has none to show"
 labels = ["com.apple.appleidsetupd", "com.apple.followupd"]
 
 [group.hardware]
 default = true
 source = "hardware this host has no stand-in for. aned: iOSPlus10 ios26-root-spec.py DROP_N104 ('no Neural Engine on this SoC'; read on 26.5.2, label [U] on 27.0.1). The NFC, Secure Element and UWB jobs are in base already"
-labels = ["com.apple.aned", "com.apple.fairplayd.H2"]
-# fairplayd.H2 (the iPhone's; the iPad's is fairplayd.A2): UniXNU-droidvm package/DroidVMBootArgs27.c disables it on
+labels = ["com.apple.aned"]
+# fairplayd.H2 runs since 2026-11-23 (the owner asked: App Store apps need it); it was here until then. Watch its first
+# boot for what follows. fairplayd.H2 (the iPhone's; the iPad's is fairplayd.A2): UniXNU-droidvm package/DroidVMBootArgs27.c disables it on
 # iPadOS 27.0.1: without the FairPlayIOKit kext, which the kernel collection does not carry, it exits but its Mach
 # services stay registered, and lockdownd, accountsd and the apps behind them hang; on iOS 16 iOSPlus10 saw locationd
 # deadlock the same way. Costs: App Store apps do not start. The other three of UniXNU's iPad list are covered:
