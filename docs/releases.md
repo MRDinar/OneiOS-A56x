@@ -413,6 +413,18 @@ to 0087 (0084 MobileGestalt cache, 0085 Edge spill, 0086 Actuator chain, 0087 bl
 (`out/kernel/24A446-release/kernel.kc`, SHA-256 `f499f3ae...`): audit 2711 paired, 93 on the stub, 0 failures;
 `prelink stubs-check` 666 good, 0 bad; `kernel/tests/host.sh` 8 of 8. Not booted on the phone before the release.
 
+The kernel of v0.1.18 (2026-11-23, built on the build laptop in the `t3/enable-jobs-0092` worktree, uploaded from the
+main checkout with `kernel/publish.sh --hosted jobs --upload`): `xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3`,
+`xnu.macho` 24,608,768 bytes, SHA-256 `72b67dff4838e9677bcd65747cadff8fa89fb04ae8fc10a9c70242884b91aa88`, `main`'s hosted
+series to 0092 (after v0.1.16's: 0088 the camera's model name `OneiOSAP`, the fix for no sound; 0089 the scheduler's
+completion step; 0090 the boot add-on; 0091 no pull-back of spilled threads; 0092 the jobs policy), original
+corecrypto, `"releasable": true`. Its `series.txt` checked against `main` before the upload: the 174 tracked patches
+and the 3 generated ones (equal to v0.1.16's) all match. Archive 6,438,794 bytes, SHA-256 `60b86a55...`, release
+`kernel-xnu-...-c889b14b24f3`. Its prelink (`out/kernel/jobs-24A446/kernel.kc`, SHA-256 `aef14856...`): audit 0
+failures, `kernel/tests/host.sh` 8 of 8. **Booted on the phone before the release** (2026-11-23 13:45, `boot-jobs`:
+0092's 134 jobs, the wallpaper gallery loads; that session ended in xnuhost's GPU renderer, the fault v0.1.18's
+runtime fixes, not in the kernel).
+
 ## Released
 
 | Tag | Date | Commit | What |
