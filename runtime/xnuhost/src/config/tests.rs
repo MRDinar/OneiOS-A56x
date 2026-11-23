@@ -1451,7 +1451,9 @@ fn the_switches() {
     ] {
         assert!(c.set(k, v).is_err(), "{k}={v} refused");
     }
-    c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-audio-rt=0".into();
+    c.boot_args =
+        "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-audio-rt=0"
+            .into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
     assert!(
