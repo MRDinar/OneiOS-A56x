@@ -13,8 +13,8 @@ kernel pass with the Rust xnuhost under qemu-aarch64, and the trap path was benc
 (docs/booter.md 2.6a, docs/building.md section 4). **On the phone** (2026-11-23 13:03, xnuhost `58a378e2...` from
 `00c174d`): iOS booted to the Home Screen, first frame with content 50.1 s after xnuhost's start (the C: 51.9 s on the
 same kernel and image); touch, the GPU, Wi-Fi, audio and haptics ran; the trap path is level with the C
-(docs/booter.md 2.6a, "On the phone, Rust against C"). Not checked yet: the return to One UI, the camera's picture,
-the pen. Every other phone result in the docs dated before 2026-11-23 is of the C runtime.
+(docs/booter.md 2.6a, "On the phone, Rust against C"). The return to One UI was clean (`exit 0`, gates A-C, One UI in place after 67 s). Not checked yet: the camera's
+picture, the pen. Every other phone result in the docs dated before 2026-11-23 is of the C runtime.
 
 ## The crates
 
