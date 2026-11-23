@@ -17,7 +17,7 @@
 #             has no binderfs), the camera, the encoder (its stand-in streams decoded by ffmpeg when it is there)
 #   lint      cargo fmt --check and cargo clippy --workspace --all-targets -D warnings, on the host and (with the NDK) for
 #             aarch64-linux-android
-#   boot      runtime/xnuhost/check-arm64.sh smoke check: the vCPU machinery alone, then the static Android xnuhost
+#   boot      only with QEMU=1 (skipped by default, CLAUDE.md 2026-11-24): runtime/xnuhost/check-arm64.sh smoke check: the vCPU machinery alone, then the static Android xnuhost
 #             booting the Rust test kernel three times (the normal boot, ram=auto, the restart loop) under qemu-aarch64 on
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
@@ -86,7 +86,11 @@ suite() {
   if ndk_ok; then part lint-android sh -c 'cd runtime && cargo clippy --workspace --all-targets --locked --target aarch64-linux-android -- -D warnings'; fi
   # PREBUILT=1 (the Mac's container): the Mac built the static xnuhost and the test image with its NDK just before, and
   # the container has no NDK: check-arm64.sh boots those as they are and builds nothing.
-  if [ "${PREBUILT:-0}" = 1 ]; then
+  # QEMU=1 runs the boot part. By default it is skipped: the phone is the test (CLAUDE.md, the owner's rule of
+  # 2026-11-24); a helper hands the build to the Mac for a phone boot instead.
+  if [ "${QEMU:-0}" != 1 ]; then
+    results+=("boot: skipped (the qemu boot runs only with QEMU=1: the phone is the test, CLAUDE.md 2026-11-24)")
+  elif [ "${PREBUILT:-0}" = 1 ]; then
     if [ -f "$PREBUILT_XNUHOST" ] && [ -f "$PREBUILT_IMAGE/kernel.kc" ]; then
       part boot env XNUHOST="$PREBUILT_XNUHOST" IMAGE="$PREBUILT_IMAGE" runtime/xnuhost/check-arm64.sh check
     else results+=("boot: FAIL: no $PREBUILT_XNUHOST or $PREBUILT_IMAGE: the Mac builds them before the container"); fi

@@ -28,6 +28,12 @@ kernel. Read first: [README.md](README.md) (status), [docs/architecture.md](docs
 > with a background task and wait for its completion notice; follow a live log with `oneios-tool phone log --follow`
 > under a filter. Never a polling loop, in the foreground or the background.
 
+> **No qemu boots: test on the phone (2026-11-24).** Do not boot the kernel or the runtime under qemu (the 25-minute
+> test-kernel or `--mode bench` boots) to check a change, unless the owner asks for it. Run the fast host tests
+> (`runtime/host-tests.sh`, whose qemu `boot` part now runs only with `QEMU=1`; `kernel/tests/host.sh`, unit tests), build, and hand the files
+> to the Mac for a phone boot: the phone is the test. A helper on the build laptop says "not booted" and gives the
+> Mac what to stage and the proof lines.
+
 - **No Python.** Retired 2026-11-21: no `.py` file, no `python3` in a script, CI or a doc's commands. Tools are
   `oneios-tool` (Rust) or plain POSIX shell; JSON in a script is `oneios-tool json`. Only other projects' pinned code
   (UniXNU, Droid-VM, Mesa) still runs Python inside the kernel and Metal builds (`tools/oneios-tool/todo_rust.md` 7).

@@ -316,7 +316,7 @@ checks still run there.
 |---|---|
 | `workspace` | `cd runtime && cargo test --workspace --locked`: every crate's tests. drm2kgsl's and the stand-in KGSL scenarios when `external/virglrenderer` is there (the memory ones need `/dev/udmabuf`); the binder tests on a binderfs in a user namespace (`runtime/bridges/hal/binderfs.rs`; they print "skipped" where the kernel has none); the encoder's stand-in streams decoded by `ffmpeg` when it is there |
 | `lint` | `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
-| `boot` | `runtime/xnuhost/check-arm64.sh smoke check` (when the NDK is there): the vCPU machinery alone, then the static Android xnuhost booting the Rust test kernel three times, under qemu-aarch64 on an x86_64 PC, as it is on an arm64 host |
+| `boot` | only with `QEMU=1` (skipped by default since 2026-11-24: the phone is the test, CLAUDE.md): `runtime/xnuhost/check-arm64.sh smoke check` (when the NDK is there): the vCPU machinery alone, then the static Android xnuhost booting the Rust test kernel three times, under qemu-aarch64 on an x86_64 PC, as it is on an arm64 host |
 | `port` | `sh scripts/port/test-verify-host.sh` (the read-only phone preflight against stand-in phones) |
 | `links` | `runtime/package/elf-check-test.sh`, the link rule and the check of the next section (needs the NDK) |
 | `package` | `runtime/package/test.sh` (needs the NDK) |
