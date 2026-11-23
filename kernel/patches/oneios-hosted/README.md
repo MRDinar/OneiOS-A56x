@@ -2105,3 +2105,61 @@ is 3.5 KiB of its 4 KiB buffer; a cut list says so (`the enable list is cut at 4
 
 Tested: `git apply --check` after 0095 on the patched tree; built and prelinked with the series (docs/switches.md has
 the build). Not booted with `oneios-telemetry-jobs=1`.
+
+## 0097-wired-owners-pressure-order.patch (fix/wired-names, 2026-11-23)
+
+**Why.** The session of 2026-11-23 22:19-22:30 (integration build 74c56ef, kernel `b5f5378a`;
+`out/session-logs/2026-11-23-mac-int/live2.log`) had `oneios-mem: free 25 MiB ... wired 3195` of 5302 MiB, the pageout
+scan at 7-17 s of CPU in each 30 s, and no line naming who held the wired pages. Read from that log: the wired count
+follows the GPU's blob totals, line for line (`oneios-gpu-memory: ... own 2044 (2044 MiB), wired 629`). At 97907 s
+wired was 3133 MiB with 2172 + 370 MiB of blobs, at 98040 s 3195 with 2044 + 629. Every blob is wired guest RAM: the
+gpu archive's own pages are `prepare()`d in the client's task until the blob goes, and an imported range is wired the
+same way. So about 2.0-2.7 GiB of the 3.2 GiB was GPU memory of every client (backboardd 917+300, WebKit's GPU process
+475+267, the widget renderer 179, MapKit 115, iconservicesagent 104, SpringBoard 93, cameracaptured 88 MiB), not
+backboardd's 1.2 GiB alone. About 0.5 GiB was the rest. The same log has `memorystatus available` at 816-875 MiB, just
+above the warning line (795 MiB), and `long-idle-exit 8`: the level reached warning (the long-idle kills come only
+there) and fell back.
+
+At a rise XNU notifies one process at a time, 250 ms apart, the least important band first, the largest first within a
+band. Apple's privileged listeners go before all (`vm_pressure_select_optimal_candidate_to_notify`). The processes that
+hold the GPU memory are the most important ones, so they were last. A round over 150-300 listeners takes 40-75 s. A level
+that falls back before the round reaches them (the long-idle kills free a little) ends it there. Core Animation's pooled
+textures, metal2vulkan's kept and spare blocks (the base's 0019-0031 patches, `release_spare`) and NativeMetal's held
+imports (`watchImportPressure`) all wait for that note (docs/gpu.md, "Who keeps a blob").
+
+**What.**
+- `oneios-wired` lines every `oneios-wired-log` seconds (60; 0: never), from the free-page thread's `oneios-mem` report
+  (`vm_resident.c`). The numbers are XNU's own accounting by site, what `zprint` reads (`vm_page_diagnose`), plus the
+  gpu archive's blob totals (`droidvm_virtgpu_live`, weak):
+
+  ```text
+  oneios-wired: 3195 MiB: kernelcache 96, boot 223 (stolen 40, booter 12), zones 180 of a 512 MiB map; compressor 269 apart; GPU blobs: own 2044, imported 629 (counted with their owners too)
+  oneios-wired: owners (MiB): IOKIT 2690, ZONE 180, RESERVED 150, kext com.apple.iokit.IOSurface 120, ..., rest 40, unnamed 12
+  oneios-wired: zones in use (MiB): VM.objects 40, ...
+  ```
+
+  (The numbers in the sample are made up; the format is the build's.) "owners" are the 10 largest sites that add to the
+  wired count: a tag (`VM_KERN_MEMORY_*` without the prefix), a kext by its identifier, or a kernel site by its unslid
+  address (`oneios-tool sym kernel` names it). The hosted drivers are kernel code, so their wired pages (the GPU's blob
+  pages, the display's, the disks') come under `IOKIT`, and the GPU's own totals in the first line say how much of
+  `IOKIT` is the GPU's. "unnamed" is the wired count less every site's. "compressor ... apart": the compressor's pages
+  are not in XNU's wired count. Cost: one `vm_page_diagnose` a minute (a few hundred KiB buffer, freed again, and one
+  pass over the zones).
+- An `oneios-pressure` pair after them (`kern_memorystatus_notify.c`, `hosted_pressure_report`): the level, the
+  `memorystatus_level`, the available pages against the warning, normal-again (115%) and critical lines. Then, since the
+  last pair, the rises and falls, the notes sent by level and how many the rule below picked, the longest round (from
+  the first note at a level to the last listener that wanted it), and the newest four notes (name[pid], level W/C/N,
+  footprint, how long ago).
+- **The fix, `oneios-pressure-big=MB`** (512; `0` is XNU's order, the behaviour before 0097; one boot-arg,
+  `boot-args-add=oneios-pressure-big=0` in the image's `xnuhost.conf`, docs/switches.md). At a rise, a process whose
+  footprint is at least that many MiB and that was not yet notified at that level is picked first, the largest first.
+  So the render server and the apps that draw hear of the warning in the first 250 ms steps of the round, not after
+  150-300 smaller processes. Privileged listeners still go first, each process is still notified once per level, and
+  nothing else in the order, the delays or the levels changes. Whether a GPU client's footprint counts its blob pages
+  (they are purgeable memory the client owns) is not checked yet: the last-notes column shows the footprints.
+
+Tested: `git apply --check` after 0096 on the patched tree; built release-style (`ONEIOS_CRYPTO=original`) and
+prelinked (docs/switches.md has the build). The kernel built for the phone leaves out 0095 (its `recount.c:753` panic
+is being fixed apart). Not booted. **Watch in its first boot:** the `oneios-wired` lines (`IOKIT` near the GPU's own +
+imported, `unnamed` small), and in `oneios-pressure` a warning round whose first notes are backboardd and the other
+large GPU clients (`big first` above 0), then `oneios-gpu-memory` own bytes falling within seconds of the rise.

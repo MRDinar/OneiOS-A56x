@@ -475,3 +475,11 @@
 # as they are. The telemetry labels are 0093's list after the loops (read, not copied: one list). README.md, "0096".
 # Applies after 0095 (git apply --check on the patched tree).
 0096-telemetry-jobs-switch.patch
+# fix/wired-names (2026-11-23): who holds the wired pages, and who hears of memory pressure first. The session of 22:19
+# had "wired 3195" of 5302 MiB with no line naming the owners: oneios-wired lines every oneios-wired-log seconds (60)
+# from XNU's own accounting by site (vm_page_diagnose, what zprint reads), with the GPU's blob totals, and an
+# oneios-pressure line (the level, its thresholds, the notes sent and to whom). And oneios-pressure-big=MB (512; 0:
+# XNU's order): at a rise, a process of at least that footprint is notified first, the largest first, so the render
+# server's GPU memory is asked for before 150-300 smaller processes 250 ms apart. README.md, "0097". Applies after 0096
+# (vm_resident.c after 0076, kern_memorystatus_notify.c is no other patch's; git apply --check on the patched tree).
+0097-wired-owners-pressure-order.patch
