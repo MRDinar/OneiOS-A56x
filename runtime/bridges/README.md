@@ -59,7 +59,7 @@ onebridges::log::set_sink(...);                           // optional: the bridg
 // CPU, before the device tree is made and the vCPUs start
 let host = cpu::Topology::read("/sys")?;
 let plan = cpu::CpuPlan::make(&host, ncpu, false)?;      // machine.cpu_cluster[i] from plan.v[i].kind
-let cpufreq = Arc::new(cpu::Cpufreq::new(&plan, Some(Box::new(vcpu_tid))));
+let cpufreq = Arc::new(cpu::Cpufreq::with_apply(&plan, Box::new(apply)));  // or Cpufreq::new(&plan, tid_of): it clamps itself
 xh_core::mmio::bus().add(BOARD_CPUFREQ, ncpu * cpu::CPUFREQ_WINDOW, "cpufreq", cpufreq.clone())?;
 // each vCPU thread and the iOS thread it runs: cpu::set_affinity(tid, mask); the clamp from plan.util_for(vcpu, cpufreq.requested(vcpu))
 

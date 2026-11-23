@@ -370,6 +370,8 @@ fn reports_log() -> String {
     t += "[   341.000] xnuhost I perf:   up (trap->vCPU)    n    46933  mean   12.52  p50   14.34  p90   16.38  p99    49.15  max     949.1 us\n";
     t += "[   341.000] xnuhost I perf:   kernel: syscall    n    11001  mean  384.52  p50   40.96  p90  196.61  p99 10485.76  max  242913.6 us\n";
     t += "[   341.000] xnuhost I perf: cpu3: 19% of a core; of its wall time 28% kernel, 6% an iOS thread's turn, 66% idle; 754 traps/s; last on host CPU 3; waited for a host CPU 12% (runnable, not running)\n";
+    t += "[   341.000] xnuhost I perf: qos: the iOS threads' turns, % of each vCPU's wall time (realtime/UI/default/background): cpu0 E 0/2/10/40, cpu7 P 3/30/5/0\n";
+    t += "[   342.000] xnuhost I thermal: 30 s clocks: policy0 (cpu0-1) busy 40%, mean 1478 of 2265 MHz, at the top 33%, under half 33%; policy7 (cpu7) busy 12%, no time counted\n";
     t
 }
 
@@ -418,6 +420,13 @@ fn report_tables() {
     // By process, the largest sum first: kernel_task 259, My App 50, launchd 18 + 2.
     assert_eq!(tables[1].rows[0][..4], [Cell::text("kernel_task"), Cell::Int(0), Cell::Int(1), Cell::Int(259)]);
     assert_eq!(tables[1].rows[1][..4], [Cell::text("My App"), Cell::Int(41), Cell::Int(1), Cell::Int(50)]);
+    // The host's side: what ran where (perf: qos) and each policy's clocks (thermal: N s clocks).
+    assert_eq!(tables[2].rows.len(), 2);
+    assert_eq!(tables[2].rows[1][2..], [Cell::Int(7), Cell::text("P"), Cell::Int(3), Cell::Int(30), Cell::Int(5), Cell::Int(0)]);
+    assert_eq!(tables[3].rows.len(), 2);
+    assert_eq!(tables[3].rows[0][2..], [Cell::Int(0), Cell::text("cpu0-1"), Cell::Int(40), Cell::Int(1478), Cell::Int(2265), Cell::Int(33), Cell::Int(33)]);
+    // -2: the text "cpu7"; -1: no number
+    assert_eq!(ints(&tables[3].rows[1]), [342_000, 50, 7, -2, 12, -1, -1, -1, -1]);
     assert_eq!(tables[1].rows[2], [Cell::text("launchd"), Cell::Int(1), Cell::Int(2), Cell::Int(20), Cell::Float(10.0, 1), Cell::Float(10.0, 1), Cell::Int(18)]);
 
     let (tables, _) = reports::display(&log);

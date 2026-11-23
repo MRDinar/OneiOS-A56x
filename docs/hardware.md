@@ -159,7 +159,9 @@ eight CPUs have `paca` and `pacg` [F, owner's phone]. Top frequencies are not in
 - `Cpufreq` (an `xh_core::mmio::MmioDevice`): the register window. A write of a frequency sets the utilisation clamp
   (`sched_setattr`, `SCHED_FLAG_UTIL_CLAMP_MIN`, capacity x kHz / max kHz) of the vCPU's thread; the lowest table
   entry drops the request. Linux's governor keeps clock control. `Cpufreq::requested(vcpu)` lets booter apply
-  the same clamp to the iOS thread it runs (`CpuPlan::request`, `CpuPlan::util_for`).
+  the same clamp to the iOS thread it runs (`CpuPlan::request`, `CpuPlan::util_for`). xnuhost makes it with
+  `Cpufreq::with_apply` (2026-11-23): the device records the request and hands its clamp to xnuhost, which keeps each
+  vCPU thread's clamp itself (`docs/booter.md` 2.6e).
 
 ### Missing
 

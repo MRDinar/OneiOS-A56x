@@ -140,8 +140,10 @@ rule's hysteresis (it stays on down to half its rate) follows the rate rule's ow
 kept a 45 fps redraw constrained. `MIN_RATE=0` still constrains every submission; `BURST=0` is upstream's rule alone. Only
 queues that ask are constrained (the render server's: `context N: constrained ...` in the log). drm2kgsl's matching vCPU
 clamp looked for threads named `crosvm_vcpu*` (xnuhost's are `xnu-cpuN`: `vCPU uclamp.min 1024: 0 of 0 threads`); since 2026-11-15 its
-patch 0008 hands the value to xnuhost (`drm2kgsl_vcpu_uclamp`), which sets it on the vCPU threads and, at each release, on
-the iOS threads they run (`docs/booter.md` 2.6a).
+patch 0008 hands the value to xnuhost (`drm2kgsl_vcpu_uclamp`). Since 2026-11-23 xnuhost only stores it and gives it, at
+each release, to the frame's threads (a UI, above-UI, realtime or user-initiated thread, or one whose vCPU the guest asked
+for its top) and their vCPU threads with them; before, every vCPU thread and every iOS thread but background ones carried
+it through each animation (`docs/booter.md` 2.6e).
 
 ### 2.2a `drm2kgsl/patches/0005-clock-held-between-frames.patch` (2026-11-12)
 

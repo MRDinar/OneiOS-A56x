@@ -192,7 +192,67 @@ pub fn cpu(log: &Log) -> (Vec<Table>, Vec<String>) {
             Cell::Int(max),
         ]);
     }
-    (vec![report, summary], notes.lines())
+    let (qos, clocks) = host_cpu(log, &mut notes);
+    (vec![report, summary, qos, clocks], notes.lines())
+}
+
+/// The host's side of `log cpu` (2026-11-23): xnuhost's `perf: qos:` line (the iOS threads' turns on each vCPU by the
+/// kernel's class of the thread) and the thermal bridge's `thermal: N s clocks:` line (each cpufreq policy's busy share
+/// and frequency residency), one row per vCPU or policy per period.
+fn host_cpu(log: &Log, notes: &mut Notes) -> (Table, Table) {
+    let mut qos = Table::new(
+        "host vCPUs by QoS (xnuhost perf: qos; percent of the vCPU's wall time in an iOS thread's turn)",
+        &["time", "line", "cpu", "kind", "realtime%", "ui%", "default%", "background%"],
+    );
+    let mut clocks = Table::new(
+        "host clocks (thermal: N s clocks; per cpufreq policy)",
+        &["time", "line", "policy", "cpus", "busy%", "mean_mhz", "top_mhz", "at_top%", "under_half%"],
+    );
+    for r in &log.recs {
+        if let Some(text) = host(r, "perf: qos: ") {
+            let list = text.split_once("): ").map_or("", |x| x.1);
+            let mut any = false;
+            for part in list.split(", ") {
+                // `cpu3 P 1/20/5/0`
+                let w: Vec<&str> = part.split_whitespace().collect();
+                let [cpu, kind, shares] = w[..] else { continue };
+                let Some(Ok(cpu)) = cpu.strip_prefix("cpu").map(str::parse::<i64>) else { continue };
+                let v: Vec<i64> = shares.split('/').filter_map(|x| x.parse().ok()).collect();
+                let [rt, ui, def, bg] = v[..] else { continue };
+                let mut row = head(r);
+                row.extend([Cell::Int(cpu), Cell::text(kind), Cell::Int(rt), Cell::Int(ui), Cell::Int(def), Cell::Int(bg)]);
+                qos.push(row);
+                any = true;
+            }
+            if any {
+                notes.seen("xnuhost perf: qos", r);
+            } else {
+                notes.unparsed("xnuhost perf: qos", r.line);
+            }
+        } else if let Some(text) = host(r, "thermal: ") {
+            let Some((_, list)) = text.split_once(" s clocks: ") else { continue };
+            let mut any = false;
+            for part in list.split("; ") {
+                // `policy0 (cpu0-1) busy 40%, mean 1478 of 2265 MHz, at the top 33%, under half 33%`
+                let mut s = Scan::new(part);
+                let Some(policy) = s.num("policy") else { continue };
+                let cpus = part.split_once('(').and_then(|x| x.1.split_once(')')).map_or("", |x| x.0);
+                let mut row = head(r);
+                row.extend([Cell::Int(policy as i64), Cell::text(cpus)]);
+                for label in ["busy ", "mean ", "of ", "at the top ", "under half "] {
+                    row.push(Cell::int(s.num(label)));
+                }
+                clocks.push(row);
+                any = true;
+            }
+            if any {
+                notes.seen("thermal clocks", r);
+            } else {
+                notes.unparsed("thermal clocks", r.line);
+            }
+        }
+    }
+    (qos, clocks)
 }
 
 pub fn display(log: &Log) -> (Vec<Table>, Vec<String>) {

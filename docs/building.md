@@ -1337,6 +1337,7 @@ oneios-tool log summary xnuhost.log --since +120    # the rows from 120 s after 
 oneios-tool log summary xnuhost.log --last 60       # the rows of the boot's last 60 s
 oneios-tool log timeline xnuhost.log                # the same stages among every milestone, in the log's order
 oneios-tool log perf xnuhost.log                    # the perf tables; host vCPUs with host_wait% (schedstat, 2026-11-23)
+oneios-tool log cpu xnuhost.log                     # iOS's CPU by process, the host's vCPUs by QoS and each policy's clocks
 ```
 
 A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in

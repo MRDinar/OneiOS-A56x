@@ -1882,6 +1882,13 @@ Limits:
 wait for a host CPU (schedstat, docs/booter.md 2.6a); empty for an older log. Tested: `cargo test -p oneios-log`
 (`synthetic.rs` `report_tables`).
 
+**`log cpu`: the host's side (2026-11-23).** Besides the guest's `oneios-cpu` tables (each report, and by process),
+two tables of the host: `host vCPUs by QoS` from xnuhost's `perf: qos:` line (each vCPU per period: `cpu`, `kind`
+E or P, `realtime%`, `ui%`, `default%`, `background%` of its wall time in an iOS thread's turn of that class) and `host
+clocks` from the thermal bridge's `thermal: N s clocks:` line (each cpufreq policy per period: `policy`, `cpus`,
+`busy%`, `mean_mhz`, `top_mhz`, `at_top%`, `under_half%`; a policy with no time counted has `-`). What the lines are:
+docs/booter.md 2.6e. A log from before 2026-11-23 has neither: both tables are empty.
+
 **`log summary` (2026-11-22): a session's health on one screen.** Its second line is xnuhost's last `versions:` line
 (docs/booter.md 2.9b: the runtime and its commit, the kernel's build id, the staged `kernel.kc`'s SHA-256, the image,
 the app's versionCode) with its line number and, when the log holds different ones, how many; a log from before

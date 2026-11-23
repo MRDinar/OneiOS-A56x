@@ -15,7 +15,7 @@
 
 use crate::perf::{Counter, Perf};
 use crate::sysreg::SysregState;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering::*};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering::*};
 use xnuhost_abi::{XhCpu, XhFrame, XhUpcalls};
 
 pub use crate::config::MAX_CPUS;
@@ -158,6 +158,10 @@ pub struct Vcpu {
     pub run_tid: AtomicU32,
     pub run_seq: AtomicU64,
     pub run_kicked_at: AtomicU64,
+    /// The uclamp.min this vCPU's own thread carries ([`own_uclamp`], set on that thread only; 0 = Linux's default).
+    pub own_uclamp: AtomicU32,
+    /// b'E' or b'P' as the CPU plan made it (0: no plan), for the perf lines.
+    pub kind: AtomicU8,
     pub perf: Perf,
 }
 
@@ -184,6 +188,8 @@ impl Vcpu {
             run_tid: AtomicU32::new(0),
             run_seq: AtomicU64::new(0),
             run_kicked_at: AtomicU64::new(0),
+            own_uclamp: AtomicU32::new(0),
+            kind: AtomicU8::new(0),
             perf: Perf::new(),
         }
     }
@@ -281,16 +287,85 @@ impl Upcalls {
 /// Puts a Linux thread (0 = the caller) on the host CPUs of a vCPU. Called by each vCPU thread for itself and for
 /// the iOS thread a vCPU runs, when that vCPU changes.
 pub type PlaceFn = fn(tid: i32, vcpu: usize);
-/// The utilisation clamp (uclamp.min, 0-1024) the work on a vCPU should carry now (the guest's cpufreq request for
-/// it, the GPU path's animation boost). thread_run gives it to the iOS thread it releases when it differs from what
-/// that thread carries: the vCPU thread itself waits while user code runs, so a clamp on it alone never reached iOS's
-/// own code (host-overhead, 2026-11-15).
+/// The guest's cpufreq request for a vCPU as a utilisation clamp (uclamp.min, 0-1024; DroidVMCpufreq's SET_PERF).
+/// thread_run gives the iOS thread it releases [`release_floor`] of it: the vCPU thread itself waits while user code
+/// runs, so a clamp on it alone never reached iOS's own code (host-overhead, 2026-11-15).
 pub type UclampFn = fn(vcpu: usize) -> u32;
 
 static PLACE: AtomicUsize = AtomicUsize::new(0);
 static UCLAMP: AtomicUsize = AtomicUsize::new(0);
 /// drm2kgsl's vCPU clamp while a constrained queue animates (its patch 0008 calls drm2kgsl_vcpu_uclamp): 0 = none.
+/// Only [`release_floor`] reads it: the frame's threads get it at their release, nothing else (2026-11-23).
 pub static GPU_VCPU_BOOST: AtomicU32 = AtomicU32::new(0);
+
+/// The uclamp.min an iOS thread gets at its release, and its vCPU's thread with it (the kernel's work after the
+/// thread's trap is done for it): `hint` the kernel's perf_hint (0075), `request` its vCPU's request ([`UclampFn`]),
+/// `boost` drm2kgsl's animation clamp ([`GPU_VCPU_BOOST`]).
+/// - no hint (a kernel before 0075): the request or the boost, the higher;
+/// - utility, background, darwin-background: 0, and no ceiling (the owner's rule; a ceiling of 512 slowed chronod's
+///   widget extensions until 2026-11-16, #57);
+/// - else the class's floor (realtime, UI, above-UI 1024, user-initiated 768) or the request, the higher, raised to the
+///   boost only when that is not 0: the frame's threads (their class, or an interactive group's default-class thread,
+///   for which the guest asks) get the animation's clamp; a daemon's default-class thread, which neither marks, does not.
+///
+/// Until 2026-11-23 the boost went to every vCPU thread directly (drm2kgsl_vcpu_uclamp) and to every iOS thread that
+/// was not background: the session of 2026-11-23 20:23 carried `vCPU uclamp.min 1024` for 470 of its 651 s, with the
+/// eight vCPUs 34-58% of a core each, the host 637-760% of 800 and the SoC at 94-98 C, while lsd, PerfPowerServices,
+/// chronod and CommCenter (default class) were the busiest processes.
+pub fn release_floor(hint: u32, request: u32, boost: u32) -> u32 {
+    use xnuhost_abi::{xh_hint_floor, XH_HINT_BACKGROUND, XH_HINT_VALID};
+    let max = |a: u32, b: u32| if a > b { a } else { b };
+    let lo = if hint & XH_HINT_VALID == 0 {
+        max(request, boost)
+    } else if hint & XH_HINT_BACKGROUND != 0 {
+        0
+    } else {
+        let base = max(request, xh_hint_floor(hint));
+        if base == 0 {
+            0
+        } else {
+            max(base, boost)
+        }
+    };
+    if lo > 1024 {
+        1024
+    } else {
+        lo
+    }
+}
+
+/// The hint's class for the perf report's `qos:` line: 0 realtime, 1 UI (UI, above-UI, user-initiated), 2 default (no
+/// class of the kernel's: default, kernel, a kernel before 0075), 3 background (utility, background, darwin-background).
+pub const fn hint_class(hint: u32) -> usize {
+    use xnuhost_abi::{XH_HINT_BACKGROUND, XH_HINT_REALTIME, XH_HINT_UI, XH_HINT_VALID};
+    if hint & XH_HINT_VALID == 0 {
+        2
+    } else if hint & XH_HINT_REALTIME != 0 {
+        0
+    } else if hint & XH_HINT_UI != 0 {
+        1
+    } else if hint & XH_HINT_BACKGROUND != 0 {
+        3
+    } else {
+        2
+    }
+}
+
+/// Sets the uclamp.min of vCPU `v`'s own thread (call it on that thread) when it differs from what the thread carries:
+/// the floor of the work it does now. thread_run gives it the floor of the iOS thread it releases, [`idle`] 0, the guest's
+/// cpufreq request its value. One sched_setattr per change, none otherwise (perf: `vCPU threads N`).
+pub fn own_uclamp(v: &Vcpu, lo: u32) {
+    let lo = lo.min(1024);
+    if v.own_uclamp.load(Relaxed) == lo {
+        return;
+    }
+    // KEEP_POLICY | KEEP_PARAMS | UTIL_CLAMP_MIN: the policy stays SCHED_OTHER. A host without uclamp (ENOSYS,
+    // EINVAL) is not asked again for the same value.
+    if crate::task::sched_setattr_uclamp(0, 0x18 | 0x20, lo, 0) == 0 || xh_core::sys::errno() != libc::EINTR {
+        v.own_uclamp.store(lo, Relaxed);
+    }
+    v.perf.count(crate::perf::Count::VcpuUclampSets, 1);
+}
 
 pub fn set_place(f: Option<PlaceFn>) {
     PLACE.store(fn_bits(f), Release);
@@ -540,6 +615,10 @@ mod machine {
     pub fn idle(v: &Vcpu) {
         let began = counter();
         v.idle.store(1, Release);
+        // An idle vCPU's thread carries no floor: what wakes it (a timer, an IPI) is the kernel's own short work, and a
+        // clamp left from the last thread it ran made each of those wakes ask the host for that thread's clock (the
+        // guest's request "keeps its request" while idle, DroidVMCpufreq.c). Its next release or request sets it again.
+        own_uclamp(v, 0);
         while v.cpu.irq_pending.load(Acquire) == 0 {
             if session::stopping() {
                 // SAFETY: waits for a signal.
@@ -570,25 +649,14 @@ mod machine {
         v.perf.count(crate::perf::Count::TicksIdle, counter() - began);
     }
 
-    /// drm2kgsl (its patch 0008) while a constrained queue animates: the clamp goes on the vCPU threads (their kernel
-    /// work) and, through the uclamp hook, on each iOS thread at its next release (thread_run). Returns the vCPU
-    /// threads set.
+    /// drm2kgsl (its patch 0008) while a constrained queue animates: the value only, which [`release_floor`] gives the
+    /// frame's threads at their next release (thread_run), and their vCPU's thread with it. No vCPU thread is set here
+    /// any more: until 2026-11-23 all eight carried 1024 through every animation, idle or busy with background work.
+    /// Returns the vCPUs that take it (the started ones).
     #[no_mangle]
     pub extern "C" fn drm2kgsl_vcpu_uclamp(value: u32) -> libc::c_int {
-        let value = value.min(1024);
-        GPU_VCPU_BOOST.store(value, Relaxed);
-        let mut set = 0;
-        for v in vcpus() {
-            let tid = v.tid.load(Acquire);
-            if !v.started.load(Acquire) || tid <= 0 {
-                continue;
-            }
-            // KEEP_POLICY | KEEP_PARAMS | UTIL_CLAMP_MIN
-            if crate::task::sched_setattr_uclamp(tid, 0x18 | 0x20, value, 0) == 0 {
-                set += 1;
-            }
-        }
-        set
+        GPU_VCPU_BOOST.store(value.min(1024), Relaxed);
+        vcpus().iter().filter(|v| v.started.load(Acquire)).count() as libc::c_int
     }
 
     // ---- signals ---------------------------------------------------------------------------------------------------
@@ -1294,6 +1362,39 @@ pub(crate) mod tests {
 
     pub(crate) fn machine() -> std::sync::MutexGuard<'static, ()> {
         MACHINE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The floor a release gives (2026-11-23): drm2kgsl's animation clamp only reaches the frame's threads.
+    #[test]
+    fn release_floor() {
+        use super::{hint_class, release_floor};
+        use xnuhost_abi::{XH_HINT_BACKGROUND, XH_HINT_REALTIME, XH_HINT_UI, XH_HINT_VALID};
+        let (rt, ui, uinit) = (
+            XH_HINT_VALID | XH_HINT_REALTIME | XH_HINT_UI | 1024,
+            XH_HINT_VALID | XH_HINT_UI | 1024,
+            XH_HINT_VALID | XH_HINT_UI | 768,
+        );
+        let (def, bg) = (XH_HINT_VALID, XH_HINT_VALID | XH_HINT_BACKGROUND);
+        // a daemon's default-class thread, its vCPU not asked for anything: nothing, animating or not
+        assert_eq!(release_floor(def, 0, 0), 0);
+        assert_eq!(release_floor(def, 0, 1024), 0);
+        // an interactive group's default-class thread (the guest asks for its vCPU's top): the animation's clamp
+        assert_eq!(release_floor(def, 512, 0), 512);
+        assert_eq!(release_floor(def, 512, 1024), 1024);
+        // the classes' floors, the boost on top
+        assert_eq!(release_floor(uinit, 0, 0), 768);
+        assert_eq!(release_floor(uinit, 0, 1024), 1024);
+        assert!(release_floor(ui, 0, 0) == 1024 && release_floor(rt, 0, 0) == 1024);
+        // background and utility: 0 whatever was asked
+        assert!(release_floor(bg, 1024, 1024) == 0 && release_floor(bg, 0, 0) == 0);
+        // a kernel before 0075 (no hint): the request or the boost, as before
+        assert!(
+            release_floor(0, 300, 0) == 300 && release_floor(0, 0, 1024) == 1024 && release_floor(0, 0, 4096) == 1024
+        );
+        assert_eq!(
+            [hint_class(rt), hint_class(ui), hint_class(uinit), hint_class(def), hint_class(bg), hint_class(0)],
+            [0, 1, 1, 2, 3, 2]
+        );
     }
 
     #[test]

@@ -79,17 +79,24 @@ fn vcpu_tid(vcpu: usize) -> i32 {
     }
 }
 
-/// The clamp of the work on a vCPU (cpu.rs set_uclamp): what the guest's CLPC stand-in asks for it (DroidVMCpufreq's
-/// SET_PERF, Cpufreq::requested) or the GPU path's animation boost (GPU_VCPU_BOOST), the higher one. thread_run gives
-/// it to the iOS thread it releases.
+/// The guest's request for a vCPU as a clamp (cpu.rs set_uclamp): what its CLPC stand-in asks for it (DroidVMCpufreq's
+/// SET_PERF, Cpufreq::requested). thread_run gives the iOS thread it releases cpu::release_floor of it, which adds the
+/// thread's class and the GPU path's animation clamp.
 fn vcpu_uclamp(vcpu: usize) -> u32 {
-    let mut want = cpu::GPU_VCPU_BOOST.load(Relaxed);
-    if let Some(p) = PLACEMENT.get() {
-        if let Some(f) = p.cpufreq.as_ref().filter(|_| vcpu < p.plan.nvcpu()) {
-            want = want.max(p.plan.util_for(vcpu, f.requested(vcpu)));
-        }
+    let Some(p) = PLACEMENT.get() else { return 0 };
+    match p.cpufreq.as_ref().filter(|_| vcpu < p.plan.nvcpu()) {
+        Some(f) => p.plan.util_for(vcpu, f.requested(vcpu)).min(1024),
+        None => 0,
     }
-    want.min(1024)
+}
+
+/// The guest changed its request for `vcpu` (DroidVMCpufreq writes its own window, on that vCPU's thread): the vCPU's
+/// own clamp follows at once, for the kernel's work up to the next release (which sets the released thread's floor).
+/// Before 2026-11-23 the device set the vCPU thread's clamp itself, and drm2kgsl's boost overwrote it (and back).
+fn cpufreq_apply(vcpu: usize, util: u32) {
+    if let Some(v) = cpu::current().filter(|v| v.index() == vcpu) {
+        cpu::own_uclamp(v, util);
+    }
 }
 
 /// The thermal bridge's step (cap_for): the vCPUs and the iOS threads they run keep to fewer, slower cores while the
@@ -171,6 +178,49 @@ fn log_cpu_layout(host: &Topology, plan: &CpuPlan) {
         if allowed.is_empty() { "?" } else { &allowed },
         if boost.is_empty() { "(no switch)" } else { &boost }
     );
+    log_governors(host);
+}
+
+/// Each frequency domain's governor and the tunables that set how fast it climbs and falls (2026-11-23): with One UI's
+/// power HAL gone the governor alone picks the clocks, and nothing said what it runs with. Read only, named files only:
+/// `policyN/scaling_governor`, then `policyN/<governor>/<name>` for the names below that exist (WALT's and schedutil's),
+/// and WALT's `sched_boost`. Nothing is written.
+fn log_governors(host: &Topology) {
+    const TUNABLES: [&str; 10] = [
+        "rate_limit_us",
+        "up_rate_limit_us",
+        "down_rate_limit_us",
+        "hispeed_load",
+        "hispeed_freq",
+        "target_loads",
+        "pl",
+        "boost",
+        "rtg_boost_freq",
+        "adaptive_high_freq",
+    ];
+    let mut seen = 0u64;
+    for h in host.cpu.iter().filter(|h| h.present) {
+        let n = h.policy;
+        if n >= 64 || seen >> n & 1 != 0 {
+            continue;
+        }
+        seen |= 1 << n;
+        let dir = format!("/sys/devices/system/cpu/cpufreq/policy{n}");
+        let gov = xh_core::fs::read_line(format!("{dir}/scaling_governor")).unwrap_or_default();
+        let mut line = format!("cpu: policy{n}: governor {}", if gov.is_empty() { "?" } else { &gov });
+        let name_ok = !gov.is_empty() && gov.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        let mut first = true;
+        for t in TUNABLES.iter().filter(|_| name_ok) {
+            if let Some(v) = xh_core::fs::read_line(format!("{dir}/{gov}/{t}")) {
+                line += &format!("{}{t} {}", if first { "; " } else { ", " }, v.trim());
+                first = false;
+            }
+        }
+        logi!("{line}");
+    }
+    if let Some(v) = xh_core::fs::read_line("/proc/sys/walt/sched_boost") {
+        logi!("cpu: WALT sched_boost {}", v.trim());
+    }
 }
 
 /// The CPU plan: E vCPUs first, then P, each placed on its kind of host core; the cpufreq device; the uclamp hook.
@@ -182,9 +232,10 @@ fn plan_cpus(config: &Config, machine: &mut Machine) -> bool {
     };
     for (i, v) in plan.v.iter().enumerate().take(n) {
         machine.cpu_cluster[i] = if v.kind.letter() == 'E' { Cluster::E } else { Cluster::P };
+        cpu::vcpu(i).kind.store(v.kind.letter() as u8, Relaxed);
         // E vCPUs first, then P
     }
-    let cpufreq = Arc::new(Cpufreq::new(&plan, Some(Box::new(vcpu_tid))));
+    let cpufreq = Arc::new(Cpufreq::with_apply(&plan, Box::new(cpufreq_apply)));
     let size = n as u64 * bcpu::CPUFREQ_WINDOW;
     let cpufreq = match xh_core::mmio::bus().add(xm::BOARD_CPUFREQ, size, "cpufreq", cpufreq.clone()) {
         Ok(()) => {

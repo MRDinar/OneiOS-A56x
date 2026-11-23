@@ -571,6 +571,11 @@ pub const CPUFREQ_WINDOW: u64 = 0x1000;
 /// The Linux thread to clamp for vCPU n (None: the calling thread).
 pub type TidOf = Box<dyn Fn(usize) -> i32 + Send + Sync>;
 
+/// A VMM that keeps each vCPU thread's clamp itself (xnuhost, 2026-11-23): called with the vCPU and the uclamp.min of
+/// its new request ([`CpuPlan::util_for`], 0 = dropped) instead of a clamp set here. The guest writes its own window, so
+/// the call comes on that vCPU's thread.
+pub type ApplyFn = Box<dyn Fn(usize, u32) + Send + Sync>;
+
 /// The virtual cpufreq device DroidVMCpufreq.c drives: the register layout of Linux's virtual-cpufreq driver, which
 /// UniXNU-droidvm's DroidVMCpufreq.c uses (https://github.com/Droid-VM/UniXNU-droidvm f9121cd,
 /// package/DroidVMCpufreq.c): per vCPU window 0x00 current kHz, 0x04 set kHz (write), 0x08 table length, 0x0c table
@@ -578,6 +583,7 @@ pub type TidOf = Box<dyn Fn(usize) -> i32 + Send + Sync>;
 pub struct Cpufreq {
     plan: CpuPlan,
     tid_of: Option<TidOf>,
+    apply: Option<ApplyFn>,
     select: [AtomicU32; MAX_VCPUS],
     requested: [AtomicU32; MAX_VCPUS],
 }
@@ -591,7 +597,12 @@ impl std::fmt::Debug for Cpufreq {
 impl Cpufreq {
     /// `tid_of(vcpu)` gives the Linux thread to clamp when the guest writes (None: the calling thread).
     pub fn new(plan: &CpuPlan, tid_of: Option<TidOf>) -> Cpufreq {
-        Cpufreq { plan: plan.clone(), tid_of, select: Default::default(), requested: Default::default() }
+        Cpufreq { plan: plan.clone(), tid_of, apply: None, select: Default::default(), requested: Default::default() }
+    }
+
+    /// A device that records each request and hands it to `apply` (the VMM keeps the clamp: [`ApplyFn`]).
+    pub fn with_apply(plan: &CpuPlan, apply: ApplyFn) -> Cpufreq {
+        Cpufreq { apply: Some(apply), ..Cpufreq::new(plan, None) }
     }
 
     fn at(&self, offset: u64) -> Option<(usize, u64)> {
@@ -628,6 +639,10 @@ impl Cpufreq {
                     khz = 0;
                 }
                 if self.requested[cpu].swap(khz, Ordering::AcqRel) == khz {
+                    return;
+                }
+                if let Some(apply) = self.apply.as_ref() {
+                    apply(cpu, self.plan.util_for(cpu, khz));
                     return;
                 }
                 let tid = self.tid_of.as_ref().map_or(0, |f| f(cpu));

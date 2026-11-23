@@ -553,6 +553,60 @@ fn load() {
     assert!(last.contains("host CPU ") && last.contains("; case 35.0 C"), "{last}");
 }
 
+/// The clocks line from a fake S24 Ultra's cpufreq stats: four policies, two samples 30 s apart.
+#[test]
+fn clocks() {
+    assert_eq!(cpu_list("0-1\n"), [0, 1]);
+    assert_eq!(cpu_list("2 3 4"), [2, 3, 4]);
+    assert_eq!(cpu_list("5-6,7"), [5, 6, 7]);
+    assert!(cpu_list("x").is_empty());
+    assert_eq!(cpu_ticks("cpu  9 9 9 9\ncpu0 10 0 20 60 10 0 0 0\ncpu2 1 1 1 1\n"), [(30, 100), (0, 0), (3, 4)]);
+    let b = Base::new("clocks");
+    let pol = |n: u32, cpus: &str, max: u64, time: &[(u64, u64)]| {
+        let d = format!("/sys/devices/system/cpu/cpufreq/policy{n}");
+        b.put(&format!("{d}/related_cpus"), cpus);
+        b.put(&format!("{d}/cpuinfo_max_freq"), &format!("{max}\n"));
+        let text: String = time.iter().map(|(k, t)| format!("{k} {t}\n")).collect();
+        b.put(&format!("{d}/stats/time_in_state"), &text);
+    };
+    let stat = |busy: u64| {
+        let mut text = String::from("cpu  1 1 1 1\n");
+        for i in 0..8 {
+            // user, nice, system, idle, iowait: busy of every 100 ticks
+            text += &format!("cpu{i} {busy} 0 0 {} 0 0 0 0\n", 100 - busy);
+        }
+        b.put("/proc/stat", &text);
+    };
+    pol(0, "0-1\n", 2265600, &[(364800, 100), (1804800, 0), (2265600, 0)]);
+    pol(2, "2 3 4\n", 3148800, &[(499200, 0), (3148800, 0)]);
+    pol(5, "5-6\n", 2956800, &[(499200, 0), (2956800, 0)]);
+    // the X4: the boost frequency listed above cpuinfo_max_freq
+    pol(7, "7\n", 3302400, &[(480000, 0), (3398400, 0)]);
+    stat(10);
+    let mut a = Clocks::read(&b.0);
+    assert_eq!(a.policies.len(), 4);
+    assert!(a.policies[3].policy == 7 && a.policies[3].top_khz == 3398400 && a.policies[1].cpus == [2, 3, 4]);
+    // 30 s (3000 units of 10 ms): policy0 a third at each clock; policy2 all at the top; policy5 all at the bottom;
+    // policy7 nothing counted. The CPUs 10 -> 50 busy of 100 -> 200 ticks: 40%.
+    pol(0, "0-1\n", 2265600, &[(364800, 1100), (1804800, 1000), (2265600, 1000)]);
+    pol(2, "2 3 4\n", 3148800, &[(499200, 0), (3148800, 3000)]);
+    pol(5, "5-6\n", 2956800, &[(499200, 3000), (2956800, 0)]);
+    stat(50);
+    let mut later = Clocks::read(&b.0);
+    for c in &mut later.cpu {
+        c.1 += 100; // the second sample's ticks: 200 in all
+    }
+    (a.ms, later.ms) = (1000, 31000);
+    assert_eq!(
+        Clocks::line(&a, &later).unwrap(),
+        "30 s clocks: policy0 (cpu0-1) busy 40%, mean 1478 of 2265 MHz, at the top 33%, under half 33%; \
+         policy2 (cpu2-4) busy 40%, mean 3148 of 3148 MHz, at the top 100%, under half 0%; \
+         policy5 (cpu5-6) busy 40%, mean 499 of 2956 MHz, at the top 0%, under half 100%; \
+         policy7 (cpu7) busy 40%, no time counted"
+    );
+    assert_eq!(Clocks::line(&Clocks::default(), &later), None);
+}
+
 /// The treble backend's reading: the thermal HAL's Temperature[] made a reading (the parcel round trips are hal/'s
 /// tests).
 #[test]
