@@ -2843,7 +2843,11 @@ entry: false); 9ae1f0c's `unique-model` "V54AP" gave "V54", found in `V53-V54`.
 - The Rust port (branch rust-runtime, 2026-11-23): `cargo test -p xnuloader --test loader` (`machine_cameras_and_identity`:
   "OneiOSAP" by default, `camera-model=V54AP` with its 6 bytes and another identity, back to the default identity;
   `machine_identity_tree`: an identity's own name kept, `camera-model=` over it). xnuhost's `camera-model=` setting
-  feeds `Machine::unique_model` (runtime/xnuhost, ported separately). Not run on the phone.
+  feeds `Machine::unique_model` (`runtime/xnuhost/src/session/bridges.rs` `camera_identity`, with the camera-vm=
+  part: `config::boot_args_hide_vmm_add`; the C's `config.c` and `main.c`); `cargo test -p xnuhost config::` (`image_set_settings`:
+  `camera-model=` and `camera-vm=` from the image set's `xnuhost.conf`, the command line winning;
+  `boot_argument_helpers`: every case of the C's owner-hide-vmm add and the camera-model names refused). Not run
+  on the phone.
 
 **What the camera loses with a name in no table, as far as the code shows [F, the same reading]:**
 - AVFCapture's AVGestalt (the app side: `avgestalt_buildDataBase`) has no entry: every one of its per-model answers

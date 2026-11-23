@@ -56,13 +56,15 @@ pub struct StopRequest {
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STOP: Mutex<Option<StopRequest>> = Mutex::new(None);
 
-/// xh_stop: asks the machine to stop (any thread; returns). Only the first request is kept.
+/// xh_stop: asks the machine to stop (any thread; returns). Only the first request is kept; it wakes the stop watch.
 pub fn stop(reason: u32, code: u32, why: &str) {
     let mut s = STOP.lock().unwrap_or_else(|e| e.into_inner());
     if s.is_none() {
         // what C kept of it: 95 bytes
         *s = Some(StopRequest { reason, code, why: truncate(why, 95).to_owned() });
         STOP_REQUESTED.store(true, Ordering::Release);
+        drop(s);
+        watch::post();
     }
 }
 
@@ -74,6 +76,222 @@ pub fn stopping() -> bool {
 /// The stop that was asked, if any.
 pub fn stop_request() -> Option<StopRequest> {
     STOP.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The stop path's change of the stop's reason (a restart in the return's window is the return), for [`exit_code`].
+fn set_stop_reason(reason: u32) {
+    if let Some(s) = STOP.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        s.reason = reason;
+    }
+}
+
+/// The process's exit code for the stop asked (oneos/interface.md 5).
+fn exit_code() -> i32 {
+    let s = stop_request().unwrap_or_default();
+    if s.reason == XH_HALT_RESTART {
+        EXIT_RESTART
+    } else if s.reason == XH_HALT_PANIC || s.code != 0 {
+        EXIT_PANIC
+    } else {
+        EXIT_GUEST_OFF
+    }
+}
+
+// ---- the stop watch -------------------------------------------------------------------------------------------------
+// fix-debugger-crosscall-panic (main.c, 2026-11-23). Two phone boots of v0.1.16 froze for good after a guest panic: the
+// panicking vCPU called halt (stop) and waited in pause(), but the main loop never saw the stop, because it was blocked
+// in a device's lock (the virtio report, while a vCPU waited in the encoder's open with that device held). The session
+// stayed up with six cores spinning until the user's chord. The stop watch is a thread that waits for the stop: when
+// the main loop has not left its loop STOP_SEE_MS after it, the stop path runs from another thread (end_session, which
+// only one thread runs); and when the stop path has not ended STOP_PATH_MS after the stop, the process ends with its
+// exit code all the same. Step names what the main thread does, for these lines. The watch sleeps in a futex until
+// the stop and then in a condvar: nothing on the trap path or in the main loop polls for it.
+
+/// What the main thread does now, for the stop watch's lines (C's `main_step`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum Step {
+    Boot,
+    SignalWait,
+    PerfReport,
+    DiskReport,
+    MemoryReport,
+    SwapWatch,
+    RamValve,
+    HugeReport,
+    UsbWatch,
+    VirtioReport,
+    TasksReport,
+    HapticsReport,
+    ReadyRule,
+    StopPath,
+    StopReports,
+    StopTasksBridges,
+    StopSync,
+}
+
+impl Step {
+    const ALL: [Step; 17] = [
+        Step::Boot,
+        Step::SignalWait,
+        Step::PerfReport,
+        Step::DiskReport,
+        Step::MemoryReport,
+        Step::SwapWatch,
+        Step::RamValve,
+        Step::HugeReport,
+        Step::UsbWatch,
+        Step::VirtioReport,
+        Step::TasksReport,
+        Step::HapticsReport,
+        Step::ReadyRule,
+        Step::StopPath,
+        Step::StopReports,
+        Step::StopTasksBridges,
+        Step::StopSync,
+    ];
+
+    fn text(self) -> &'static str {
+        match self {
+            Step::Boot => "the boot",
+            Step::SignalWait => "the wait for a signal",
+            Step::PerfReport => "the perf report",
+            Step::DiskReport => "the disk report",
+            Step::MemoryReport => "the memory report",
+            Step::SwapWatch => "the swap watch",
+            Step::RamValve => "the RAM valve",
+            Step::HugeReport => "the 2 MiB page report",
+            Step::UsbWatch => "the USB watch",
+            Step::VirtioReport => "the virtio report",
+            Step::TasksReport => "the tasks report",
+            Step::HapticsReport => "the haptics report",
+            Step::ReadyRule => "the ready rule",
+            Step::StopPath => "the stop path",
+            Step::StopReports => "the stop path: the reports",
+            Step::StopTasksBridges => "the stop path: the tasks and the bridges",
+            Step::StopSync => "the stop path: sync",
+        }
+    }
+}
+
+static MAIN_STEP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(Step::Boot as u8);
+
+/// The main thread (or the stop path) is at `s` now: one relaxed store.
+fn step(s: Step) {
+    MAIN_STEP.store(s as u8, Ordering::Relaxed);
+}
+
+fn main_step() -> &'static str {
+    Step::ALL.get(MAIN_STEP.load(Ordering::Relaxed) as usize).map_or("?", |s| s.text())
+}
+
+mod watch {
+    use super::*;
+    use std::sync::Condvar;
+    use std::time::{Duration, Instant};
+
+    pub(super) const STOP_SEE_MS: u64 = 3000;
+    pub(super) const STOP_PATH_MS: u64 = 60_000;
+
+    /// 1 once a stop was asked with the watch on: the futex word the watch sleeps on.
+    static POSTED: AtomicU32 = AtomicU32::new(0);
+    static ON: AtomicBool = AtomicBool::new(false);
+    /// The main loop left: the stop path runs on the main thread.
+    static LOOP_LEFT: Mutex<bool> = Mutex::new(false);
+    static LEFT: Condvar = Condvar::new();
+
+    fn futex(op: i32, value: u32) {
+        // SAFETY: a futex wait or wake on a static word; a wait without a timeout returns on a wake or EINTR.
+        unsafe {
+            libc::syscall(libc::SYS_futex, POSTED.as_ptr(), op, value, std::ptr::null::<libc::timespec>());
+        }
+    }
+
+    /// The first stop: wakes the watch (one futex wake; nothing before the watch is on).
+    pub(super) fn post() {
+        if ON.load(Ordering::Acquire) {
+            POSTED.store(1, Ordering::Release);
+            futex(libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG, 1);
+        }
+    }
+
+    /// The main loop left its loop: the watch does not run the stop path.
+    pub(super) fn loop_leave() {
+        *xh_core::thread::lock(&LOOP_LEFT) = true;
+        LEFT.notify_all();
+    }
+
+    /// Waits on the condvar until `deadline` or until `done` says so; returns the flag.
+    fn wait_until(deadline: Instant, done: impl Fn(bool) -> bool) -> bool {
+        let mut left = xh_core::thread::lock(&LOOP_LEFT);
+        loop {
+            let now = Instant::now();
+            if done(*left) || now >= deadline {
+                return *left;
+            }
+            left = LEFT.wait_timeout(left, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+
+    fn end_and_exit() -> ! {
+        let code = end_session();
+        // SAFETY: _exit ends the process at once, as main.c's stop path did (the main thread may be blocked).
+        unsafe { libc::_exit(code) }
+    }
+
+    fn run() -> ! {
+        while POSTED.load(Ordering::Acquire) == 0 {
+            futex(libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG, 0);
+        }
+        let start = Instant::now();
+        let left = wait_until(start + Duration::from_millis(STOP_SEE_MS), |left| left);
+        if !left {
+            loge!(
+                "stopping: the main loop did not take the stop ({}) in {} ms: it waits in {}; the stop path runs from the stop watch",
+                stop_request().unwrap_or_default().why,
+                STOP_SEE_MS,
+                main_step()
+            );
+            cpu::dump_all(); // where each vCPU is (the SIGQUIT lines)
+            if xh_core::thread::spawn("xnuhost-end", || end_and_exit()).is_err() {
+                end_and_exit();
+            }
+        }
+        // Nothing notifies the condvar again: this is the stop path's limit.
+        wait_until(start + Duration::from_millis(STOP_PATH_MS), |_| false);
+        let code = exit_code();
+        loge!(
+            "stopping: the stop path did not end in {} s (it is at: {}): exit {} now",
+            STOP_PATH_MS / 1000,
+            main_step(),
+            code
+        );
+        // SAFETY: _exit ends the process at once: the stop path is stuck.
+        unsafe { libc::_exit(code) }
+    }
+
+    /// Started once, before the vCPUs, with every signal blocked (the stop signals are the main thread's).
+    pub(super) fn start() {
+        // SAFETY: a full set; this thread's mask changed around the spawn and put back after.
+        let old = unsafe {
+            let mut all: libc::sigset_t = std::mem::zeroed();
+            let mut old: libc::sigset_t = std::mem::zeroed();
+            libc::sigfillset(&mut all);
+            libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut old);
+            old
+        };
+        let made = xh_core::thread::spawn("xnuhost-stop", || run());
+        // SAFETY: the mask saved above.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
+        if let Err(e) = made {
+            loge!("stopping: no stop watch: {}", xh_core::sys::error_text(&e));
+            return;
+        }
+        ON.store(true, Ordering::Release);
+        if stopping() {
+            post(); // a stop asked before the watch was on
+        }
+    }
 }
 
 /// CLOCK_MONOTONIC in whole seconds (the C's tv_sec comparisons of the periodic lines).
@@ -370,9 +588,10 @@ pub fn main() -> i32 {
     READY_WAIT.store(config.ready_content_wait, Ordering::Relaxed);
     logi!("xnuhost: session ABI {}, mode {}, pid {}", config.session_abi, config.mode, std::process::id());
     xh_core::virtio::set_log(true); // virtio's health lines (docs/booter.md 2.9b)
-                                    // The host phone (onebridges::hw, config.rs): what was found, from which property, and each default it changed.
-                                    // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
-                                    // variable the session already set wins.
+    xh_core::hooks::install_cpu(|| cpu::current().map(|v| v.index() as u32)); // who holds a device, in its "held by" line
+                                                                              // The host phone (onebridges::hw, config.rs): what was found, from which property, and each default it changed.
+                                                                              // Its environment defaults (the S26 Ultra's ONEIOS_BRIGHT_MAX) are set here, while this process has one thread; a
+                                                                              // variable the session already set wins.
     if !config.host_line.is_empty() {
         logi!("{}", config.host_line);
     }
@@ -409,6 +628,7 @@ pub fn main() -> i32 {
         libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
+    watch::start();
     if !config.session.is_empty() {
         session_file("xnuhost.pid", &format!("{}\n", std::process::id()));
     }
@@ -458,20 +678,37 @@ pub fn main() -> i32 {
         task::shutdown();
         return EXIT_SETUP;
     }
-    run(&mut s, config, &argv)
+    let _ = ARGV.set(argv);
+    *xh_core::thread::lock(&BRIDGES) = Some(std::mem::take(&mut s.bridges));
+    *xh_core::thread::lock(&SESSION) = Some(s);
+    run(config)
 }
 
-/// The main loop, the stop, the exit code.
-fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
+/// The session from the boot's end to the stop: the main loop's, and the stop path's from whichever thread runs it.
+/// The main loop holds it only around its own ticks, so a stop path on the stop watch finds it free unless the main
+/// thread is blocked in one of those.
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+/// The bridges, apart from the rest of the session: the stop path closes them (the motor, the backlight, the network
+/// as One UI had them) even while the main thread is blocked in a memory or USB report or the console's copy.
+static BRIDGES: Mutex<Option<bridges::Bridges>> = Mutex::new(None);
+/// The return's graceful wait (the main loop's; the stop path reads it).
+static RET: Mutex<ReturnState> = Mutex::new(ReturnState { active: false, started_ms: 0, deadline_ms: 0 });
+/// The command line, for a guest restart's exec.
+static ARGV: OnceLock<Vec<String>> = OnceLock::new();
+/// The stop path ran (end_session runs once).
+static ENDING: AtomicBool = AtomicBool::new(false);
+
+/// The main loop, then the stop path: the exit code.
+fn run(config: &'static Config) -> i32 {
     let waited = stop_signals();
     // The return's graceful shutdown (docs/booter.md "The return"): the first stop signal, when iOS is up and
     // return-graceful-ms > 0, asks iOS to power off and keeps the vCPUs running up to an absolute deadline; then the
     // stop below runs as always. A panic (it sets stop directly, not through a signal), a second signal, the guest
     // halting itself, or the deadline all leave the wait at once. The way back never depends on any of this: the
     // deadline is ours, and the fork's SIGKILL is the backstop under everything.
-    let mut ret = ReturnState::new();
     while !stopping() {
         let tick = libc::timespec { tv_sec: 0, tv_nsec: 100_000_000 };
+        step(Step::SignalWait);
         // SAFETY: waits up to 100 ms for one of the blocked stop signals.
         let signo = unsafe { libc::sigtimedwait(&waited, std::ptr::null_mut(), &tick) };
         if signo == libc::SIGQUIT {
@@ -482,8 +719,11 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
             perf::log(true);
             continue;
         }
+        // RET is held only for its own update (one statement), never across a bridge's request: the stop path reads it.
         if signo > 0 {
-            match ret.on_signal(config.return_graceful_ms, is_guest_ready(), monotonic_ms()) {
+            let decision =
+                xh_core::thread::lock(&RET).on_signal(config.return_graceful_ms, is_guest_ready(), monotonic_ms());
+            match decision {
                 ReturnDecision::Graceful => {
                     let asked = bridges::request_shutdown();
                     logi!(
@@ -499,29 +739,66 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
                 ReturnDecision::StopNow => stop(XH_HALT_OFF, 0, &format!("signal {signo}")),
             }
         }
+        let ret = *xh_core::thread::lock(&RET);
         if ret.expired(monotonic_ms()) {
             logi!("return: graceful shutdown timed out after {} ms; stopping", ret.elapsed_ms(monotonic_ms()));
             stop(XH_HALT_OFF, 0, "graceful shutdown timed out");
         }
+        step(Step::PerfReport);
         perf::tick(); // "perf:" lines every perf-log seconds
+        step(Step::DiskReport);
         blk::tick(); // "disk NAME: 30 s:" lines (blk.rs)
-        s.memory.host_memory_tick(config, false); // "memory: host MemAvailable" every host-mem-log seconds
-        s.memory.swap_watch(config); // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
-        s.memory.ram_valve_tick(); // the lock's valve, once a second while locked
-        s.memory.huge_tick(config); // "memory: 2 MiB pages (the prefault done): ..." once
-        s.usb_tick(config, false, ""); // "usb: state ..." when the USB gadget changed
+        {
+            let mut guard = xh_core::thread::lock(&SESSION);
+            let Some(s) = guard.as_mut() else { break };
+            step(Step::MemoryReport);
+            s.memory.host_memory_tick(config, false); // "memory: host MemAvailable" every host-mem-log seconds
+            step(Step::SwapWatch);
+            s.memory.swap_watch(config); // "memory: the host swaps iOS's RAM" when it does (nothing while all is locked)
+            step(Step::RamValve);
+            s.memory.ram_valve_tick(); // the lock's valve, once a second while locked
+            step(Step::HugeReport);
+            s.memory.huge_tick(config); // "memory: 2 MiB pages (the prefault done): ..." once
+            step(Step::UsbWatch);
+            s.usb_tick(config, false, ""); // "usb: state ..." when the USB gadget changed
+        }
+        step(Step::VirtioReport);
         xh_core::virtio::tick(); // "virtio: 60 s: ..." and a queue that holds chains (xh_core::virtio)
+        step(Step::TasksReport);
         task::tick(); // "tasks: 60 s: ..." made, ended, died on their own (task.rs)
-        s.bridges.haptic_tick(); // "haptics: 60 s: ..." when iOS used the motor
+        step(Step::HapticsReport);
+        if let Some(b) = xh_core::thread::lock(&BRIDGES).as_ref() {
+            b.haptic_tick(); // "haptics: 60 s: ..." when iOS used the motor
+        }
+        step(Step::ReadyRule);
         ready_tick(); // session/ready for an iOS that only draws black (ready-content-wait)
-        s.console_tick();
+        if let Some(s) = xh_core::thread::lock(&SESSION).as_mut() {
+            s.console_tick();
+        }
     }
+    step(Step::StopPath);
+    watch::loop_leave();
+    end_session()
+}
+
+/// The stop path, once: from the main thread when its loop sees the stop, or from the stop watch when the loop does
+/// not (main.c's end_session). The thread that comes second waits; the first ends the process (the main thread by
+/// returning the exit code, the watch's thread with _exit).
+fn end_session() -> i32 {
+    if ENDING.swap(true, Ordering::AcqRel) {
+        loop {
+            // SAFETY: waits for a signal; the other thread's stop path ends the process.
+            unsafe { libc::pause() };
+        }
+    }
+    let ret = *xh_core::thread::lock(&RET);
     let mut request = stop_request().unwrap_or_default();
     // A return was asked: a guest-initiated restart in the window is iOS finishing its shutdown, not a reboot to re-run
     // in place. Take it as the return (exit 0), so the fork's watcher goes back to One UI instead of xnuhost re-exec'ing.
     if ret.active && request.reason == XH_HALT_RESTART {
         logi!("return: the guest restarted during the graceful shutdown; taking it as the return");
         request.reason = XH_HALT_OFF;
+        set_stop_reason(XH_HALT_OFF);
     }
     // The guest shut itself down inside the window (its kernel's PSCI SYSTEM_OFF or halt set the stop): say how long it
     // took. A timeout or a second request logged its own line above; a panic took the panic path (reason PANIC).
@@ -533,11 +810,28 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
         logi!("return: iOS shut down in {} ms", ret.elapsed_ms(monotonic_ms()));
     }
     logi!("stopping: {} (reason {}, code {})", request.why, request.reason, request.code);
-    s.memory.host_memory_tick(config, true);
-    if mem::state().huge {
-        s.memory.huge_report(" at the stop");
+    step(Step::StopReports);
+    let config = config();
+    // The session's own lines at the stop; never waited for: a main thread blocked in one of its ticks holds it (the
+    // stop watch's line said where), and the rest of the stop path must go on.
+    match (SESSION.try_lock(), config) {
+        (Ok(mut guard), Some(config)) => {
+            if let Some(s) = guard.as_mut() {
+                s.memory.host_memory_tick(config, true);
+                if mem::state().huge {
+                    s.memory.huge_report(" at the stop");
+                }
+                s.usb_tick(config, true, " (at the stop)");
+            }
+        }
+        (Err(std::sync::TryLockError::WouldBlock), _) => {
+            loge!(
+                "stopping: the main thread holds the session ({}): its memory and USB lines at the stop are left out",
+                main_step()
+            )
+        }
+        _ => {}
     }
-    s.usb_tick(config, true, " (at the stop)");
     for (i, v) in cpu::vcpus().iter().enumerate().take(cpu::ncpu()) {
         logi!(
             "cpu{}: {}, {} interrupts ({} timer, {} IPI acknowledged, {} re-raised), {} device accesses, {} emulated instructions, {} task traps",
@@ -568,29 +862,30 @@ fn run(s: &mut Session, config: &'static Config, argv: &[String]) -> i32 {
             let _ = std::fs::write(path, bytes);
         }
     }
+    step(Step::StopTasksBridges);
+    oneencoder::backend_helper::stop(); // the encoder helper, also one that hangs in MediaCodec
     task::shutdown();
-    s.bridges.close();
+    if let Some(mut b) = xh_core::thread::lock(&BRIDGES).take() {
+        b.close();
+    }
     input_script::stop();
     input::stop();
     display::close();
+    step(Step::StopSync);
     // SAFETY: sync has no preconditions: the Data store's pages.
     unsafe { libc::sync() };
     // The RAM goes back to the host at once with this process (its last mapping and descriptor: the tasks and the
     // factory are gone already); a kill does the same. Nothing to undo: mlock ends with the mapping.
-    s.memory.stop();
+    if let Some(s) = xh_core::thread::lock(&SESSION).as_ref() {
+        s.memory.stop();
+    }
     if request.reason == XH_HALT_RETURN {
         session_file("return.request", "the guest asked to return\n");
     }
     if request.reason == XH_HALT_RESTART {
-        guest_restart(argv); // returns only if it could not
+        guest_restart(ARGV.get().map_or(&[][..], |a| a.as_slice())); // returns only if it could not
     }
-    let code = if request.reason == XH_HALT_RESTART {
-        EXIT_RESTART
-    } else if request.reason == XH_HALT_PANIC || request.code != 0 {
-        EXIT_PANIC
-    } else {
-        EXIT_GUEST_OFF
-    };
+    let code = exit_code();
     logi!("exit {}", code);
     code
 }
@@ -606,5 +901,20 @@ mod tests {
         stop(XH_HALT_OFF, 0, "later");
         let r = stop_request().unwrap();
         assert!(stopping() && r.reason == XH_HALT_PANIC && r.code == 7 && r.why.len() == 95);
+    }
+
+    #[test]
+    fn the_main_steps_texts() {
+        // MAIN_STEP holds a Step as u8: ALL must list each at its own index, with main.c's texts.
+        for (i, s) in Step::ALL.iter().enumerate() {
+            assert_eq!(*s as usize, i);
+        }
+        assert_eq!(main_step(), "the boot");
+        step(Step::VirtioReport);
+        assert_eq!(main_step(), "the virtio report");
+        step(Step::StopTasksBridges);
+        assert_eq!(main_step(), "the stop path: the tasks and the bridges");
+        assert_eq!(watch::STOP_SEE_MS, 3000);
+        assert_eq!(watch::STOP_PATH_MS, 60_000);
     }
 }

@@ -463,8 +463,9 @@ fn reader_main(fd: OwnedFd, gen: u64) {
         done.answer();
         if report && (frames != 0 || timeouts != 0 || copies != 0) {
             logi!(
-                "display: 10 s: {} frames copied by the helper from guest RAM (posted to in the layer: mean {:.1} ms, max \
-                 {:.1} ms), {} not answered within {} ms, {} flushes of xnuhost's own copy",
+                "display: 10 s: {} frames copied by the helper from guest RAM (its answer: mean {:.1} ms, max {:.1} ms; since \
+                 2026-11-23 the helper answers once the frame is in its snapshot, before its post), {} not answered \
+                 within {} ms, {} flushes of xnuhost's own copy",
                 frames,
                 if frames != 0 { total as f64 / 1000.0 / frames as f64 } else { 0.0 },
                 max as f64 / 1000.0,

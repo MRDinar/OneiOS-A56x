@@ -24,7 +24,7 @@ use xh_core::{loge, logi};
 use xnuloader::machine::{self as xm, Cluster, DeviceKind, Mac, Machine};
 
 use super::board::{add_boot_arg, Slots};
-use crate::config::{Bluetooth, Config, CpuPin, Encoder, Haptics, Wifi};
+use crate::config::{self as cfg, Bluetooth, CameraVm, Config, CpuPin, Encoder, Haptics, Wifi};
 use crate::{cpu, task};
 
 /// The media pool carved out of the RAM for the video encoder (0: none).
@@ -665,7 +665,7 @@ impl Bridges {
     /// MobileGestalt answers still-camera and the facing ones once and keeps them in its cache, so they must be in the
     /// tree from the first boot: the list is waited for here, asleep (the phone, 2026-11-22: it came 170 ms after the
     /// helper's start, 115 ms after the tree had been placed), at most 3 s. No list, or no camera in it: no nodes.
-    pub fn describe_cameras(&self, machine: &mut Machine) {
+    pub fn describe_cameras(&self, config: &mut Config, machine: &mut Machine) {
         let Some(camera) = &self.camera else { return };
         let list = camera.list(onecamera::proto::OC_MAX_CAMERAS as usize, Duration::from_millis(3000));
         for c in &list {
@@ -689,6 +689,50 @@ impl Bridges {
                 "no camera"
             },
             list.len()
+        );
+        if machine.cameras != 0 {
+            Self::camera_identity(config, machine);
+        }
+    }
+
+    /// With the cameras (main.c, 2026-11-23): 24A446's CMCapture in a VM (FigCaptureIsRunningInVirtualization:
+    /// kern.hv_vmm_present) takes the "external camera replaces built-in" path: -[BWFigCaptureDevice
+    /// initWithFigCaptureDevice:deviceID:] drops every Back, BackTelephoto and BackSuperWide stream, so no back source
+    /// opens and the Camera app stays black (the phone, 2026-11-23: "unable to find a stream with port type PortTypeBack",
+    /// err -12780). The kernel's per-process owner-hide-vmm tells only cameracaptured (every caller of the check is in
+    /// it) that it is not in one; bluetoothd and the others keep the VM.
+    fn camera_identity(config: &mut Config, machine: &mut Machine) {
+        let hide = config.camera_vm == CameraVm::Hide;
+        let added = if hide {
+            cfg::boot_args_hide_vmm_add(&mut config.boot_args, cfg::BOOT_ARGS_SIZE, "cameracaptured")
+        } else {
+            Ok(false)
+        };
+        match added {
+            Err(_) => loge!(
+                "camera: no room in the boot arguments for owner-hide-vmm=cameracaptured: CMCapture drops the back cameras in a VM"
+            ),
+            Ok(added) if hide => logi!(
+                "camera: cameracaptured is not told of the VM (owner-hide-vmm{}): CMCapture keeps the back cameras only outside one",
+                if added { " gets it" } else { " has it" }
+            ),
+            Ok(_) => logi!("camera: camera-vm=show: cameracaptured sees the VM, and CMCapture drops the back cameras"),
+        }
+        // /product unique-model (camera-model=): MobileGestalt's HWModelDescriptionForCamera, which both CMCapture's
+        // folder and AVGestalt's table go by. The default is in no AVGestalt table (VirtualAudio starts; the kernel,
+        // hosted 0088, shows CMCapture.framework/<name less AP> as a link to V54); V54AP stops all audio
+        // (docs/hardware.md 7).
+        machine.unique_model = Some(config.camera_model.clone());
+        let v54 = config.camera_model == "V54AP";
+        logi!(
+            "camera: unique-model {} (camera-model=): CMCapture's tables {}, AVGestalt {}",
+            config.camera_model,
+            if v54 { "in V54" } else { "through the kernel's link to V54" },
+            if v54 {
+                "answers V54's (its webcam subport stops VirtualAudio)"
+            } else {
+                "has no entry (VirtualAudio builds no webcam subport)"
+            }
         );
     }
 

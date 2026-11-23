@@ -335,6 +335,9 @@ mod machine {
     /// counter ticks: spin-host, spin-task
     static SPIN_HOST: AtomicU64 = AtomicU64::new(0);
     static SPIN_TASK: AtomicU64 = AtomicU64::new(0);
+    /// counter ticks: a kick not answered in this long is sent again (200 ms)
+    static KICK_AGAIN: AtomicU64 = AtomicU64::new(0);
+    static KICK_FAILED_SAID: AtomicBool = AtomicBool::new(false);
     /// of the stub region = the first address tasks may not use
     static BASE: AtomicU64 = AtomicU64::new(0);
     static SOCK: AtomicI32 = AtomicI32::new(-1);
@@ -685,6 +688,7 @@ mod machine {
         // xnuhost/check-arm64.sh (docs/booter.md 2.6a): the defaults are what that measurement chose.
         let hz = cpu::counter_hz();
         SPIN_HOST.store(u64::from(c.spin_host.unwrap_or(SPIN_HOST_US)) * hz / 1_000_000, Relaxed);
+        KICK_AGAIN.store(hz / 5, Relaxed);
         SPIN_TASK.store(u64::from(c.spin_task.unwrap_or(SPIN_TASK_US)) * hz / 1_000_000, Relaxed);
         MAP_DEFER.store(c.map_defer, Relaxed);
         // Is the filter usable here? (qemu-user and some kernels have no seccomp.) Asked in a child so that xnuhost
@@ -1466,6 +1470,50 @@ mod machine {
         }
     }
 
+    /// tgkill's result (cpu::tgkill does not give it): 0, or -1 with errno set.
+    fn tgkill_result(pid: i32, tid: i32, sig: i32) -> libc::c_long {
+        // SAFETY: tgkill of a thread of an iOS task process; a stale tid is an error return (ESRCH), not a fault.
+        unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, sig) }
+    }
+
+    /// The direct kick (`xh_tasks_kick`; docs/booter.md 2.6a, "The kick"): the interrupt line of vCPU `v` rose
+    /// (cpu::line, on another thread). When `v` waits in thread_run for an iOS thread it released, that thread is
+    /// signalled straight away (one signal: the thread stops and hands the vCPU its trap) instead of the vCPU's
+    /// thread. Until 2026-11-23 a raise of a busy vCPU's line always signalled the vCPU's thread, which sleeps in
+    /// thread_run's futex on the same core as the iOS thread it released (cpu-pin): that thread had to be woken and
+    /// scheduled there, ahead of the iOS thread it shares the core with, only to send the iOS thread the signal below.
+    /// On the phone (2026-11-23 03:28, 0085 and 0089 active, every vCPU busy) that was 24,419 kicks in 30 s, mean
+    /// 136 us, p99 3.7 ms. Whoever sets bit 0 of the release's run_word sends the kick, so one release gets one kick;
+    /// a kick that lands after its thread is back stays pending in the stub's handler (it blocks every signal) and is
+    /// a spurious interrupt trap at that thread's next release, which the kernel takes as an interrupt with nothing
+    /// pending (hosted_user.c, XH_TRAP_INTERRUPT). True: the thread was kicked (now or already for this release);
+    /// false: the caller signals the vCPU.
+    pub fn kick(v: &Vcpu) -> bool {
+        let w = v.run_word.load(Acquire);
+        if w == 0 {
+            return false; // no released thread: the vCPU's own signal
+        }
+        if w & 1 != 0 {
+            return true; // kicked already for this release
+        }
+        let pid = v.run_pid.load(Relaxed);
+        let tid = v.run_tid.load(Relaxed);
+        // Sets the bit only if the word is still this release's (the release numbers are never reused): pid and tid,
+        // read after the word with acquire and before this exchange with release, are that release's thread.
+        if let Err(now) = v.run_word.compare_exchange(w, w | 1, AcqRel, Acquire) {
+            // kicked by another raiser or the vCPU; 0 or a new release not kicked yet: the vCPU's own signal
+            return now & 1 != 0;
+        }
+        v.run_kicked_at.store(cpu::counter(), Relaxed);
+        if pid > 0 && tid != 0 && tgkill_result(pid, tid as i32, kick_signal()) == 0 {
+            return true;
+        }
+        // Refused (the process is gone, or its queue of real-time signals is full): the bit off again, and the vCPU's
+        // own signal, after which thread_run kicks (and says a refusal) as before.
+        let _ = v.run_word.compare_exchange(w | 1, w, AcqRel, Relaxed);
+        false
+    }
+
     /// thread_run's end, for perf: the trap's kind and when it was handed to the kernel.
     fn run_done(v: &Vcpu, kind: u32) {
         let p = &v.perf;
@@ -1581,6 +1629,13 @@ mod machine {
         word!(tp, command).store(XS_RUN, Relaxed);
         word64!(tp, spin_ticks).store(SPIN_TASK.load(Relaxed), Relaxed);
         word!(tp, to_host).store(0, Release);
+        // From here a raise of this vCPU's line may kick the thread itself (kick): before the release, so that a raise
+        // that comes first is a kick that stays pending in the stub and stops the thread before its first instruction.
+        v.run_pid.store(t.pid(), Relaxed);
+        v.run_tid.store(word!(tp, tid).load(Acquire), Relaxed);
+        let seq = v.run_seq.load(Relaxed) + 1;
+        v.run_seq.store(seq, Relaxed);
+        v.run_word.store(seq << 1, SeqCst);
         let released = cpu::counter();
         p.count(Count::PrepTicks, released - entered); // placement, uclamp, the queue: host work before the hand-off
         th.released_at.store(released, Relaxed);
@@ -1593,7 +1648,8 @@ mod machine {
             p.count(Count::TaskWakes, 1);
         }
         let (mut kicked, mut sleeping) = (false, false);
-        let mut kicked_at = 0;
+        let (mut kicked_at, mut kicked_last) = (0, 0);
+        let kick_again = KICK_AGAIN.load(Relaxed);
         let spin_host = SPIN_HOST.load(Relaxed);
         let step = libc::timespec { tv_sec: 0, tv_nsec: 200_000_000 };
         let to_host = word!(tp, to_host);
@@ -1610,6 +1666,7 @@ mod machine {
                 break;
             }
             if t.dead() {
+                v.run_word.store(0, SeqCst);
                 if drain.take().is_some() {
                     unmaps_done(t);
                 }
@@ -1624,12 +1681,44 @@ mod machine {
                 return 0;
             }
             // The vCPU's interrupt line rose (its timer or another CPU signalled this thread, which ended the wait
-            // below): force the iOS thread to stop, once.
-            if !kicked && (v.cpu.irq_pending.load(Relaxed) != 0 || session::stopping()) {
+            // below): force the iOS thread to stop. Again at each futex step (200 ms) while it is not back: a kick that
+            // did not get there (tgkill refused: the queue of real-time signals full) must not leave the vCPU deaf to
+            // its interrupts and to the debugger's cross-call (a stackshot panics after debug-ack, 5 s). The first
+            // refusal is said. The first kick of a release is whoever sets bit 0 of run_word: a raiser on another
+            // thread (kick, which then signalled the thread already) or this loop; the second, 200 ms on, is always
+            // this loop's. The counter is read only once the line is up: a hand-off that comes back with no interrupt
+            // costs nothing more.
+            if (v.cpu.irq_pending.load(Relaxed) != 0 || session::stopping())
+                && (!kicked || cpu::counter() - kicked_last >= kick_again)
+            {
                 let tid = word!(tp, tid).load(Acquire);
-                kicked_at = cpu::counter();
-                if tid != 0 {
-                    cpu::tgkill(t.pid(), tid as i32, kick_signal());
+                let mut send = kicked;
+                if !kicked {
+                    let w = v.run_word.load(Acquire);
+                    send = w & 1 == 0 && v.run_word.compare_exchange(w, w | 1, AcqRel, Acquire).is_ok();
+                }
+                kicked_last = cpu::counter();
+                if kicked {
+                    p.count(Count::KicksAgain, 1);
+                } else if send {
+                    kicked_at = kicked_last;
+                } else {
+                    // a raiser's kick, sent from its own thread (kick)
+                    let at = v.run_kicked_at.load(Relaxed);
+                    kicked_at = if at >= released && at <= kicked_last { at } else { kicked_last };
+                }
+                if send
+                    && tid != 0
+                    && tgkill_result(t.pid(), tid as i32, kick_signal()) != 0
+                    && !KICK_FAILED_SAID.swap(true, Relaxed)
+                {
+                    loge!(
+                        "tasks: the kick of pid {} tid {} (vCPU {}'s interrupt) was refused: {}; it is sent again every 200 ms",
+                        t.pid(),
+                        tid,
+                        v.index(),
+                        xh_core::sys::strerror(xh_core::sys::errno())
+                    );
                 }
                 kicked = true;
             }
@@ -1651,7 +1740,17 @@ mod machine {
         if sleeping {
             word!(tp, host_sleeping).store(0, Relaxed);
         }
+        // No more direct kicks for this release; a raiser's kick that landed while the loop did not look (the trap came
+        // back first) counts for the histogram when the trap is the interrupt it caused.
+        let last_word = v.run_word.swap(0, SeqCst);
         let seen = cpu::counter();
+        if !kicked && last_word & 1 != 0 {
+            let at = v.run_kicked_at.load(Relaxed);
+            if at >= released && at <= seen {
+                kicked = true;
+                kicked_at = at;
+            }
+        }
         t.running.fetch_sub(1, SeqCst);
         p.count(Count::TicksUser, seen - released);
         // SAFETY: the thread trapped (to_host seen with acquire): its state and trap are written and stay until the
@@ -1741,6 +1840,10 @@ mod machine {
     }
     pub fn shutdown() {}
     pub fn tick() {}
+    /// No tasks here: the caller signals the vCPU.
+    pub fn kick(_v: &crate::cpu::Vcpu) -> bool {
+        false
+    }
     /// Changed by main's thermal step when the vCPUs' host CPUs change.
     pub static PLACE_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 }

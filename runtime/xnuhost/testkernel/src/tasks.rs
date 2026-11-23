@@ -4,7 +4,7 @@
 
 use crate::{
     at, c0, check, cpu_yield, hex, host, info, irq_pending, kva, now, page_alloc, put, read64, run_thread,
-    set_irq_masked, take_irqs, write64, zero, Racy, TIMER_FIRES,
+    set_irq_masked, take_irqs, write64, zero, Racy, SGI_SEEN, TIMER_FIRES,
 };
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering::*};
@@ -249,6 +249,72 @@ fn test_unmap_race(task: u64, a: u64, code_va: u64, data_pa: u64) {
     );
     check(host!(thread_destroy(c, b)) == 0, "unmap race: the second thread destroyed");
 }
+
+/// The debugger's cross-call to a vCPU that waits in the hand-off (testkernel.c's test_xcall; phone, 2026-11-23: a
+/// stackshot's SIGPdebug went to every CPU, and a vCPU that did not answer within debug-ack panicked the guest). vCPU 1
+/// releases a thread that spins in user code and never traps, so vCPU 1 waits in thread_run's futex; vCPU 0 sends it
+/// SGI 7, as DebuggerXCallEnter's cross-call does, and vCPU 1 must take it (the kick stops the thread; its interrupt
+/// upcall sees the SGI) well within debug-ack, every time. 20 rounds, the thread in the hand-off 20 ms before each;
+/// then the word ends its loop.
+fn test_xcall(task: u64, code_va: u64) {
+    let c = c0();
+    let (mut b, flag_pa) = (0u64, page_alloc());
+    let (flag_va, hz) = (0x5_0000_0000u64, info().timebase_hz);
+    if host!(thread_create(c, task, &mut b)) != 0
+        || host!(task_map(c, task, flag_va, 0x4000, XH_PROT_READ | XH_PROT_WRITE, flag_pa)) != 0
+    {
+        check(false, "cross-call: a spinning thread");
+        return;
+    }
+    let flag = kva(flag_pa);
+    write64(flag, 0);
+    WORKER.thread.store(b, Relaxed);
+    WORKER.done.store(0, Relaxed);
+    WORKER.go.store(0, Relaxed);
+    state_at(WORKER_ST.get(), code_va + 40).x[1] = flag_va;
+    WORKER.armed.store(1, Release);
+    WORKER.go.store(1, Release);
+    host!(ipi(c, 1, 6));
+    let (rounds, mut taken, mut worst, mut total) = (20u64, 0u64, 0u64, 0u64);
+    for _ in 0..rounds {
+        let t = now();
+        while now() - t < hz / 50 {} // 20 ms: vCPU 1 is in the hand-off's futex wait
+        SGI_SEEN.fetch_and(!(1 << 7), SeqCst);
+        let sent = now();
+        host!(ipi(c, 1, 7));
+        while SGI_SEEN.load(Acquire) & (1 << 7) == 0 && now() - sent < hz {}
+        if SGI_SEEN.load(Acquire) & (1 << 7) != 0 {
+            let took = now() - sent;
+            taken += 1;
+            total += took;
+            worst = worst.max(took);
+        }
+    }
+    write64(flag, 1); // the thread leaves its loop and stops at brk
+    let start = now();
+    while WORKER.done.load(Acquire) != 1 && now() - start < hz * 5 {}
+    WORKER.armed.store(0, Release);
+    put("  cross-call to a vCPU in the hand-off: taken ");
+    hex(taken);
+    put(" of 20, slowest (us) ");
+    hex(worst * 1_000_000 / hz);
+    put(", mean (us) ");
+    hex(if taken != 0 { total * 1_000_000 / hz / taken } else { 0 });
+    put(" (hex)\n");
+    check(
+        taken == rounds && worst < hz / 2,
+        "cross-call: an SGI to a vCPU whose thread spins in user code is taken each time, within 500 ms",
+    );
+    check(
+        WORKER.done.load(Relaxed) == 1 && WORKER.kind.load(Relaxed) == XH_TRAP_BRK,
+        "cross-call: the thread then ends its loop (brk)",
+    );
+    check(
+        host!(thread_destroy(c, b)) == 0 && host!(task_unmap(c, task, flag_va, 0x4000)) == 0,
+        "cross-call: the thread destroyed, the word unmapped",
+    );
+}
+
 
 static JIT_ST: Racy<XhUserState> = Racy::new(zeroed_state());
 
@@ -516,11 +582,14 @@ pub(crate) fn test_tasks() {
             (6, 0x1400_0000), // b .
             (8, 0xf940_0020), // ldr x0, [x1]      (test_unmap_race)
             (9, 0xd420_0020), // brk #1
+            (10, 0xf940_0020), // ldr x0, [x1]     (test_xcall: spin, never trapping, until the word is set)
+            (11, 0xb4ff_ffe0), // cbz x0, .-4
+            (12, 0xd420_0020), // brk #1
         ],
     );
     // As the kernel does with a page of signed text before it maps it: on a host with no seccomp the svc becomes the
     // undefined instruction thread_run reports as a system call.
-    host!(text_fixup(c, code.cast(), 10 * 4));
+    host!(text_fixup(c, code.cast(), 13 * 4));
     let (code_va, data_va) = (0x1_0000_0000u64, 0x2_0000_0000u64);
     check(
         host!(task_map(c, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa)) == 0,
@@ -639,6 +708,7 @@ pub(crate) fn test_tasks() {
     if trapped {
         test_unmap_queue(task, thread, code_va, data_pa);
         test_unmap_race(task, thread, code_va, data_pa);
+        test_xcall(task, code_va);
     }
     // Preemption: a thread that never traps is stopped when the vCPU's timer fires.
     st.pc = code_va + 24;

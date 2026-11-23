@@ -58,6 +58,7 @@ mod calls {
     use crate::{discard, gic, mem, session, task};
     use std::ffi::c_void;
     use std::sync::OnceLock;
+    use xh_core::logi;
     use xh_core::regs::Regs;
     use xnuhost_abi::*;
 
@@ -80,6 +81,18 @@ mod calls {
     }
 
     pub(crate) unsafe extern "C" fn halt(cpu: *mut XhCpu, reason: u32, code: u32) {
+        // A panic's halt (the kernel's hosted_halt: code 0 panic(), 1 a start-up check, 2 a fatal kernel fault, 3 a
+        // panic while panicking). The session ends from here whatever the other vCPUs do (the debugger's wait loops
+        // spin on, and a blocked main loop is the stop watch's: session.rs).
+        if reason == XH_HALT_PANIC {
+            const KINDS: [&str; 4] = ["panic()", "a start-up check", "a fatal kernel fault", "a panic while panicking"];
+            logi!(
+                "guest panic: the kernel halted on cpu{} (code {}, {}): ending the session",
+                index(cpu),
+                code,
+                KINDS.get(code as usize).copied().unwrap_or("?")
+            );
+        }
         session::stop(reason, code, &format!("the guest halted on cpu{}", index(cpu)));
         loop {
             // SAFETY: waits for a signal (the stop ends the process).

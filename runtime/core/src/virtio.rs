@@ -27,7 +27,7 @@ use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// Queues a device may have (`XH_VIRTIO_QUEUES`).
@@ -39,6 +39,9 @@ pub const QSIZE: u32 = 1024;
 pub const REPORT_MS: u64 = 60_000;
 /// The parts of one chain the transport hands to [`Device::handle`] at most.
 pub const MAX_PARTS: usize = 64;
+/// A device held this long or longer by one holder is said by the health report (`xh_virtio_held_ms`); a test's
+/// registry sets less ([`Registry::set_held_ms`]).
+pub const HELD_MS: u64 = 2000;
 
 const MAGIC: u32 = 0x7472_6976;
 const VENDOR: u32 = 0x4f69_4f53; // "SOiO"
@@ -293,6 +296,85 @@ impl RecursiveMutex {
         unsafe { libc::pthread_mutex_lock(self.0.get()) };
         RawGuard(self, std::marker::PhantomData)
     }
+
+    /// The lock if nobody else holds it (its holder may take it again), `None` without waiting.
+    fn try_lock(&self) -> Option<RawGuard<'_>> {
+        // SAFETY: an initialized mutex; trylock never blocks.
+        (unsafe { libc::pthread_mutex_trylock(self.0.get()) } == 0).then(|| RawGuard(self, std::marker::PhantomData))
+    }
+}
+
+/// Who holds a device now, for the health report, which reads it without the lock when it cannot take it (C's
+/// `held_ms`, `held_queue`, `held_cpu`, `held_depth`, `held_said`). Marked by a request's handler (the transport's
+/// pop loop on a kick) and by a device thread's [`Virtio::lock`]; a nested mark keeps the outer one. Written only with
+/// the device's lock held.
+#[derive(Debug)]
+struct Holder {
+    since_ms: AtomicU64, // CLOCK_MONOTONIC ms; 0: nobody marked
+    queue: AtomicI32,    // the queue whose request holds it; -1: a device thread's lock
+    cpu: AtomicI32,      // the vCPU that holds it; -1: another thread
+    depth: AtomicU32,    // nesting (with the lock held only)
+    said: AtomicBool,    // the health report said this hold
+}
+
+impl Holder {
+    const fn new() -> Holder {
+        Holder {
+            since_ms: AtomicU64::new(0),
+            queue: AtomicI32::new(-1),
+            cpu: AtomicI32::new(-1),
+            depth: AtomicU32::new(0),
+            said: AtomicBool::new(false),
+        }
+    }
+
+    /// The device's lock held. One clock read per outer mark (the vDSO's, no system call).
+    fn hold(&self, queue: i32) {
+        if self.depth.fetch_add(1, Ordering::Relaxed) != 0 {
+            return;
+        }
+        self.said.store(false, Ordering::Release);
+        self.queue.store(queue, Ordering::Relaxed);
+        self.cpu.store(hooks::cpu().map_or(-1, |c| c as i32), Ordering::Relaxed);
+        self.since_ms.store(crate::time::monotonic_ms(), Ordering::Release);
+    }
+
+    /// The device's lock held; says "free again" when the report said the hold.
+    fn release(&self, label: &str) {
+        let depth = self.depth.load(Ordering::Relaxed);
+        if depth == 0 {
+            return;
+        }
+        self.depth.store(depth - 1, Ordering::Relaxed);
+        if depth != 1 {
+            return;
+        }
+        let since = self.since_ms.swap(0, Ordering::AcqRel);
+        if self.said.swap(false, Ordering::AcqRel) {
+            say(format_args!(
+                "virtio {label}: free again: the request that held it ended after {} s",
+                crate::time::monotonic_ms().saturating_sub(since) / 1000
+            ));
+        }
+    }
+
+    /// The report could not take the lock at `now_ms`: the line for a hold of `held_ms` or longer, once per hold.
+    fn held_line(&self, label: &str, now_ms: u64, held_ms: u64) -> Option<String> {
+        let since = self.since_ms.load(Ordering::Acquire);
+        if since == 0 || now_ms < since + held_ms || self.said.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let (cpu, queue) = (self.cpu.load(Ordering::Relaxed), self.queue.load(Ordering::Relaxed));
+        let who = if cpu >= 0 { format!("cpu{cpu}") } else { "a device thread".to_owned() };
+        let secs = (now_ms - since) / 1000;
+        Some(if queue >= 0 {
+            format!(
+                "virtio {label}: held by a request on queue {queue} for {secs} s ({who} in its handler): the guest's next access to the device waits for it"
+            )
+        } else {
+            format!("virtio {label}: held by {who} for {secs} s: the guest's next access to the device waits for it")
+        })
+    }
 }
 
 impl Drop for RecursiveMutex {
@@ -312,16 +394,23 @@ impl Drop for RawGuard<'_> {
     }
 }
 
-/// The device's lock held ([`Virtio::lock`]): the device's state, shared.
+/// The device's lock held ([`Virtio::lock`]): the device's state, shared. While it lives the device is marked held by
+/// this thread (the health report's "held by a device thread" line).
 pub struct Guard<'a, D> {
-    dev: &'a D,
+    virtio: &'a Virtio<D>,
     _raw: RawGuard<'a>,
 }
 
 impl<D> std::ops::Deref for Guard<'_, D> {
     type Target = D;
     fn deref(&self) -> &D {
-        self.dev
+        &self.virtio.device
+    }
+}
+
+impl<D> Drop for Guard<'_, D> {
+    fn drop(&mut self) {
+        self.virtio.holder.release(&self.virtio.label); // before the unlock (`_raw` drops after this)
     }
 }
 
@@ -379,6 +468,8 @@ pub struct Virtio<D> {
     name: String,
     label: String,
     spi: u32,
+    holder: Holder,
+    bad_seen: AtomicU64, // its bad chains at the last report that took its lock (a held device's part of the next)
     device: D,
 }
 
@@ -397,6 +488,8 @@ pub fn set_log(on: bool) {
 }
 
 fn say(args: std::fmt::Arguments<'_>) {
+    #[cfg(test)]
+    tests::said(args);
     if LOG_ON.load(Ordering::Relaxed) {
         crate::log::write(crate::log::Level::Info, args);
     }
@@ -456,6 +549,8 @@ impl<D: Device> Virtio<D> {
             name: name.to_owned(),
             label,
             spi,
+            holder: Holder::new(),
+            bad_seen: AtomicU64::new(0),
             device,
         });
         if base != 0 {
@@ -491,7 +586,9 @@ impl<D: Device> Virtio<D> {
 
     /// Takes the device's lock (recursive) and gives its state.
     pub fn lock(&self) -> Guard<'_, D> {
-        Guard { _raw: self.lock.lock(), dev: &self.device }
+        let raw = self.lock.lock();
+        self.holder.hold(-1);
+        Guard { virtio: self, _raw: raw }
     }
 
     /// The device's state without the lock, for a state that is itself thread-safe (atomics).
@@ -687,6 +784,7 @@ impl<D: Device> Virtio<D> {
             return;
         }
         let mut iov = [Viov::EMPTY; MAX_PARTS];
+        self.holder.hold(queue as i32); // the request's handler holds the device (the health report's "held by")
         loop {
             let Some((head, n)) = Self::take(&mut self.st(), qi, &mut iov) else { break };
             let written = if n > 0 { self.device.handle(self, queue, head, &iov[..n]) } else { Some(0) };
@@ -694,6 +792,7 @@ impl<D: Device> Virtio<D> {
                 self.put(&mut self.st(), qi, head, written);
             }
         }
+        self.holder.release(&self.label);
     }
 
     /// A read of the device's registers at `offset` (`xh_virtio_mmio_read`).
@@ -833,7 +932,9 @@ const SUM_ROOM: usize = 899;
 /// A device as the health report sees it.
 trait Report: Send + Sync {
     /// Adds the device's part to the summary `sum`, says its episode lines, and returns its bad chains (all queues).
-    fn report(&self, now_ms: u64, sum: &mut String, out: &mut dyn FnMut(&str)) -> u64;
+    /// Never waits for the device's lock: a device held by another thread says so once per hold of `held_ms` or longer
+    /// and gives its bad chains of the last report; its counts wait for the next.
+    fn report(&self, now_ms: u64, held_ms: u64, sum: &mut String, out: &mut dyn FnMut(&str)) -> u64;
 }
 
 fn append(sum: &mut String, part: std::fmt::Arguments<'_>) {
@@ -845,8 +946,19 @@ fn append(sum: &mut String, part: std::fmt::Arguments<'_>) {
 }
 
 impl<D: Device> Report for Virtio<D> {
-    fn report(&self, now_ms: u64, sum: &mut String, out: &mut dyn FnMut(&str)) -> u64 {
-        let _g = self.lock.lock();
+    fn report(&self, now_ms: u64, held_ms: u64, sum: &mut String, out: &mut dyn FnMut(&str)) -> u64 {
+        // Never waits for a device: a handler that does not come back held this report, and with it xnuhost's main
+        // loop and the session's end (phone, 2026-11-23: the encoder's open waited for ever on cpu1 with the
+        // virtio-media device held; the main loop stopped in this lock 78 s before the guest's panic, and the halt was
+        // never seen). A device held longer than `held_ms` is said once per hold; its counts wait for the next report.
+        let Some(_g) = self.lock.try_lock() else {
+            if let Some(mut line) = self.holder.held_line(&self.label, now_ms, held_ms) {
+                crate::text::truncate_string(&mut line, 191); // C's char line[192]
+                out(&line);
+            }
+            // its bad chains as last seen (C left them out: that "bad chains +N" wrapped, the next said them again)
+            return self.bad_seen.load(Ordering::Relaxed);
+        };
         let mut st = self.st();
         let mut named = false;
         for i in 0..(self.info.nqueues as usize).min(QUEUES) {
@@ -908,7 +1020,9 @@ impl<D: Device> Report for Virtio<D> {
             s.shown_returned = s.returned;
             s.shown_taken = s.taken;
         }
-        st.st.iter().map(|s| s.bad).sum()
+        let bad = st.st.iter().map(|s| s.bad).sum();
+        self.bad_seen.store(bad, Ordering::Relaxed);
+        bad
     }
 }
 
@@ -919,6 +1033,7 @@ struct RegistryInner {
     last_ms: u64,
     bad_shown: u64,
     next_ms: u64,
+    held_ms: Option<u64>, // None: HELD_MS
 }
 
 /// The devices the health report covers. The machine's is [`Registry::global`]; a test may make its own.
@@ -949,18 +1064,27 @@ impl Registry {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The hold the report says (`xh_virtio_held_ms`, [`HELD_MS`] unless set): a test's registry sets less.
+    pub fn set_held_ms(&self, ms: u64) {
+        self.inner().held_ms = Some(ms);
+    }
+
     /// The queues' health at `now_ms` (`xh_virtio_health`), each line to `out`, only when something changed:
     /// `virtio: 60 s: gpu#0 q0 +1200 q1 +30, input#0 q0 +5400, blk#3 q0 +544 (in flight 1)` (+N: chains returned to
     /// the guest in the span), and once per episode a queue that holds chains with none returned for a whole span
     /// (`virtio gpu#0: queue 0: 2 chain(s) in flight and none returned in 60 s ...`), a queue whose posted chains
-    /// nobody took, and the line that says it moves again.
+    /// nobody took, and the line that says it moves again. It never waits for a device's lock: a device held for the
+    /// held span ([`HELD_MS`]) or longer by one request (or a device thread's [`Virtio::lock`]) is said once per hold,
+    /// with the vCPU in its handler (`virtio media#0: held by a request on queue 0 for 78 s (cpu1 in its handler)`),
+    /// and again when it is free.
     pub fn health(&self, now_ms: u64, out: &mut dyn FnMut(&str)) {
         let mut reg = self.inner();
         reg.devices.retain(|d| d.strong_count() > 0);
         let mut sum = String::new();
         let mut bad = 0;
+        let held_ms = reg.held_ms.unwrap_or(HELD_MS);
         for dev in reg.devices.iter().filter_map(Weak::upgrade) {
-            bad += dev.report(now_ms, &mut sum, out);
+            bad += dev.report(now_ms, held_ms, &mut sum, out);
         }
         if !sum.is_empty() {
             let bads = if bad != reg.bad_shown {

@@ -86,6 +86,42 @@ fn rank_of_a_device() {
 }
 
 #[test]
+fn the_s26_ultras_pen() {
+    // The Galaxy S26 Ultra's S Pen (docs/s26.md; YMGPwcca/OneiOS on its SM-S948B, port-sm8850-s26): sec_e-pen with key
+    // 0x140 (getevent calls it BTN_DIGI, the kernel's BTN_TOOL_PEN), tip and side button, x/y, pressure, distance, tilt.
+    let (mut keys, mut abs) = ([0u8; 96], [0u8; 8]);
+    for k in [0x140, 0x14a, 0x14b] {
+        setbit(&mut keys, k);
+    }
+    for a in [0, 1, 0x18, 0x19, 0x1a, 0x1b] {
+        setbit(&mut abs, a);
+    }
+    assert!(rank("sec_e-pen", &keys, &abs).is_ok_and(|r| r >= 1 + 2 + 4)); // at least a full pen's rank
+    setbit(&mut keys, 115); // with Volume Up: never the pen
+    assert!(rank("sec_e-pen", &keys, &abs).is_err_and(|w| w.contains("side keys")));
+    // Its digitizer in its own units (x 0..7330, y 0..15881, pressure 0..4095, distance 0..255, tilt +-63) and a
+    // stroke the fork read on it: a hover at height 77, a contact at pressure 156, a hover at 28, then out of range.
+    let d = device([(0, 7330, 0), (0, 15881, 0), (0, 4095, 0), (0, 255, 0), (-63, 63, 0), (-63, 63, 0)]);
+    let mut st = State { tool: true, ..State::default() };
+    st.value = [5924, 10584, 0, 77, -1, 13];
+    let s = sample_of(&d, 0, false, &st);
+    assert!(s.in_range && !s.touch && s.pressure == 0 && s.distance == 77);
+    assert!(s.x == (5924 * 32767 / 7330) as _ && s.y == (10584 * 32767 / 15881) as _);
+    st.touch = true;
+    st.value[PRESSURE] = 156;
+    st.value[DISTANCE] = 0;
+    let s = sample_of(&d, 0, false, &st);
+    assert!(s.in_range && s.touch && s.pressure == 156 && s.distance == 0);
+    st.touch = false;
+    st.value[PRESSURE] = 0;
+    st.value[DISTANCE] = 28;
+    let s = sample_of(&d, 0, false, &st);
+    assert!(s.in_range && !s.touch && s.distance == 28);
+    st.tool = false;
+    let s = sample_of(&d, 0, false, &st);
+    assert!(!s.in_range && !s.touch);
+}
+#[test]
 fn samples() {
     // A digitizer of 0..16000 x 0..34000, pressure 0..8191, height 0..255, tilt +-63 without a resolution.
     let mut d = device([(0, 16000, 0), (0, 34000, 0), (0, 8191, 0), (0, 255, 0), (-63, 63, 0), (-63, 63, 0)]);

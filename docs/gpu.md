@@ -485,7 +485,7 @@ after them (about 100 frames in 10 s).
 | GPU time of a frame at the top clock | `gpu: 10 s level: ... GPU time at the top` | 1.4-1.7 ms | 2.3-8.2 ms |
 | the render server's fence, submit -> retired | `gpu: 10 s host: backboardd fences` | 1.6 ms (max 2-4 ms) | 7.6-11.9 ms (max 34-90 ms) |
 | metal2vulkan's submit call in drm2kgsl | `... submit calls mean` | 49-51 us | 23-48 us |
-| the display helper's answer to a frame | `display: 10 s: ... (posted to in the layer: mean` | 5.1-5.2 ms | 8.2-9.1 ms (max 30-40 ms) |
+| the display helper's answer to a frame | `display: 10 s: ... (posted to in the layer: mean` (since 2026-11-23 `(its answer: mean`) | 5.1-5.2 ms | 8.2-9.1 ms (max 30-40 ms) |
 | the same, split (an older helper, 2026-11-22 `kbd-debug/display-s3.log`, still screen) | `oneios-display: 10 s: ...` | guest pages read 5.5 ms, buffer wait 4.1 ms, copy 0.2 ms | not logged |
 | the render server's own CPU | `oneios-top: backboardd` (30 s) | 28% | 158%, 98,068 vm_faults (4.1 s in vm_fault), 158,612 own unmaps |
 | the host | `thermal: 30 s` | 567% of 800 | 711% of 800, SoC 95 C ("heavy" for 85 s) |
@@ -530,7 +530,9 @@ for, in order:
 
 The order to work in, by the size of each cost per frame against the 8.3 ms: 4 (5.4 ms of faults), 2 (5.5 ms of copy
 on the CPU), 3 (5-9 ms of fence time beyond the GPU's work), then 5. 1 and the host work of 5 are done in this change
-(not yet booted on the phone).
+(not yet booted on the phone). The Rust runtime (branch rust-runtime, 2026-11-23) has both: xnuhost's line
+`display: 10 s: ... (its answer: mean X ms ...)` in `runtime/xnuhost/src/display.rs` and the direct kick in
+`src/task.rs` `kick` (check-arm64's boots passed under qemu-aarch64; not on the phone).
 
 ## 3. Tests on the PC
 

@@ -20,6 +20,7 @@ pub use xh_core::fs::{meminfo_value, proc_values};
 use xh_core::log::Level;
 use xh_core::parse;
 pub use xh_core::parse::size as parse_size;
+use xnuloader::machine::CAMERA_MODEL;
 
 use onebridges::hw::{self as bhw, Backend, Bridge, HostDevice, HwSettings};
 
@@ -147,6 +148,13 @@ named!(
     /// oneios-encoder helper in a session (the bridges on), the stand-in encoder inside xnuhost with the bridges off (a
     /// PC boot) | sim: the stand-in always.
     Encoder { Off = "off", Auto = "auto", Sim = "sim" }
+);
+named!(
+    /// camera-vm=: hide (the default) | show: whether cameracaptured is told it runs in a VM. hide adds cameracaptured
+    /// to the boot arguments' owner-hide-vmm= when the camera helper lists a camera: 24A446's CMCapture drops every
+    /// back stream in a VM (FigCaptureIsRunningInVirtualization, kern.hv_vmm_present; docs/hardware.md 7). show: the VM
+    /// path as before 2026-11-23.
+    CameraVm { Hide = "hide", Show = "show" }
 );
 
 impl DisplayFormat {
@@ -350,6 +358,8 @@ const GIVEN_KEYS: &[&str] = &[
     "pen-rotate",
     "pen-mirror",
     "encoder",
+    "camera-vm",
+    "camera-model",
     "bridges",
     "wifi",
     "bluetooth",
@@ -481,6 +491,13 @@ pub struct Config {
     /// pen-mirror=1: then mirrored left to right
     pub pen_mirror: bool,
     pub encoder: Encoder,
+    pub camera_vm: CameraVm,
+    /// camera-model=NAME: /product unique-model with the cameras (MobileGestalt's HWModelDescriptionForCamera;
+    /// CMCapture's per-model folder is NAME less "AP"). Default xnuloader's CAMERA_MODEL "OneiOSAP" (in no AVGestalt
+    /// table: VirtualAudio starts; the kernel, hosted 0088, links CMCapture.framework/OneiOS to V54); V54AP: the
+    /// iPhone's name, as from 2026-11-23 to the fix (AVGestalt answers V54's features, and VirtualAudio's webcam
+    /// subport stops all audio). 3-15 letters and digits ending in "AP"
+    pub camera_model: String,
     /// start the task factory
     pub tasks: bool,
     /// uid of iOS task processes; None = xnuhost's own
@@ -539,6 +556,12 @@ fn text(value: &str, size: usize) -> Result<String, BadSetting> {
     } else {
         Ok(value.to_owned())
     }
+}
+
+/// camera-model=: 3 to 15 letters and digits that end in "AP" (CMCapture takes the name less "AP" as a folder name;
+/// the kernel, hosted 0088, makes a link of that name), so nothing else reaches the device tree or a path.
+fn camera_model_ok(value: &str) -> bool {
+    (3..=15).contains(&value.len()) && value.ends_with("AP") && value.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 /// One of a setting's names.
@@ -672,6 +695,8 @@ impl Config {
             pen_rotate: PenRotate::Auto,
             pen_mirror: false,
             encoder: Encoder::Off,
+            camera_vm: CameraVm::Hide,
+            camera_model: CAMERA_MODEL.to_owned(),
             tasks: true,
             task_uid: None,
             log_level: Level::Info,
@@ -821,6 +846,11 @@ impl Config {
             "pen-rotate" => self.pen_rotate = named(PenRotate::parse(value))?,
             "pen-mirror" => self.pen_mirror = flag(value)?,
             "encoder" => self.encoder = named(Encoder::parse(value))?,
+            "camera-vm" => self.camera_vm = named(CameraVm::parse(value))?,
+            "camera-model" => {
+                fmt_ok(camera_model_ok(value))?;
+                self.camera_model = value.to_owned();
+            }
             "bridges" => self.bridges = flag(value)?,
             "clusters" => {
                 fmt_ok(value.len() <= MAX_CPUS && value.bytes().all(|b| b == b'E' || b == b'P'))?;
@@ -999,6 +1029,8 @@ impl Config {
         // encoder= of the image set: the way a phone session turns the video encoder on (the OneOS app passes no --set
         // encoder=). Until 2026-11-22 it was read and then dropped, so encoder=auto in xnuhost.conf did nothing.
         take!(self, image, "encoder", encoder);
+        take!(self, image, "camera-vm", camera_vm);
+        take!(self, image, "camera-model", camera_model);
         // Physical touchscreen exclusivity is a bounded non-takeover diagnostic only.
         // Never let an input-grabbing guest take control of Android outside a SHM bench.
         if self.touch_exclusive
@@ -1467,6 +1499,44 @@ pub fn boot_args_hides_vmm_from(args: &str, name: &str) -> bool {
         let list = list.split(' ').next().unwrap_or("");
         list.split(',').any(|entry| entry == name)
     })
+}
+
+/// xh_boot_args_hide_vmm_add: adds `name` to the boot arguments' owner-hide-vmm= list, the first such word (the one
+/// the kernel's PE_parse_boot_arg_str reads), or a new word when there is none. `Ok(true)`: added, `Ok(false)`: the
+/// list names it already; `NoRoom`: no room in the arguments (`size` with C's NUL) or in the kernel's 127 characters
+/// for the list (bsd/kern/hvg_sysctl.c).
+pub fn boot_args_hide_vmm_add(args: &mut String, size: usize, name: &str) -> Result<bool, NoRoom> {
+    const KEY: &str = "owner-hide-vmm=";
+    const LIST_MAX: usize = 127;
+    let (used, n) = (args.len(), name.len());
+    let word = args.match_indices(KEY).map(|(at, _)| at).find(|&at| at == 0 || args.as_bytes()[at - 1] == b' ');
+    let Some(at) = word else {
+        if used + usize::from(used != 0) + KEY.len() + n + 1 > size || n > LIST_MAX {
+            return Err(NoRoom);
+        }
+        if used != 0 {
+            args.push(' ');
+        }
+        args.push_str(KEY);
+        args.push_str(name);
+        return Ok(true);
+    };
+    let first = args[at..].split(' ').next().unwrap_or("");
+    if first.len() >= 256 {
+        return Err(NoRoom); // C's char first[256]
+    }
+    if boot_args_hides_vmm_from(first, name) {
+        return Ok(false);
+    }
+    let start = at + KEY.len();
+    let list = first.len() - KEY.len();
+    if used + 1 + n + 1 > size || list + 1 + n > LIST_MAX {
+        return Err(NoRoom);
+    }
+    // "owner-hide-vmm=" with an empty list: no leading comma
+    let add = if list == 0 { name.to_owned() } else { format!(",{name}") };
+    args.insert_str(start + list, &add);
+    Ok(true)
 }
 
 /// xh_boot_args_bt_transport: the transport the boot arguments' bt-transport-override gives 24A446's bluetoothd, read

@@ -285,6 +285,13 @@ fn image_set_settings() {
     write(&path, &format!("boot-args=-v debug=0x8\nencoder=auto\n{set_meminfo}\n"));
     assert_eq!(run(&img1).unwrap().encoder, Encoder::Auto);
     assert_eq!(run(&[&img1[..], &["--set", "encoder=off"]].concat()).unwrap().encoder, Encoder::Off);
+    // the image set's camera-model= applies (the phone's overlay/userland/xnuhost.conf); the command line wins
+    write(&path, &format!("boot-args=-v debug=0x8\ncamera-model=V54AP\n{set_meminfo}\n"));
+    assert_eq!(run(&img1).unwrap().camera_model, "V54AP");
+    assert_eq!(run(&[&img1[..], &["--set", "camera-model=OneiOSAP"]].concat()).unwrap().camera_model, "OneiOSAP");
+    write(&path, &format!("boot-args=-v debug=0x8\ncamera-vm=show\n{set_meminfo}\n"));
+    assert_eq!(run(&img1).unwrap().camera_vm, CameraVm::Show);
+    assert_eq!(run(&[&img1[..], &["--set", "camera-vm=hide"]].concat()).unwrap().camera_vm, CameraVm::Hide);
     // hw-backend: samsung by default for every bridge; xnuhost.conf, --set and --hw-backend*; the command line wins per
     // setting over the image set's file; a bad value or an unknown bridge refused.
     let c = Config::new();
@@ -587,6 +594,45 @@ fn boot_argument_helpers() {
     assert!(!boot_args_hides_vmm_from("owner-hide-vmm=audiomxd,com.apple.WebKit.GPU bluetoothd=1", "bluetoothd"));
     assert!(!boot_args_hides_vmm_from("owner-hide-vmm=bluetoothd2 xowner-hide-vmm=bluetoothd", "bluetoothd"));
     assert!(!boot_args_hides_vmm_from("", "bluetoothd"));
+    // cameracaptured added to the first owner-hide-vmm= word (the one the kernel reads), or a new word; never twice
+    let add = |args: &str, size: usize, name: &str| {
+        let mut a = args.to_owned();
+        let r = boot_args_hide_vmm_add(&mut a, size, name);
+        (r, a)
+    };
+    let (r, a) = add("-v wdt=-1", 96, "cameracaptured");
+    assert_eq!((r, a.as_str()), (Ok(true), "-v wdt=-1 owner-hide-vmm=cameracaptured"));
+    assert_eq!(add(&a, 96, "cameracaptured"), (Ok(false), "-v wdt=-1 owner-hide-vmm=cameracaptured".to_owned()));
+    let (r, b) = add("-v owner-hide-vmm=audiomxd,com.apple.WebKit.GPU wdt=-1", 96, "cameracaptured");
+    assert_eq!((r, b.as_str()), (Ok(true), "-v owner-hide-vmm=audiomxd,com.apple.WebKit.GPU,cameracaptured wdt=-1"));
+    assert!(boot_args_hides_vmm_from(&b, "cameracaptured") && boot_args_hides_vmm_from(&b, "audiomxd"));
+    assert_eq!(add("owner-hide-vmm=", 96, "cameracaptured"), (Ok(true), "owner-hide-vmm=cameracaptured".to_owned()));
+    let (r, d) = add("owner-hide-vmm=audiomxd x owner-hide-vmm=cameracaptured", 96, "cameracaptured"); // the first word
+    assert_eq!((r, d.as_str()), (Ok(true), "owner-hide-vmm=audiomxd,cameracaptured x owner-hide-vmm=cameracaptured"));
+    assert_eq!(add("-v wdt=-1", 24, "cameracaptured"), (Err(NoRoom), "-v wdt=-1".to_owned())); // no room: unchanged
+    let mut g = String::from("owner-hide-vmm=procname1"); // the kernel's 127 characters for the list
+    for _ in 1..12 {
+        g.push_str(",procname");
+    }
+    assert_eq!(g.len() - 15, 108);
+    assert_eq!(boot_args_hide_vmm_add(&mut g, 200, "cameracaptured"), Ok(true));
+    assert_eq!(boot_args_hide_vmm_add(&mut g, 200, "anotherprocess"), Err(NoRoom));
+    // camera-vm=: hide by default, show; nothing else
+    let mut c = Config::new();
+    assert_eq!(c.camera_vm, CameraVm::Hide);
+    assert!(
+        c.set("camera-vm", "show").is_ok() && c.camera_vm == CameraVm::Show && c.set("camera-vm", "maybe").is_err()
+    );
+    // camera-model= (/product unique-model with the cameras): OneiOSAP by default (in no AVGestalt table: VirtualAudio
+    // starts); V54AP the iPhone's; letters and digits ending in AP only, at most 15
+    let mut c = Config::new();
+    assert!(c.camera_model == "OneiOSAP" && !c.given("camera-model"));
+    assert!(c.set("camera-model", "V54AP").is_ok() && c.given("camera-model") && c.camera_model == "V54AP");
+    assert!(c.set("camera-model", "OneiOSAP").is_ok() && c.camera_model == "OneiOSAP");
+    assert!(c.set("camera-model", "V54").is_err() && c.set("camera-model", "AP").is_err());
+    assert!(c.set("camera-model", "../V54AP").is_err() && c.set("camera-model", "One iOSAP").is_err());
+    assert!(c.set("camera-model", "ABCDEFGHIJKLMAP").is_ok() && c.set("camera-model", "ABCDEFGHIJKLMNAP").is_err());
+    assert_eq!(c.camera_model, "ABCDEFGHIJKLMAP");
     // bt-transport-override read as bluetoothd reads it: any word that contains the name, the value after its '=',
     // under 13, the last word wins
     assert_eq!(boot_args_bt_transport("-v bt-transport-override=10 wdt=-1"), Some(10));

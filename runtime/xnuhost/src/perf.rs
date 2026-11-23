@@ -165,7 +165,8 @@ pub enum Step {
     OrderClone,
     /// deferred maps carried out by the released thread itself (task.rs, map-defer)
     Drain,
-    /// the vCPU signalled a running thread (its interrupt line rose) -> it has the thread's trap
+    /// a running thread was signalled (the vCPU's interrupt line rose; by the raiser itself since 2026-11-23,
+    /// task::kick, else by the vCPU) -> the vCPU has the thread's trap
     Kick,
 }
 pub const STEPS: usize = 12;
@@ -212,12 +213,16 @@ pub enum Count {
     /// raises of another vCPU's line that signalled or woke it; those it had up already
     Kicks,
     KicksSkipped,
+    /// kicks of an iOS thread sent again: it was not back 200 ms after the first (task.rs)
+    KicksAgain,
+    /// raises that kicked the iOS thread a vCPU waits for straight away (task::kick)
+    KicksDirect,
     /// fix-mach-rpc: sched_setaffinity calls that put an iOS thread with its vCPU (thread_run), and the ticks
     /// thread_run spent before the release (placement, uclamp, the queue)
     Places,
     PrepTicks,
 }
-const COUNTS: usize = 18;
+const COUNTS: usize = 20;
 
 /// `xh_perf`: a vCPU's histograms and counts, and thread_run's bookkeeping between two calls.
 #[derive(Debug)]
@@ -433,11 +438,15 @@ pub fn log(since_start: bool) {
     // host-overhead (2026-11-15): what the queue joined, the clamps given to iOS threads, the cross-vCPU signals.
     logi!(
         "perf:   queue: {} maps and unmaps joined to the one before (one host call less each); uclamp: {} given to iOS \
-         threads; interrupt lines raised on other vCPUs: {} signalled or woken, {} already up (no signal)",
+         threads; interrupt lines raised on other vCPUs: {} signalled or woken ({} of them by a kick of the iOS thread \
+         they wait for, sent by the raiser), {} already up (no signal); kicks of iOS threads sent again {} (not back 200 \
+         ms after the first)",
         sum.count(OpsJoined),
         sum.count(UclampSets),
         sum.count(Kicks),
-        sum.count(KicksSkipped)
+        sum.count(KicksDirect),
+        sum.count(KicksSkipped),
+        sum.count(KicksAgain)
     );
     // fix-mach-rpc (2026-11-15): what a release costs on the host before its hand-off (the `down` line starts after
     // it), and how often an iOS thread was put on another vCPU's core (one sched_setaffinity each).

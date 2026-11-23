@@ -378,3 +378,104 @@ fn bus_registration() {
     assert!(Virtio::create_in(&reg, base, 55, ECHO, Echo::default(), "virtio-echo").is_err());
     drop(dev);
 }
+
+// The transport's own lines (say), whatever set_log is: for the tests that look for them.
+static SAID: Mutex<String> = Mutex::new(String::new());
+
+pub(super) fn said(args: std::fmt::Arguments<'_>) {
+    use std::fmt::Write as _;
+    let mut s = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = s.write_fmt(args);
+    s.push('\n');
+}
+
+fn said_lines() -> String {
+    SAID.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+// test_xnuhost.c test_health_held: a handler that does not come back (phone, 2026-11-23: the encoder's open waited for
+// ever on cpu1 with the virtio-media device held, and the main loop's report waited in its lock): the report goes on,
+// says who holds the device, and says when it is free again.
+struct Stuck {
+    entered: Mutex<std::sync::mpsc::Sender<()>>,
+    go: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl Device for Stuck {
+    fn handle(&self, _dev: &Virtio<Self>, _queue: u32, _head: u16, _iov: &[Viov]) -> Option<u32> {
+        let _ = self.entered.lock().unwrap().send(());
+        let _ = self.go.lock().unwrap().recv(); // until the test lets it go
+        Some(0)
+    }
+}
+
+#[test]
+fn health_held() {
+    testing::install();
+    hooks::install_cpu(|| Some(1)); // the guest's thread below is "cpu1" (no other test looks at the vCPU)
+    let reg = Registry::new();
+    reg.set_held_ms(0);
+    let (go, wait) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let stuck = Stuck { entered: Mutex::new(entered_tx), go: Mutex::new(wait) };
+    let info = Info { device_id: 97, nqueues: 1, ..Info::default() };
+    let dev = Virtio::create_in(&reg, 0, 52, info, stuck, "virtio-stuckq").unwrap();
+    let ram = GuestRam::new(0x20000);
+    let mut d = Driver::up(dev.clone(), 0, 1, 8, ram.pa(0)).unwrap();
+    let report = || {
+        let mut lines = String::new();
+        reg.health(crate::time::monotonic_ms(), &mut |l| {
+            lines.push_str(l);
+            lines.push('\n');
+        });
+        lines
+    };
+    let pa = ram.pa(0x8000);
+    let guest = std::thread::spawn(move || {
+        d.send(0, &[(pa, 8, true)], true); // the kick runs the handler here
+    });
+    // The guest's thread is in the handler, the device's lock held: the report must come back all the same.
+    entered.recv().unwrap();
+    let l = report();
+    assert!(
+        l.contains("virtio stuckq#0: held by a request on queue 0 for ")
+            && l.contains(" s (cpu1 in its handler): the guest's next access to the device waits for it"),
+        "{l}"
+    );
+    assert!(!report().contains("stuckq"), "said once per hold");
+    go.send(()).unwrap();
+    guest.join().unwrap();
+    assert!(said_lines().contains("virtio stuckq#0: free again: the request that held it ended after "));
+    let l = report();
+    assert!(l.contains("stuckq#0 q0 +1"), "its counts come with the next report: {l}");
+    // A device thread's own lock: "held by cpu1" without a queue (the hook says cpu1 here too), and free again.
+    let g = dev.lock();
+    let other = std::thread::scope(|s| s.spawn(report).join().unwrap());
+    assert!(other.contains("virtio stuckq#0: held by cpu1 for 0 s: the guest's next access"), "{other}");
+    drop(g);
+    hooks::install_cpu(|| None);
+}
+
+// A held device keeps its bad chains in the sum (C left them out: the report said a wrapped "bad chains +N").
+#[test]
+fn health_held_keeps_bad_chains() {
+    testing::install();
+    let reg = Registry::new();
+    let a = Virtio::create_in(&reg, 0, 56, ECHO, Echo::default(), "virtio-gpu").unwrap();
+    let b = Virtio::create_in(&reg, 0, 57, ECHO, Echo::default(), "virtio-input").unwrap();
+    let ram = GuestRam::new(0x40000);
+    let mut da = up(&a, &ram, 0).unwrap();
+    let mut db = Driver::up(b.clone(), 0, 3, 8, ram.pa(0x20000)).unwrap();
+    let report = |now: u64| {
+        let mut lines = Vec::new();
+        reg.health(now, &mut |l| lines.push(l.to_owned()));
+        lines
+    };
+    report(1000);
+    db.send(0, &[(0x200, 4, false)], true); // bad
+    assert_eq!(report(61000), ["virtio: 60 s: input#0 q0 +1; bad chains +1"]);
+    da.send(0, &[(ram.pa(0x10000), 4, true)], true);
+    let held = b.lock(); // input#0 held on this thread; the report runs on another
+    let lines = std::thread::scope(|s| s.spawn(|| report(121000)).join().unwrap());
+    drop(held);
+    assert_eq!(lines, ["virtio: 60 s: gpu#0 q0 +1"]);
+}

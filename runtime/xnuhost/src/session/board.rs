@@ -518,8 +518,9 @@ impl Session {
         machine.view_size = view;
         machine.model = Some("iPhone18,2".into());
         machine.target_type = Some("V54".into()); // its board: iOS finds com.apple.jetsamproperties.V54.plist by it
-                                                  // The cameras iOS is told about (the loader's /arm-io/isp and /product/camera): the roles the helper lists.
-        self.bridges.describe_cameras(&mut machine);
+                                                  // The cameras iOS is told about (the loader's /arm-io/isp and /product/camera): the roles the helper lists;
+                                                  // with them cameracaptured's owner-hide-vmm and /product unique-model (camera-vm=, camera-model=).
+        self.bridges.describe_cameras(config, &mut machine);
         machine.display_width = fb_width;
         machine.display_height = fb_height;
         machine.display_scale = config.scale;

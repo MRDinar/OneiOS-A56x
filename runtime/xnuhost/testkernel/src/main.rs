@@ -324,6 +324,7 @@ pub(crate) fn run_thread(
 extern "C" fn secondary_entry(cpu: *mut XhCpu, arg: u64) {
     SECONDARY_SEEN.store(arg + cpu_index(cpu) as u64, Relaxed);
     host!(irq_enable(cpu, 6, 1));
+    host!(irq_enable(cpu, 7, 1)); // test_xcall's cross-call
     host!(ipi(cpu, 0, 5));
     tasks::worker_loop(cpu)
 }

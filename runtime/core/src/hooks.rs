@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! What the devices need from the machine, as hooks the machine installs: a device's interrupt line
-//! (`xh_gic_set_spi`) and guest physical RAM (`xh_ram`). xnuhost installs its GIC and its RAM window at the start;
-//! a tool or a test installs its own (see [`identity_ram`]). Until then a line goes nowhere and no RAM is there.
+//! (`xh_gic_set_spi`), guest physical RAM (`xh_ram`) and the calling vCPU (`xh_virtio_cpu`). xnuhost installs its
+//! GIC, its RAM window and its vCPUs at the start; a tool or a test installs its own (see [`identity_ram`]). Until then
+//! a line goes nowhere, no RAM is there and no thread is a vCPU.
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -44,6 +45,30 @@ pub fn ram(pa: u64, len: u64) -> Option<NonNull<u8>> {
     // SAFETY: RAM only ever holds a `RamFn` (the default or one stored by install_ram).
     let f: RamFn = unsafe { std::mem::transmute::<*mut (), RamFn>(p) };
     f(pa, len)
+}
+
+/// The calling thread's vCPU index, `None` on a thread that is not a vCPU (`xh_virtio_cpu`): who holds a virtio
+/// device, in its "held by" line ([`crate::virtio`]). xnuhost installs its own; the default says `None`.
+pub type CpuFn = fn() -> Option<u32>;
+
+fn no_cpu() -> Option<u32> {
+    None
+}
+
+static CPU: AtomicPtr<()> = AtomicPtr::new(no_cpu as CpuFn as *mut ());
+
+/// Installs the vCPU index hook.
+pub fn install_cpu(f: CpuFn) {
+    CPU.store(f as *mut (), Ordering::Release);
+}
+
+/// The calling thread's vCPU index, `None` when it is not a vCPU.
+#[inline]
+pub fn cpu() -> Option<u32> {
+    let p = CPU.load(Ordering::Acquire);
+    // SAFETY: CPU only ever holds a `CpuFn` (the default or one stored by install_cpu).
+    let f: CpuFn = unsafe { std::mem::transmute::<*mut (), CpuFn>(p) };
+    f()
 }
 
 /// A RAM hook for tools and tests whose "guest" is plain host memory: a guest physical address is the host address

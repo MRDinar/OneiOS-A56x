@@ -824,12 +824,12 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
   every time (below), so both are off.
 - **The kick (direct since 2026-11-23, fix-fps-scheduler-migration).** A vCPU that waits in `thread_run` for the iOS
   thread it released sleeps in the hand-off's futex on that thread's core (`cpu-pin`). When another thread raised its
-  interrupt line (an IPI, a device), `xh_cpu_line` signalled the vCPU's thread (`SIG_KICK`): that thread had to be woken
+  interrupt line (an IPI, a device), `cpu::line` (the C's `xh_cpu_line`) signalled the vCPU's thread (`SIG_KICK`): that thread had to be woken
   and scheduled on the busy core, ahead of the iOS thread it shares the core with, only to send the iOS thread the kick
   (`tgkill`, `KICK_SIGNAL`); the iOS thread's handler then handed the trap back. On the phone (2026-11-23 03:28, every
   vCPU busy after hosted 0089) that was 24,419 kicks in 30 s, mean 136 us, p99 3.7 ms (the `kick` line). Now the raiser
-  kicks the iOS thread itself (`task.c` `xh_tasks_kick`): `thread_run` publishes the released thread (pid, tid) and a
-  word `v->run_word` = release number << 1 before the release, and whoever sets the word's bit 0 first (a raiser, by
+  kicks the iOS thread itself (`src/task.rs` `kick`, the C's `task.c` `xh_tasks_kick`): `thread_run` publishes the
+  released thread (pid, tid: `Vcpu::run_pid`, `run_tid`) and a word `Vcpu::run_word` = release number << 1 before the release, and whoever sets the word's bit 0 first (a raiser, by
   compare-and-swap, or the vCPU's own loop for its timer) sends the one kick of that release; the vCPU's thread is not
   woken until the thread's trap comes back. The release numbers are never reused, so a raiser whose word changed under
   it (the thread came back, another was released) sends nothing and signals the vCPU as before. A kick that lands
@@ -844,6 +844,12 @@ store of a word in the shared trap page and, when the other side sleeps, a futex
   laptop with a load of 14-22 from other jobs: mean 115/104, 591/539, 1617/275 us, slowest 444/337, 2262/3251,
   4954/1489 us. qemu's times and that load make it a check that nothing got slower, not a measurement of the phone;
   the phone's is the `kick` line (mean 136 us, p99 3.7 ms before).
+  The Rust port (branch rust-runtime, 2026-11-23: `task::kick`, `cpu::line_with`, the `KicksDirect` and `KicksAgain`
+  counts of `src/perf.rs`, the same line texts): `runtime/xnuhost/check-arm64.sh smoke check` with the static Rust
+  xnuhost under qemu-aarch64 on the build laptop, all three boots passed; `test_xcall` (`testkernel/src/tasks.rs`)
+  `taken 0x14 of 20, slowest (us) 0x156, mean (us) 0x6f` (342 us, 111 us), and the boot's `perf:   queue:` line
+  `23 signalled or woken (20 of them by a kick of the iOS thread they wait for, sent by the raiser)`. Not run on the
+  phone.
 
 **Measured** with the C tree's `make bench-arm64` (today `runtime/xnuhost/check-arm64.sh bench`; the test kernel's loops on vCPU 0, one iOS thread; native arm64 Linux 6.18 in the
 Mac's container, an M4 with 8 CPUs; the counter is 24 MHz, so a tick is 42 ns). Means, p50 in brackets, 40,000 null
@@ -1594,23 +1600,32 @@ panic. So the main loop never saw the halt's stop either.
   HELLO and each write 1 s, an open's reply 2.5 s (under `debug-ack`). A helper that misses one is killed and the next
   open starts a new one (twice a session at most; then VideoToolbox keeps its software encoder). The stop kills the
   helper.
-- `xh_virtio_health` never waits for a device's lock (`pthread_mutex_trylock`): a device held for 2 s or longer by
+- The virtio health report (`xh_core::virtio::Registry::health`, `runtime/core/src/virtio.rs`; the C's
+  `xh_virtio_health`) never waits for a device's lock (`pthread_mutex_trylock`): a device held for 2 s or longer by
   one request is said once per hold, with the vCPU in its handler, and again when it is free: `virtio media#0: held
   by a request on queue 0 for 78 s (cpu1 in its handler): the guest's next access to the device waits for it` /
-  `virtio media#0: free again: the request that held it ended after N s` (a device thread's `xh_virtio_lock`: `held
-  by a device thread for N s`). One clock read (the vDSO's) per queue notify.
-- **The stop watch** (`main.c`): a thread, started before the vCPUs, waits for `xh_stop`. When the main loop has not
+  `virtio media#0: free again: the request that held it ended after N s` (a device thread's `Virtio::lock`, the C's `xh_virtio_lock`:
+  `held by a device thread for N s`, or `held by cpuK` when a vCPU holds it). One clock read (the vDSO's) per queue
+  notify. A held device's bad chains count as last seen (the C left them out of the sum, so that report's `bad chains
+  +N` wrapped and the next said them again).
+- **The stop watch** (`src/session.rs`, `watch`; the C's `main.c`): a thread (`xnuhost-stop`), started before the vCPUs,
+  waits in a futex for the first `session::stop` (the C's `xh_stop`), then in a condvar. When the main loop has not
   left its loop 3 s after the stop, it says `stopping: the main loop did not take the stop (WHY) in 3000 ms: it waits
   in STEP; the stop path runs from the stop watch` (STEP: the loop's step, e.g. `the virtio report`), logs where each
-  vCPU is (the SIGQUIT lines), and runs the stop path from another thread; only one thread runs it (`end_session`).
+  vCPU is (the SIGQUIT lines), and runs the stop path from another thread (`xnuhost-end`); only one thread runs it (`end_session`). In the Rust
+  the session's state the stop path needs is behind locks the main loop holds only around its own ticks (`SESSION`,
+  and `BRIDGES` apart, so the bridges are closed even while the main thread is blocked in a memory or USB report);
+  when the main thread holds the session the stop path says `stopping: the main thread holds the session (STEP): its
+  memory and USB lines at the stop are left out` and goes on.
   When the stop path has not ended 60 s after the stop: `stopping: the stop path did not end in 60 s (it is at:
   STEP): exit N now` and `_exit(N)`. So a guest panic always ends the session with exit 4, its log written, and the
   fork's way back runs.
-- The halt host call says a panic: `guest panic: the kernel halted on cpu0 (code 0, panic()): ending the session`
-  (codes: 0 `panic()`, 1 a start-up check, 2 a fatal kernel fault, 3 a panic while panicking).
+- The halt host call (`src/hostcalls.rs` `halt`) says a panic: `guest panic: the kernel halted on cpu0 (code 0,
+  panic()): ending the session` (codes: 0 `panic()`, 1 a start-up check, 2 a fatal kernel fault, 3 a panic while
+  panicking).
 - The hand-off's kick (section 2.6) was sent once and its result not looked at. A vCPU whose iOS thread is not back
-  200 ms after the kick now sends it again at each futex step while its line is up; a refused `tgkill` (a full queue of
-  real-time signals) is said once (`tasks: the kick of pid N tid T (vCPU K's interrupt) was refused: ...`), and the
+  200 ms after the kick now sends it again (`src/task.rs` `thread_run`) at each futex step while its line is up; a
+  refused `tgkill` (a full queue of real-time signals) is said once (`tasks: the kick of pid N tid T (vCPU K's interrupt) was refused: ...`), and the
   perf line counts the second kicks (`kicks of iOS threads sent again N (not back 200 ms after the first)`). Not seen
   in these boots; it keeps a lost kick from leaving a vCPU deaf the same way.
 
@@ -1625,7 +1640,15 @@ hangs no helper starts). Results on the build laptop, 2026-11-23: `xnuhost tests
 passed` under qemu-aarch64 with `cross-call to a vCPU in the hand-off: taken 0x14 of 20, slowest (us) 0x146` (326 us),
 `test_encoder: 218/218 checks passed`, `runtime/host-tests.sh` exit 0, the oneios-tool crates' tests 0 failed. The stop
 watch and the second kick have no host test of their own (a host test that stops
-the process would need a fork of xnuhost's main; not done). **Phone:** the lines to look for in the next boot that
+the process would need a fork of xnuhost's main; not done). Those were the C's. **The Rust port** (branch
+rust-runtime, 2026-11-23, build laptop): `cargo test -p xh-core virtio::` (`health_held`, the C's `test_health_held`
+case for case, and `held by cpu1 for 0 s` for a device thread's `Virtio::lock`; `health_held_keeps_bad_chains`, the
+C's wrapped `bad chains +N`), `cargo test -p xnuhost` (`session::tests::the_main_steps_texts`: the steps' texts and
+the 3 s / 60 s limits), `cargo test --workspace --locked` exit 0, `cargo fmt --all --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` clean, and `runtime/xnuhost/check-arm64.sh smoke check` with the static Rust
+xnuhost under qemu-aarch64: all three boots passed, `cross-call to a vCPU in the hand-off: taken 0x14 of 20, slowest
+(us) 0x137, mean (us) 0x7a` (311 us, 122 us). The Rust stop watch and second kick have no host test of their own
+either (the same reason). **Phone:** the lines to look for in the next boot that
 opens an encoder session are `encoder: helper ... (pid N)`, then either `encoder: session N: HEVC ...` or `encoder:
 the helper (pid N) did not answer an open in 2500 ms (...): killed (1 of 2)`, and never a `virtio media#0: held by`
 line longer than 2-3 s.

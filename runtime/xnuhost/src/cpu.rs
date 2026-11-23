@@ -149,6 +149,15 @@ pub struct Vcpu {
     pub idle: AtomicU32,
     pub sys: SysregState,
     pub stat: CpuStats,
+    /// The iOS thread this vCPU has released and waits for in thread_run, for the direct kick (task::kick):
+    /// `run_word` is (release number << 1) | 1 once a kick was sent for that release, 0 while no thread is released;
+    /// `run_pid` and `run_tid` are written before the word. `run_kicked_at`: the counter when a raiser kicked (perf).
+    /// `run_seq`: the release numbers (the vCPU's own thread only).
+    pub run_word: AtomicU64,
+    pub run_pid: AtomicI32,
+    pub run_tid: AtomicU32,
+    pub run_seq: AtomicU64,
+    pub run_kicked_at: AtomicU64,
     pub perf: Perf,
 }
 
@@ -170,6 +179,11 @@ impl Vcpu {
             idle: AtomicU32::new(0),
             sys: SysregState::new(),
             stat: CpuStats::new(),
+            run_word: AtomicU64::new(0),
+            run_pid: AtomicI32::new(0),
+            run_tid: AtomicU32::new(0),
+            run_seq: AtomicU64::new(0),
+            run_kicked_at: AtomicU64::new(0),
             perf: Perf::new(),
         }
     }
@@ -457,6 +471,11 @@ mod machine {
         }
         if v.idle.load(Acquire) != 0 {
             futex(&v.cpu.irq_pending, libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG, 1, None);
+        } else if crate::task::kick(v) {
+            // it waits for an iOS thread: that thread is kicked
+            if let Some(m) = me {
+                m.perf.count(crate::perf::Count::KicksDirect, 1);
+            }
         } else {
             tgkill(getpid(), v.tid.load(Acquire), sig_kick());
         }
