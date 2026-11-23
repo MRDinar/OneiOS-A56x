@@ -2255,3 +2255,7 @@ ONEIOS_CRYPTO=original`, 184 patches, 367 s): `xnu.macho` `7ecd6622`, releasable
 the lines of 0098 and 0100 are in it (`strings`). **Not booted** (no phone boot yet; no qemu boot: the owner's rule of
 2026-11-24). Watch in the first boot: `oneios-kill` lines naming the posters' killer and reason (FrontBoard's scene
 watchdog, RunningBoard's, or launchd's), which decides the next fix.
+
+Merged with fix/audio-late (`oneios-audio-rt`, the audio archive) and built again from the merged tree (`HOSTED_OUT=disallow
+ONEIOS_CRYPTO=original`, 184 patches, releasable): `xnu.macho` `0f51c0e3`; `out/kernel/24A446-merged/kernel.kc` `af1321f7`
+(`.hashes` `ef107ec1`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 11 of 11. Not booted.
