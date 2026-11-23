@@ -34,6 +34,7 @@ extern volatile int32_t droidvm_vthost_error_value;
 extern volatile uint32_t droidvm_vtpv_sent, droidvm_vtpv_dropped;
 extern char droidvm_vthost_trace[16][112];
 extern volatile uint32_t droidvm_vthost_trace_count;
+extern volatile uint32_t oneios_codec_pictures[3];   // the staged DroidVMVTHost.cpp: 8-bit, 10-bit as P010, 10-bit as 8-bit
 // DroidVMVTParavirt.cpp's record of a message from a process (its struct droidvm_vtpv_record at the pin f9121cd, 136
 // bytes; the ring keeps the newest 32, indexed by seq).
 struct oneios_codec_record {
@@ -79,6 +80,11 @@ static void oneios_codec_report(void *arg, wait_result_t result) {
                droidvm_vthost_sessions, droidvm_vthost_frames_in, droidvm_vthost_frames_out,
                droidvm_vthost_errors, droidvm_vthost_error_stage, droidvm_vthost_error_value,
                droidvm_media_commands, droidvm_media_timeouts, droidvm_media_events[0], droidvm_media_events[1], droidvm_media_events[2]);
+        // The pictures copied for the device by their samples (2026-11-23; a line of its own: the counters line is long
+        // enough that the console cuts its end), once one was.
+        if (oneios_codec_pictures[0] || oneios_codec_pictures[1] || oneios_codec_pictures[2])
+            printf("ONEIOS CODEC: pictures: 8-bit %u, 10-bit as P010 %u, 10-bit as 8-bit %u (the device takes no P010)\n",
+                   oneios_codec_pictures[0], oneios_codec_pictures[1], oneios_codec_pictures[2]);
         // The messages since the last report, the newest 32 at most: who sent what (encs: the encoder list; +enc, esta,
         // efrm, ecfr, einv, -enc: an encoder session; decs: the decoder list).
         const uint32_t messages = droidvm_vtpv_messages;

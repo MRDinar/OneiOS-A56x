@@ -19,7 +19,7 @@
 //! in MediaCodec), and the next open starts a new one, [`HELPER_HANGS`] times at most a session. [`stop`] (xnuhost's
 //! stop) kills the helper, also one that hangs and would never see its socket's end. Session ids are never reused, so
 //! a late reply cannot be taken for a new open.
-use crate::backend::{Backend, Polled, Session};
+use crate::backend::{Backend, Coding, Polled, Session};
 use crate::link::*;
 use onecamera::spawn::{reap_nowait, spawn_with_fd3};
 use std::collections::VecDeque;
@@ -57,6 +57,8 @@ struct Slot {
     id: u32,
     open_ok: bool,
     open_done: bool,
+    /// how the helper opened it (the OPEN_REPLY's b)
+    coding: Coding,
     ring: VecDeque<Coded>,
     got_eos: bool,
 }
@@ -184,10 +186,22 @@ impl Shared {
             if from.read_exact(&mut payload).is_err() {
                 break;
             }
+            // The helper's own lines (its binder threads, its warm-up, an open that takes long): into xnuhost's log.
+            if m.type_ == ENC_MSG_LOG {
+                let line = String::from_utf8_lossy(&payload);
+                if m.a != 0 {
+                    loge!("encoder: helper: {line}");
+                } else {
+                    logi!("encoder: helper: {line}");
+                }
+                continue;
+            }
             let mut st = self.lock();
             if let Some(s) = st.slot_of(m.session) {
                 match m.type_ {
-                    ENC_MSG_OPEN_REPLY => (s.open_ok, s.open_done) = (m.session != 0 && m.a != 0, true),
+                    ENC_MSG_OPEN_REPLY => {
+                        (s.open_ok, s.open_done, s.coding) = (m.session != 0 && m.a != 0, true, Coding::from_u32(m.b));
+                    }
                     ENC_MSG_CODED if !payload.is_empty() && s.ring.len() < HELPER_CODED_RING => s
                         .ring
                         .push_back(Coded { bytes: payload, pts: m.pts, key: m.a & 1 != 0, eos: (m.a >> 1) & 1 != 0 }),
@@ -356,6 +370,7 @@ impl HelperBackend {
 struct HelperSession {
     shared: Arc<Shared>,
     id: u32,
+    coding: Coding,
 }
 
 impl Backend for HelperBackend {
@@ -363,7 +378,7 @@ impl Backend for HelperBackend {
         "mediacodec-helper"
     }
 
-    fn open(&self, codec: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
+    fn open(&self, codec: u32, input: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
         let shared = &self.shared;
         let mut st = shared.lock();
         shared.start(&mut st).ok()?;
@@ -373,7 +388,7 @@ impl Backend for HelperBackend {
         st.slots[index] = Slot { used: true, id, ..Slot::default() };
         drop(st);
         let open = EncMsg { a: codec, b: width, c: height, ..EncMsg::new(ENC_MSG_OPEN, id) };
-        let sent = shared.send(open, &[]);
+        let sent = shared.send(open, &input.to_le_bytes());
         let mut st = shared.lock();
         if sent.is_err() {
             if let Some(s) = st.slot_of(id) {
@@ -390,7 +405,8 @@ impl Backend for HelperBackend {
             .wait_timeout_while(st, limit, |st| st.slots[index].id == id && !st.slots[index].open_done && !st.gone)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0;
-        let (done, ok) = st.slot_of(id).map_or((false, false), |s| (s.open_done, s.open_done && s.open_ok));
+        let (done, ok, coding) =
+            st.slot_of(id).map_or((false, false, Coding::Eight), |s| (s.open_done, s.open_done && s.open_ok, s.coding));
         if !done && st.alive() {
             shared.kill(&mut st, &format!("did not answer an open in {} ms", shared.open_ms));
         }
@@ -400,7 +416,18 @@ impl Backend for HelperBackend {
             }
             return None;
         }
-        Some(Box::new(HelperSession { shared: Arc::clone(shared), id }))
+        Some(Box::new(HelperSession { shared: Arc::clone(shared), id, coding }))
+    }
+
+    /// The helper started at a guest's first virtio-media session (its transport's check at boot), not at the first
+    /// encode: it starts its binder threads and opens one HEVC encoder at once (its warm-up line), so the first
+    /// encode does not wait for MediaCodec's first load. A vCPU calls it: the HELLO's limit only.
+    fn prepare(&self) {
+        let shared = &self.shared;
+        let mut st = shared.lock();
+        if !st.alive() && st.hangs < HELPER_HANGS {
+            let _ = shared.start(&mut st);
+        }
     }
 }
 
@@ -428,9 +455,13 @@ impl HelperSession {
 }
 
 impl Session for HelperSession {
-    fn feed(&mut self, nv12: &[u8], pts_us: i64, force_key: bool) -> Result<(), i32> {
+    fn coding(&self) -> Coding {
+        self.coding
+    }
+
+    fn feed(&mut self, frame: &[u8], pts_us: i64, force_key: bool) -> Result<(), i32> {
         let m = EncMsg { pts: pts_us, a: u32::from(force_key), ..EncMsg::new(ENC_MSG_FEED, self.id) };
-        self.send(m, nv12, "did not take a frame").map_err(|_| libc::EIO)
+        self.send(m, frame, "did not take a frame").map_err(|_| libc::EIO)
     }
 
     fn drain(&mut self) -> Result<(), i32> {

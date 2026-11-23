@@ -21,8 +21,9 @@ use xh_core::bytes::le;
 const W: u32 = 256;
 const H: u32 = 256;
 
-/// One session of one frame on a device over `backend`, as DroidVMVTHost.cpp runs it.
-fn run(backend: Arc<dyn Backend>, base: u64) {
+/// One session of one frame on a device over `backend`, as DroidVMVTHost.cpp runs it, its pictures `input` (NV12, or
+/// P010: the guest's 10-bit pictures, 2026-11-23; the stand-in codes them 8-bit, from their high bytes).
+fn run(backend: Arc<dyn Backend>, base: u64, input: u32) {
     let mut g = Guest::up(backend, base).expect("the device and its guest");
     assert_eq!(g.dev.mmio_read(0x08, 4), u64::from(MEDIA_VIRTIO_DEVICE_ID));
     assert_eq!(g.dev.mmio_read(0x100, 4), u64::from(MEDIA_CAP_VIDEO_M2M_MPLANE | MEDIA_CAP_STREAMING));
@@ -31,10 +32,11 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
     assert_ne!(session, 0);
 
     // ENUM_FMT, as the guest's transport lists each queue once at start (DroidVMVirtioMedia.c check()): OUTPUT takes
-    // NV12, CAPTURE gives HEVC and H.264, and the list ends with an error.
+    // NV12 and P010, CAPTURE gives HEVC and H.264, and the list ends with an error.
     for (kind, index, format) in [
         (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 0, MEDIA_PIXFMT_NV12),
-        (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 1, 0),
+        (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 1, MEDIA_PIXFMT_P010),
+        (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 2, 0),
         (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 0, MEDIA_PIXFMT_HEVC),
         (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 1, MEDIA_PIXFMT_H264),
         (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 2, 0),
@@ -49,7 +51,7 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
         }
     }
 
-    // S_FMT CAPTURE (HEVC) then OUTPUT (NV12), as startEncoder does.
+    // S_FMT CAPTURE (HEVC) then OUTPUT (NV12 or P010), as startEncoder does.
     let mut cap = MediaV4l2Format {
         type_: MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
         width: W,
@@ -63,19 +65,23 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
         type_: MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
         width: W,
         height: H,
-        pixelformat: MEDIA_PIXFMT_NV12,
+        pixelformat: input,
         num_planes: 1,
         ..Default::default()
     };
     assert_eq!(g.ioctl(session, MEDIA_VIDIOC_S_FMT, out.as_bytes_mut()), 0);
-    assert_eq!(out.planes[0].sizeimage, W * H * 3 / 2);
+    let bytes = if input == MEDIA_PIXFMT_P010 { 2 } else { 1 };
+    assert_eq!((out.planes[0].sizeimage, out.planes[0].bytesperline), (W * H * 3 / 2 * bytes, W * bytes));
+    // a format the device does not take: refused
+    let mut bad = MediaV4l2Format { pixelformat: fourcc(b'Y', b'U', b'Y', b'V'), ..out };
+    assert_ne!(g.ioctl(session, MEDIA_VIDIOC_S_FMT, bad.as_bytes_mut()), 0);
 
     // REQBUFS + QUERYBUF + MMAP for OUTPUT.
     let mut req = [2, MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, MEDIA_MEMORY_MMAP, 0, 0];
     assert!(g.ioctl(session, MEDIA_VIDIOC_REQBUFS, req.as_bytes_mut()) == 0 && req[0] == 2);
     let qb = querybuf(&mut g, session, MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 0);
     let (out_buf, out_size) = g.mmap(session, qb.plane.m).expect("MMAP of the OUTPUT buffer");
-    assert!(out_size != 0);
+    assert!(out_size >= u64::from(W * H * 3 / 2 * bytes));
 
     // REQBUFS + QUERYBUF + MMAP + QBUF for CAPTURE.
     let mut req = [4, MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, MEDIA_MEMORY_MMAP, 0, 0];
@@ -90,12 +96,18 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
     assert_eq!(g.stream_on(session, MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE), 0);
     assert_eq!(g.stream_on(session, MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE), 0);
 
-    // A NV12 test pattern into the OUTPUT buffer, then QBUF it.
+    // A NV12 test pattern (in P010: each value v as the 16-bit v << 8 | 0xc0, high byte v) into the OUTPUT buffer,
+    // then QBUF it.
     let frame_len = (W * H * 3 / 2) as usize;
     let pattern: Vec<u8> = (0..frame_len).map(|i| (i * 7 + 13) as u8).collect();
-    g.write(out_buf, &pattern);
+    let sent: Vec<u8> = if bytes == 2 {
+        pattern.iter().flat_map(|&v| (u16::from(v) << 8 | 0xc0).to_le_bytes()).collect()
+    } else {
+        pattern.clone()
+    };
+    g.write(out_buf, &sent);
     let mut qbo = MediaV4l2Buffer { type_: MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, index: 0, sec: 1, ..Default::default() };
-    qbo.plane.bytesused = frame_len as u32;
+    qbo.plane.bytesused = sent.len() as u32;
     assert_eq!(g.ioctl(session, MEDIA_VIDIOC_QBUF, qbo.as_bytes_mut()), 0);
 
     // The events: a DQBUF of the returned OUTPUT buffer and a DQBUF of the coded CAPTURE buffer.
@@ -145,6 +157,9 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
     assert!(saw_eos);
     let st = g.stats();
     assert!(st.sessions == 1 && st.frames_in == 1 && st.frames_out == 1 && st.errors == 0, "{st:?}");
+    // the access unit counted by its path: 8-bit, or (the stand-in has no Main10) 10-bit as 8-bit
+    assert_eq!(st.coded, if bytes == 2 { [0, 0, 1] } else { [1, 0, 0] }, "{st:?}");
+    assert_eq!(st.refused, 0);
 
     // CLOSE, then more sessions than the device has slots, one after another: each close gives its slot back (the
     // guest's transport opens and closes one at start, VideoToolbox one for every picture).
@@ -158,10 +173,20 @@ fn run(backend: Arc<dyn Backend>, base: u64) {
 
 #[test]
 fn through_the_helper_process() {
-    run(HelperBackend::new(env!("CARGO_BIN_EXE_oneios-encoder")), 0x0a00_0000);
+    run(HelperBackend::new(env!("CARGO_BIN_EXE_oneios-encoder")), 0x0a00_0000, MEDIA_PIXFMT_NV12);
+}
+
+#[test]
+fn ten_bit_through_the_helper_process() {
+    run(HelperBackend::new(env!("CARGO_BIN_EXE_oneios-encoder")), 0x0a00_2000, MEDIA_PIXFMT_P010);
+}
+
+#[test]
+fn ten_bit_with_the_standin_in_process() {
+    run(Arc::new(StubBackend), 0x0a00_3000, MEDIA_PIXFMT_P010);
 }
 
 #[test]
 fn with_the_standin_in_process() {
-    run(Arc::new(StubBackend), 0x0a00_1000);
+    run(Arc::new(StubBackend), 0x0a00_1000, MEDIA_PIXFMT_NV12);
 }

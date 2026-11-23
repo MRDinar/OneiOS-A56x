@@ -4,6 +4,8 @@
 // builds and runs it; tests/crop.sh then decodes a cropped stream with ffmpeg):
 //   copy      oneios_nv12_copy_area on made-up NV12 surfaces: a tile inside, a tile at the edges (cut, then repeated),
 //             a surface of a padded row, a picture coded larger than the tile, parts that do not start inside
+//   copy16    oneios_yuv_copy_area on made-up 10-bit surfaces (x420, xf20: 16-bit samples): into P010 as they are,
+//             into NV12 as their high bytes, the same cases; an 8-bit surface into P010; rows shorter than the plane
 //   sps       oneios_hevc_sps_crop on HEVC SPSs: a made-up one built field by field here (no window; a window of its
 //             own; sub-layers; emulation prevention bytes in and out), read back field by field
 //   stream    with a FILE: the HEVC stream FILE (Annex B, as an encoder wrote it at WxH) with every SPS cropped to
@@ -64,6 +66,86 @@ static void test_copy(void) {
     CHECK(!oneios_nv12_copy_area(to, 84, 84, s, plane, 200, 0, 84, 84), "origin x past the surface");
     CHECK(!oneios_nv12_copy_area(to, 84, 84, s, plane, 0, 120, 84, 84), "origin y past the surface");
     CHECK(!oneios_nv12_copy_area(to, 84, 84, s, plane, 0, 0, 0, 84), "an empty part");
+    free(s);
+    free(to);
+}
+
+
+// --- 10-bit surfaces (x420, xf20: 16-bit samples, the value in the high 10 bits) and P010 pictures (2026-11-23) -------
+// A 10-bit value at (x, y) of plane p (0 luma; 1 U, 2 V of chroma pair x), in 0..1023 and distinct in its low bits.
+static uint32_t ten(uint32_t p, uint32_t x, uint32_t y) { return (p * 300 + x * 5 + y * 7) % 1024; }
+
+// A surface of W x H, 16-bit samples, rows of `stride` bytes (at least 2 W).
+static uint8_t *surface16(uint32_t w, uint32_t h, uint32_t stride, struct oneios_nv12_plane plane[2]) {
+    uint8_t *s = calloc(1, (size_t)stride * h * 3 / 2 + 64);
+    plane[0] = (struct oneios_nv12_plane){0, w, h, stride};
+    plane[1] = (struct oneios_nv12_plane){(uint64_t)stride * h, w / 2, h / 2, stride};
+    for (uint32_t y = 0; y < h; ++y) for (uint32_t x = 0; x < w; ++x) {
+        const uint32_t v = ten(0, x, y) << 6;
+        s[y * stride + 2 * x] = (uint8_t)v; s[y * stride + 2 * x + 1] = (uint8_t)(v >> 8);
+    }
+    for (uint32_t y = 0; y < h / 2; ++y) for (uint32_t x = 0; x < w / 2; ++x) for (uint32_t c = 0; c < 2; ++c) {
+        const uint32_t v = ten(1 + c, x, y) << 6;
+        uint8_t *at = s + (size_t)stride * h + (size_t)y * stride + 4 * x + 2 * c;
+        at[0] = (uint8_t)v; at[1] = (uint8_t)(v >> 8);
+    }
+    return s;
+}
+
+// A sample of the picture `to` (`bytes` a sample, w x h): plane 0 luma at (x, y), 1 and 2 chroma pair x of row y.
+static uint32_t sample(const uint8_t *to, uint32_t bytes, uint32_t w, uint32_t h, uint32_t p, uint32_t x, uint32_t y) {
+    const uint64_t i = p == 0 ? (uint64_t)y * w + x : (uint64_t)w * h + (uint64_t)y * w + 2 * x + (p - 1);
+    return bytes == 2 ? (uint32_t)to[2 * i] | (uint32_t)to[2 * i + 1] << 8 : to[i];
+}
+
+// What `to` must hold from surface16 (as same_as_expected): each sample the 10-bit value in the high bits of 16 (P010),
+// or its high byte (NV12).
+static int same_as_expected16(const uint8_t *to, uint32_t bytes, uint32_t w, uint32_t h, uint32_t sw, uint32_t sh, uint32_t ox,
+                              uint32_t oy, uint32_t aw, uint32_t ah) {
+    uint32_t lw = sw - ox < aw ? sw - ox : aw, lh = sh - oy < ah ? sh - oy : ah;
+    if (lw > w) lw = w;
+    const uint32_t cw = (lw + 1) / 2, ch = (lh + 1) / 2;
+    for (uint32_t p = 0; p < 3; ++p)
+        for (uint32_t y = 0; y < (p ? h / 2 : h); ++y) for (uint32_t x = 0; x < (p ? w / 2 : w); ++x) {
+            const uint32_t sx = p ? ox / 2 + (x < cw ? x : cw - 1) : ox + (x < lw ? x : lw - 1);
+            const uint32_t sy = p ? oy / 2 + (y < ch ? y : ch - 1) : oy + (y < lh ? y : lh - 1);
+            const uint32_t want = bytes == 2 ? ten(p, sx, sy) << 6 : ten(p, sx, sy) >> 2;
+            if (sample(to, bytes, w, h, p, x, y) != want) return 0;
+        }
+    return 1;
+}
+
+static void test_copy16(void) {
+    struct oneios_nv12_plane plane[2];
+    uint8_t *s = surface16(200, 120, 448, plane);
+    uint8_t *to = malloc(96 * 96 * 3);
+    // 10-bit into P010: the samples as they are; inside, coded larger (96x96), at the edges, cut, a whole frame
+    CHECK(oneios_yuv_copy_area(to, 2, 84, 84, s, 2, plane, 84, 0, 84, 84) && same_as_expected16(to, 2, 84, 84, 200, 120, 84, 0, 84, 84), "P010: a tile inside");
+    CHECK(oneios_yuv_copy_area(to, 2, 96, 96, s, 2, plane, 84, 0, 84, 84) && same_as_expected16(to, 2, 96, 96, 200, 120, 84, 0, 84, 84), "P010: coded larger");
+    CHECK(oneios_yuv_copy_area(to, 2, 84, 84, s, 2, plane, 168, 84, 84, 84) && same_as_expected16(to, 2, 84, 84, 200, 120, 168, 84, 84, 84), "P010: at the edge");
+    CHECK(oneios_yuv_copy_area(to, 2, 84, 84, s, 2, plane, 0, 84, 40, 20) && same_as_expected16(to, 2, 84, 84, 200, 120, 0, 84, 40, 20), "P010: a cut tile");
+    CHECK(oneios_yuv_copy_area(to, 2, 96, 96, s, 2, plane, 0, 0, 200, 120) && same_as_expected16(to, 2, 96, 96, 200, 120, 0, 0, 200, 120), "P010: a frame");
+    // 10-bit into NV12 (the encoder has no Main10): the high byte of each sample
+    CHECK(oneios_yuv_copy_area(to, 1, 96, 96, s, 2, plane, 84, 0, 84, 84) && same_as_expected16(to, 1, 96, 96, 200, 120, 84, 0, 84, 84), "10-bit to NV12: coded larger");
+    CHECK(oneios_yuv_copy_area(to, 1, 84, 84, s, 2, plane, 168, 84, 84, 84) && same_as_expected16(to, 1, 84, 84, 200, 120, 168, 84, 84, 84), "10-bit to NV12: at the edge");
+    // parts that do not start inside, a sample size that is neither, a row shorter than the plane says: cut at the row
+    CHECK(!oneios_yuv_copy_area(to, 2, 84, 84, s, 2, plane, 200, 0, 84, 84), "P010: origin x past the surface");
+    CHECK(!oneios_yuv_copy_area(to, 3, 84, 84, s, 2, plane, 0, 0, 84, 84) && !oneios_yuv_copy_area(to, 2, 84, 84, s, 4, plane, 0, 0, 84, 84), "sample sizes");
+    struct oneios_nv12_plane short_rows[2] = {plane[0], plane[1]};
+    short_rows[0].bytes_per_row = short_rows[1].bytes_per_row = 448;   // 224 samples: the 200 fit, so the same
+    short_rows[0].width = 240; short_rows[1].width = 120;               // a plane that claims more than its rows hold
+    CHECK(oneios_yuv_copy_area(to, 2, 84, 84, s, 2, short_rows, 168, 0, 84, 84), "P010: rows shorter than the width");
+    CHECK(sample(to, 2, 84, 84, 0, 83, 0) == sample(to, 2, 84, 84, 0, 224 - 168 - 1, 0), "P010: cut at the row's end, then repeated");
+    free(s);
+    // 8-bit into P010 (a 420v tile of a session that codes P010): v * 257 in the high bits
+    s = surface(200, 120, 256, plane);
+    CHECK(oneios_yuv_copy_area(to, 2, 96, 96, s, 1, plane, 84, 0, 84, 84), "8-bit to P010");
+    int good = 1;
+    for (uint32_t y = 0; y < 96; ++y) for (uint32_t x = 0; x < 96; ++x) {
+        const uint32_t sx = 84 + (x < 84 ? x : 83), sy = y < 84 ? y : 83, v = (uint8_t)(sx + 3 * sy);
+        good &= sample(to, 2, 96, 96, 0, x, y) == ((v * 257) & 0xffc0);
+    }
+    CHECK(good, "8-bit to P010: v * 257, the low 6 bits clear");
     free(s);
     free(to);
 }
@@ -217,6 +299,7 @@ static int crop_stream(const char *path, uint32_t width, uint32_t height, const 
 int main(int argc, char **argv) {
     if (argc == 6 && !strcmp(argv[1], "stream")) return crop_stream(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)atoi(argv[4]), argv[5]);
     test_copy();
+    test_copy16();
     test_sps();
     printf("test_picture: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

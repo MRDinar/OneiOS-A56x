@@ -3,9 +3,11 @@
 // OneiOS's two picture helpers of the staged DroidVMVTHost.cpp (tools/oneios-tool/crates/oneios-kernel/src/staged/
 // codec.rs), in plain C so that the host test (tests/test_picture.c, run by kernel/tests/host.sh) compiles the same
 // code the kernel does:
-//   oneios_nv12_copy_area   a part of an NV12 surface (a tile's origin and size) into a tightly packed NV12 picture of
-//                           the size the device codes; what lies past the part, or past the surface, repeats the last
-//                           column and row copied
+//   oneios_yuv_copy_area    a part of a two-plane 4:2:0 surface (a tile's origin and size) of 8-bit samples (420v,
+//                           420f) or 16-bit ones (x420, xf20: 10 bits in the high bits, 2026-11-23) into a tightly
+//                           packed picture of the size the device codes, NV12 or P010; what lies past the part, or
+//                           past the surface, repeats the last column and row copied. oneios_nv12_copy_area is the
+//                           8-bit to NV12 case
 //   oneios_hevc_sps_crop    an HEVC SPS with the conformance window that crops its coded picture to a smaller size:
 //                           the phone's c2.qti encoders code nothing below 96x96, and chronod's widget tiles are 84x84
 // Both read only the bytes they are given and write only within the capacity they are given.
@@ -17,17 +19,47 @@ struct oneios_nv12_plane {
     uint64_t offset, width, height, bytes_per_row;   // plane 1's width and height count chroma pairs
 };
 
-// The part (origin_x, origin_y: even; area_width x area_height) of an NV12 surface into `to`, w x h luma then w x h/2
-// interleaved chroma (w even). 0 when the part does not start inside the surface.
-static inline int oneios_nv12_copy_area(uint8_t *to, uint32_t w, uint32_t h, const uint8_t *surface,
-                                        const struct oneios_nv12_plane plane[2], uint32_t origin_x, uint32_t origin_y,
-                                        uint32_t area_width, uint32_t area_height) {
+// The two sample sizes (bytes a sample) of a surface or a picture: 8-bit (NV12; the surfaces '420v' and '420f') and 16-bit
+// little endian with the value in the high bits (P010; the surfaces 'x420' and 'xf20', whose 10 bits are the high 10 of
+// each 16). A 16-bit sample into 8 bits is its high byte; an 8-bit sample into 16 bits is v * 257 (255 is 0xffff: white
+// stays white), the low 6 bits cleared as P010 has them.
+#define ONEIOS_SAMPLE8 1u
+#define ONEIOS_SAMPLE16 2u
+
+static inline uint32_t oneios_sample_at(const uint8_t *row, uint32_t from, uint64_t i) {
+    return from == ONEIOS_SAMPLE16 ? (uint32_t)row[2 * i] | (uint32_t)row[2 * i + 1] << 8 : (uint32_t)row[i] * 257u;
+}
+
+static inline void oneios_sample_put(uint8_t *row, uint32_t to, uint64_t i, uint32_t v) {
+    if (to == ONEIOS_SAMPLE16) { row[2 * i] = (uint8_t)(v & 0xc0); row[2 * i + 1] = (uint8_t)(v >> 8); }
+    else row[i] = (uint8_t)(v >> 8);
+}
+
+// n samples of a row from `from`-byte samples into `to`-byte ones (a plain copy when both are the same size).
+static inline void oneios_row_copy(uint8_t *line, uint32_t to, const uint8_t *row, uint32_t from, uint64_t n) {
+    if (to == from) { memcpy(line, row, (size_t)(n * to)); return; }
+    for (uint64_t i = 0; i < n; ++i) oneios_sample_put(line, to, i, oneios_sample_at(row, from, i));
+}
+
+// The part (origin_x, origin_y: even; area_width x area_height) of a two-plane 4:2:0 surface of `from`-byte samples into
+// `to`, a tightly packed picture of `to`-byte samples: w x h luma then w x h/2 interleaved chroma (w even; rows of w * to
+// bytes). Plane widths count samples (plane 1's chroma pairs), bytes_per_row bytes. 0 when the part does not start
+// inside the surface.
+static inline int oneios_yuv_copy_area(uint8_t *to, uint32_t to_bytes, uint32_t w, uint32_t h, const uint8_t *surface,
+                                       uint32_t from_bytes, const struct oneios_nv12_plane plane[2], uint32_t origin_x,
+                                       uint32_t origin_y, uint32_t area_width, uint32_t area_height) {
+    if ((to_bytes != ONEIOS_SAMPLE8 && to_bytes != ONEIOS_SAMPLE16) || (from_bytes != ONEIOS_SAMPLE8 && from_bytes != ONEIOS_SAMPLE16))
+        return 0;
     if (origin_x >= plane[0].width || origin_y >= plane[0].height || origin_y / 2 >= plane[1].height || w < 2 || h < 2) return 0;
     uint64_t luma_width = plane[0].width - origin_x, luma_height = plane[0].height - origin_y;
+    const uint64_t luma_row = plane[0].bytes_per_row / from_bytes;   // samples
+    if (luma_row <= origin_x) return 0;
+    if (luma_width > luma_row - origin_x) luma_width = luma_row - origin_x;
     if (luma_width > area_width) luma_width = area_width;
     if (luma_height > area_height) luma_height = area_height;
     if (luma_width > w) luma_width = w;
-    const uint64_t chroma_row = plane[1].width * 2 < plane[1].bytes_per_row ? plane[1].width * 2 : plane[1].bytes_per_row;
+    const uint64_t row_samples = plane[1].bytes_per_row / from_bytes;
+    const uint64_t chroma_row = plane[1].width * 2 < row_samples ? plane[1].width * 2 : row_samples;   // samples, U and V
     if (chroma_row <= origin_x) return 0;
     uint64_t chroma_width = (chroma_row - origin_x) & ~(uint64_t)1, chroma_height = plane[1].height - origin_y / 2;
     if (chroma_width > ((luma_width + 1) & ~(uint64_t)1)) chroma_width = (luma_width + 1) & ~(uint64_t)1;
@@ -36,20 +68,30 @@ static inline int oneios_nv12_copy_area(uint8_t *to, uint32_t w, uint32_t h, con
     if (!luma_width || !luma_height || !chroma_width || !chroma_height) return 0;
     for (uint32_t y = 0; y < h; ++y) {
         const uint64_t from = origin_y + (y < luma_height ? y : luma_height - 1);
-        const uint8_t *row = surface + plane[0].offset + from * plane[0].bytes_per_row + origin_x;
-        uint8_t *line = to + (uint64_t)y * w;
-        memcpy(line, row, (size_t)luma_width);
-        if (luma_width < w) memset(line + luma_width, row[luma_width - 1], (size_t)(w - luma_width));
+        const uint8_t *row = surface + plane[0].offset + from * plane[0].bytes_per_row + (uint64_t)origin_x * from_bytes;
+        uint8_t *line = to + (uint64_t)y * w * to_bytes;
+        oneios_row_copy(line, to_bytes, row, from_bytes, luma_width);
+        const uint32_t last = oneios_sample_at(row, from_bytes, luma_width - 1);
+        for (uint64_t x = luma_width; x < w; ++x) oneios_sample_put(line, to_bytes, x, last);
     }
-    uint8_t *chroma = to + (uint64_t)w * h;
+    uint8_t *chroma = to + (uint64_t)w * h * to_bytes;
     for (uint32_t y = 0; y < h / 2; ++y) {
         const uint64_t from = origin_y / 2 + (y < chroma_height ? y : chroma_height - 1);
-        const uint8_t *row = surface + plane[1].offset + from * plane[1].bytes_per_row + origin_x;
-        uint8_t *line = chroma + (uint64_t)y * w;
-        memcpy(line, row, (size_t)chroma_width);
-        for (uint64_t x = chroma_width; x + 1 < w; x += 2) { line[x] = row[chroma_width - 2]; line[x + 1] = row[chroma_width - 1]; }
+        const uint8_t *row = surface + plane[1].offset + from * plane[1].bytes_per_row + (uint64_t)origin_x * from_bytes;
+        uint8_t *line = chroma + (uint64_t)y * w * to_bytes;
+        oneios_row_copy(line, to_bytes, row, from_bytes, chroma_width);
+        const uint32_t u = oneios_sample_at(row, from_bytes, chroma_width - 2), v = oneios_sample_at(row, from_bytes, chroma_width - 1);
+        for (uint64_t x = chroma_width; x + 1 < w; x += 2) { oneios_sample_put(line, to_bytes, x, u); oneios_sample_put(line, to_bytes, x + 1, v); }
     }
     return 1;
+}
+
+// The part (origin_x, origin_y: even; area_width x area_height) of an NV12 surface into `to`, w x h luma then w x h/2
+// interleaved chroma (w even). 0 when the part does not start inside the surface.
+static inline int oneios_nv12_copy_area(uint8_t *to, uint32_t w, uint32_t h, const uint8_t *surface,
+                                        const struct oneios_nv12_plane plane[2], uint32_t origin_x, uint32_t origin_y,
+                                        uint32_t area_width, uint32_t area_height) {
+    return oneios_yuv_copy_area(to, ONEIOS_SAMPLE8, w, h, surface, ONEIOS_SAMPLE8, plane, origin_x, origin_y, area_width, area_height);
 }
 
 // The bits of an RBSP, most significant first; ue(v) as H.265 7.2.

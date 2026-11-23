@@ -7,7 +7,7 @@
 //! test binary of its own, so no other test's stand-in or helper sees it.
 use oneencoder::backend::{Backend, Session};
 use oneencoder::backend_helper::{self, HelperBackend};
-use oneencoder::proto::MEDIA_PIXFMT_HEVC;
+use oneencoder::proto::{MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12};
 use std::time::{Duration, Instant};
 
 const HANG: &str = "ONEIOS_ENCODER_STUB_HANG_OPEN";
@@ -22,7 +22,7 @@ fn open_until(b: &HelperBackend, want_hang: bool) -> (Option<u64>, Option<Box<dy
     let began = Instant::now();
     while ms_since(began) < 5000 {
         let t = Instant::now();
-        let s = b.open(MEDIA_PIXFMT_HEVC, 64, 64);
+        let s = b.open(MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12, 64, 64);
         let took = ms_since(t);
         if s.is_some() {
             return (if want_hang { None } else { Some(took) }, s);
@@ -71,7 +71,7 @@ fn hung_helper() {
     let (mut any, mut slow) = (false, false);
     while ms_since(began) < 500 {
         let t = Instant::now();
-        any |= b.open(MEDIA_PIXFMT_HEVC, 64, 64).is_some();
+        any |= b.open(MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12, 64, 64).is_some();
         slow |= ms_since(t) > 100;
         std::thread::sleep(Duration::from_millis(5));
     }

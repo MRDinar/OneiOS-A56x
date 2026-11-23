@@ -109,8 +109,14 @@ fn the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source() {
     for text in ["#include \"OneiOSCodecPicture.h\"", "cc(\"TEsa\")", "s->tiles ? cc(\"TEcd\") : cc(\"Efds\")", "s->tiles ? cc(\"TEem\") : cc(\"Eemt\")",
                  "s->tiles ? cc(\",til\") : cc(\",frm\")", "h.type = s->finishType ? s->finishType : cc(\"ecfr\");",
                  "bool cropSps(Session *s)", "oneios_hevc_sps_crop(s->spsIn, s->spsInSize, s->width, s->height, s->sps, sizeof s->sps)",
-                 "oneios_nv12_copy_area(to, w, h, surface, planes,", "if (crop && !cropSps(s)) failed(102, int32_t(n));",
-                 "f.width = s->codedWidth;", "constexpr uint32_t MinCodedSize = 96;"] {
+                 "oneios_yuv_copy_area(to, toBytes, w, h, surface, surfaceSampleBytes(view.format), planes,",
+                 "if (crop && !cropSps(s)) failed(102, int32_t(n));", "f.width = s->codedWidth;", "constexpr uint32_t MinCodedSize = 96;",
+                 // 10-bit pictures (2026-11-23): x420 and xf20 taken, P010 to the device (NV12 when it refuses), the tile
+                 // session's device opened at its first tile, a tile session's SPS always cropped, the pictures counted
+                 "if (format == cc(\"x420\") || format == cc(\"xf20\")) return 2;", "f.pixelformat = bytes == 2 ? cc(\"010P\") : cc(\"21VN\");",
+                 "if (const int error = openForPicture(s, surfaces[0], view)) return error;",
+                 "(s->tiles || s->codedWidth != s->width || s->codedHeight != s->height)",
+                 "oneios_codec_pictures[path] = oneios_codec_pictures[path] + 1;"] {
         assert!(staged.contains(text), "{text}");
     }
     // copyArea before feedFrame, cropSps before handleCoded: each defined before its caller
@@ -118,6 +124,9 @@ fn the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source() {
     assert!(at("bool copyArea(") < at("bool feedFrame(Session *s)"));
     assert!(at("bool cropSps(Session *s)") < at("void handleCoded("));
     assert!(at("bool encodeSurface(") < at("int queueEncodeFrame("));
+    assert!(at("uint32_t surfaceSampleBytes(") < at("bool feedFrame(Session *s)"));
+    assert!(at("int openForPicture(") < at("int queueEncodeTile(") && at("int openForPicture(") < at("int queueEncodeFrame("));
+    assert!(!staged.contains("view.format != cc(\"420v\") && view.format != cc(\"420f\")"));   // the 8-bit-only check is gone
 }
 
 #[test]

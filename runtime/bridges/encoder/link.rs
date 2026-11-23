@@ -7,15 +7,17 @@
 use crate::pod::Pod;
 use std::io::{self, Read, Write};
 
-pub const ENC_LINK_VERSION: u32 = 1;
+/// 2 (2026-11-23): the OPEN's input format, the OPEN_REPLY's coding, ENC_MSG_LOG. xnuhost and the helper ship together;
+/// a HELLO of another version is refused.
+pub const ENC_LINK_VERSION: u32 = 2;
 
 /// helper -> device at start: a = ENC_LINK_VERSION
 pub const ENC_MSG_HELLO: u32 = 1;
-/// device -> helper: a = codec FourCC, b = width, c = height
+/// device -> helper: a = codec FourCC, b = width, c = height, payload = the input FourCC (u32 LE: NV12 or P010)
 pub const ENC_MSG_OPEN: u32 = 2;
-/// helper -> device: session (0 = refused)
+/// helper -> device: session, a = 1 opened (0 refused), b = its coding ([`crate::backend::Coding`])
 pub const ENC_MSG_OPEN_REPLY: u32 = 3;
-/// device -> helper: session, pts (us) in pts, payload = NV12
+/// device -> helper: session, pts (us) in pts, payload = the frame (NV12 or P010, as opened)
 pub const ENC_MSG_FEED: u32 = 4;
 /// device -> helper: session
 pub const ENC_MSG_DRAIN: u32 = 5;
@@ -27,6 +29,9 @@ pub const ENC_MSG_CODED: u32 = 7;
 pub const ENC_MSG_EOS: u32 = 8;
 /// helper -> device: session
 pub const ENC_MSG_ERROR: u32 = 9;
+/// helper -> device: session 0, a = 1 an error (0 news), payload = a line for xnuhost's log (the helper's own: its
+/// binder threads, its warm-up, an open that takes long and where it waits)
+pub const ENC_MSG_LOG: u32 = 10;
 
 /// Every message: this header, then `len` payload bytes (`struct enc_msg`).
 #[repr(C)]

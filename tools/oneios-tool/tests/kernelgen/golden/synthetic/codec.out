@@ -29,6 +29,11 @@
     uint8_t spsIn[256] = {};
     uint32_t spsInSize = 0;
     uint32_t finishType = 0;
+    // OneiOS (kernel gen codec, 2026-11-23): the device's samples (1: NV12, 2: P010) and whether the session was opened for
+    // 10-bit pictures; a tile session's open that failed at its first tile (its error, given to every later tile).
+    uint32_t outputBytes = 1;
+    bool tenBit = false;
+    int32_t tileOpenError = 0;
 // (before anchor 3)
         w.header(s->tiles ? cc("TEcd") : cc("Efds"), FlagHostRequest, s->uuid, request);   // OneiOS: TEcd, a tile session's
 // (before anchor 4)
@@ -42,26 +47,42 @@
     const uint32_t originX = f->originX & ~1u, originY = f->originY & ~1u, areaWidth = f->areaWidth, areaHeight = f->areaHeight;
     IOLockUnlock(s->lock);
     Mapped &out = s->output[index];
-    // OneiOS (kernel gen codec): the device's size (codedWidth x codedHeight), from the frame's part of the surface.
-    const uint32_t w = s->codedWidth, h = s->codedHeight, need = w * h * 3 / 2;
+    // OneiOS (kernel gen codec): the device's size (codedWidth x codedHeight) and samples (NV12 or P010), from the frame's
+    // part of the surface.
+    const uint32_t w = s->codedWidth, h = s->codedHeight, need = w * h * 3 / 2 * s->outputBytes;
     IOMemoryDescriptor *memory = IOMemoryDescriptor::withAddressRange(view.base, view.size, kIODirectionInOut, s->client->task);
     IOMemoryMap *map = memory && memory->prepare() == kIOReturnSuccess ? memory->createMappingInTask(kernel_task, 0, kIOMapAnywhere) : nullptr;
     const uint8_t *surface = map ? reinterpret_cast<const uint8_t *>(map->getVirtualAddress()) : nullptr;
-    if (surface && need <= out.length && copyArea(out.bytes, w, h, surface, view, originX, originY, areaWidth, areaHeight)) {
-        // copied
+    if (surface && need <= out.length && copyArea(out.bytes, s->outputBytes, w, h, surface, view, originX, originY, areaWidth, areaHeight)) {
+        // copied: counted by the samples it had and the device takes (8-bit, 10-bit as P010, 10-bit as 8-bit)
+        const unsigned path = surfaceSampleBytes(view.format) == 1 ? 0 : s->outputBytes == 2 ? 1 : 2;
+        oneios_codec_pictures[path] = oneios_codec_pictures[path] + 1;
     } else {
 // (before anchor 6)
 #include "DroidVMVTWire.h"
-#include "OneiOSCodecPicture.h"   // OneiOS (kernel gen codec): oneios_nv12_copy_area, oneios_hevc_sps_crop
+#include "OneiOSCodecPicture.h"   // OneiOS (kernel gen codec): oneios_yuv_copy_area, oneios_hevc_sps_crop
+// OneiOS (kernel gen codec, 2026-11-23): the pictures copied for the device: 8-bit, 10-bit as P010, 10-bit as 8-bit
+// (OneiOSCodec.c's counters line).
+extern "C" { volatile uint32_t oneios_codec_pictures[3]; }
 // (before anchor 7)
-// OneiOS (kernel gen codec): the part (originX, originY: even; areaWidth x areaHeight) of an NV12 surface into a tightly
-// packed NV12 picture of w x h; what lies past the part, or past the surface, repeats the last column and row copied (a
-// tile at the image's edge; a session coded larger than its size, whose SPS crops it away). OneiOSCodecPicture.h.
-bool copyArea(uint8_t *to, uint32_t w, uint32_t h, const uint8_t *surface, const SurfaceView &view, uint32_t originX, uint32_t originY,
-              uint32_t areaWidth, uint32_t areaHeight) {
+// OneiOS (kernel gen codec): the bytes a sample of a surface the encoder takes: 1 for 420v and 420f, 2 for x420 and xf20
+// (10 bits in the high bits of 16: P010's layout); 0 for any other.
+uint32_t surfaceSampleBytes(uint32_t format) {
+    if (format == cc("420v") || format == cc("420f")) return 1;
+    if (format == cc("x420") || format == cc("xf20")) return 2;
+    return 0;
+}
+
+// OneiOS (kernel gen codec): the part (originX, originY: even; areaWidth x areaHeight) of a two-plane 4:2:0 surface into a
+// tightly packed picture of w x h, NV12 (toBytes 1) or P010 (2); what lies past the part, or past the surface, repeats the
+// last column and row copied (a tile at the image's edge; a session coded larger than its size, whose SPS crops it away).
+// OneiOSCodecPicture.h.
+bool copyArea(uint8_t *to, uint32_t toBytes, uint32_t w, uint32_t h, const uint8_t *surface, const SurfaceView &view, uint32_t originX,
+              uint32_t originY, uint32_t areaWidth, uint32_t areaHeight) {
     const oneios_nv12_plane planes[2] = {{view.plane[0].offset, view.plane[0].width, view.plane[0].height, view.plane[0].bytesPerRow},
                                          {view.plane[1].offset, view.plane[1].width, view.plane[1].height, view.plane[1].bytesPerRow}};
-    return oneios_nv12_copy_area(to, w, h, surface, planes, originX, originY, areaWidth, areaHeight) != 0;
+    return oneios_yuv_copy_area(to, toBytes, w, h, surface, surfaceSampleBytes(view.format), planes, originX, originY, areaWidth,
+                                areaHeight) != 0;
 }
 
 // The oldest frame not yet fed, into a free OUTPUT buffer as tightly packed NV12 (the lock held, released for the copy).
@@ -76,9 +97,11 @@ bool cropSps(Session *s) {
 // A coded CAPTURE buffer: its parameter sets kept, its picture handed over.
 // (before anchor 9)
         if (set) {
-            // OneiOS (kernel gen codec): the SPS of a session coded larger than its size is compared as the codec wrote it
-            // and kept with the window that crops it (an SPS that cannot be read keeps none: no description, step 102).
-            const bool crop = set == s->sps && (s->codedWidth != s->width || s->codedHeight != s->height);
+            // OneiOS (kernel gen codec): the SPS of a session coded larger than its size, and every tile session's (the
+            // host may code a tile larger than asked, to its encoder's smallest: 2026-11-23), is compared as the codec
+            // wrote it and kept with the window that crops it to the session's size (an SPS that cannot be read keeps
+            // none: no description, step 102).
+            const bool crop = set == s->sps && hevcSession(s) && (s->tiles || s->codedWidth != s->width || s->codedHeight != s->height);
             uint8_t *seen = crop ? s->spsIn : set;
             uint32_t *seenSize = crop ? &s->spsInSize : setSize;
             if (n <= 256 && (n != *seenSize || memcmp(seen, nal, n))) {
@@ -123,28 +146,46 @@ void tileAttributes(Session *s) {
     s->client->send(s->client->transport, buffer, w.size() + 24);
 }
 
-int openEncoder(Session *s, uint32_t width, uint32_t height, bool tiles);
+int openEncoder(Session *s, uint32_t width, uint32_t height, bool tiles, bool tenBit, bool announce);
+
+bool sessionSize(uint32_t width, uint32_t height) {
+    return width && height && !(width & 1) && !(height & 1) && width <= 16384 && height <= 16384;
+}
 
 int startEncoder(Session *s, const uint8_t *m, uint32_t n) {
     Param size;
     if (!param(m, n, cc(",vdi"), size) || size.size < 8) return -12902;
-    return openEncoder(s, be32(size.value), be32(size.value + 4), false);
+    return openEncoder(s, be32(size.value), be32(size.value + 4), false, false, true);
 }
 
-// OneiOS (kernel gen codec): ests, a tile session (,twh the tile size): the encoder opened at that size.
+// OneiOS (kernel gen codec): ests, a tile session (,twh the tile size). TEsa is sent now; the device is opened at the first
+// tile, with that tile's samples (2026-11-23: CMPhoto's tiles may be 10-bit although TEsa asks for 420v).
 int startTiles(Session *s, const uint8_t *m, uint32_t n) {
     Param size;
     if (!param(m, n, cc(",twh"), size) || size.size < 8) return -12902;
-    return openEncoder(s, be32(size.value), be32(size.value + 4), true);
-}
-
-// esta's and ests's open: width x height, coded at least MinCodedSize in each direction for HEVC.
-int openEncoder(Session *s, uint32_t width, uint32_t height, bool tiles) {
-    if (!width || !height || (width & 1) || (height & 1) || width > 16384 || height > 16384) return -12902;
+    const uint32_t width = be32(size.value), height = be32(size.value + 4);
+    if (!sessionSize(width, height)) return -12902;
     teardown(s);
     s->width = width;
     s->height = height;
+    s->tiles = true;
+    s->tenBit = false;
+    s->tileOpenError = 0;
+    tileAttributes(s);
+    trace("tile session %ux%u: the device opens at the first tile", width, height);
+    return 0;
+}
+
+// esta's and ests's open: width x height, coded at least MinCodedSize in each direction for HEVC, P010 for 10-bit pictures
+// when the device takes it (else NV12); announce: Epba or TEsa (not again for a session opened again for 10-bit pictures).
+int openEncoder(Session *s, uint32_t width, uint32_t height, bool tiles, bool tenBit, bool announce) {
+    if (!sessionSize(width, height)) return -12902;
+    if (s->open || s->workerRunning || announce) teardown(s);   // a tile session's first open keeps its surface client
+    s->width = width;
+    s->height = height;
     s->tiles = tiles;
+    s->tenBit = tenBit;
+    s->outputBytes = 1;
     s->codedWidth = hevcSession(s) && width < MinCodedSize ? MinCodedSize : width;
     s->codedHeight = hevcSession(s) && height < MinCodedSize ? MinCodedSize : height;
     s->spsInSize = 0;
@@ -160,15 +201,21 @@ int openEncoder(Session *s, uint32_t width, uint32_t height, bool tiles) {
     f.type = TypeOutputMplane;
     f.width = s->codedWidth;     // OneiOS: the device's size
     f.height = s->codedHeight;
-    f.pixelformat = cc("21VN");   // V4L2_PIX_FMT_NV12
-    f.num_planes = 1;
-    f.planes[0].bytesperline = s->codedWidth;
-    f.planes[0].sizeimage = s->codedWidth * s->codedHeight * 3 / 2;
+    // OneiOS (2026-11-23): P010 (V4L2_PIX_FMT_P010, 16-bit samples) for 10-bit pictures; a device that refuses it gets NV12.
+    for (uint32_t bytes = tenBit ? 2 : 1; bytes >= 1; --bytes) {
+        f.pixelformat = bytes == 2 ? cc("010P") : cc("21VN");   // V4L2_PIX_FMT_P010, V4L2_PIX_FMT_NV12
+        f.num_planes = 1;
+        f.planes[0].bytesperline = s->codedWidth * bytes;
+        f.planes[0].sizeimage = s->codedWidth * s->codedHeight * 3 / 2 * bytes;
+        r = ioctl(s, IocSFmt, &f, sizeof f, sizeof f);
+        if (!r) { s->outputBytes = f.pixelformat == cc("010P") ? 2 : 1; break; }
+    }
+    if (r) { failed(92, r); return -12911; }
 // (before anchor 14)
-    if (tiles) tileAttributes(s);   // OneiOS: TEsa, a tile session's
-    else encoderPixelBufferAttributes(s);
-    trace("encoder session %u %ux%u%s coded %ux%u %c%c%c%c", s->v4l2, width, height, tiles ? " tiles" : "", s->codedWidth,
-          s->codedHeight, s->codec >> 24, s->codec >> 16, s->codec >> 8, s->codec);
+    if (announce && !tiles) encoderPixelBufferAttributes(s);   // OneiOS: Epba; a tile session's TEsa went at ests
+    trace("encoder session %u %ux%u%s coded %ux%u %s %c%c%c%c", s->v4l2, width, height, tiles ? " tiles" : "", s->codedWidth,
+          s->codedHeight, s->outputBytes == 2 ? "P010" : tenBit ? "NV12 (10-bit pictures, the device takes no P010)" : "NV12",
+          s->codec >> 24, s->codec >> 16, s->codec >> 8, s->codec);
 // (before anchor 15)
 // OneiOS (kernel gen codec): the IOSurface of a frame or tile to encode (the app's, given to the codec process), looked up
 // once and kept by ID (upstream's lookup of efrm, shared with etil).
@@ -187,12 +234,31 @@ bool encodeSurface(Session *s, uint32_t id, SurfaceView &view) {
     return surface;
 }
 
+// OneiOS (kernel gen codec, 2026-11-23): the device opened for the samples of a session's first picture: at a tile
+// session's first tile (not open yet), or again at a session's first picture when it is 10-bit and the device was opened
+// for 8-bit ones (or the other way). A later picture of the other depth is converted by the copy. The view is looked up
+// again after an open that closed the session's surface client. A tile session's failed open fails its later tiles too.
+int openForPicture(Session *s, uint32_t surface, SurfaceView &view) {
+    const bool tenBit = surfaceSampleBytes(view.format) == 2;
+    if (s->tiles && s->tileOpenError) return s->tileOpenError;
+    if (s->outputStreaming && (tenBit == s->tenBit || s->frameHead != 0)) return 0;
+    const bool closesSurfaces = s->open || s->workerRunning;
+    const int error = openEncoder(s, s->width, s->height, s->tiles, tenBit, false);
+    if (error) {
+        if (s->tiles) s->tileOpenError = error;
+        return error;
+    }
+    if (closesSurfaces && !encodeSurface(s, surface, view)) { failed(97, int32_t(surface)); return -12902; }
+    return 0;
+}
+
 // OneiOS (kernel gen codec): etil, a tile (,til its ID, ,tio its origin in the surface, ,tia its size: at most the tile
-// size, ,uui its pixel buffer's UUID, the surface with it), queued as a frame is, with no times (a tile has none).
+// size, ,uui its pixel buffer's UUID, the surface with it), queued as a frame is, with no times (a tile has none). Its
+// surface 420v, 420f, x420 or xf20 (2026-11-23: 10-bit, P010 to the device).
 int queueEncodeTile(Session *s, const uint8_t *m, uint32_t n, const uint32_t *surfaces, unsigned surfaceCount) {
     int64_t tile = 0;
     Param origin, area, uuid;
-    if (!s->outputStreaming || !surfaceCount || !paramS64(m, n, cc(",til"), tile) || !param(m, n, cc(",tio"), origin) ||
+    if (!surfaceCount || !paramS64(m, n, cc(",til"), tile) || !param(m, n, cc(",tio"), origin) ||
         origin.size < 8 || !param(m, n, cc(",tia"), area) || area.size < 8 || !param(m, n, cc(",uui"), uuid) || uuid.size < 16) {
         failed(100, int32_t(n));
         return -12902;
@@ -205,7 +271,8 @@ int queueEncodeTile(Session *s, const uint8_t *m, uint32_t n, const uint32_t *su
     }
     SurfaceView view;
     if (!encodeSurface(s, surfaces[0], view)) { failed(97, int32_t(surfaces[0])); return -12902; }
-    if (view.format != cc("420v") && view.format != cc("420f")) { failed(101, int32_t(view.format)); return -12902; }
+    if (!surfaceSampleBytes(view.format)) { failed(101, int32_t(view.format)); return -12902; }
+    if (const int error = openForPicture(s, surfaces[0], view)) return error;
     IOLockLock(s->lock);
     if (s->frameHead - s->frameTail >= 64) { IOLockUnlock(s->lock); failed(98, 0); return -12911; }
     Session::Frame &f = s->frames[s->frameHead++ % 64];
@@ -229,6 +296,10 @@ int queueEncodeTile(Session *s, const uint8_t *m, uint32_t n, const uint32_t *su
 // (before anchor 16)
     SurfaceView view;
     if (!encodeSurface(s, surfaces[0], view)) { failed(97, int32_t(surfaces[0])); return -12902; }   // OneiOS: the shared lookup
+    // OneiOS (2026-11-23): a 10-bit first frame opens the device again for P010.
+    if (surfaceSampleBytes(view.format) == 2) {
+        if (const int error = openForPicture(s, surfaces[0], view)) return error;
+    }
     IOLockLock(s->lock);
     if (s->frameHead - s->frameTail >= 64) { IOLockUnlock(s->lock); failed(98, 0); return -12911; }
     Session::Frame &f = s->frames[s->frameHead++ % 64];
@@ -240,7 +311,7 @@ int queueEncodeTile(Session *s, const uint8_t *m, uint32_t n, const uint32_t *su
     case cc("esta"): replyStatus(c, h, s ? startEncoder(s, m, n) : -12903); break;
     // OneiOS (kernel gen codec): iOS 27's tile session (CMPhoto's HEIC) and its JPEG sessions' capability query.
     case cc("ests"): replyStatus(c, h, s ? startTiles(s, m, n) : -12903); break;
-    case cc("epti"): replyStatus(c, h, s && s->tiles && s->outputStreaming ? 0 : -12903); break;
+    case cc("epti"): replyStatus(c, h, s && s->tiles ? 0 : -12903); break;   // the device opens at the first tile
     case cc("etil"): {
         const int error = s && s->tiles ? queueEncodeTile(s, m, n, surfaces, surfaceCount) : -12903;
         uint8_t buffer[128];

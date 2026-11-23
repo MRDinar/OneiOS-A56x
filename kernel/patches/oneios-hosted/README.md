@@ -675,14 +675,17 @@ whose start, `oneios_codec_start` (`codec/OneiOSCodec.c`), is the last call of `
 unchanged, `-DDROIDVM_DEVICE_DYNAMIC=1`), its `AppleVideoToolboxParavirtualizationDriver` and user client
 (`DroidVMVTParavirt.cpp`, unchanged; its static initializer out of `__mod_init_func`, as the audio archive's:
 `droidvm_vt_paravirt_attach` runs it in its own module load), and the sessions behind it (`DroidVMVTHost.cpp`, staged
-with one edit: the hvcC's profile, tier and level bytes taken from the SPS without its emulation prevention bytes).
+with five edits, `codec/README.md`: the hvcC's profile, tier and level bytes taken from the SPS without its emulation
+prevention bytes; iOS 27's tile session; small HEVC sessions coded at 96x96 and cropped back; `jcap`; and since
+2026-11-23 10-bit pictures, `x420`/`xf20` surfaces sent to xnuhost's device as P010 for HEVC Main10).
 With xnuhost's `encoder=auto` (`/arm-io/virtio-media-0`, `droidvm-vt-paravirt=1`) the kernel publishes iOS's own
 paravirtualized VideoToolbox codecs, so CMPhoto finds a hardware HEVC encoder and writes HEIC; without it (the
 default) the classes are registered and no service is published, and iOS is as before. Why this route, the boot
 arguments, the log lines (`ONEIOS CODEC: ...`), the limits and what was built and booted: `codec/README.md`;
 `docs/hardware.md` section 7g. Built and booted on the Linux PC (`HOSTED_OUT=hevc`); on main with 0081 and 0082
-built and prelinked on the Mac on 2026-11-22 (`HOSTED_OUT=codec`, audit 0 failures, stubs 666 good); not run on the
-phone.
+built and prelinked on the Mac on 2026-11-22 (`HOSTED_OUT=codec`, audit 0 failures, stubs 666 good); on the phone on
+2026-11-22 and 2026-11-23 (no tile coded yet: `codec/README.md`, "The tile session on the phone"); the 10-bit edit is
+built and host-tested, not yet booted.
 
 ## 0052-rt-computation-held.patch (media, 2026-11-12)
 

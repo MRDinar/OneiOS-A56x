@@ -12,8 +12,8 @@
 //! the samples are written at the largest PCM bit depths that fit (HEVC's pcm_sample_bit_depth_luma/chroma: 8+8, 4+4,
 //! 3+2, 2+2, 2+1 or 1+1 bits), with an ordered dither, and the decoder shifts them back up: the picture is the frame
 //! with fewer levels, not noise. The frame is padded to whole 16x16 blocks and cropped back by the conformance window.
-use crate::backend::{Backend, Polled, Session};
-use crate::proto::MEDIA_PIXFMT_HEVC;
+use crate::backend::{input_format, p010_to_nv12, Backend, Coding, Polled, Session};
+use crate::proto::{MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_P010};
 use std::collections::VecDeque;
 
 const STUB_RING: usize = 16;
@@ -586,6 +586,8 @@ struct Frame {
 /// A stand-in session (`br_enc_session` of backend_stub.c).
 struct StubSession {
     codec: u32,
+    /// MEDIA_PIXFMT_NV12, or MEDIA_PIXFMT_P010: coded 8-bit from the samples' high bytes (the stand-in has no Main10)
+    input: u32,
     width: u32,
     height: u32,
     ring: VecDeque<Frame>,
@@ -628,17 +630,35 @@ impl StubSession {
 }
 
 impl Session for StubSession {
-    fn feed(&mut self, nv12: &[u8], pts_us: i64, _force_key: bool) -> Result<(), i32> {
+    fn feed(&mut self, frame: &[u8], pts_us: i64, _force_key: bool) -> Result<(), i32> {
         if self.ring.len() >= STUB_RING {
             return Err(libc::ENOSPC);
         }
         let (w, h) = (self.width as usize, self.height as usize);
         let need = w * h + 2 * w.div_ceil(2) * h.div_ceil(2);
-        if nv12.len() < need {
-            return Err(libc::EINVAL);
-        }
-        self.ring.push_back(Frame { nv12: nv12[..need].to_vec(), pts_us });
+        let nv12 = if self.input == MEDIA_PIXFMT_P010 {
+            if frame.len() < 2 * need {
+                return Err(libc::EINVAL);
+            }
+            let mut nv12 = vec![0u8; need];
+            p010_to_nv12(&frame[..2 * need], &mut nv12);
+            nv12
+        } else {
+            if frame.len() < need {
+                return Err(libc::EINVAL);
+            }
+            frame[..need].to_vec()
+        };
+        self.ring.push_back(Frame { nv12, pts_us });
         Ok(())
+    }
+
+    fn coding(&self) -> Coding {
+        if self.input == MEDIA_PIXFMT_P010 {
+            Coding::TenAsEight
+        } else {
+            Coding::Eight
+        }
     }
 
     /// Every drain ends with its own end of stream (the guest starts the encoder again after one and may drain
@@ -671,7 +691,7 @@ impl Backend for StubBackend {
         "stand-in"
     }
 
-    fn open(&self, codec: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
+    fn open(&self, codec: u32, input: u32, width: u32, height: u32) -> Option<Box<dyn Session>> {
         // The test of a helper whose open never comes back (tests/hung_helper.rs): MediaCodec's open hung so in the
         // phone's helper on 2026-11-23. Only the helper's environment sets it.
         if std::env::var_os("ONEIOS_ENCODER_STUB_HANG_OPEN").is_some() {
@@ -680,11 +700,12 @@ impl Backend for StubBackend {
                 unsafe { libc::pause() };
             }
         }
-        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        if width == 0 || height == 0 || width > 16384 || height > 16384 || !input_format(input) {
             return None;
         }
         Some(Box::new(StubSession {
             codec,
+            input,
             width,
             height,
             ring: VecDeque::with_capacity(STUB_RING),

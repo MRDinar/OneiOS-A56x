@@ -17,7 +17,7 @@
 //! Each virtio-media session gets a fixed slice of the shared media pool for its MMAP'd buffers ([`MEDIA_SLOTS`]
 //! slots), so the allocator is a per-slot bump with no fragmentation. A session that will not fit is refused at
 //! REQBUFS and VideoToolbox keeps its software encoder.
-use crate::backend::{Backend, Session};
+use crate::backend::{input_format, Backend, Coding, Session};
 use crate::pod::Pod;
 use crate::proto::*;
 use std::cell::RefCell;
@@ -42,6 +42,9 @@ pub const MEDIA_BUSY_MS: u64 = 2000;
 /// then this often, while a session is open
 pub const MEDIA_IDLE_MS: u64 = 50;
 const EVENT_BODY: usize = MEDIA_EVENT_BYTES as usize - 8;
+/// The coded pictures' line (`encoder: 60 s: ...`): at most this often, and only while pictures are coded or opens
+/// refused.
+pub const REPORT_MS: u64 = 60_000;
 
 /// Counters for the host rig and encctl (`br_encoder_stats`; monotonic).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,6 +53,10 @@ pub struct Stats {
     pub frames_in: u64,
     pub frames_out: u64,
     pub errors: u64,
+    /// coded access units by the session's coding (8-bit, Main10, 10-bit as 8-bit; [`Coding`]'s order)
+    pub coded: [u64; 3],
+    /// backend opens refused
+    pub refused: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -69,10 +76,11 @@ struct MediaSession {
     slot_base: u64,
     slot_size: u64,
     bump: u64,
-    /// codec from the CAPTURE format, size from OUTPUT
+    /// codec from the CAPTURE format, size and input (NV12 or P010; 0 before S_FMT: NV12) from OUTPUT
     codec: u32,
     width: u32,
     height: u32,
+    input: u32,
     output_on: bool,
     capture_on: bool,
     draining: bool,
@@ -135,6 +143,9 @@ struct State {
     /// the worker asks the backend every millisecond until then
     busy_until_ms: u64,
     stats: Stats,
+    /// the 60 s line ([`REPORT_MS`]): the stats when the window began, and when (0: no window open)
+    report_from: Stats,
+    report_since_ms: u64,
 }
 
 /// The worker's sleep: `wake` under its own lock (not the device's).
@@ -194,6 +205,39 @@ impl State {
     }
 }
 
+/// The 60 s line (2026-11-23): the pictures coded since `from` by their path, the opens refused and the sessions.
+pub fn report_text(from: &Stats, now: &Stats) -> String {
+    let coded = |c: Coding| now.coded[c as usize] - from.coded[c as usize];
+    format!(
+        "encoder: {} s: coded 8-bit {}, 10-bit as Main10 {}, 10-bit as 8-bit {}; opens refused {}; sessions {}",
+        REPORT_MS / 1000,
+        coded(Coding::Eight),
+        coded(Coding::Main10),
+        coded(Coding::TenAsEight),
+        now.refused - from.refused,
+        now.sessions - from.sessions
+    )
+}
+
+/// The 60 s window: it opens at the first picture coded or open refused after the last line, and the line is said
+/// [`REPORT_MS`] later (nothing while nothing is coded). The ms until it is due, 0 with no window open.
+fn report(st: &mut State, now_ms: u64) -> u64 {
+    if st.report_since_ms == 0 {
+        if st.stats.coded == st.report_from.coded && st.stats.refused == st.report_from.refused {
+            st.report_from = st.stats; // other counters moved: not a reason for a line
+            return 0;
+        }
+        st.report_since_ms = now_ms.max(1);
+    }
+    let gone = now_ms.saturating_sub(st.report_since_ms);
+    if gone < REPORT_MS {
+        return REPORT_MS - gone;
+    }
+    logi!("{}", report_text(&st.report_from, &st.stats));
+    (st.report_from, st.report_since_ms) = (st.stats, 0);
+    0
+}
+
 /// A DQBUF event: a struct v4l2_buffer (+ one plane) for the returned buffer.
 fn push_dqbuf(st: &mut State, slot: usize, kind: u32, index: usize, bytesused: u32, flags: u32, sec: i64) {
     let s = &st.sessions[slot];
@@ -220,15 +264,22 @@ impl MediaDevice {
         if s.enc.is_some() || !s.output_on || !s.capture_on || s.codec == 0 || s.width == 0 || s.height == 0 {
             return;
         }
-        s.enc = self.backend.open(s.codec, s.width, s.height);
+        let input = if s.input == 0 { MEDIA_PIXFMT_NV12 } else { s.input };
+        s.enc = self.backend.open(s.codec, input, s.width, s.height);
         let (id, codec, w, h) = (s.id, s.codec, s.width, s.height);
-        if s.enc.is_none() {
-            st.stats.errors += 1;
-            loge!("encoder: backend {} refused {w}x{h}", self.backend.name());
-        } else {
-            st.stats.sessions += 1;
-            let name = if codec == MEDIA_PIXFMT_HEVC { "HEVC" } else { "H.264" };
-            logi!("encoder: session {id}: {name} {w}x{h} on {}", self.backend.name());
+        let name = if codec == MEDIA_PIXFMT_HEVC { "HEVC" } else { "H.264" };
+        let p010 = if input == MEDIA_PIXFMT_P010 { " (P010 input)" } else { "" };
+        match s.enc.as_ref().map(|e| e.coding()) {
+            None => {
+                st.stats.errors += 1;
+                st.stats.refused += 1;
+                loge!("encoder: backend {} refused {name} {w}x{h}{p010}", self.backend.name());
+            }
+            Some(coding) => {
+                st.stats.sessions += 1;
+                // which path codes it, once a session (2026-11-23)
+                logi!("encoder: session {id}: {name} {w}x{h} on {}: {}", self.backend.name(), coding.text());
+            }
         }
     }
 
@@ -243,13 +294,15 @@ impl MediaDevice {
                 }
                 let mut f = MediaV4l2Format::read_from(payload);
                 if f.type_ == MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE {
-                    if f.pixelformat != MEDIA_PIXFMT_NV12 || f.width == 0 || f.height == 0 {
+                    // NV12, or P010 (2026-11-23: iOS's 10-bit surfaces, two bytes a sample)
+                    if !input_format(f.pixelformat) || f.width == 0 || f.height == 0 {
                         return libc::EINVAL as u32;
                     }
-                    (s.width, s.height) = (f.width, f.height);
+                    (s.width, s.height, s.input) = (f.width, f.height, f.pixelformat);
+                    let bytes = if f.pixelformat == MEDIA_PIXFMT_P010 { 2 } else { 1 };
                     f.num_planes = 1;
-                    f.planes[0].bytesperline = f.width;
-                    f.planes[0].sizeimage = f.width.wrapping_mul(f.height).wrapping_mul(3) / 2;
+                    f.planes[0].bytesperline = f.width.wrapping_mul(bytes);
+                    f.planes[0].sizeimage = picture_bytes(f.pixelformat, f.width, f.height) as u32;
                 } else if f.type_ == MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE {
                     if f.pixelformat != MEDIA_PIXFMT_HEVC && f.pixelformat != MEDIA_PIXFMT_H264 {
                         return libc::EINVAL as u32;
@@ -273,7 +326,8 @@ impl MediaDevice {
                 let (want, kind) = (r[0], r[1]);
                 let (cap, size) = match kind {
                     MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE => {
-                        (MEDIA_OUTPUT_BUFS, u64::from(s.width) * u64::from(s.height) * 3 / 2)
+                        let input = if s.input == 0 { MEDIA_PIXFMT_NV12 } else { s.input };
+                        (MEDIA_OUTPUT_BUFS, picture_bytes(input, s.width, s.height))
                     }
                     MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE => {
                         (MEDIA_CAPTURE_BUFS, u64::from(s.width) * u64::from(s.height) / 2 + MEDIA_CODED_HEADROOM)
@@ -374,13 +428,14 @@ impl MediaDevice {
             MEDIA_VIDIOC_ENUM_FMT => {
                 // struct v4l2_fmtdesc: index, type, flags, description[32], pixelformat (at 44). The guest's
                 // transport lists each queue's formats once at start (DroidVMVirtioMedia.c check(), up to 16 an
-                // answer of 0 gives it): OUTPUT takes NV12, CAPTURE gives HEVC and H.264; past the list EINVAL ends
+                // answer of 0 gives it): OUTPUT takes NV12 and P010, CAPTURE gives HEVC and H.264; past the list EINVAL ends
                 // its loop, as V4L2 says.
                 if len < 48 {
                     return libc::EINVAL as u32;
                 }
                 let format = match (le::u32(payload, 4), le::u32(payload, 0)) {
                     (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 0) => MEDIA_PIXFMT_NV12,
+                    (MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 1) => MEDIA_PIXFMT_P010,
                     (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 0) => MEDIA_PIXFMT_HEVC,
                     (MEDIA_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 1) => MEDIA_PIXFMT_H264,
                     _ => return libc::EINVAL as u32,
@@ -425,7 +480,9 @@ impl MediaDevice {
                 let Some(dst) = self.pool.at(buf.offset, buf.size) else { break };
                 // SAFETY: a queued CAPTURE buffer inside the pool: the guest does not touch it until DQBUF.
                 let dst = unsafe { std::slice::from_raw_parts_mut(dst, buf.size as usize) };
-                let polled = match s.enc.as_mut().unwrap().poll(dst) {
+                let enc = s.enc.as_mut().unwrap();
+                let coding = enc.coding();
+                let polled = match enc.poll(dst) {
                     Ok(p) => p,
                     Err(_) => {
                         st.stats.errors += 1;
@@ -451,6 +508,7 @@ impl MediaDevice {
                 st.busy_until_ms = monotonic_ms() + MEDIA_BUSY_MS; // the backend is giving: the next may follow at once
                 if polled.bytes > 0 {
                     st.stats.frames_out += 1;
+                    st.stats.coded[coding as usize] += 1;
                 }
                 if polled.eos {
                     let mut ev = [0u32; 16];
@@ -463,16 +521,17 @@ impl MediaDevice {
         }
     }
 
-    /// One turn of the worker: pump and flush. Whether a session is open or an event waits, and whether the busy
-    /// time runs.
-    fn work(&self, dev: &MediaVirtio) -> (bool, bool) {
+    /// One turn of the worker: pump, flush, and the 60 s line when it is due. Whether a session is open or an event
+    /// waits, whether the busy time runs, and the ms until the 60 s line is due (0: no window open).
+    fn work(&self, dev: &MediaVirtio) -> (bool, bool, u64) {
         let mut st = self.state.borrow_mut();
         self.pump(&mut st);
         self.flush_events(dev, &mut st);
+        let report_in = report(&mut st, monotonic_ms());
         // Something may still come without a command: a session's backend may hold a frame, an event may wait for a
         // buffer.
         let open = !st.fifo.is_empty() || st.sessions.iter().any(|s| s.used);
-        (open, open && monotonic_ms() < st.busy_until_ms)
+        (open, open && monotonic_ms() < st.busy_until_ms, report_in)
     }
 
     fn command(&self, reads: &[&Viov], writes: &[&Viov]) -> Option<u32> {
@@ -521,6 +580,9 @@ impl MediaDevice {
                         slot_size: self.slot_size,
                         ..Default::default()
                     };
+                    // the backend gets ready for an encoder (the helper starts at the guest's first session: its
+                    // transport's check at boot), so the first encode does not wait for MediaCodec's first load
+                    self.backend.prepare();
                     resp.write_at(8, &id.to_le_bytes());
                     16
                 } else {
@@ -630,7 +692,7 @@ impl Drop for MediaDevice {
 fn worker(dev: Weak<MediaVirtio>, wake: Arc<Wake>) {
     while !wake.stop.load(Ordering::Acquire) {
         let Some(dev) = dev.upgrade() else { break };
-        let (open, busy) = {
+        let (open, busy, report_in) = {
             let guard = dev.lock();
             guard.work(&dev)
         };
@@ -638,7 +700,15 @@ fn worker(dev: Weak<MediaVirtio>, wake: Arc<Wake>) {
         if busy {
             std::thread::sleep(Duration::from_millis(1));
         } else {
-            wake.sleep(if open { MEDIA_IDLE_MS } else { 0 });
+            // with no session, until a command; but no longer than the 60 s line's window (one wake-up for it)
+            let idle = if open { MEDIA_IDLE_MS } else { 0 };
+            wake.sleep(if idle == 0 {
+                report_in
+            } else if report_in == 0 {
+                idle
+            } else {
+                idle.min(report_in)
+            });
         }
     }
 }
@@ -674,6 +744,8 @@ pub unsafe fn create(
         next_session: 0,
         busy_until_ms: 0,
         stats: Stats::default(),
+        report_from: Stats::default(),
+        report_since_ms: 0,
     };
     let device = MediaDevice {
         backend,
@@ -699,4 +771,50 @@ pub unsafe fn create(
 /// The counters of a device (`br_encoder_get_stats`).
 pub fn stats(dev: &MediaVirtio) -> Stats {
     dev.lock().stats()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> State {
+        State {
+            sessions: Default::default(),
+            fifo: VecDeque::new(),
+            next_session: 0,
+            busy_until_ms: 0,
+            stats: Stats::default(),
+            report_from: Stats::default(),
+            report_since_ms: 0,
+        }
+    }
+
+    #[test]
+    fn the_60_s_line_comes_only_while_pictures_are_coded() {
+        let mut st = state();
+        // nothing coded: no window, whatever else moves
+        st.stats.frames_in = 3;
+        assert_eq!(report(&mut st, 1000), 0);
+        // a picture coded: the window opens, the line is due 60 s later
+        st.stats.coded[Coding::Main10 as usize] += 2;
+        st.stats.coded[Coding::TenAsEight as usize] += 1;
+        st.stats.sessions += 1;
+        assert_eq!(report(&mut st, 5000), REPORT_MS);
+        assert_eq!(report(&mut st, 5000 + REPORT_MS - 1), 1);
+        st.stats.refused += 1;
+        assert_eq!(
+            report_text(&st.report_from, &st.stats),
+            "encoder: 60 s: coded 8-bit 0, 10-bit as Main10 2, 10-bit as 8-bit 1; opens refused 1; sessions 1"
+        );
+        assert_eq!(report(&mut st, 5000 + REPORT_MS), 0); // said: the window is closed
+        assert_eq!((st.report_from, st.report_since_ms), (st.stats, 0));
+        // nothing more coded: no new window
+        assert_eq!(report(&mut st, 200_000), 0);
+        st.stats.coded[Coding::Eight as usize] += 1;
+        assert_eq!(report(&mut st, 300_000), REPORT_MS);
+        assert_eq!(
+            report_text(&st.report_from, &st.stats),
+            "encoder: 60 s: coded 8-bit 1, 10-bit as Main10 0, 10-bit as 8-bit 0; opens refused 0; sessions 0"
+        );
+    }
 }

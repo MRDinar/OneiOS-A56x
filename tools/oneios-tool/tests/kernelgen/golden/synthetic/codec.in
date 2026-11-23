@@ -69,6 +69,8 @@ int startEncoder(Session *s, const uint8_t *m, uint32_t n) {
     f.num_planes = 1;
     f.planes[0].bytesperline = width;
     f.planes[0].sizeimage = width * height * 3 / 2;
+    r = ioctl(s, IocSFmt, &f, sizeof f, sizeof f);
+    if (r) { failed(92, r); return -12911; }
 // (before anchor 14)
     encoderPixelBufferAttributes(s);
     trace("encoder session %u %ux%u %c%c%c%c", s->v4l2, width, height, s->codec >> 24, s->codec >> 16, s->codec >> 8, s->codec);

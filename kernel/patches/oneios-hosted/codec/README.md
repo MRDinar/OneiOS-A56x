@@ -33,7 +33,7 @@ paravirtualization service, exactly as the Metal and camera plug-ins are iOS-sid
 | File | What |
 |---|---|
 | `DroidVMVirtioMedia.c` | the virtio-media transport (V4L2 stateful codec over virtio-mmio): `/arm-io/virtio-media-0`, `media-host-pool`. The device is xnuhost's (`runtime/bridges/encoder/media_device.rs`), not crosvm's. Unchanged, `-DDROIDVM_DEVICE_DYNAMIC=1`, Mach universe, as its iPadOS 27 board builds it |
-| `DroidVMVTHost.cpp` | the session logic: `encs`/`+enc`/`esta`/`efrm`/`Eemt`/`ecfr` (and, staged, iOS 27's tile session `ests`/`epti`/`etil`/`ecti` with `TEsa`/`TEcd`/`TEem`); the IOSurface lookup (IOCoreSurfaceRoot), NV12 copy into the OUTPUT buffer, hvcC/avcC assembly, the sample-buffer atoms. Runs in the guest kernel over the virtio-media device. **Staged with four edits** (below) |
+| `DroidVMVTHost.cpp` | the session logic: `encs`/`+enc`/`esta`/`efrm`/`Eemt`/`ecfr` (and, staged, iOS 27's tile session `ests`/`epti`/`etil`/`ecti` with `TEsa`/`TEcd`/`TEem`); the IOSurface lookup (IOCoreSurfaceRoot), NV12 copy into the OUTPUT buffer (staged: NV12 or P010), hvcC/avcC assembly, the sample-buffer atoms. Runs in the guest kernel over the virtio-media device. **Staged with five edits** (below) |
 | `DroidVMVTParavirt.cpp` | Apple's `AppleVideoToolboxParavirtualizationDriver` user client + the `IODataQueue` transport; publishes the service with `droidvm-vt-paravirt=1`. Unchanged; its static initializer is taken out of `__mod_init_func` and made global (`droidvm_vt_paravirt_attach` runs it in its own module load), as the audio archive's |
 
 `OneiOSCodec.c` (this folder, OneiOS's own) is the start: `oneios_codec_start` → `droidvm_media_start()` +
@@ -47,6 +47,9 @@ paravirtualization service, exactly as the Metal and camera plug-ins are iOS-sid
 3. A **small HEVC session** is coded at 96x96 at least (c2.qti's smallest) and cropped back by its SPS's conformance
    window.
 4. `jcap` (the paravirtualized JPEG session's capability query) is answered -12908: there is no JPEG codec here.
+5. **10-bit pictures** (2026-11-23, "10-bit pictures" below): `etil` and `efrm` take `x420` and `xf20` surfaces and
+   send them to the device as P010 (or NV12, their high bytes, to a device that takes no P010); a tile session's
+   device opens at its first tile.
 
 The hvcC's twelve bytes of profile, tier and level. Upstream copies them from the SPS as the stream has them
 (`memcpy(out + at, s->sps + 3, 12)`). Every
@@ -94,8 +97,10 @@ HandleMessageFromHost`) write and read them:
 same in 24A446 as upstream's (`efrm` answered `,err ,inf`).
 
 **The fix (staged `DroidVMVTHost.cpp`, edits 2 to 4):**
-- `ests` opens the encoder at the tile size and sends `TEsa` (420v, as `Epba`); `epti` is answered; `etil` looks the
-  surface up as `efrm` does (one shared lookup now), takes its part (`,tio`, `,tia`; a 420v or 420f surface) and
+- `ests` sends `TEsa` (420v, as `Epba`) and (since 2026-11-23, edit 5) leaves the device's open to the first tile,
+  which opens it with that tile's samples; `epti` is answered; `etil` looks the
+  surface up as `efrm` does (one shared lookup now), takes its part (`,tio`, `,tia`; a 420v, 420f, x420 or xf20
+  surface) and
   queues it as a frame with no times; the worker copies that part and the phone's encoder codes it (every frame of
   it is a key frame: `i-frame-interval` 0), then `TEcd` once per new parameter sets and `TEem` per tile; `ecti` is
   answered as `ecfr` (the drain, the 2 s deadline, a tile not coded by then handed over dropped).
@@ -110,7 +115,8 @@ same in 24A446 as upstream's (`efrm` answered `,err ,inf`).
 The copy and the crop are `OneiOSCodecPicture.h` (this folder, plain C), which the staged file includes (`-I` this
 folder) and `kernel/tests/host.sh` tests on the host: `tests/test_picture.c` (17 checks: tiles inside, at the edges,
 coded larger, parts outside; SPSs built field by field with and without a window of the codec's own, with
-sub-layers, with emulation prevention bytes, read back) and `tests/crop.sh` (ffmpeg 9.0.2's libx265 and
+sub-layers, with emulation prevention bytes, read back; since 2026-11-23 30, with the 10-bit copies of "10-bit
+pictures" below) and `tests/crop.sh` (ffmpeg 9.0.2's libx265 and
 hevc_videotoolbox code 96x96 and 128x96, the SPS is cropped to 84x84 and 120x90, ffprobe reads the new size and
 ffmpeg decodes, with `-err_detect explode`, exactly the top-left part of the picture: 4 streams on the Mac).
 
@@ -158,14 +164,18 @@ line).
   closed N, messages N (refused N, unknown N, the last 'TYPE'), to the guest N (dropped N), replies N; sessions N,
   frames in N out N, errors N (last: step S value V); virtio-media commands N (timeouts N), events N errors N buffers
   N other`, then `ONEIOS CODEC: session: ...` for each line `DroidVMVTHost.cpp` wrote into its trace ring since (a
-  session's size, `tiles` for a tile session, the size the device codes, the codec; the IOSurface lookups).
+  session's size, `tiles` for a tile session, the size the device codes, its samples (`NV12`, `P010`, or `NV12 (10-bit
+  pictures, the device takes no P010)`), the codec; `tile session WxH: the device opens at the first tile`; the
+  IOSurface lookups). Then, once a picture was copied (2026-11-23), `ONEIOS CODEC: pictures: 8-bit N, 10-bit as P010
+  N, 10-bit as 8-bit N (the device takes no P010)`: the pictures copied for the device by their samples.
   `the last 'TYPE'` (2026-11-22) is the last message type the host has no case for (`droidvm_vthost_last_unknown` as
   four characters, `'none'` before the first): a type a new iOS sends shows on this line at once (iOS 27's `'ests'`
   was found from the message lines). `step S` is the stage `DroidVMVTHost.cpp` gives `failed()`: 90-96 the session's
   start (90 OPEN, 91/92 S_FMT, 93/94 REQBUFS, 95/96 STREAMON), 10-12 a buffer's QUERYBUF, MMAP and mapping, 40-42 and
   97 the IOSurface lookup, 84 the frame's copy, 85 its QBUF, 80/81 the format description, 86 a coded frame nobody
   waits for, 20 a message that does not fit; staged: 100 a tile's parameters (`etil` without `,til`/`,tio`/`,tia`/
-  `,uui`, or larger than the tile size), 101 a tile's surface not 420v/420f, 102 an SPS whose conformance window
+  `,uui`, or larger than the tile size), 101 a tile's surface none of 420v, 420f, x420, xf20 (until 2026-11-23: not
+  420v/420f), 102 an SPS whose conformance window
   could not be written (a small HEVC session: no description, so no tile is handed over).
 
 ## What the transport costs when idle
@@ -177,7 +187,7 @@ open (`media_device.c`).
 ## Limits [F from the code]
 
 - A session's buffers come from its half of the 48 MiB media pool (`MEDIA_SLOTS` 2): 4 NV12 frames and 6 coded
-  buffers of width x height / 2 + 64 KiB each, about 9 bytes a pixel. A frame above about 2.7 megapixels is refused
+  buffers of width x height / 2 + 64 KiB each, about 9 bytes a pixel (P010 frames: about 15). A frame above about 2.7 megapixels is refused
   at REQBUFS (`errors`, step 93 or 94) and that session gets no encoder. CMPhoto encodes HEIC as tiles: a tile
   session is opened at the tile size (84x84 for chronod's widget snapshots on 2026-11-22, coded at 96x96), not the
   picture's.
@@ -195,8 +205,16 @@ With the tile session (2026-11-22): the message lines `'+enc'`, `'ests'`, `'epti
 tiles), `'etil'` (one per tile, with a surface: `1 surface(s)`), `'ecti'`, then `'einv'`, `'-enc'`; `sessions`
 growing slowly (once per snapshot, not 3 a second); `frames in N out N` with the same N above 0; `unknown` not
 growing and `the last` not `'ests'`;
-`ONEIOS CODEC: session: encoder session N 84x84 tiles coded 96x96 hvc1`; xnuhost's `encoder: session N: HEVC 96x96
-on mediacodec-helper` (the device's size).
+`ONEIOS CODEC: session: encoder session N 84x84 tiles coded 96x96 NV12 hvc1` (`P010` for the wallpaper posters'
+10-bit tiles, 2026-11-23); xnuhost's `encoder: session N: HEVC 96x96 on mediacodec-helper: 8-bit` (the device's
+size; for 10-bit tiles `10-bit pictures as Main10 (P010)` or `10-bit pictures as 8-bit (the encoder offers no
+Main10 at this size)`).
+
+With 10-bit pictures (2026-11-23, "10-bit pictures" below): **no** `DroidVMVTHost: stage 101 failed`; `ONEIOS
+CODEC: pictures: ...` with `10-bit as P010` above 0; xnuhost's `encoder: 60 s: coded 8-bit N, 10-bit as Main10 N,
+10-bit as 8-bit N; opens refused 0; sessions N` with a coded count above 0; **no** `encoder: backend mediacodec-helper
+refused`, **no** `did not answer an open`; the helper's `encoder: helper: binder threads: ...` and `encoder: helper:
+warm-up: ...` lines near the boot's start (the transport's check starts the helper).
 
 iOS's log (`oneios-tool phone pull-log DIR`, then `oneios-tool ioslog health` and `checks`):
 - **no** `StartTileSession failed with error` from videocodecd;
@@ -291,12 +309,78 @@ both are no:
   `kCVPixelFormatType_420YpCbCr10BiPlanarFullRange` (10-bit 4:2:0, full range, two planes of 16-bit samples). So
   CMPhoto hands the wallpaper posters' tiles in a 10-bit surface although `TEsa` asks for 420v, and the staged
   `etil` (`staged/codec.rs`, the `failed(101, ...)` check) refuses it with -12902.
-- **96x96 [F]:** six `xnuhost E encoder: backend mediacodec-helper refused 96x96`: c2.qti refused the tile size the
-  session codes at (84x84 tiles coded 96x96).
+- **96x96 [F], read again on 2026-11-23:** six `xnuhost E encoder: backend mediacodec-helper refused 96x96`. Each
+  comes 1 ms after `encoder: the helper (pid N) did not answer an open in 2500 ms (state S, waiting in
+  futex_wait_queue): killed (1 of 2)` (lines 2416-2417 of the log), and after the second kill every open fails at once
+  (`the helper hung 2 times: no more helpers this session`). So c2.qti did not refuse the size: MediaCodec's open
+  never came back in the helper, as in the two v0.1.16 boots (docs/booter.md). `encctl hevc 96 96`, run from a root
+  shell, passed on 2026-11-22.
 
 So no tile is coded; the guest's tile encode fails, and nothing else of the session is harmed (the line is the
-codec's, not the GPU's: the abort at the end of that session was drm2kgsl's, docs/gpu.md 2.4b). **Not fixed [I]:**
-the fix is two parts, both open: take `'xf20'` (and `'x420'`, its video-range twin) in `etil` and copy the high byte of
-each 16-bit sample into the NV12 frame (`OneiOSCodecPicture.h`, with a case in `tests/test_picture.c`), and find a
-size c2.qti takes for HEVC (`encctl hevc W H` on the phone: the smallest it codes), then pad the tiles to it as
-96x96 does now. Each needs a kernel build and a phone boot.
+codec's, not the GPU's: the abort at the end of that session was drm2kgsl's, docs/gpu.md 2.4b). Both are fixed by
+"10-bit pictures" below (built and host-tested; not yet booted on the phone).
+
+## 10-bit pictures and the helper's open (2026-11-23)
+
+**The 10-bit tiles.** Edit 5 of the staged `DroidVMVTHost.cpp` (`staged/codec.rs`):
+- `etil` takes `420v`, `420f`, `x420` and `xf20` surfaces (`surfaceSampleBytes`: 1 or 2 bytes a sample; any other
+  format is still step 101). `efrm` takes them too.
+- A tile session's device opens at its first tile, not at `ests` (`openForPicture`): a 10-bit tile opens it with
+  OUTPUT `V4L2_PIX_FMT_P010` (16-bit samples, the 10 bits high: the surface's own layout, copied as it is), an 8-bit
+  tile with NV12. A device that refuses P010 (an xnuhost before this change) gets NV12, each sample's high byte. A
+  frame session opens at `esta` as before and again at its first frame when that frame is 10-bit. A later picture
+  of the other depth is converted by the copy (16 bits to 8: the high byte; 8 to 16: v x 257, the low 6 bits
+  cleared). `TEsa` still asks for 420v, and is sent at `ests` as before.
+- A tile session's SPS is always cropped to the tile size (the host may code a tile larger than asked: below).
+- `oneios_codec_pictures[3]` counts the pictures copied (8-bit, 10-bit as P010, 10-bit as 8-bit): the line
+  `ONEIOS CODEC: pictures: ...` after the counters line.
+
+The copy is `oneios_yuv_copy_area` (`OneiOSCodecPicture.h`; `oneios_nv12_copy_area` is its 8-bit case). xnuhost's
+side (`runtime/bridges/encoder/README.md`, "10-bit pictures"): the device takes P010 on its OUTPUT queue (ENUM_FMT
+lists it), and the MediaCodec backend codes it as HEVC Main10 with P010 input (`COLOR_FormatYUVP010`,
+`HEVCProfileMain10`) when the encoder offers it at that size, else as 8-bit (the high bytes, NV12). The session's
+line says which path ran (`encoder: session N: HEVC 96x96 on mediacodec-helper: 10-bit pictures as Main10 (P010)`),
+and xnuhost's `encoder: 60 s: coded 8-bit N, 10-bit as Main10 N, 10-bit as 8-bit N; opens refused N; sessions N`
+counts the pictures by path, every 60 s while any are coded.
+
+The camera's "10-bit formats" (docs/HANDOFF-2026-11-23.md, c.) are not the same need: they are the formats the
+capture plug-in's streams list and fill (`x420`, `x422`; done in `a5c244d`), not what the encoder takes. A 10-bit
+video frame given to the encoder (`efrm` with an `x420` surface) now goes the same way as a tile; `x422` (4:2:2)
+is not taken (step 84: no copy).
+
+**The helper's open.** The refused opens were the helper's MediaCodec open that never came back. The likely cause [I,
+from the camera helper's fault of 2026-11-17, `runtime/bridges/camera/README.md`]: a plain executable has no binder
+threads, and Codec2 calls its client back over binder. The helper (and `encctl`) now start their binder threads
+first (libbinder_ndk's pool; libhidlbase's when it is loaded), start at the guest's first virtio-media session (the
+transport's check at boot) instead of the first encode, open one HEVC encoder at once (a warm-up), and name the
+MediaCodec call an open waits in at 1 s and 2 s. Lines: `encoder: helper: binder threads: ...`, `encoder: helper:
+warm-up: c2.qti.hevc.encoder: widths A-B, heights C-D, alignment WxH; smallest WxH, Main10 (P010) there yes|no (in N
+ms); an HEVC WxH encoder opened and closed in N ms`, and only when slow `encoder: helper: an open of HEVC 96x96 (NV12)
+has waited 1000 ms in AMediaCodec_configure`.
+
+**The smallest size.** With Android 16's codec store (API 36, by dlsym) the backend opens the first vendor HEVC
+encoder by its name and codes a picture below its smallest size, or off its alignment, at the next size it takes (the
+frame's last column and row repeated; the guest's SPS crop above takes it back to the tile). The guest still pads to
+96x96 first. The phone's numbers: `encctl caps` (one line an encoder, then 64 to 512 square: the size, and Main10
+with P010) and `encctl hevc10 96 96` (a P010 picture through the whole host path; its last line says `coded Main10`
+or `coded 10-bit as 8-bit`).
+
+**Built and tested on the build laptop (2026-11-23, main 78c4b86 plus this work):**
+- **Kernel [F]:** `HOSTED_OUT=codec10 ONEIOS_CRYPTO=original kernel/build-hosted.sh` (as a release is built), 416 s:
+  `xnu.macho` `73f3e2241e68240c...` (24,649,528 bytes), `releasable`, 0 of the source corecrypto's 1191 symbols;
+  `build-oneios-codec: ... (4 objects ...)`, no compiler warning; the staged `DroidVMVTHost.cpp` `15745ee1...`
+  (98,771 bytes; `tests/kernelgen/golden/staged.sha256`); `_oneios_codec_pictures` in the kernel.
+- **Prelinked [F]:** `KERNEL=out/kernel/current-hosted-codec10/xnu.macho OUT=out/kernel/codec10-24A446
+  kernel/prelink/build.sh`: `kernel.kc` `b5f5378a3acac4428848400d79618609bcca727e70004383e54ebc2050e79950`
+  (96,272,384 bytes), `audit: 2711 paired, 93 functions on the stub, 9 data unpaired; 0 failures`; `oneios-tool
+  prelink stubs-check`: 666 good, 0 bad.
+- **Host tests [F]:** `kernel/tests/host.sh` 5 of 5 (`test_picture` 30 checks; `crop.sh` 2 libx265 streams, no
+  VideoToolbox on Linux); `cargo test -p oneios-kernel --test golden` 14 of 14; `runtime/tests/host.sh` passed (the
+  workspace's tests, fmt, clippy for the host and Android, the three arm64 boots); `compare-golden.sh`: the codec
+  line is the new hash; `oneios-net/report.json`, `DroidVMVirtioInput.c` and the tree paths of `stdout.txt` differ as
+  they did before this work.
+- **Runtime [F]:** `runtime/build.sh` (elf-check 0 failures): `bin/xnuhost` `f5e52e28...`, `bin/oneios-encoder`
+  `cc04ff76...`, `bin/encctl` `22ccf55e...`.
+- **Not tested:** the phone (MediaCodec's Main10 with P010, the codec store's numbers, whether the binder threads
+  end the helper's hang, CMPhoto taking the Main10 tiles). The proof lines: "What a session on the phone must
+  show", "With 10-bit pictures".

@@ -6,8 +6,15 @@
 //! encoder as root with One UI up, and checks the bitstream. No xnuhost, no Apple code.
 //!
 //! ```text
-//!   encctl hevc|h264 [WIDTH HEIGHT [FILE]]        default hevc 256x256; FILE: the coded stream, as it came (Annex B)
+//!   encctl hevc|h264|hevc10 [WIDTH HEIGHT [FILE]] default hevc 256x256; FILE: the coded stream, as it came (Annex B)
+//!   encctl caps                                  the encoders' sizes and Main10, as Android 16's codec store says
 //! ```
+//!
+//! `hevc10` (2026-11-23) sends a P010 picture (10-bit, as the guest sends iOS's x420 and xf20 surfaces): the line
+//! `encctl: encoder: session 1: HEVC WxH on mediacodec: ...` says whether it was coded as Main10 or as 8-bit, and the
+//! last line names it again. `caps` prints, for the HEVC and H.264 encoders the device opens, their sizes
+//! (lower-upper), alignment, the size an 84x84 tile is coded at, and for 64 to 512 square whether the size and (HEVC)
+//! Main10 with P010 are taken. On Android encctl starts its binder threads first, as the helper does.
 //!
 //! A pass prints each access unit's size and the types of its NAL units (HEVC: 32 VPS, 33 SPS, 34 PPS, 19 or 20 the
 //! IDR slice; H.264: 7 SPS, 8 PPS, 5 the IDR slice), and "ok". `error:` lines say which step failed. FILE is for a
@@ -255,6 +262,57 @@ fn fail(text: &str) -> i32 {
     1
 }
 
+/// `encctl caps` (2026-11-23): what Android 16's codec store says of the HEVC and H.264 encoders the device opens. One
+/// line an encoder, then one a square size; 1 when there is no store or no encoder.
+fn caps() -> i32 {
+    #[cfg(target_os = "android")]
+    {
+        let mut found = 0;
+        for (codec, name) in [(MEDIA_PIXFMT_HEVC, "hevc"), (MEDIA_PIXFMT_H264, "h264")] {
+            let c = match crate::backend_ndk::caps(codec) {
+                Ok(c) => c,
+                Err(why) => {
+                    println!("encctl: caps {name}: {why}");
+                    continue;
+                }
+            };
+            found += 1;
+            let (tw, th) = c.coded_size(84, 84);
+            println!(
+                "encctl: caps {name}: {}{}, widths {}-{}, heights {}-{}, alignment {}x{}; an 84x84 tile is coded {tw}x{th}",
+                c.name.to_string_lossy(),
+                if c.vendor { "" } else { " (not a vendor encoder)" },
+                c.widths.0,
+                c.widths.1,
+                c.heights.0,
+                c.heights.1,
+                c.align.0,
+                c.align.1
+            );
+            for side in [64, 84, 96, 128, 160, 192, 256, 512] {
+                let main10 = if codec == MEDIA_PIXFMT_HEVC {
+                    format!(", Main10 (P010) {}", if c.main10(side, side) { "yes" } else { "no" })
+                } else {
+                    String::new()
+                };
+                println!(
+                    "encctl: caps {name} {side}x{side}: 8-bit {}{main10}",
+                    if c.size(side, side) { "yes" } else { "no" }
+                );
+            }
+        }
+        if found == 0 {
+            return 1;
+        }
+        0
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        println!("encctl: caps: no MediaCodec here (a host: the stand-in codes every size, 8-bit only)");
+        1
+    }
+}
+
 /// encctl's main: its exit code.
 pub fn main() -> i32 {
     // The bridges' log goes to stderr here, as encctl.c's br_log.
@@ -269,6 +327,14 @@ pub fn main() -> i32 {
     })));
     let args: Vec<String> = std::env::args().collect();
     let codec_name = args.get(1).map_or("hevc", String::as_str);
+    if codec_name == "caps" {
+        return caps();
+    }
+    #[cfg(target_os = "android")]
+    eprintln!("encctl: {}", crate::helper::binder_threads()); // as the helper: Codec2 calls its client back over binder
+                                                              // hevc10: a P010 picture (2026-11-23)
+    let ten = codec_name == "hevc10";
+    let input = if ten { MEDIA_PIXFMT_P010 } else { MEDIA_PIXFMT_NV12 };
     let num = |i: usize| onecamera::util::atoi(&args[i]) as u32;
     let (w, h) = if args.len() > 3 { (num(2), num(3)) } else { (256, 256) };
     let codec = if codec_name == "h264" { MEDIA_PIXFMT_H264 } else { MEDIA_PIXFMT_HEVC };
@@ -300,7 +366,7 @@ pub fn main() -> i32 {
         type_: MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
         width: w,
         height: h,
-        pixelformat: MEDIA_PIXFMT_NV12,
+        pixelformat: input,
         num_planes: 1,
         ..Default::default()
     };
@@ -327,12 +393,16 @@ pub fn main() -> i32 {
             return fail("no output buffer");
         }
     };
-    let frame = (w * h * 3 / 2) as usize;
-    let mut picture = vec![128u8; frame]; // grey chroma: a visible gradient
+    let frame = picture_bytes(input, w, h) as usize;
+    let mut picture = vec![128u8; (w * h * 3 / 2) as usize]; // grey chroma: a visible gradient
     for y in 0..h {
         for x in 0..w {
             picture[(y * w + x) as usize] = ((x ^ y) + y) as u8;
         }
+    }
+    if ten {
+        // the same picture in P010: each 8-bit value v as the 10-bit 4v, in the high 10 bits (v << 8)
+        picture = picture.iter().flat_map(|&v| (u16::from(v) << 8).to_le_bytes()).collect();
     }
     g.write(out_buf, &picture);
     let mut qo = MediaV4l2Buffer { type_: MEDIA_BUF_TYPE_VIDEO_OUTPUT_MPLANE, index: 0, sec: 1, ..Default::default() };
@@ -396,7 +466,12 @@ pub fn main() -> i32 {
     g.close(session);
     let st = g.stats();
     if aus != 0 && key && total != 0 && st.errors == 0 {
-        println!("encctl: {codec_name} {w}x{h}: {aus} access unit(s), {total} bytes, keyframe present; ok");
+        let paths = ["8-bit", "Main10", "10-bit as 8-bit"];
+        let how: Vec<&str> = st.coded.iter().zip(paths).filter(|(n, _)| **n != 0).map(|(_, p)| p).collect();
+        println!(
+            "encctl: {codec_name} {w}x{h}: {aus} access unit(s), {total} bytes, keyframe present, coded {}; ok",
+            how.join(", ")
+        );
         return 0;
     }
     fail(&format!(

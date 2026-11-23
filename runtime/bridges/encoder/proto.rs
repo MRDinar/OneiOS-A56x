@@ -85,6 +85,19 @@ pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
     a as u32 | (b as u32) << 8 | (c as u32) << 16 | (d as u32) << 24
 }
 pub const MEDIA_PIXFMT_NV12: u32 = fourcc(b'N', b'V', b'1', b'2');
+/// V4L2_PIX_FMT_P010: NV12's layout with 16-bit little-endian samples, the 10 bits in the high bits (2026-11-23: iOS's
+/// 10-bit surfaces x420 and xf20, as the guest copies them; coded as HEVC Main10 when the encoder offers it).
+pub const MEDIA_PIXFMT_P010: u32 = fourcc(b'P', b'0', b'1', b'0');
+
+/// The bytes of one tightly packed 4:2:0 picture of `input` (NV12 or P010) at width x height.
+pub fn picture_bytes(input: u32, width: u32, height: u32) -> u64 {
+    let samples = u64::from(width) * u64::from(height) * 3 / 2;
+    if input == MEDIA_PIXFMT_P010 {
+        samples * 2
+    } else {
+        samples
+    }
+}
 pub const MEDIA_PIXFMT_H264: u32 = fourcc(b'H', b'2', b'6', b'4');
 pub const MEDIA_PIXFMT_HEVC: u32 = fourcc(b'H', b'E', b'V', b'C');
 

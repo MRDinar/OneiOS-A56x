@@ -10,7 +10,7 @@ mod standin_reader;
 
 use oneencoder::backend::Backend;
 use oneencoder::backend_stub::StubBackend;
-use oneencoder::proto::{MEDIA_PIXFMT_H264, MEDIA_PIXFMT_HEVC};
+use oneencoder::proto::{MEDIA_PIXFMT_H264, MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12};
 use std::path::Path;
 use std::process::Command;
 
@@ -56,7 +56,7 @@ fn one(dir: &Path, codec: u32, w: u32, h: u32, cap: u32, black: bool, failures: 
     } else {
         pattern(&mut nv12, w, h);
     }
-    let Some(mut s) = StubBackend.open(codec, w, h) else {
+    let Some(mut s) = StubBackend.open(codec, MEDIA_PIXFMT_NV12, w, h) else {
         check(false, "open");
         return;
     };
@@ -153,11 +153,11 @@ fn standin_streams() {
 #[test]
 fn standin_refusals() {
     // A buffer nothing fits in is an error, not an overrun; a short frame is refused.
-    let mut s = StubBackend.open(MEDIA_PIXFMT_HEVC, 640, 480).unwrap();
+    let mut s = StubBackend.open(MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12, 640, 480).unwrap();
     let nv12 = vec![0u8; 640 * 480 * 3 / 2];
     let mut small = [0u8; 64];
     assert!(s.feed(&nv12, 0, true).is_ok());
     assert!(s.poll(&mut small).is_err());
     assert!(s.feed(&nv12[..100], 0, true).is_err());
-    assert!(StubBackend.open(MEDIA_PIXFMT_HEVC, 0, 480).is_none());
+    assert!(StubBackend.open(MEDIA_PIXFMT_HEVC, MEDIA_PIXFMT_NV12, 0, 480).is_none());
 }

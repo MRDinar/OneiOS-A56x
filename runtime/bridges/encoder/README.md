@@ -33,13 +33,13 @@ cargo build --release --target aarch64-linux-android -p oneencoder --bins   # th
 | Module | What |
 |---|---|
 | `proto.rs` | the wire layout of the `droidvm,virtio-media` device: the commandq (OPEN/CLOSE/IOCTL/MMAP), the eventq (DQBUF/EVENT), and the V4L2 structs (`v4l2_buffer`, `v4l2_format`) as UniXNU-droidvm's `DroidVMVirtioMedia.c`/`DroidVMVTHost.cpp` read them (the C's `media_proto.h`; no C side any more: checked by `tests/encoder.rs`'s round trips) |
-| `media_device.rs` | xnuhost's stateful V4L2 **encoder** device on `xh_core::virtio` (`create`, `stats`): OUTPUT = tightly packed NV12, CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. Linked statically into xnuhost |
-| `backend.rs` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) as the `Backend` and `Session` traits (the C's `encoder.h`) |
+| `media_device.rs` | xnuhost's stateful V4L2 **encoder** device on `xh_core::virtio` (`create`, `stats`): OUTPUT = tightly packed NV12 or P010 (2026-11-23), CAPTURE = HEVC/H.264 Annex-B. Each guest session gets a slice of the media pool (`media-host-pool`); a worker thread turns coded access units into CAPTURE DQBUF events. Linked statically into xnuhost |
+| `backend.rs` | the backend interface (`open`/`feed`/`drain`/`poll`/`close`) as the `Backend` and `Session` traits (the C's `encoder.h`); since 2026-11-23 `open` takes the input format (NV12 or P010), a session says its `Coding` (8-bit, Main10, 10-bit as 8-bit), and `prepare` (a guest's virtio-media OPEN) lets the helper backend start its helper early |
 | `backend_helper.rs` | the device-side backend that runs the real encoder in the **oneios-encoder helper process** (`HelperBackend::new`; xnuhost is static; MediaCodec is a shared library, as for the camera and audio helpers). Spawns the helper, multiplexes sessions over a UNIX socket (`link.rs`, the C's `encoder_link.h`), buffers coded AUs for `poll()`. **Never waits for the helper without a limit** (a vCPU calls it): the HELLO and each write 1 s, an open's reply `OPEN_MS` (2.5 s; `HelperBackend::with_open_ms` for another); a helper that misses one is killed (`encoder: the helper (pid N) did not answer an open in 2500 ms (state S, waiting in W): killed (1 of 2); the next open starts a new one`), the next open starts a new one, twice a session at most (then `encoder: the helper hung 2 times: no more helpers this session ...`, once); `backend_helper::stop()` (xnuhost's stop; `HelperBackend::stop` for one backend) kills it without waiting. Session ids are never reused. `ONEIOS_ENCODER_STUB_HANG_OPEN=1` in the helper's environment makes the stand-in's open hang (`tests/hung_helper.rs`) |
-| `helper.rs` → `bin/oneios-encoder.rs` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic |
-| `backend_ndk.rs` | the real backend: the NDK's `AMediaCodec` (`video/hevc` → Codec2 `c2.qti.hevc.encoder`, `video/avc`) behind a `Codec` trait, NV12 ByteBuffer input, Annex-B output. Still-image settings: one keyframe, constant quality. Both the `samsung` and `treble` hardware backends use this same path |
+| `helper.rs` → `bin/oneios-encoder.rs` → `oneios-encoder` | the helper: reads the device's messages, runs the backend, streams the bitstream back. Dynamic. Since 2026-11-23 it starts its binder threads, warms MediaCodec up, and names a slow open's MediaCodec call ("10-bit pictures and the helper's open", below) |
+| `backend_ndk.rs` | the real backend: the NDK's `AMediaCodec` (`video/hevc` → Codec2 `c2.qti.hevc.encoder`, `video/avc`) behind a `Codec` trait, NV12 ByteBuffer input (P010 with HEVC Main10, 2026-11-23), placed by the codec's own stride and slice height, Annex-B output. Still-image settings: one keyframe, constant quality. With Android 16's codec store (API 36, dlsym): the vendor encoder by name, its smallest size and alignment (`caps`). Both the `samsung` and `treble` hardware backends use this same path |
 | `backend_stub.rs` | the **stand-in encoder** (`StubBackend`) for a host with no MediaCodec (below). In the library too: xnuhost runs it in its own process on the PC |
-| `encctl.rs` → `bin/encctl.rs` → `encctl` | the phone test: the whole host path in one process (direct MediaCodec, no helper), encoding a test pattern as root; on a host the same path with the stand-in; and the in-process guest `Guest` the device test drives |
+| `encctl.rs` → `bin/encctl.rs` → `encctl` | the phone test: the whole host path in one process (direct MediaCodec, no helper), encoding a test pattern as root (`hevc10`: a P010 one), and `encctl caps` (the encoders' sizes and Main10); on a host the same path with the stand-in; and the in-process guest `Guest` the device test drives |
 | `tests/standin.rs`, `tests/standin_reader/`, `tests/decode.sh` | the stand-in's tests (below; the C's `test_standin.c`, `standin_reader.h`) |
 | `tests/encoder.rs` | the device's test (below; the C's `test_encoder.c`) |
 | `tests/hung_helper.rs` | a helper that hangs in its open: bounded, killed, a new one, none after two hangs, a stop not a hang (the C's `test_hung_helper` in `test_encoder.c`; a test binary of its own, since it sets the hang switch in its process's environment) |
@@ -170,6 +170,53 @@ new entry). Until 2026-11-22 xnuhost read `encoder=` of the image set and then d
 **Guess [I]:** NV12 as `COLOR_FormatYUV420SemiPlanar` ByteBuffer input to `c2.qti.hevc.encoder`; the still-image CQ
 settings; that MediaCodec's unit for a frame at quality 90 fits width x height / 2 + 64 KiB (a larger one is dropped
 and counted, point 4 above).
+
+## 10-bit pictures and the helper's open (2026-11-23)
+
+The phone's session of 2026-11-23 18:24 coded no tile: the guest refused CMPhoto's 10-bit (`xf20`) tiles, and every
+open of the helper hung until the device killed it (`did not answer an open in 2500 ms ... futex_wait_queue`, then
+`refused 96x96`; the guest side: `kernel/patches/oneios-hosted/codec/README.md`, "10-bit pictures and the helper's
+open").
+
+- **P010 [F, host-tested]:** the device takes `V4L2_PIX_FMT_P010` on OUTPUT (ENUM_FMT index 1; S_FMT answers
+  bytesperline 2 W and sizeimage 3 W H; REQBUFS sizes its buffers so; any other format EINVAL). `Backend::open` gets
+  the input format; the helper link carries it (link version 2: the OPEN's payload, the OPEN_REPLY's `b` = the
+  session's `Coding`).
+- **MediaCodec [I: not run on the phone]:** a P010 HEVC session is configured with `COLOR_FormatYUVP010` (54) and
+  `HEVCProfileMain10` (2), at constant quality, then at a bit rate; if both are refused (or Android 16's codec store
+  says the encoder has no Main10 with P010 at that size), as 8-bit NV12 with each sample's high byte, and that size
+  is not tried for Main10 again by the process. The frame goes into the input buffer at the codec's own `stride` and
+  `slice-height` (its input format, read after start), the last column and row repeated to the size the codec codes
+  (`Layout::place`).
+- **The codec's size:** with the codec store (API 36: `AMediaCodecStore_*`, `ACodecVideoCapabilities_*`, found with
+  dlsym since the programs are built for API 30) the backend opens the first vendor encoder of the type by its name,
+  and a picture below its smallest size or off its alignment is coded at the next size it takes. Without the store:
+  the type's first encoder at the picture's size, as before.
+- **The helper's open:** the helper (and `encctl`) start their binder threads first (libbinder_ndk's pool through
+  `onecamera::android::binder_threads`, the camera's fix of 2026-11-17; libhidlbase's `configureRpcThreadpool` and a
+  thread in `joinRpcThreadpool` when that library is loaded), then say HELLO; the device starts the helper at the
+  guest's first virtio-media OPEN (`Backend::prepare`: the transport's check at boot), and the helper opens one HEVC
+  encoder at once on a thread of its own (the warm-up). A watchdog thread names the MediaCodec call an open waits in
+  (`backend_ndk::open_step`) at 1 s and 2 s; the device logs the helper's lines (`ENC_MSG_LOG`). [I] that the missing
+  binder threads were the hang: the warm-up line of the next boot says whether an open comes back now.
+- **The 60 s line:** `encoder: 60 s: coded 8-bit N, 10-bit as Main10 N, 10-bit as 8-bit N; opens refused N; sessions
+  N`, the access units coded by their session's path since the last line; said 60 s after the first unit or refused
+  open, and not at all while nothing is coded (the worker sleeps until it is due, one wake-up). Each session's line
+  says its path once: `encoder: session N: HEVC 96x96 on mediacodec-helper: 10-bit pictures as Main10 (P010)`.
+
+Tested on the build laptop: `cargo test -p oneencoder` (unit: the P010 placing with a codec's stride, slice height
+and padding, P010 into an 8-bit codec, 8-bit into P010, the rows taken or not, the coded sizes, the 60 s window and
+text, the high bytes; the device test through the helper process and in process, NV12 and P010 each: ENUM_FMT, the
+S_FMT sizes, a refused format, the picture read back, the coded counts by path; the hung helper; the stand-in's 16
+streams), `cargo clippy` for the host and `aarch64-linux-android`. Not tested: anything with MediaCodec (the phone).
+
+On the phone (the CLI has no `encctl` command, so this is adb; one line an encoder, then one a square size):
+
+```sh
+adb push STAGE/bin/encctl /data/local/tmp/ && adb shell su -c '/data/local/tmp/encctl caps'
+adb shell su -c 'cd /data/local/tmp && ./encctl hevc10 96 96'    # the last line: "coded Main10" or "coded 10-bit as 8-bit"
+adb shell su -c 'cd /data/local/tmp && ./encctl hevc 96 96'
+```
 
 ## The Rust port (`oneencoder`, 2026-11-23; runtime/RUST.md)
 

@@ -3856,7 +3856,7 @@ All of these at once: `oneios-tool log pen xnuhost.log` (each stage's first line
 `N of a layout not known` above 0 with `0 stylus events given ...` means the event data is not the layout orient()
 knows: tilt and pressure then stay as the driver made them (pressure 0..1, no angles).
 
-## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; on the phone 2026-11-22: no frame encoded, iOS 27's tile session added; booted 2026-11-22: widgets render, encode-fail 0, no tile encoded yet)
+## 7g. Video encoder (hevc-encoder, hevc-guest, 2026-11-15; host and guest built, booted on the PC; on main and built on the Mac 2026-11-22; on the phone 2026-11-22: no frame encoded, iOS 27's tile session added; booted 2026-11-22: widgets render, encode-fail 0, no tile encoded yet; 2026-11-23: 10-bit tiles (P010, HEVC Main10) and the helper's binder threads, not yet booted)
 
 The phone's hardware video encoder (Qualcomm's Codec2 `c2.qti.hevc.encoder` / `c2.qti.avc.encoder`) for iOS, so
 VideoToolbox encodes HEVC and H.264 and **CMPhoto writes HEIC**: chronod's widget snapshots, screenshots, the photo
@@ -4036,6 +4036,26 @@ its software encoder)`). Host-tested (`test_hung_helper`); not yet on the phone.
 vCPU (up to 2.5 s of a deaf vCPU, under the 5 s `debug-ack`); moving it to the device's worker would make STREAMON
 return before the session is open, which the guest's V4L2 path does not expect today. Why MediaCodec's open hangs in
 the helper is the next thing to find from the new line.
+
+**The session of 2026-11-23 18:24 (runtime 0.1.18) and its fix (2026-11-23; built and host-tested, not yet booted on
+the phone).** No tile was coded, for two reasons ([codec README](../kernel/patches/oneios-hosted/codec/README.md),
+"The tile session on the phone" and "10-bit pictures and the helper's open"):
+- six `DroidVMVTHost: stage 101 failed: 2019963440` (`'xf20'`): CMPhoto gave the wallpaper posters' tiles in 10-bit
+  surfaces. The guest now takes `x420` and `xf20`, opens a tile session's device at its first tile with P010 for a
+  10-bit tile, and xnuhost codes P010 as HEVC Main10 (`COLOR_FormatYUVP010`, `HEVCProfileMain10`) when the encoder
+  offers it at that size, else as 8-bit from each sample's high byte. Each session's line says which
+  (`encoder: session N: HEVC 96x96 on mediacodec-helper: 10-bit pictures as Main10 (P010)`), and `encoder: 60 s:
+  coded 8-bit N, 10-bit as Main10 N, 10-bit as 8-bit N; opens refused N; sessions N` counts them every 60 s while any
+  are coded; the guest's `ONEIOS CODEC: pictures: 8-bit N, 10-bit as P010 N, 10-bit as 8-bit N` counts the copies.
+- six `encoder: backend mediacodec-helper refused 96x96`: not a refused size (`encctl hevc 96 96` passed on
+  2026-11-22) but the helper's open that never came back (`did not answer an open in 2500 ms ... futex_wait_queue`,
+  killed, twice, then no more helpers). The helper and `encctl` now start their binder threads (the camera helper's
+  fault of 2026-11-17: a plain executable has none, and Codec2 calls its client back over binder) [I: that this was
+  the hang], the helper starts at the boot's first virtio-media session and opens one HEVC encoder at once (`encoder:
+  helper: warm-up: ...`, with the encoder's sizes from Android 16's codec store), and a slow open says which MediaCodec
+  call it waits in (`encoder: helper: an open of HEVC 96x96 (NV12) has waited 1000 ms in AMediaCodec_configure`). A
+  picture below the encoder's smallest size is coded at that size (the guest's SPS crop takes it back).
+  `encctl caps` prints the encoders' sizes and Main10 support; `encctl hevc10 96 96` codes a P010 picture.
 
 ## 7h. The host device (host-device, 2026-11-21)
 
