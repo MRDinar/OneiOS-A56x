@@ -241,7 +241,8 @@ plan ──┬── runtime    ubuntu-24.04   the runtime package and its check
   with Homebrew's folders taken off `PATH`, so that core:root's script tests use the harness's stand-ins over
   macOS's own `stat`, `shasum`, `perl` and `awk` (a Mac without coreutils). Every test's start and end is in the
   log (`--init-script .github/scripts/gradle-test-events.gradle`, failures with their whole exception). A watchdog
-  stops Gradle after 30 minutes and first prints the processes and the test JVMs' threads (`jstack`), so a hung
+  stops Gradle after 45 minutes (30 until 2026-11-23: a good run takes about 29 on main, and slower runners were
+  still passing tests at 30) and first prints the processes and the test JVMs' threads (`jstack`), so a hung
   test is named and the reports still come out. On a failure the job summary lists the failed tests; the reports
   and results are the artifact `oneos-tests-macos`. Not a gate of the release. The macOS results are in
   "macOS: the fork's unit tests" below.
