@@ -82,6 +82,22 @@ pub const RAM_TASKS: u32 = 400;
 /// 1567 MiB for 342 tasks, 4.6 MiB each (page tables 683 MiB). Less the 256 MiB of ram-gpu-reserve (which covers the
 /// non-task part): 3.9 MiB each; 4 MiB.
 pub const RAM_TASK_COST: u64 = 4 << 20;
+/// ram-tasks-awake: with task-trim (task.rs, "The trim"; docs/booter.md 2.6), the tasks counted at ram-task-cost; the
+/// rest of ram-tasks are trimmed (no thread released for task-trim-idle seconds: their host mappings, page tables and
+/// VMAs dropped) and counted at ram-task-idle-cost. An estimate (2026-11-23): no phone log yet counts the tasks that
+/// ran in 30 s; the `tasks: trim:` line counts them from the next session on, and the trim's pressure mode
+/// (TRIM_PRESSURE_MARGIN) takes every task idle 2 s when the host gets near the headroom.
+pub const RAM_TASKS_AWAKE: u32 = 150;
+/// ram-task-idle-cost: a trimmed task's host memory: its threads' kernel stacks and task structures, its stub region's
+/// maps and tables, its mm. An estimate (2026-11-23) that also keeps room in case part of the 900 MiB no line named on
+/// 2026-11-23 is not the tasks' VMAs (then the trim does not give it back): 1 MiB.
+pub const RAM_TASK_IDLE_COST: u64 = 1 << 20;
+/// task-trim-idle: seconds without a release before a task's host mappings are dropped (task.rs, "The trim").
+pub const TASK_TRIM_IDLE: u32 = 30;
+/// Under pressure (MemAvailable under ram-session-reserve and this much) the trim takes every task idle
+/// TASK_TRIM_IDLE_PRESSED seconds.
+pub const TRIM_PRESSURE_MARGIN: u64 = 512 << 20;
+pub const TASK_TRIM_IDLE_PRESSED: u32 = 2;
 /// The host's pressure line (docs/booter.md 2.2, "The host's pressure"): swap-ins at or over this many bytes a second
 /// over 5 s start an event (the phone, 2026-11-23: 31-42 MB/s at the end, 0.1-2.5 MB/s before).
 pub const PRESSURE_SWAP_IN: u64 = 4 << 20;
@@ -414,6 +430,10 @@ const GIVEN_KEYS: &[&str] = &[
     "spin-task",
     "cpu-pin",
     "map-defer",
+    "task-trim",
+    "task-trim-idle",
+    "ram-tasks-awake",
+    "ram-task-idle-cost",
 ];
 
 /// xnuhost's settings. Before [`Config::finish`] they are what was set; after it, what the session uses.
@@ -485,6 +505,10 @@ pub struct Config {
     pub ram_tasks: u32,
     /// ram-task-cost=SIZE (4 MiB): the host's memory for one iOS task outside the guest (page tables, kernel memory)
     pub ram_task_cost: u64,
+    /// ram-tasks-awake=N (150) and ram-task-idle-cost=SIZE (1 MiB): with task-trim, the tasks counted at ram-task-cost
+    /// and what each of the others (trimmed) costs
+    pub ram_tasks_awake: u32,
+    pub ram_task_idle_cost: u64,
     /// what fits and the MemAvailable it came from (both 0: not known)
     pub ram_fit: u64,
     pub ram_fit_available: u64,
@@ -580,6 +604,10 @@ pub struct Config {
     pub cpu_pin: CpuPin,
     /// task.rs: task_map orders ride on the next release of one of the task's threads (on)
     pub map_defer: bool,
+    /// task.rs, "The trim": an idle task's host mappings are dropped (on)
+    pub task_trim: bool,
+    /// task-trim-idle=SECONDS (30): no release for this long and a task is trimmed
+    pub task_trim_idle: u32,
     pub selftest: bool,
     /// runtime/bridges devices (network, sound, haptics, Bluetooth, CPU placement); by mode unless given
     pub bridges: bool,
@@ -748,6 +776,8 @@ impl Config {
             ram_hold_percent: RAM_HOLD_PERCENT,
             ram_tasks: RAM_TASKS,
             ram_task_cost: RAM_TASK_COST,
+            ram_tasks_awake: RAM_TASKS_AWAKE,
+            ram_task_idle_cost: RAM_TASK_IDLE_COST,
             ram_fit: 0,
             ram_fit_available: 0,
             ram_lock_fit: 0,
@@ -793,6 +823,8 @@ impl Config {
             spin_task: None,
             cpu_pin: CpuPin::On,
             map_defer: true,
+            task_trim: true,
+            task_trim_idle: TASK_TRIM_IDLE,
             selftest: false,
             bridges: true,
             clusters: String::new(),
@@ -967,6 +999,10 @@ impl Config {
                 }
             }
             "map-defer" => self.map_defer = flag(value)?,
+            "task-trim" => self.task_trim = flag(value)?,
+            "task-trim-idle" => self.task_trim_idle = number(value, 1, 86400)?,
+            "ram-tasks-awake" => self.ram_tasks_awake = number(value, 0, 4096)?,
+            "ram-task-idle-cost" => self.ram_task_idle_cost = size_below_tib(value)?,
             // hw-backend, hw-backend-<bridge>, hw-backend-fallback (onebridges::hw)
             _ if key.starts_with("hw-backend") => self.hw.setting(key, value).map_err(|_| BadSetting)?,
             "host-device" => {
@@ -1185,6 +1221,8 @@ impl Config {
         take!(self, image, "gpu-priority", gpu_priority);
         take!(self, image, "spin-task", spin_task);
         take!(self, image, "map-defer", map_defer);
+        take!(self, image, "task-trim", task_trim);
+        take!(self, image, "task-trim-idle", task_trim_idle);
         take!(self, image, "cpu-pin", cpu_pin);
         self.hw.merge(&image.hw); // each hw-backend setting: the command line's, else the image set's,
         self.hw.merge(&device.hw); // else the host phone's
@@ -1366,6 +1404,8 @@ impl Config {
         take!(self, image, "ram-hold-percent", ram_hold_percent);
         take!(self, image, "ram-tasks", ram_tasks);
         take!(self, image, "ram-task-cost", ram_task_cost);
+        take!(self, image, "ram-tasks-awake", ram_tasks_awake);
+        take!(self, image, "ram-task-idle-cost", ram_task_idle_cost);
         // What the host can hold for the guest without swapping it (2026-11-14, fix-ram-fit): MemAvailable now, after
         // the fork stopped One UI's zygote and before the guest takes anything (oneos/interface.md 4), less what the
         // session needs outside the guest at its peak (2026-11-23): what holding the RAM costs (a share of it), the iOS
@@ -1860,6 +1900,10 @@ pub struct FitTerms {
     /// ram-tasks and ram-task-cost: the iOS tasks' page tables and kernel memory
     pub tasks: u32,
     pub task_cost: u64,
+    /// ram-tasks-awake and ram-task-idle-cost (task-trim): of the tasks, at most `awake` cost task_cost, the rest
+    /// idle_cost each (trimmed); `awake` >= tasks: all of them task_cost (task-trim=0)
+    pub awake: u32,
+    pub idle_cost: u64,
     /// ram-hold-percent and ram-pagetable-percent: what scales with the guest's size, % of it
     pub hold_percent: u32,
     pub pagetable_percent: u32,
@@ -1872,8 +1916,10 @@ impl FitTerms {
         self.reserve + self.gpu + self.tasks_bytes()
     }
 
+    /// The tasks' term: `awake` of them (at most all) at task_cost, the others trimmed at idle_cost.
     pub fn tasks_bytes(&self) -> u64 {
-        self.tasks as u64 * self.task_cost
+        let awake = self.awake.min(self.tasks) as u64;
+        awake * self.task_cost + (self.tasks as u64 - awake) * self.idle_cost
     }
 
     /// The share of the guest's size the host needs beside it, %.
@@ -1898,6 +1944,9 @@ impl Config {
             gpu: self.ram_gpu_reserve,
             tasks: self.ram_tasks,
             task_cost: self.ram_task_cost,
+            // Without the trim every task keeps its host mappings: all of them at ram-task-cost.
+            awake: if self.task_trim && self.tasks { self.ram_tasks_awake } else { u32::MAX },
+            idle_cost: self.ram_task_idle_cost,
             hold_percent: self.ram_hold_percent,
             pagetable_percent: self.ram_pagetable_percent,
         }
@@ -2046,6 +2095,20 @@ pub fn host_users(m: &HostMemory, guest: u64, kgsl: u64, zram: u64) -> Vec<(&'st
 /// "the guest's RAM 5632, page tables 788, ..." in MiB.
 pub fn host_users_text(users: &[(&str, u64)]) -> String {
     users.iter().map(|(name, b)| format!("{name} {}", b >> 20)).collect::<Vec<_>>().join(", ")
+}
+
+/// What changed between two looks of host_users (and the free RAM, `free`), largest change first, changes of 1 MiB or
+/// more, in MiB with their sign: "free -5900, the guest's RAM +5632, page cache -290, ..." (the hold line, memory.rs).
+pub fn host_change_text(before: &[(&str, u64)], free_before: u64, after: &[(&str, u64)], free_after: u64) -> String {
+    let get = |l: &[(&str, u64)], name: &str| l.iter().find(|u| u.0 == name).map_or(0, |u| u.1) as i64;
+    let mut names: Vec<&str> = before.iter().chain(after).map(|u| u.0).collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut d: Vec<(&str, i64)> = names.into_iter().map(|n| (n, get(after, n) - get(before, n))).collect();
+    d.push(("free", free_after as i64 - free_before as i64));
+    d.retain(|x| x.1.unsigned_abs() >= 1 << 20);
+    d.sort_by_key(|x| std::cmp::Reverse(x.1.unsigned_abs()));
+    d.iter().map(|(n, b)| format!("{n} {:+}", b / (1 << 20))).collect::<Vec<_>>().join(", ")
 }
 
 /// xh_ram_fit_auto, ram=auto: ram_auto and, unless `fit` is None (ram-fit=0), no more than `fit`, in 256 MiB steps; 0

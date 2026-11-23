@@ -1,13 +1,16 @@
 #!/bin/sh
-# runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK: the four boots of the Makefile's `make check-arm64`,
-# for any xnuhost binary (the C one, the Rust one) and any test image (IMAGE/kernel.kc and IMAGE/os.img, as mkkernel
-# writes them from the test kernel's ELF). WORK holds the data store and the logs (check.log, ramauto.log, lastwords.log,
-# restart.log). Under qemu-aarch64 on a PC, natively on an arm64 Linux host; QEMU=... names another qemu.
+# runtime/xnuhost/testkernel/check-arm64.sh XNUHOST IMAGE WORK: five boots (the first four the Makefile's
+# `make check-arm64`), for any xnuhost binary (the C one, the Rust one) and any test image (IMAGE/kernel.kc and
+# IMAGE/os.img, as mkkernel writes them from the test kernel's ELF). WORK holds the data store and the logs (check.log,
+# ramauto.log, lastwords.log, restart.log, trim.log). Under qemu-aarch64 on a PC, natively on an arm64 Linux host;
+# QEMU=... names another qemu.
 #   1. the normal boot: 3 vCPUs, 256 MiB, ram-giveback=1: 'TESTKERNEL: all passed'
 #   2. ram=auto on a host of 4 GiB, 3.5 GiB available (ram-meminfo), ram-tasks=64: 1024 or 1280 MiB, held and prefaulted
 #   3. a guest that keeps restarting: xnuhost starts again in place 8 times, then exit 3 (9 'TESTKERNEL: restart')
 #   4. the last words: SIGUSR1 from outside to xnuhost in the test kernel's hold (testkernel-hold): its line
 #      'xnuhost !! fatal signal 10 (SIGUSR1) ...: code 0, sent by pid <this shell>', then status 138 (it dies of the signal)
+#   5. the trim (task-trim-idle=1, testkernel-trim): an idle task's host mappings are dropped and filled again
+#      ('TESTKERNEL: all passed' and xnuhost's 'tasks: trim: the first' line)
 set -u
 [ $# -eq 3 ] || { echo "usage: check-arm64.sh XNUHOST IMAGE WORK" >&2; exit 2; }
 xnuhost=$1 image=$2 work=$3
@@ -77,4 +80,17 @@ if [ "$code" != 138 ] ||
   exit 1
 fi
 grep 'fatal signal' "$work/lastwords.log"
-echo "check-arm64: all four boots passed"
+
+echo "check-arm64: the trim: a task idle 1 s (task-trim-idle=1) loses its host mappings; its next run faults and is filled again"
+rm -f "$work/testdata/data.img"
+# shellcheck disable=SC2086
+timeout 60 $run "$xnuhost" $common --cpus 1 --ram 256M --set ram-giveback=1 --set task-trim-idle=1 \
+  --boot-args testkernel-trim > "$work/trim.log" 2>&1
+if ! { grep -q 'TESTKERNEL: all passed' "$work/trim.log" &&
+       grep -Eq 'tasks: trim: the first: pid [0-9]+ after [0-9]+ s with no release' "$work/trim.log"; }; then
+  grep -E 'trim|FAIL|TESTKERNEL' "$work/trim.log" | tail -8
+  echo "check-arm64: the trim failed"
+  exit 1
+fi
+grep -E 'tasks: trim: the first|PASS trim' "$work/trim.log"
+echo "check-arm64: all five boots passed"

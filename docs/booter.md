@@ -17,7 +17,7 @@ and offset; and the GPU's renderer (virglrenderer's drm2kgsl, pinned, built by `
 with a small C glue). Function names below are the Rust ones (`module::function`) where the text names code; a record
 of a test or a measurement keeps the names of the tree it was made on. **The Rust xnuhost first booted iOS on the
 phone on 2026-11-23** (section 2.6a, "On the phone, Rust against C"); it also passes the host tests and boots the test
-kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`, the four boots: the last one, xnuhost's last words on a SIGUSR1 from outside). Every other phone measurement
+kernel under qemu-aarch64 (`runtime/xnuhost/check-arm64.sh check`, the five boots: the fourth, xnuhost's last words on a SIGUSR1 from outside; the fifth, the task trim). Every other phone measurement
 below was made with the C xnuhost.
 
 xnuhost boots a source-built XNU **as a Linux process** on One UI's kernel: it loads the kernel collection
@@ -37,7 +37,7 @@ runtime/build.sh --test       # = runtime/host-tests.sh
 runtime/host-tests.sh         # every host test of the runtime (workspace, lint, boot, port, links, package); on a Mac
                               # in an arm64 Linux container, where the binary boots the test kernel as it is (no qemu)
 cd runtime && cargo test -p xnuloader -p xnuhost   # the loader's and xnuhost's unit tests alone
-runtime/xnuhost/check-arm64.sh smoke check         # the vCPU machinery alone, then the test kernel's four boots
+runtime/xnuhost/check-arm64.sh smoke check         # the vCPU machinery alone, then the test kernel's five boots
                               # (the static Android xnuhost under qemu-aarch64 on a PC; natively on arm64 Linux)
 runtime/xnuhost/check-arm64.sh bench|parallel|rpc|ab   # the trap path's costs, the parallel test, the Mach RPC
                               # round trip, two binaries compared (sections 2.6a, 2.6b, 2.6d; the script's header)
@@ -68,7 +68,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `FILE.trustcache`, `.vroot`, `.gpuaddon`, `.ramdisk`, `.adt` | optional | DarwinBoot's sidecars beside the kernel, same formats and checks. `.gpuaddon` is the boot addon the kernel writes into the Data store: the Metal plug-in (`addons/`) and, since hosted 0090, the capture plug-in (`camera/`); `oneios-tool ios addon` makes it, `phone addon` stages it (the manifest need not list it) |
 | `DIR/identity.adt` | optional | the device's own decoded device tree: model, target-type, board name and `/product` are taken from it. Without it the root has model iPhone18,2 and target-type V54 (since fix-ios-compressor: iOS names its jetsam properties by it, section 2.2). No script writes one (2026-11-13: `scripts/image/build.sh` does not, and the PC's set `out/image-pc/24A446` has none), so `/product` is only `product-name`, `artwork-scale-factor` and `model`: none of the iPhone's own `/product` (`artwork-display-gamut P3`, `oled-display`, `graphics-featureset-class APPLE10`, `ui-background-quality 100`, ...), which MobileGestalt answers from. Since 2026-11-22 (fix-artwork-traits) the no-identity `/product` also has the artwork and GPU feature-set values CoreUI needs (`artwork-device-idiom` phone, `artwork-device-subtype` 2868, `artwork-display-gamut` sRGB, `artwork-dynamic-displaymode` 0, `graphics-featureset-class` APPLE10 and its fallbacks without APPLE2; [userland.md](userland.md) "The artwork answers"). `--set identity=out/kernel-inputs/24A446/devicetree.bin` (the decoded tree as it is) gives them for one run (`kernel/patches/oneios-hosted/display/README.md`, "What iOS reads about the panel") |
 | `--display-format bgrx\|rgba16f` (`display-format=`) | `bgrx` | the frame's pixels (section 2.8): 8-bit sRGB, or half floats that keep wide colour and EDR |
-| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `boot-args-add`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ram-gpu-reserve`, `ram-pagetable-percent`, `ram-hold-percent`, `ram-tasks`, `ram-task-cost`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
+| `DIR/xnuhost.conf` | optional | `key=value` lines: `boot-args`, `boot-args-add`, `disk`, `disk-rw`, `data-store`, `scale`, `scale-fixup`, `text-fixup`, `ram`, `ram-percent`, `ram-host-floor`, `host-mem-log`, `ram-giveback`, `ram-prefault`, `ram-lock`, `ram-session-reserve`, `ram-unlock-below`, `ram-huge`, `ram-gpu-reserve`, `ram-pagetable-percent`, `ram-hold-percent`, `ram-tasks`, `ram-task-cost`, `ram-tasks-awake`, `ram-task-idle-cost`, `task-trim`, `task-trim-idle`, `ready-content-wait`, `bridges`, `wifi`, `bluetooth`, `haptics`, `pen`, `encoder` (and the others of this table that say so); the command line wins. Until 2026-11-21 `bridges=`, `wifi=`, `bluetooth=` and `haptics=` here were read and then ignored (only the command line's applied); no image this tree makes sets them |
 | `boot-args-add=WORDS` (`--set`, or the image set's `xnuhost.conf`; 2026-11-22) | none | boot arguments added to the guest's, whichever gave those (`--boot-args`, the image set's `boot-args`, or the built-in default), each unless they name it already (`NAME` or `NAME=...`): what `boot-args` says wins, and a profile adds one argument (`oneios-disable-jobs=...`, a debugging switch such as `oneios-ubt=`) without repeating the defaults. A `boot-args=` line that replaced the defaults was the cause of logo-only stalls in the S25 Ultra forks ([s25.md](s25.md)). The command line's `boot-args-add` wins over the image set's; a result over 1023 bytes is refused (exit 2). Ported from `YumikoHayamato/OneiOS` (440abb2). A runtime older than this key refuses it as a bad setting and does not start: stage the runtime before an image set that has it |
 | `DIR/overlay/userland/xnuhost.conf` | optional | the same, written by the userland hook: `scale=3` or `scale=2`, the UI scale the image's Data seed was made for (`docs/userland.md` "The screen") |
 | `--width W --height H`, `--hz N` (or `width=`, `height=`, `hz=` in the image set's `xnuhost.conf`) | the display helper's report of the panel | the guest's display mode (section 2.8); for a PC run or another panel |
@@ -85,6 +85,10 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set ram-gpu-reserve=SIZE` | 256M | what fits leaves this for KGSL's own memory and the helpers (the GPU's blobs are in the guest's RAM: section 2.2, "The terms of 2026-11-23") |
 | `--set ram-tasks=N` | 400 | what fits is sized for this many iOS tasks at once, 0 to 4096 (2026-11-23) |
 | `--set ram-task-cost=SIZE` | 4M | the host's memory for one iOS task outside the guest: its page tables and kernel memory (2026-11-23) |
+| `--set ram-tasks-awake=N` | 150 | with `task-trim=1`, what fits counts this many of `ram-tasks` at `ram-task-cost` and the rest at `ram-task-idle-cost`, 0 to 4096 (section 2.2, "The trim"; an estimate until a session's `tasks: trim:` lines measure it) |
+| `--set ram-task-idle-cost=SIZE` | 1M | the host's memory for one trimmed iOS task (its threads, its stub region, its mm; an estimate) |
+| `--set task-trim=0\|1` | 1 | 1: an iOS task with no thread released for `task-trim-idle` seconds has its host mappings dropped, its page tables and VMAs given back (section 2.6, "The trim"); 0: every task keeps them, and what fits counts every task at `ram-task-cost` |
+| `--set task-trim-idle=SECONDS` | 30 | the idle time before a task is trimmed, 1 to 86400; 2 s while host MemAvailable is under the headroom and 512 MiB |
 | `--set ram-hold-percent=N` | 7 | what holding the guest's RAM costs the host beyond its bytes, % of it, 0 to 50 (2026-11-23) |
 | `--set gpu-level=deadline\|hold\|governor` (`gpu-level=`) | `deadline` | the GPU's level (`docs/gpu.md` 2.2b): the top only for a frame that would miss its deadline; `hold`: every render-server frame at the top to 150 ms after it (the rule before 2026-11-15); `governor`: KGSL's governor alone. Passed to the renderer as `ONEIOS_GPU_LEVEL` |
 | `--set gpu-priority=0\|1` (`gpu-priority=`) | 1 | 1: each GPU context's KGSL priority from its owner's class (render server and front 4, default and background 8), background contexts at KGSL's lowest level at a still screen while no other context has GPU work queued (`docs/gpu.md` 2.2b); 0: the guest's queue priority, as upstream, and no lowest level (`ONEIOS_GPU_PRIORITY=off`) |
@@ -321,8 +325,10 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
   held fixed is the thermal fix too.** Outside the guest the host used about 11,084 - 860 - (7,263 - 2,126) = 5,087 MiB,
   zram's compressed pool and the 575 MiB of page tables included. So `ram=auto` now also takes no more than what fits:
   - Since 2026-11-23 (the terms below, "The terms of 2026-11-23"): `fit = (MemAvailable - ram-session-reserve -
-    ram-gpu-reserve - ram-tasks * ram-task-cost) / (1 + (ram-hold-percent + ram-pagetable-percent) / 100)`. The rest of
-    this point and the next ones are the history of the terms. As of 2026-11-14:
+    ram-gpu-reserve - tasks) / (1 + (ram-hold-percent + ram-pagetable-percent) / 100)`, where `tasks` is
+    `ram-tasks-awake * ram-task-cost + (ram-tasks - ram-tasks-awake) * ram-task-idle-cost` with the trim (the default
+    since 2026-11-23, "The trim" below) and `ram-tasks * ram-task-cost` without it. The rest of this point and the next
+    ones are the history of the terms. As of 2026-11-14:
     `fit = (MemAvailable - ram-session-reserve - ram-gpu-reserve) / (1 + ram-pagetable-percent / 100)` (`config::ram_fit`,
     `config.rs`), MemAvailable read at xnuhost's start, which is after the fork stopped One UI's zygote and
     system_server (`oneos/interface.md` 4) and before the guest takes anything.
@@ -410,8 +416,68 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
       tables and kernel memory) and 7% of the guest for holding it); the host keeps about 1774 MiB at the peak` (the
       model's own estimate). **The image's `ram-session-reserve=2G` must go** (`overlay/userland/xnuhost.conf`): kept,
       it gives 4352 MiB, because the 2 GiB counted what the tasks' term counts now. Host tests:
-      `config::tests::ram_fit_sessions_2026_11_23` (both logs' numbers), `ram_config`, `ram_arithmetic`. Not run on the
-      phone yet.
+      `config::tests::ram_fit_sessions_2026_11_23` (both logs' numbers), `ram_config`, `ram_arithmetic`. On the phone
+      (2026-11-23 20:23, the session the Mac copies to `out/session-logs/2026-11-23-mac-s2023/`): a window of 4534 MiB,
+      host swap near 0 (`thermal: 30 s: ... swap in 16-27 out 0 KiB/s`), but iOS starved: `oneios-mem: free 1 MiB ...
+      wired 2443-2570, compressor 162-244 MiB holding 571-832 MiB`, `jetsam: available 846-880 MiB`. The owner: far too
+      slow. Hence the trim (next point), which cuts the tasks' term at its cause.
+  - **The trim (2026-11-23, fix/task-trim; the default, `task-trim=1`).** What each task costs the host, from the
+    2026-11-23 logs: every page the kernel fills for a task is an `mmap` of one 16 KiB page of the memfd in that task's
+    Linux process (`task_map`, 2.6). The kernel's `oneios-perf:   pmap:` line counts 1,556,799-1,697,416 user maps per
+    30 s at the start of the 19:40 session (`out/session-logs/2026-11-23-mac-wifi/`). Two pages merge into one VMA only
+    when they are next to each other both in the address and in the memfd, which the guest's free pages seldom are, so
+    each map is about one VMA and one share of 4 KiB page tables, held for the task's whole life, busy or idle. The
+    `memory:` lines: page tables 558 MiB for 204 live tasks (2.7 MiB a task) and 818 MiB at 19:43; 728 and 683 MiB for
+    353 and 342 tasks at 19:06 and 18:30 (2.0-2.1 MiB). The other 900 MiB no line named is, by this arithmetic, their
+    VMAs [inference: 2 MiB of page tables is 512 tables of 2 MiB of address each; at about 16 mapped pages a table that
+    is 8,000 VMAs of about 250 bytes, 2 MiB; the 30 s line now prints the unreclaimable slab, where VMAs live, to show
+    it]. These mappings are the pmap's TLB (2.6), so a task none of whose threads has run for `task-trim-idle` (30) s
+    gets one unmap of its whole iOS range from its service thread, and Linux frees its VMAs and page tables there at
+    once; what the task touches again it faults in (one fill each, as after any flush). An iOS session has a few busy
+    tasks and hundreds of daemons that sleep for minutes, so most of the tasks' term goes back to the host. The trim
+    has a pressure mode: with host MemAvailable under the headroom and 512 MiB, tasks idle 2 s are trimmed (and 30 s
+    again 128 MiB above that). Section 2.6, "The trim", has the code's side.
+    - **What fits with it**: of `ram-tasks` (400), `ram-tasks-awake` (150) at `ram-task-cost` (4 MiB) and the rest at
+      `ram-task-idle-cost` (1 MiB): 850 MiB instead of 1600. Both numbers are estimates: no log yet counts the tasks
+      that ran in 30 s (the trim's own line does from now on), and 1 MiB for a trimmed task (its threads' kernel stacks,
+      its stub region, its mm: about 0.3 MiB [estimate]) keeps room in case part of the 900 MiB is not the VMAs.
+      `task-trim=0` counts all 400 at 4 MiB again.
+    - **On this phone**: (8561 - 1536 - 256 - 850) / 1.07 = 5531 -> **5376 MiB** (and 5423 -> 5376 from 8445), 768 MiB
+      more than the 4608 MiB above; the model leaves 8561 - 5376 - 376 - 256 - 850 = 1702 MiB at the peak, 166 above
+      the headroom. The `ram=auto` line: `... 400 tasks, 150 awake at 4096 KiB and 250 trimmed at 1024 KiB (850 MiB:
+      their page tables and kernel memory) and 7% of the guest for holding it); the host keeps about 1702 MiB at the
+      peak`.
+    - **The lines** (all lasting and cheap): at the start `tasks: trim: a task with no thread released for 30 s has its
+      host mappings dropped (task-trim=1): ...`; once `tasks: trim: the first: pid N after T s with no release: page
+      tables K KiB -> k KiB (VmPTE), the unmap U us`; every 60 s `tasks: trim: 60 s: +N trimmed (+P under pressure, F
+      failed), page tables M MiB given back (K KiB a task, k KiB left), the unmaps T ms (U us a task, most V ms); now L
+      live: A awake (a release in the last 30 s; most B since the last line), R trimmed` (B is the figure
+      `ram-tasks-awake` stands for); on each change of the pressure mode `tasks: trim: host MemAvailable N MiB: under
+      the headroom and 512 MiB: tasks idle 2 s are trimmed` or `... tasks idle 30 s are trimmed again`. The 30 s
+      `memory: the guest's RAM:` line now ends `page tables P MiB (xnuhost's own X MiB; K KiB a live task (L live)); 2
+      MiB pages: ...; unreclaimable slab S MiB, kernel stacks K MiB`.
+    - **What it costs**: a trimmed task's next run faults its working set in again: one fill per page (about 4 us on the
+      test kernel's bench, 2.6a; a fault on the phone costs about 30 us, CLAUDE.md), so a daemon that wakes after a
+      minute and touches 300 pages spends about 10 ms more. The unmap itself is one `munmap` in the task, on a nice-10
+      thread of xnuhost (`xnuhost-trim`), never on a vCPU. Fewer VMAs on the memfd also make every task's `mmap` and
+      `munmap` cheaper: each takes the memfd's `i_mmap_rwsem` and inserts into or removes from its interval tree of all
+      the tasks' VMAs [inference from Linux 6.1's mm; not measured].
+    - **Holding the RAM** (`ram-hold-percent=7`): 389, 333 and 409 MiB at 5632 MiB on 2026-11-23 (8535 - 5632 - 2494
+      at 19:40). Not the 4 KiB pages: xnuhost's own page tables over the window are 11 MiB (the 2 MiB pages point
+      below). A new line, once when the prefault is done, names it by user: `memory: holding the guest's RAM: host
+      MemAvailable A -> B MiB for N MiB held, +C MiB beyond it (P % of it; ram-hold-percent 7); by user since the start
+      (MiB): free -..., the guest's RAM +..., page cache ..., the rest ...`. The term stays 7 % until that line says
+      what it is.
+    - **The guest's wired 2.5 GiB** (`oneios-mem: ... wired 2443-2570`): mostly the GPU's buffers, which are guest
+      pages wired by IOSurface and IOGPU (`oneios-gpu-memory: ... live 1931-2044: own 1001-1284 MiB, wired 164-172
+      MiB` at 19:42-19:45, up to 2305 + 918 MiB at 18:30). Not changed here (the GPU path, [gpu.md](gpu.md)); the
+      kernel's zones were not measured apart.
+    - Tested: host tests `task::tests::the_trim_takes_only_idle_tasks_once`, `task::tests::the_trim_line`,
+      `config::tests::ram_fit_with_the_trim` (5376 MiB from both starts), `config::tests::ram_config` (the defaults,
+      `task-trim=0`, the keys by hand), `config::tests::host_change_by_user`; the test kernel's fifth boot under
+      qemu-aarch64 (`check-arm64.sh check`: `task-trim-idle=1`, boot argument `testkernel-trim`: a task's code and data
+      pages mapped and loaded, 4 s idle, then its run faults at its pc, filled faults at the data page, filled reads
+      what the kernel wrote since; `tasks: trim: the first: ...`). **Not run on the phone.**
   - A size given by hand (`ram=`) is used as given; if it is more than fits, an error line says so: `memory: ram=N MiB is
     more than this host can hold without swapping it (F MiB fit): the host will swap iOS's RAM; give ram=auto or ram=..M`.
   - When the host does swap iOS's RAM (held less resident, every 5 s), a plain line, once past 64 MiB and again at each
@@ -605,8 +671,19 @@ multiple of 2 MiB away from the link base, which is the slide the kernel finds w
     SpringBoard at +680 s (the PC shared with other agents' boots, and the host swapping 1.7 GiB of iOS's RAM with
     9.5 GiB available), no panic: the moved offsets work for the tasks' maps and `kernel_map`. qemu-user refuses
     `MADV_HUGEPAGE` (`madvise(MADV_HUGEPAGE) on the RAM: Invalid argument`, also for a static test program), so no PC
-    boot can show the 2 MiB pages themselves, and under qemu `/proc/self/stat`'s minor faults read 0. **Not run:** the
-    phone.
+    boot can show the 2 MiB pages themselves, and under qemu `/proc/self/stat`'s minor faults read 0.
+  - **On the phone (2026-11-23, three sessions):** `2 MiB host pages: yes ... shmem_enabled advise, hpage_pmd_size
+    2097152`, then `xnuhost maps 0 of 5632 MiB of the guest's RAM with 2 MiB entries`, `ShmemHugePages 0 MiB` all
+    session, and the prefault's `minor +1448977` faults: one per 4 KiB of 5632 MiB. So shmem gave no 2 MiB folio at all.
+    Linux 6.1's `shmem_is_huge` says no for a process with `MMF_DISABLE_THP` (PR_SET_THP_DISABLE, inherited across fork
+    and exec) while `madvise(MADV_HUGEPAGE)` still succeeds; a failed allocation would have given some. A guess at the
+    cause, so two things (fix/task-trim): `mem::map` reads `THP_enabled` in `/proc/self/status` and, when it is 0, turns
+    it on again for xnuhost alone (`prctl(PR_SET_THP_DISABLE, 0)`, with a line: `memory: this process had transparent
+    huge pages turned off (THP_enabled 0, PR_SET_THP_DISABLE from its parent): turned on again for xnuhost (prctl)`);
+    and when the prefault is done with none, a line says why: `memory: 2 MiB pages: none: THP_enabled 0|1; since the
+    start the host's thp_file_alloc +A, thp_file_fallback +F (tried, no free 2 MiB block|never tried|some given);
+    defrag D`. What 2 MiB pages would save is small for the RAM (xnuhost's own page tables, 11 MiB at 5632 MiB) and
+    larger for the vCPUs' TLB; the tasks' page tables do not change (they map 16 KiB at a time). Not run on the phone.
   - With the RAM more than fits (`ram=` by hand) the `memory: fixed RAM` line said `held, prefault running` for the
     whole session (no prefault was started); now `held, not locked`.
 - **iOS's own compressor and the memory view (`ram-view=`, fix-ios-compressor, 2026-11-15; off by default).** The phone's
@@ -868,6 +945,21 @@ The same reading goes to the guest on the bridge's channel 6 (`drivers/thermal`)
   gives a widget extension a few seconds after chronod asks RunningBoard to end it (5 s, read in 24A446's WidgetKit, not
   proven to be that timer) before it logs `Extension process termination watchdogged
   pid (N) after Ns` in chronod's log.
+- **The trim** (`task-trim`, default 1; `task.rs`, fix/task-trim, 2026-11-23). A task's host mappings are the pmap's
+  TLB: dropping them is always allowed, and a page the task touches again faults and is filled from the tables, as
+  after the kernel's own flush of a whole pmap (`hosted_tlb_flush_pmap`, which unmaps `[0, user_va_limit)` too). Each
+  release stamps the task (`last_release`, one store); a thread `xnuhost-trim` (nice 10, never realtime) looks every 5 s
+  (every second when the idle time is under 5 s) and orders a task none of whose threads is released (`running` 0)
+  and whose last release is `task-trim-idle` s old (2 s in the pressure mode, 2.2) one `XS_OP_UNMAP` of `[0, the stub
+  region)` through its service thread, like any order: under the task's order lock, after the maps and unmaps queued
+  before it (which it undoes). Linux frees the task's VMAs and page tables there; the stub region (threads' slots,
+  signal stacks, the service page) stays. `trimmed` is set before the order and cleared by the next release, so a task
+  is trimmed once per idle spell, and a release that comes while the unmap runs only faults, as after a flush. The
+  kernel needs no change: it never assumes a host mapping is there (fills on every fault the tables allow; `task_read`
+  and `task_write` fail and are filled on a missing page; `task_protect` is not called), and its own bookkeeping only
+  gets more conservative (0045's nested-region bits stay set, so a flush still goes to the task; 0050's fault-around
+  windows, off by default, stay marked done). The orders' time is the trim's own line, not the vCPUs' perf steps.
+  Lines and numbers: 2.2, "The trim".
 
 ### 2.6a The cost of the trap path (perf, 2026-11-12)
 
@@ -2076,7 +2168,7 @@ The Rust runtime (2026-11-23, branch `rust-runtime`; every C test was ported wit
 | `cd runtime && cargo test -p xnuloader` (`runtime/loader/tests/loader.rs`) | PC | every case of the C `test_loader.c` (193 checks) in 11 tests, plus the Makefile's `xnuloader-inspect` checks and a `mkkernel` run, pass; against the C loader on two refused kernelcaches the output and exit codes were byte-identical |
 | `cd runtime && cargo test -p xnuhost` (unit tests beside each module: `src/*/tests.rs`, `#[cfg(test)]`) | PC (x86_64; `cpu.rs` and `task.rs` with their stand-ins) | 73 pass (commit `8c56fa5`); the 3D renderer's stand-in-KGSL scenarios need `external/virglrenderer` and the memory ones `/dev/udmabuf` |
 | `cd runtime && cargo test -p xnuhost-abi` (`runtime/abi/tests/headers.rs`) | PC | the Rust mirrors of `hostcall.h`, `free_report.h`, `free_report_runs.h` agree with the C headers (every constant, size and offset), and the kernel's copies are the same files |
-| `runtime/xnuhost/check-arm64.sh smoke check` | the static Android xnuhost under `qemu-aarch64` (natively on arm64 Linux) | `smoke`: the vCPU machinery alone passes; `check`: the Rust test kernel's four boots pass (`TESTKERNEL: all passed` with 3 vCPUs and 256 MiB, `ram=auto` 1024 MiB held, the restart loop's exit 3 after 9 starts, and a SIGUSR1 from outside in `testkernel-hold`: the `xnuhost !! fatal signal 10 (SIGUSR1)` line and status 138; not SIGABRT, which qemu-aarch64 11 takes itself) |
+| `runtime/xnuhost/check-arm64.sh smoke check` | the static Android xnuhost under `qemu-aarch64` (natively on arm64 Linux) | `smoke`: the vCPU machinery alone passes; `check`: the Rust test kernel's five boots pass (`TESTKERNEL: all passed` with 3 vCPUs and 256 MiB, `ram=auto` 1024 MiB held, the restart loop's exit 3 after 9 starts, a SIGUSR1 from outside in `testkernel-hold`: the `xnuhost !! fatal signal 10 (SIGUSR1)` line and status 138, not SIGABRT, which qemu-aarch64 11 takes itself; and the task trim with `task-trim-idle=1` and `testkernel-trim`: after 4 s idle the task faults at its pc and then at its data page, filled it reads the page as the kernel left it, and xnuhost says `tasks: trim: the first`) |
 | `runtime/xnuhost/check-arm64.sh ab` | the same, two binaries pinned and alternated | the Rust xnuhost level with the C on every BENCH line before the stub's word copy, faster after (section 2.6a) |
 | `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` | PC; clippy also for `aarch64-linux-android` | clean |
 | the phone | - | **not run yet** with the Rust runtime |

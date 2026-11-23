@@ -457,6 +457,24 @@ pub fn vmstat_swaps() -> Option<(u64, u64)> {
     Some((v[0]?, v[1]?))
 }
 
+/// Whether this process has transparent huge pages turned off (/proc/self/status `THP_enabled: 0`, PR_SET_THP_DISABLE);
+/// None when the line is not there (Linux before 5.0).
+pub fn thp_disabled_self() -> Option<bool> {
+    thp_disabled_in("/proc/self/status")
+}
+
+/// [`thp_disabled_self`] of a named status file (the tests').
+pub fn thp_disabled_in(path: &str) -> Option<bool> {
+    proc_values(path, &["THP_enabled"])[0].map(|v| v == 0)
+}
+
+/// The host's file and shmem THP counters (/proc/vmstat): 2 MiB folios allocated, and attempts that fell back to 4 KiB
+/// pages (no free 2 MiB block). Neither moves when shmem never tries (shmem_enabled, VM_HUGEPAGE or THP_enabled say no).
+pub fn thp_file_counts() -> (u64, u64) {
+    let v = proc_values("/proc/vmstat", &["thp_file_alloc", "thp_file_fallback"]);
+    (v[0].unwrap_or(0), v[1].unwrap_or(0))
+}
+
 /// `xh_ramfix_counters`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counters {
@@ -854,6 +872,15 @@ mod tests {
         let h = huge_choose(&r, true); // no THP at all
         assert!(h.mode == Huge::None && h.pmd_size == 0 && h.shmem_enabled.is_empty());
         assert_eq!(huge_choose("/nonexistent", true).mode, Huge::None);
+        // THP_enabled of a status file (a parent's PR_SET_THP_DISABLE, mem.rs): 0 turned off, 1 on, no line unknown
+        let status = root.join("status");
+        std::fs::write(&status, "Name:\txnuhost\nTHP_enabled:\t0\nVmPTE:\t      48 kB\n").unwrap();
+        assert_eq!(thp_disabled_in(&status.to_string_lossy()), Some(true));
+        std::fs::write(&status, "Name:\txnuhost\nTHP_enabled:\t1\n").unwrap();
+        assert_eq!(thp_disabled_in(&status.to_string_lossy()), Some(false));
+        std::fs::write(&status, "Name:\txnuhost\n").unwrap();
+        assert_eq!(thp_disabled_in(&status.to_string_lossy()), None);
+        assert!(thp_disabled_self().is_some()); // Linux 5.0 or later here
         std::fs::remove_dir_all(&root).ok();
     }
 

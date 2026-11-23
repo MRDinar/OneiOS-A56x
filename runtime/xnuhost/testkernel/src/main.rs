@@ -11,7 +11,8 @@
 //!
 //! The boot-args it reads: testkernel-restart, testkernel-parallel[=SCALE], testkernel-rpc[=SCALE] with
 //! testkernel-rpc-mode=N, testkernel-bench[=SCALE] (the Makefile's check-arm64, bench-arm64, parallel-arm64, rpc-arm64),
-//! testkernel-hold (idle for good: check-arm64.sh signals xnuhost from outside).
+//! testkernel-hold (idle for good: check-arm64.sh signals xnuhost from outside), testkernel-trim (only the task trim,
+//! with task-trim-idle=1).
 #![no_std]
 #![no_main]
 
@@ -543,6 +544,14 @@ unsafe extern "C" fn kernel_main(args: *const BootArgs, vector: *const XhVector,
         NEXT_PAGE.store(first_page, Relaxed);
         bench::rpc_bench(cpu, rpc_scale, rpc_mode);
         halt(cpu, XH_HALT_OFF, 0);
+    }
+    // boot-args "testkernel-trim": only the trim (check-arm64.sh's fifth boot, with task-trim-idle=1), then off.
+    if (0..len).any(|c| word_at(line, c, b"testkernel-trim").is_some()) {
+        NEXT_PAGE.store(first_page, Relaxed);
+        tasks::test_trim();
+        let failures = FAILURES.load(Relaxed);
+        put(if failures != 0 { "TESTKERNEL: FAILED\n" } else { "TESTKERNEL: all passed\n" });
+        halt(cpu, if failures != 0 { XH_HALT_PANIC } else { XH_HALT_OFF }, failures)
     }
 
     // 1. What the loader handed over.

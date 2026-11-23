@@ -48,6 +48,31 @@ pub struct MemoryWatch {
     pressure: config::Pressure,
     pressure_last: Option<u64>,
     pressure_swap_ins: u64,
+    /// the trim's pressure mode (task.rs, "The trim"): on under the headroom and TRIM_PRESSURE_MARGIN
+    trim_pressed: bool,
+    /// the host before the prefault (the hold line, held_tick): its memory by user, MemFree, MemAvailable, the THP
+    /// counters; and whether the hold line was written
+    start: Option<HostLook>,
+    held_said: bool,
+}
+
+/// One look at the host's memory (the hold line).
+struct HostLook {
+    users: Vec<(&'static str, u64)>,
+    free: u64,
+    available: u64,
+    thp: (u64, u64),
+}
+
+/// The host's memory by user now (config::host_users), with the guest's held bytes.
+fn host_look(config: &Config) -> Option<HostLook> {
+    let v = config::proc_values(&config.ram_meminfo, &config::HOST_MEMORY_KEYS);
+    let available = v[9]?;
+    let host = config::HostMemory::from_values(&v);
+    let guest = held(mem::state().fd).unwrap_or(0).min(host.shmem);
+    let kgsl = ramfix::kgsl_value(std::process::id() as i32, "kernel").unwrap_or(0);
+    let users = config::host_users(&host, guest, kgsl, ramfix::zram_pool());
+    Some(HostLook { users, free: host.free, available, thp: ramfix::thp_file_counts() })
 }
 
 impl MemoryWatch {
@@ -61,6 +86,7 @@ impl MemoryWatch {
     /// of this.
     pub fn ram_fix_start(&mut self, config: &Config) {
         self.was = Some(ramfix::sample());
+        self.start = host_look(config);
         if config.ram_giveback {
             logi!("memory: ram-giveback=1: the guest's RAM is faulted in as it is used and its free pages are given back (0058); not prefaulted, not locked");
             return;
@@ -197,6 +223,24 @@ impl MemoryWatch {
         let v = config::proc_values(&config.ram_meminfo, &config::HOST_MEMORY_KEYS);
         let Some(available) = v[9] else { return };
         let reserve = config.ram_session_reserve;
+        // The trim's pressure mode (task.rs, "The trim"): with MemAvailable under the headroom and its margin, every task
+        // idle 2 s is trimmed; off again 128 MiB above that (no flapping at the line).
+        let near = reserve + config::TRIM_PRESSURE_MARGIN;
+        let pressed = available < if self.trim_pressed { near + config::PRESSURE_CALM_MARGIN } else { near };
+        if pressed != self.trim_pressed && config.task_trim {
+            self.trim_pressed = pressed;
+            crate::task::trim_pressure(pressed);
+            let what = if pressed {
+                format!(
+                    "under the headroom and {} MiB: tasks idle {} s are trimmed",
+                    config::TRIM_PRESSURE_MARGIN >> 20,
+                    crate::task::trim_idle_s(config.task_trim_idle, true)
+                )
+            } else {
+                format!("tasks idle {} s are trimmed again", config.task_trim_idle)
+            };
+            logi!("tasks: trim: host MemAvailable {} MiB: {}", available >> 20, what);
+        }
         match self.pressure.step(now, available, rate, seconds, reserve) {
             None => {}
             Some(config::PressureNote::Start { short, swapping }) => {
@@ -277,6 +321,8 @@ impl MemoryWatch {
             "Mlocked",
             "ShmemHugePages",
             "ShmemPmdMapped",
+            "SUnreclaim",
+            "KernelStack",
         ];
         let mi: Vec<u64> =
             config::proc_values(&config.ram_meminfo, &keys).into_iter().map(|v| v.unwrap_or(0)).collect();
@@ -306,16 +352,27 @@ impl MemoryWatch {
         c.mlocked = mi[5];
         let from = self.ramfix.map_or(0, |r| r.unlocked_from(c.vm_locked));
         let in_ram = if m.host.is_null() { 0 } else { resident_from(&m, from) };
+        // The iOS tasks' share (2026-11-23): the page tables less xnuhost's own, per live task, and the kernel's
+        // unreclaimable slab (their VMAs) and stacks (their threads), so a log shows what the trim (task.rs) gives back.
+        let tasks = crate::task::live();
+        let per_task = if tasks != 0 {
+            format!("; {} KiB a live task ({} live)", (tables.saturating_sub(c.vm_pte) >> 10) / tasks as u64, tasks)
+        } else {
+            String::new()
+        };
         logi!(
-            "memory: the guest's RAM: {} MiB in the host's RAM, {} MiB swapped out by the host; host swap {} of {} MiB used, page tables {} MiB (xnuhost's own {} MiB); 2 MiB pages: host ShmemHugePages {} MiB, ShmemPmdMapped {} MiB",
+            "memory: the guest's RAM: {} MiB in the host's RAM, {} MiB swapped out by the host; host swap {} of {} MiB used, page tables {} MiB (xnuhost's own {} MiB{}); 2 MiB pages: host ShmemHugePages {} MiB, ShmemPmdMapped {} MiB; unreclaimable slab {} MiB, kernel stacks {} MiB",
             in_ram >> 20,
             held.saturating_sub(in_ram) >> 20,
             swap_total.saturating_sub(swap_free) >> 20,
             swap_total >> 20,
             tables >> 20,
             c.vm_pte >> 20,
+            per_task,
             mi[6] >> 20,
-            mi[7] >> 20
+            mi[7] >> 20,
+            mi[8] >> 20,
+            mi[9] >> 20
         );
         // The fixed RAM (2026-11-13, ramfix.rs): what is held and locked, what was refused, and since the last line the
         // host's swap traffic (all processes) and this process's faults that needed the host's I/O. With the RAM held
@@ -378,9 +435,61 @@ impl MemoryWatch {
             c.vm_pte >> 20,
             (m.size / 512) >> 20
         );
+        // None of it in 2 MiB pages: why (2026-11-23: the phone said `yes` and then 0 of 5632 MiB). The host's THP
+        // counters since the start: an allocation tried and failed (no free 2 MiB block) moves thp_file_fallback;
+        // neither moving means shmem never tried (THP_enabled 0, shmem_enabled, or no VM_HUGEPAGE on the mapping).
+        if shmem == 0 {
+            let (alloc, fallback) = ramfix::thp_file_counts();
+            let (alloc0, fallback0) = self.start.as_ref().map_or((alloc, fallback), |s| s.thp);
+            let defrag = xh_core::fs::read_line("/sys/kernel/mm/transparent_hugepage/defrag").unwrap_or_default();
+            let thp = match ramfix::thp_disabled_self() {
+                Some(true) => "0 (PR_SET_THP_DISABLE)",
+                Some(false) => "1",
+                None => "?",
+            };
+            let why = if fallback != fallback0 {
+                "tried, no free 2 MiB block"
+            } else if alloc == alloc0 {
+                "never tried"
+            } else {
+                "some given"
+            };
+            logi!(
+                "memory: 2 MiB pages: none: THP_enabled {}; since the start the host's thp_file_alloc +{}, thp_file_fallback +{} ({}); defrag {}",
+                thp,
+                alloc.wrapping_sub(alloc0),
+                fallback.wrapping_sub(fallback0),
+                why,
+                defrag.trim()
+            );
+        }
+    }
+
+    /// Once, when the prefault is done: what holding the guest's RAM cost the host, MemAvailable at the start less
+    /// now, and by user (ram-hold-percent, config.rs: 5.9-7.3 % of 5632 MiB on 2026-11-23, nothing named it). Two reads
+    /// of /proc/meminfo and of /proc/vmstat in a session.
+    fn held_tick(&mut self, config: &Config) {
+        if self.held_said || !self.ramfix.is_some_and(|r| r.done.load(Acquire)) {
+            return;
+        }
+        self.held_said = true;
+        let (Some(was), Some(now)) = (self.start.as_ref(), host_look(config)) else { return };
+        let m = mem::state();
+        let cost = was.available as i64 - now.available as i64 - m.size as i64;
+        logi!(
+            "memory: holding the guest's RAM: host MemAvailable {} -> {} MiB for {} MiB held, {:+} MiB beyond it ({:.1} % of it; ram-hold-percent {}); by user since the start (MiB): {}",
+            was.available >> 20,
+            now.available >> 20,
+            m.size >> 20,
+            cost / (1 << 20),
+            cost as f64 * 100.0 / m.size.max(1) as f64,
+            config.ram_hold_percent,
+            config::host_change_text(&was.users, was.free, &now.users, now.free)
+        );
     }
 
     pub fn huge_tick(&mut self, config: &Config) {
+        self.held_tick(config);
         if self.huge_said || !mem::state().huge {
             return;
         }
@@ -437,8 +546,21 @@ pub fn ram_choice_log(config: &Config) {
         } else {
             String::new()
         };
+        // With the trim (task.rs): of the tasks, `awake` at the full cost and the others trimmed.
+        let tasks = if t.awake < t.tasks {
+            format!(
+                "{} tasks, {} awake at {} KiB and {} trimmed at {} KiB",
+                t.tasks,
+                t.awake,
+                t.task_cost >> 10,
+                t.tasks - t.awake,
+                t.idle_cost >> 10
+            )
+        } else {
+            format!("{} tasks at {} KiB", t.tasks, t.task_cost >> 10)
+        };
         format!(
-            "what fits beside the session's needs: {} MiB (MemAvailable {} MiB less {} MiB headroom{}, {} MiB for the GPU's own, {} tasks at {} KiB ({} MiB: their page tables and kernel memory) and {}% of the guest for holding it{}); the host keeps about {} MiB at the peak",
+            "what fits beside the session's needs: {} MiB (MemAvailable {} MiB less {} MiB headroom{}, {} MiB for the GPU's own, {} ({} MiB: their page tables and kernel memory) and {}% of the guest for holding it{}); the host keeps about {} MiB at the peak",
             config.ram_fit >> 20,
             config.ram_fit_available >> 20,
             t.reserve >> 20,
@@ -450,8 +572,7 @@ pub fn ram_choice_log(config: &Config) {
                 ""
             },
             t.gpu >> 20,
-            t.tasks,
-            t.task_cost >> 10,
+            tasks,
             t.tasks_bytes() >> 20,
             t.hold_percent,
             pagetables,

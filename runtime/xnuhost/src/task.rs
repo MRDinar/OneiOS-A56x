@@ -132,6 +132,81 @@ pub fn health_line(now: &TaskCounts, before: &TaskCounts, seconds: u64) -> Optio
     ))
 }
 
+// ---- the trim (docs/booter.md 2.6, "The trim"; portable: unit-tested) -------------------------------------------
+/// Whether a task is trimmed now: none of its threads is released (`running` 0), it has not been trimmed since its last
+/// release, and that release is `idle` counter ticks old or more.
+pub fn trim_due(now: u64, last_release: u64, running: u32, trimmed: bool, idle: u64) -> bool {
+    running == 0 && !trimmed && now.saturating_sub(last_release) >= idle
+}
+
+/// The idle time a task needs before it is trimmed, seconds: task-trim-idle, under the host's pressure (MemAvailable
+/// under the headroom and TRIM_PRESSURE_MARGIN) at most TASK_TRIM_IDLE_PRESSED; never under 1.
+pub fn trim_idle_s(idle: u32, pressed: bool) -> u32 {
+    if pressed { idle.min(crate::config::TASK_TRIM_IDLE_PRESSED) } else { idle }.max(1)
+}
+
+/// What the trim did, summed from the session's start (the trim's 60 s line).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrimCounts {
+    /// tasks trimmed, of them under pressure, and orders that failed (not counting a task that died meanwhile)
+    pub trims: u64,
+    pub pressed: u64,
+    pub failed: u64,
+    /// the trimmed tasks' page tables (VmPTE) before and after, bytes
+    pub pte_before: u64,
+    pub pte_after: u64,
+    /// the unmaps' time, ns
+    pub ns: u64,
+}
+
+/// What the trim saw at its last look: the live tasks, those with a release in the last task-trim-idle seconds
+/// ("awake"), and those trimmed and not released since.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrimLook {
+    pub live: u32,
+    pub awake: u32,
+    pub trimmed: u32,
+}
+
+/// One line every 60 s while the trim is on (task-trim=1) and there are tasks:
+///   tasks: trim: 60 s: +41 trimmed (+0 under pressure, 0 failed), page tables 83 MiB given back (2073 KiB a task, 12
+///   KiB left), the unmaps 60 ms (1487 us a task, most 5 ms); now 312 live: 97 awake (a release in the last 30 s; most
+///   140 since the last line), 188 trimmed
+/// `most_awake` is the most awake tasks at any look since the last line: the figure ram-tasks-awake (config.rs) is for.
+pub fn trim_line(
+    now: &TrimCounts,
+    before: &TrimCounts,
+    seconds: u64,
+    look: &TrimLook,
+    most_awake: u32,
+    most_ns: u64,
+    idle_s: u32,
+) -> Option<String> {
+    let trims = now.trims - before.trims;
+    if trims == 0 && look.live == 0 {
+        return None;
+    }
+    let (pte_before, pte_after) = (now.pte_before - before.pte_before, now.pte_after - before.pte_after);
+    let freed = pte_before.saturating_sub(pte_after);
+    let ns = now.ns - before.ns;
+    Some(format!(
+        "tasks: trim: {seconds} s: +{trims} trimmed (+{} under pressure, {} failed), page tables {} MiB given back ({} KiB \
+         a task, {} KiB left), the unmaps {} ms ({} us a task, most {} ms); now {} live: {} awake (a release in the last \
+         {idle_s} s; most {most_awake} since the last line), {} trimmed",
+        now.pressed - before.pressed,
+        now.failed - before.failed,
+        freed >> 20,
+        (freed >> 10) / trims.max(1),
+        (pte_after >> 10) / trims.max(1),
+        ns / 1_000_000,
+        ns / 1000 / trims.max(1),
+        most_ns / 1_000_000,
+        look.live,
+        look.awake,
+        look.trimmed
+    ))
+}
+
 /// SIGKILL to an iOS task's Linux process, only to a pid of one (> 0): kill(0, ...) is the caller's own process
 /// group (from xnuhost: xnuhost itself, without a word), and kill(-1, ...) as root every process of the phone. The
 /// task table's pid is 0 while a slot is being made again, so a stale order read there would be that (a race: not
@@ -254,6 +329,10 @@ mod machine {
         /// too: the kernel's flush has returned, so nothing may use the old mapping meanwhile. A taker whose batch has
         /// only maps sets nothing: a map that comes late costs a fault, not a stale page.
         unmaps_out: AtomicBool,
+        /// The trim (docs/booter.md 2.6, "The trim"): the counter at the last release of one of its threads (at its
+        /// creation before the first), written by every release; whether its host mappings were dropped since.
+        last_release: AtomicU64,
+        trimmed: AtomicBool,
     }
 
     impl Task {
@@ -271,6 +350,8 @@ mod machine {
                 npending: AtomicU32::new(0),
                 running: AtomicU32::new(0),
                 unmaps_out: AtomicBool::new(false),
+                last_release: AtomicU64::new(0),
+                trimmed: AtomicBool::new(false),
             }
         }
         fn dead(&self) -> bool {
@@ -788,6 +869,23 @@ mod machine {
             SPIN_TASK.load(Relaxed) * 1_000_000 / hz,
             if c.map_defer { "carried by the next release (map-defer=1)" } else { "ordered one by one (map-defer=0)" }
         );
+        if c.task_trim {
+            TRIM_IDLE_S.store(c.task_trim_idle.max(1), Relaxed);
+            TRIM_ON.store(true, Relaxed);
+            if std::thread::Builder::new().name("xnuhost-trim".into()).spawn(trim_main).is_err() {
+                TRIM_ON.store(false, Relaxed);
+                loge!("tasks: trim: no thread: idle tasks keep their host mappings");
+            } else {
+                logi!(
+                    "tasks: trim: a task with no thread released for {} s has its host mappings dropped (task-trim=1): \
+                     their page tables and VMAs go back to the host, and it faults in again what it touches; tasks idle \
+                     {} s when host MemAvailable is under the headroom and {} MiB",
+                    c.task_trim_idle.max(1),
+                    trim_idle_s(c.task_trim_idle, true),
+                    crate::config::TRIM_PRESSURE_MARGIN >> 20
+                );
+            }
+        }
         Ok(())
     }
 
@@ -809,7 +907,144 @@ mod machine {
         if let Some(line) = health_line(&c, &last.1, now - last.0) {
             logi!("{}", line);
         }
+        if TRIM_ON.load(Relaxed) {
+            let mut s = trim_state();
+            let idle_s = TRIM_IDLE_S.load(Relaxed);
+            if let Some(line) = trim_line(&s.counts, &s.said, now - last.0, &s.look, s.most_awake, s.most_ns, idle_s) {
+                logi!("{}", line);
+            }
+            s.said = s.counts;
+            s.most_awake = s.look.awake;
+            s.most_ns = 0;
+        }
         *last = (now, c);
+    }
+
+    // ---- the trim (docs/booter.md 2.6, "The trim") -------------------------------------------------------------------
+    // Every iOS task is a Linux process, and each page the kernel fills for it is an mmap of one 16 KiB page of the RAM
+    // memfd there (task_map): one VMA (pages next to each other in both the address and the memfd merge, most do not)
+    // and a share of 4 KiB page tables. The host keeps all of it as long as the task lives, idle or not: on the phone
+    // (2026-11-23) page tables 2.0-2.7 MiB a task (683-818 MiB for 204-353 tasks) and about as much again of kernel
+    // memory no line named, 3.9 MiB a task in all, which ram=auto had to leave beside the guest. These mappings are the
+    // pmap's TLB (hosted_pmap.h): dropping them is always allowed, and a page the task touches again faults and is
+    // filled from the tables (the kernel's flush of a whole pmap does the same, hosted_tlb_flush_pmap). So a task none
+    // of whose threads has been released for task-trim-idle seconds gets one unmap of its whole iOS range [0, the stub
+    // region) from its service thread: Linux frees its VMAs and page tables there at once.
+
+    /// task-trim; its idle time (seconds); the host near its headroom (memory.rs's pressure look: then 2 s).
+    static TRIM_ON: AtomicBool = AtomicBool::new(false);
+    static TRIM_IDLE_S: AtomicU32 = AtomicU32::new(crate::config::TASK_TRIM_IDLE);
+    static TRIM_PRESSED: AtomicBool = AtomicBool::new(false);
+
+    struct TrimState {
+        counts: TrimCounts,
+        /// the counts at the last line
+        said: TrimCounts,
+        look: TrimLook,
+        /// the most awake tasks at a look, and the slowest unmap (ns), since the last line
+        most_awake: u32,
+        most_ns: u64,
+        first_said: bool,
+    }
+    const NO_TRIMS: TrimCounts = TrimCounts { trims: 0, pressed: 0, failed: 0, pte_before: 0, pte_after: 0, ns: 0 };
+    static TRIM: Mutex<TrimState> = Mutex::new(TrimState {
+        counts: NO_TRIMS,
+        said: NO_TRIMS,
+        look: TrimLook { live: 0, awake: 0, trimmed: 0 },
+        most_awake: 0,
+        most_ns: 0,
+        first_said: false,
+    });
+    fn trim_state() -> MutexGuard<'static, TrimState> {
+        TRIM.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The main loop's pressure look (session/memory.rs): the host is near its headroom, or no longer.
+    pub fn trim_pressure(pressed: bool) {
+        TRIM_PRESSED.store(pressed, Relaxed);
+    }
+
+    /// The trim's thread, `xnuhost-trim`: nice 10 (below the vCPUs, never realtime), a look every 5 s (every second
+    /// when the idle time is shorter: pressure, or the test kernel's task-trim-idle=1). A look reads each live task's
+    /// atomics; a trim costs a read of the task's /proc status before and after and one order.
+    fn trim_main() {
+        // SAFETY: gettid and setpriority of this thread.
+        unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10) };
+        let hz = cpu::counter_hz().max(1);
+        loop {
+            let pressed = TRIM_PRESSED.load(Relaxed);
+            let idle_s = trim_idle_s(TRIM_IDLE_S.load(Relaxed), pressed);
+            std::thread::sleep(Duration::from_secs(u64::from(idle_s.min(5))));
+            if SOCK.load(Acquire) < 0 {
+                return; // the stop
+            }
+            let idle = u64::from(idle_s) * hz;
+            let awake_for = u64::from(TRIM_IDLE_S.load(Relaxed)) * hz;
+            let mut look = TrimLook::default();
+            for t in TASKS.iter() {
+                if !t.used.load(Acquire) || t.dead() || t.killing.load(Relaxed) || t.pid() <= 0 {
+                    continue;
+                }
+                look.live += 1;
+                let now = cpu::counter();
+                let last = t.last_release.load(Relaxed);
+                if now.saturating_sub(last) < awake_for {
+                    look.awake += 1;
+                }
+                if trim_due(now, last, t.running.load(SeqCst), t.trimmed.load(Relaxed), idle) {
+                    trim_one(t, (now - last) / hz, pressed);
+                }
+                look.trimmed += t.trimmed.load(Relaxed) as u32;
+            }
+            let mut s = trim_state();
+            s.look = look;
+            s.most_awake = s.most_awake.max(look.awake);
+        }
+    }
+
+    /// One trim: the task's whole iOS range unmapped by its service thread (an order: the deferred maps and unmaps go
+    /// first, then this one undoes them too). A release that comes meanwhile runs into faults and fills, as after any
+    /// flush; `trimmed` is set before the order, so such a release clears it and the task counts as awake.
+    fn trim_one(t: &Task, idle_s: u64, pressed: bool) {
+        let pid = t.pid();
+        let status = format!("/proc/{pid}/status");
+        let pte = || xh_core::fs::proc_values(&status, &["VmPTE"])[0].unwrap_or(0);
+        let before = pte();
+        t.trimmed.store(true, Relaxed);
+        let began = Instant::now();
+        let rc = order_as(t, &[XsOp { op: XS_OP_UNMAP, va: 0, size: BASE.load(Relaxed), ..ZERO_OP }], false);
+        let ns = began.elapsed().as_nanos() as u64;
+        let mut s = trim_state();
+        if rc < 0 {
+            // A task that died meanwhile is no failure. Either way it is not tried again before its next release.
+            if rc != neg(libc::ESRCH) {
+                s.counts.failed += 1;
+                if s.counts.failed <= 4 {
+                    loge!("tasks: trim: pid {}: the unmap of its iOS range failed: {}", pid, rc);
+                }
+            }
+            return;
+        }
+        drop(s);
+        let after = pte();
+        let mut s = trim_state();
+        s.counts.trims += 1;
+        s.counts.pressed += pressed as u64;
+        s.counts.pte_before += before;
+        s.counts.pte_after += after.min(before);
+        s.counts.ns += ns;
+        s.most_ns = s.most_ns.max(ns);
+        if !s.first_said {
+            s.first_said = true;
+            logi!(
+                "tasks: trim: the first: pid {} after {} s with no release: page tables {} KiB -> {} KiB (VmPTE), the unmap {} us",
+                pid,
+                idle_s,
+                before >> 10,
+                after >> 10,
+                ns / 1000
+            );
+        }
     }
 
     /// The iOS tasks alive now (the host's pressure line, session/memory.rs).
@@ -954,6 +1189,11 @@ mod machine {
     }
 
     fn order(t: &Task, ops: &[XsOp]) -> i64 {
+        order_as(t, ops, true)
+    }
+
+    /// An order; `timed`: its time goes to the vCPU's perf steps (not for the trim's, which has its own line).
+    fn order_as(t: &Task, ops: &[XsOp], timed: bool) -> i64 {
         let sp = service_page(t.service_slot.load(Relaxed));
         if ops.len() > XS_OPS_MAX - PENDING_MAX {
             return neg(libc::EINVAL);
@@ -1010,7 +1250,7 @@ mod machine {
         if rc == neg(libc::ETIMEDOUT) {
             log_task_threads(t.pid());
         }
-        if let Some(o) = ops.first() {
+        if let Some(o) = ops.first().filter(|_| timed) {
             let step = match o.op {
                 XS_OP_MAP => Some(Step::OrderMap),
                 XS_OP_UNMAP | XS_OP_EXIT => Some(Step::OrderUnmap),
@@ -1070,6 +1310,8 @@ mod machine {
         t.npending.store(0, Relaxed);
         t.running.store(0, Relaxed);
         t.unmaps_out.store(false, Relaxed);
+        t.last_release.store(cpu::counter(), Relaxed);
+        t.trimmed.store(false, Relaxed);
         tb.areas[ti] = [0; AREA_BYTES];
         tb.reply_ready = false;
         if !send(SOCK.load(Relaxed), &Message { kind: M_SPAWN, pid: 0, slot, status: 0 }) {
@@ -1667,6 +1909,11 @@ mod machine {
         let released = cpu::counter();
         p.count(Count::PrepTicks, released - entered); // placement, uclamp, the queue: host work before the hand-off
         th.released_at.store(released, Relaxed);
+        // The trim: the task is awake again; if it was trimmed, it faults its pages in again from here.
+        t.last_release.store(released, Relaxed);
+        if t.trimmed.load(Relaxed) {
+            t.trimmed.store(false, Relaxed);
+        }
         // xnuhost-abi's stub.rs: store, then wake only a sleeper.
         word!(tp, to_task).store(1, Release);
         std::sync::atomic::fence(SeqCst);
@@ -1868,6 +2115,7 @@ mod machine {
     }
     pub fn shutdown() {}
     pub fn tick() {}
+    pub fn trim_pressure(_pressed: bool) {}
     pub fn live() -> u32 {
         0
     }
@@ -1972,5 +2220,51 @@ mod tests {
             health_line(&now, &before, 60).as_deref(),
             Some("tasks: 60 s: +3 made, +2 ended by the kernel, +1 died on their own, +0 fatal traps, +0 refused; live 7 (most 8)")
         );
+    }
+
+    #[test]
+    fn the_trim_takes_only_idle_tasks_once() {
+        let hz = 19_200_000u64; // the phone's counter
+        let idle = 30 * hz;
+        let now = 1000 * hz;
+        // idle 30 s or more, nothing released, not trimmed yet: due
+        assert!(trim_due(now, now - idle, 0, false, idle));
+        assert!(trim_due(now, 0, 0, false, idle));
+        // a thread released now, a release 29 s ago, or trimmed since its last release: not due
+        assert!(!trim_due(now, now - idle, 1, false, idle));
+        assert!(!trim_due(now, now - idle + 1, 0, false, idle));
+        assert!(!trim_due(now, now - 2 * idle, 0, true, idle));
+        // a release stamped after the look (another vCPU): not due, no underflow
+        assert!(!trim_due(now, now + 5, 0, false, idle));
+        // under pressure 2 s; never under 1 s; task-trim-idle=1 stays 1
+        assert_eq!(trim_idle_s(30, false), 30);
+        assert_eq!(trim_idle_s(30, true), 2);
+        assert_eq!(trim_idle_s(1, true), 1);
+        assert_eq!(trim_idle_s(0, false), 1);
+    }
+
+    #[test]
+    fn the_trim_line() {
+        let before =
+            TrimCounts { trims: 10, pressed: 1, failed: 0, pte_before: 30 << 20, pte_after: 1 << 20, ns: 5_000_000 };
+        let now = TrimCounts {
+            trims: 51,
+            pressed: 1,
+            failed: 0,
+            pte_before: (30 << 20) + 41 * 2085 * 1024,
+            pte_after: (1 << 20) + 41 * 12 * 1024,
+            ns: 5_000_000 + 41 * 1_487_000,
+        };
+        let look = TrimLook { live: 312, awake: 97, trimmed: 188 };
+        assert_eq!(
+            trim_line(&now, &before, 60, &look, 140, 5_100_000, 30).as_deref(),
+            Some(
+                "tasks: trim: 60 s: +41 trimmed (+0 under pressure, 0 failed), page tables 83 MiB given back (2073 KiB a \
+                 task, 12 KiB left), the unmaps 60 ms (1487 us a task, most 5 ms); now 312 live: 97 awake (a release in \
+                 the last 30 s; most 140 since the last line), 188 trimmed"
+            )
+        );
+        // no task and nothing trimmed: no line
+        assert_eq!(trim_line(&before, &before, 60, &TrimLook::default(), 0, 0, 30), None);
     }
 }
