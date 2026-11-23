@@ -849,7 +849,7 @@ fn hook_the_image_hook_speaks_api_1() {
     assert_eq!(rules["db/com.apple.xpc.launchd/disabled.plist"], "0\t0\t0644");
     assert_eq!(rules["mobile/Library/Preferences/com.apple.springboard.plist"], "501\t501\t0600");
     assert_eq!(rules["tmp"], "0\t0\t1777");
-    assert_eq!((str_of(&summary, "layout"), int_of(&summary, "disabled_jobs"), str_of(&summary, "build")), ("sealed".into(), 8, BUILD.into()));
+    assert_eq!((str_of(&summary, "layout"), int_of(&summary, "disabled_jobs"), str_of(&summary, "build")), ("sealed".into(), 3, BUILD.into())); // the replace jobs of the fake root (base and extra run since 2026-11-23)
     assert!(strs(summary.get("off").unwrap()).iter().any(|l| l.starts_with("oneios-init")));
     assert!(read_plist(&c.data, "db/com.apple.xpc.launchd/disabled.plist").get("com.apple.momentsd").is_none());
     // with built helpers: the first-start unpacker goes to the overlay, not into the seed, and is trusted
@@ -933,8 +933,9 @@ fn rw_the_launchd_cache_and_the_jetsam_properties_are_edited() {
     let (helpers, _) = c.helpers();
     assert_eq!(c.apply_in("rw", &["--helpers", &helpers.to_string_lossy()]), 0, "{}", c.log);
     let cache = cache_of(&c);
-    for label in ["com.apple.nfcd", "com.apple.watchdogd", "com.apple.momentsd"] {
-        assert!(job(&cache, label).is_none(), "{label}");
+    assert!(job(&cache, "com.apple.watchdogd").is_none());
+    for label in ["com.apple.nfcd", "com.apple.momentsd"] {
+        assert!(job(&cache, label).is_some(), "{label}"); // base and extra run since 2026-11-23
     }
     assert!(job(&cache, "com.apple.analyticsd").is_some()); // kept: its clients spin without it
     for label in ["com.apple.SpringBoard", "com.apple.CommCenter", "com.apple.example.unknownd", "com.apple.example.boot"] {
@@ -960,7 +961,7 @@ fn rw_the_launchd_cache_and_the_jetsam_properties_are_edited() {
     assert!(plist::py_eq(over.get("com.apple.analyticsd").unwrap(), &d(vec![("ActiveSoftMemoryLimit", P::Int(10))])));
     assert!(launchd::forced(&jetsam).is_empty());
     // the Data tree is the root's /private/var; the edited cache needs the boot argument
-    assert!(read_plist(&c.root, "private/var/db/com.apple.xpc.launchd/disabled.plist").get("com.apple.nfcd").is_some());
+    assert!(read_plist(&c.root, "private/var/db/com.apple.xpc.launchd/disabled.plist").get("com.apple.watchdogd").is_some());
     let ek = read_plist(&c.root, "private/var/preferences/FeatureFlags/Domain/ExtensionKit.plist");
     assert!(matches!(ek.get("enforce_xpc_cache_code_signing").and_then(|f| f.get("Enabled")), Some(P::Bool(false))));
     let k = c.contract();
@@ -1048,7 +1049,7 @@ const LOG: &str = "\
 2026-11-10 14:11:19.407385 (user/501/com.apple.sleepd) <Notice>: service state: spawning
 2026-11-10 14:11:25.728310 (system/com.apple.backboardd) <Notice>: service state: spawning
 2026-11-10 14:11:27.945354 (user/501/com.apple.SpringBoard [32]) <Notice>: service state: running
-2026-11-10 14:11:29.000000 (user/501) <Warning>: failed lookup: name = com.apple.nfcd, requestor = backboardd[55], error = 3: No such process
+2026-11-10 14:11:29.000000 (user/501) <Warning>: failed lookup: name = com.apple.watchdogd, requestor = backboardd[55], error = 3: No such process
 ";
 
 fn booted(c: &mut Case, more: &str) {
@@ -1064,20 +1065,20 @@ fn bootcheck_the_policy_was_applied() {
     assert!(problems.is_empty(), "{problems:?}");
     let text = lines.join("\n");
     assert!(text.contains("2 jobs spawned, 1 pending at load"), "{text}");
-    assert!(text.contains("com.apple.nfcd (asked by backboardd[55])"), "{text}");
+    assert!(text.contains("com.apple.watchdogd (asked by backboardd[55])"), "{text}");
     assert!(text.contains("no disabled job was started"), "{text}");
 }
 
 #[test]
 fn bootcheck_a_disabled_job_that_ran_is_a_problem_unless_launchd_may_not_disable_it() {
     let mut c = Case::new("boot-ran");
-    booted(&mut c, "2026-11-10 14:12:00.000000 (system/com.apple.nfcd) <Notice>: service state: spawning\n2026-11-10 14:12:01.000000 (system/com.apple.OTATaskingAgent [70]) <Notice>: service state: spawning\n");
+    booted(&mut c, "2026-11-10 14:12:00.000000 (system/com.apple.watchdogd) <Notice>: service state: spawning\n2026-11-10 14:12:01.000000 (system/com.apple.OTATaskingAgent [70]) <Notice>: service state: spawning\n");
     let (lines, problems) = bootcheck::check(&c.data, Some(&c.root), true);
-    assert_eq!(problems, ["1 disabled jobs were started: com.apple.nfcd"]);
+    assert_eq!(problems, ["1 disabled jobs were started: com.apple.watchdogd"]);
     assert!(lines.contains(&"run although disabled (DisableAllowed = false): com.apple.OTATaskingAgent".to_string()), "{lines:?}");
     // without the OS volume's files only launchd's own line says a job may not be disabled
     let (_, problems) = bootcheck::check(&c.data, None, true);
-    assert_eq!(problems, ["2 disabled jobs were started: com.apple.OTATaskingAgent, com.apple.nfcd"]);
+    assert_eq!(problems, ["2 disabled jobs were started: com.apple.OTATaskingAgent, com.apple.watchdogd"]);
 }
 
 #[test]
