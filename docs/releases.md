@@ -505,7 +505,9 @@ Notes on the build:
   has SIGINT and SIGQUIT ignored, and every process of the lane inherits that. The first v0.1.20 run (2026-11-23)
   failed its apk lane on that: the fork's `OneiosScriptTest.theInnerShellWaitsForXnuhostAndRecordsHowItEnded` (since
   fork `bd4bbf2`) checks that xnuhost's stand-in does not ignore them, and it saw `SigIgn 0x2`. The same test passes
-  in a foreground `./gradlew test` and in CI.
+  in a foreground `./gradlew test` and in CI. The apk lane's Gradle runs with `--no-daemon` too: the second v0.1.20
+  run (with `set -m`) failed the same way, because it reused the Gradle daemon the first run had started with SIGINT
+  ignored (pid 732505, `SigIgn 0x2`), and a daemon's test workers inherit its ignored signals.
 - Tested on the Linux PC (20 cores) on 2026-11-22 with `scripts/release/release.sh 0.1.14 --build-only` at `e1b55be`,
   `app/` at `5ffc71c`. All three lanes passed in 240 s, with Gradle's and cargo's caches warm. The files: the runtime
   package (12,938,612 bytes, 26 members, kernel in), `oneios-tool-0.1.14-android-arm64`, and

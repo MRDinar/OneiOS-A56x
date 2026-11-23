@@ -130,7 +130,7 @@ lane_apk() {
   local bt=$SDK/build-tools/37.0.0 src=app/app-android/app/build/outputs/apk/full/debug/app-full-debug.apk
   app/scripts/build-guest-manager.sh --debug
   rm -f "$src"
-  ( cd app/app-android && ./gradlew --max-workers=3 test assembleFullDebug \
+  ( cd app/app-android && ./gradlew --no-daemon --max-workers=3 test assembleFullDebug \
       -Pandroid.injected.signing.store.file="$KEYSTORE" -Pandroid.injected.signing.store.password=android \
       -Pandroid.injected.signing.key.alias=androiddebugkey -Pandroid.injected.signing.key.password=android )
   [ -s "$src" ] || { echo "no $src"; return 1; }
@@ -170,8 +170,10 @@ lane_tests() {
 declare -A PIDS=()
 # Each lane with job control on (set -m): without it bash starts a background command with SIGINT and SIGQUIT
 # ignored, every process of the lane inherits that, and the fork's OneiosScriptTest (xnuhost's stand-in must not ignore
-# them) failed here and passes in CI's foreground steps (v0.1.20, 2026-11-23). Stdin is /dev/null: a lane in its own
-# process group never reads the terminal.
+# them) failed here and passes in CI's foreground steps (v0.1.20, 2026-11-23). lane_apk's Gradle runs with --no-daemon:
+# a daemon left by such a run (or by anyone's background job) keeps the ignored signals, and its test workers inherit
+# them (the second v0.1.20 run reused one). Stdin is /dev/null: a lane in its own process group never reads the
+# terminal.
 start() {
   local n=$1
   set -m
