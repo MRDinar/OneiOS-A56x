@@ -147,14 +147,15 @@ decoder-codecs=h264,hevc,vp9,av1
   passed run alone, and this change touches no bridge). Before the owner's no-qemu rule, two partial qemu boots of
   the same code (all four off against the defaults): kernel/patches/oneios-hosted/README.md "0101". Not booted on the
   phone.
-- The integration build of 2026-11-24 (main fc10d45: takeover-ram, m2v-update, frame-path, m2v-rt, with main's 0098,
-  0100 and 0101; fork e00fb92), on the build laptop: `runtime/host-tests.sh` passes (350 cargo results, 0 failed; qemu
-  boot skipped), `kernel/tests/host.sh` 11 of 11, `config::` 16 passed, the fork's `./gradlew test --rerun-tasks` 734, 0
-  failures. Kernel `HOSTED_OUT=i2 ONEIOS_CRYPTO=original` (185 patches): `xnu.macho` `a39a4885`, releasable; `kernel.kc`
-  `2586f55e` (`.hashes` `2ed63755`), audit 0 failures, stubs-check 666 good 0 bad. Add-ons with the camera plug-in
-  (`fda818f2`): 624bab3 (NativeAdrenoMetal `080821ef`, Turnip `5652c89d`; 12,330,152 bytes) and rt (`7a398d78`,
-  `bbe6c736`; 9,538,920 bytes). Runtime 0.1.21-dev `f85c11f6` (xnuhost `3da3bac6`). APK 0.5.87 (216) `b5d72170`, the
-  shared debug key. Handed to the Mac as `out/handoff/integration2-fc10d45/`. Not booted.
+- The integration build of 2026-11-24 (main d3b802f: takeover-ram, m2v-update, frame-path, m2v-rt, hw-decode, with
+  main's 0098, 0100 and 0101; fork e00fb92), on the build laptop: `runtime/host-tests.sh` passes (361 cargo results, 0
+  failed; qemu boot skipped), `kernel/tests/host.sh` 11 of 11, `config::` 16 passed, the fork's `./gradlew test
+  --rerun-tasks` 734, 0 failures. Kernel `HOSTED_OUT=i2 ONEIOS_CRYPTO=original` (185 patches, the decoder's codec
+  edit): `xnu.macho` `4fb1cf6a`, releasable; `kernel.kc` `4db993fc` (`.hashes` `e1b3ee7e`), audit 0 failures,
+  stubs-check 666 good 0 bad. Add-ons with the camera plug-in (`fda818f2`): 624bab3 (NativeAdrenoMetal `080821ef`,
+  Turnip `5652c89d`; 12,330,152 bytes) and rt (`7a398d78`, `bbe6c736`; 9,538,920 bytes). Runtime 0.1.21-dev
+  `0fc186a8` (xnuhost `7f33cd68`, oneios-encoder `79bc4a70`). APK 0.5.87 (216) `b5d72170`, the shared debug key.
+  Handed to the Mac as `out/handoff/integration2-d3b802f/`. Not booted.
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").
 
 ## Found while building the Metal plug-in (2026-11-23)
