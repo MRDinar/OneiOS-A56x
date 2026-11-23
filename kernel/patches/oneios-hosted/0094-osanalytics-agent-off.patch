@@ -1,0 +1,20 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -9177,10 +9177,16 @@
+  * writes a crash's .ips itself (OSALog createForSubmission with a writing block does not go through the helper).
+  * 0092's enable list no longer has these labels; tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs checks that
+  * this list is the policy's loops and telemetry groups.
++ *
++ * 0094 (osanalytics-agent-off, 2026-11-23): osanalyticshelper has a second job, com.apple.osanalytics.osanalyticshelper.agent
++ * (LaunchDaemons/com.apple.osanalytics.osanalyticshelper.agent.plist: "agent-init", launched by the notifyd event
++ * com.apple.trial.NamespaceUpdate.STEEL_ROSE_CHECK_IN_COHORT, a Trial update after the network comes up). With only the
++ * server label disabled, the session of 2026-11-23 20:23 still had osanalyticshelper at 15-49% of a CPU (oneios-cpu).
+  */
+ static const char oneios_jobs_disable_default[] =
+ 	"com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,"   /* 0053: the loops */
+ 	"com.apple.osanalytics.osanalyticshelper,"
++	"com.apple.osanalytics.osanalyticshelper.agent,"                                   /* 0094 */
+ 	"com.apple.analyticsagent,"
+ 	"com.apple.audioanalyticsd,"
+ 	"com.apple.cloudtelemetryd,"

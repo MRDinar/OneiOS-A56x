@@ -315,6 +315,10 @@ pub struct Policy {
     pub top_us: u32,
     pub gov_us: u32,
     pub cold_us: u32,
+    /// a frame's GPU time at the governor's clock during a burst over its time at the top, x16, as measured (0: not
+    /// yet; then [`DOWN_GUESS_X16`]). The governor is not at its bottom in a burst: KGSL's ratio (ratio_x16, 12.5 on
+    /// the S24 Ultra) said no frame over 0.53 ms at the top would ever fit at 120 Hz, so the level never came down
+    pub gov_x16: u32,
     pub easy: u32,
     pub down_need: u32,
     // counters (since the start)
@@ -335,6 +339,10 @@ pub struct Policy {
 /// "fence timeouts". A fence that took this long from submission to retirement on the host is one of those (xnuhost's
 /// 10 s "fences over 100 ms" line).
 pub const FENCE_SLOW_US: u64 = 100_000;
+
+/// The governor's clock in a burst before one is measured: half the top's (x16). The first frames at the governor teach
+/// the real ratio ([`Policy::gov_x16`]); a frame that (nearly) misses there sends the level back up at once.
+pub const DOWN_GUESS_X16: u32 = 32;
 
 fn avg(avg: u32, sample: u32) -> u32 {
     if avg != 0 {
@@ -367,6 +375,13 @@ impl Policy {
 
     fn fit(&self, budget_us: u32) -> u32 {
         (budget_us as u64 * self.fit_pct as u64 / 100) as u32
+    }
+
+    /// A frame of `top_us` at the top, at the governor's clock in a burst: the measured ratio ([`Policy::gov_x16`]),
+    /// else [`DOWN_GUESS_X16`], never more than KGSL's own top over lowest.
+    pub fn at_governor(&self, top_us: u32) -> u32 {
+        let r = if self.gov_x16 != 0 { self.gov_x16 } else { DOWN_GUESS_X16.min(self.ratio_x16.max(16)) };
+        (top_us as u64 * r as u64 / 16) as u32
     }
 
     /// A frame of `top_us` at the top, at the lowest clock (ratio_x16).
@@ -480,7 +495,8 @@ impl Policy {
             if self.mode != Mode::Deadline {
                 return;
             }
-            self.easy = if self.at_bottom(gpu_us) <= fit { self.easy + 1 } else { 0 };
+            // Whether it would fit at the governor's clock (a burst's: not its bottom, which a cold frame meets).
+            self.easy = if self.at_governor(gpu_us) <= fit { self.easy + 1 } else { 0 };
             if self.level == Level::Top && self.easy >= self.down_need {
                 self.level = Level::Governor;
                 self.downs += 1;
@@ -491,6 +507,10 @@ impl Policy {
         self.gov_us = avg(self.gov_us, gpu_us);
         if f.cold {
             self.cold_us = avg(self.cold_us, gpu_us);
+        } else if self.top_us != 0 {
+            // What the governor's clock costs this work in a burst, against the top's (bounded by KGSL's own ratio).
+            let r = (gpu_us as u64 * 16 / self.top_us as u64).clamp(16, self.ratio_x16.max(16) as u64) as u32;
+            self.gov_x16 = if self.gov_x16 != 0 { ((self.gov_x16 as u64 * 3 + r as u64 + 2) / 4) as u32 } else { r };
         }
         if gpu_us > fit {
             // It (nearly) missed at the governor's clock: the next frames at the top, and longer before trying again.

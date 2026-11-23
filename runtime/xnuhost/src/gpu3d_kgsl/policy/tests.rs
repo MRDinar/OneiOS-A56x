@@ -161,12 +161,22 @@ fn levels() {
     }
     assert_eq!(p.level, Level::Governor);
 
-    // Heavy frames at 120 Hz (3 ms at the top: 12 at the bottom, over 6.7): the top, for as long as they come.
+    // Heavy frames at 120 Hz (3 ms at the top: 12 at the governor's here, over 6.7): the top, for as long as they come.
+    // The way down guesses the governor at half the top's clock until it has measured it (6 ms: fits), so after 8
+    // frames one frame teaches it (12 ms: late, the level up at once, the ratio x4 learned); then the top for good.
     let mut p = Policy::new(Mode::Deadline);
     t = 5000 * MS;
     for _ in 0..200 {
         t += 8333 * US;
-        frame(&mut p, Class::Render, t, 0, 3000);
+        let (_, f) = p.frame_start(Class::Render, t, 0);
+        p.frame_done(&f, if f.level == Level::Top { 3000 } else { 12000 });
+    }
+    assert!(p.level == Level::Top && p.frames_top == 199 && p.late == 1 && p.gov_x16 == 64, "{p:?}");
+    // Frames the guess already rules out (3.5 ms at the top: 7 at half its clock, over 6.7) never leave the top.
+    let mut p = Policy::new(Mode::Deadline);
+    for _ in 0..200 {
+        t += 8333 * US;
+        frame(&mut p, Class::Render, t, 0, 3500);
     }
     assert!(p.level == Level::Top && p.frames_top == 200 && p.late == 0);
     // The same frames at 60 Hz fit at the bottom (12 ms of 16.7): the governor's after 8.
@@ -291,7 +301,13 @@ struct Stream {
 
 /// The share of time held at the top, the frames late, the frames.
 fn run(s: &Stream, mode: Mode) -> (f64, u32, u32) {
+    run_kgsl(s, mode, 64)
+}
+
+/// [`run`] with KGSL's top over lowest clock (x16) as the phone reads it (`ratio_x16`).
+fn run_kgsl(s: &Stream, mode: Mode, ratio_x16: u32) -> (f64, u32, u32) {
     let mut p = Policy::new(mode);
+    p.ratio_x16 = ratio_x16;
     let (hold_ns, period, end, start0) = (150 * MS, (1e9 / s.hz) as u64, (s.seconds * 1e9) as u64, 100_000 * MS);
     let (mut held, mut hold_until, mut late, mut frames) = (0u64, 0u64, 0, 0);
     let mut at = 0;
@@ -301,6 +317,8 @@ fn run(s: &Stream, mode: Mode) -> (f64, u32, u32) {
             let now = start0 + at;
             let (a, f) = p.frame_start(Class::Render, now, 0);
             if a == Action::Governor && hold_until > now {
+                // the hold ends now: what was counted past it was not held
+                held -= hold_until - now;
                 hold_until = now;
             }
             if a == Action::Top {
@@ -704,4 +722,52 @@ fn starvation() {
         assert!(now_run[1].fences == 60 && now_run[1].over_bound == 0 && now_run[1].max_ns < 50 * MS, "{what}");
         assert!(now_run[1].max_ns < old_run[1].max_ns && now_run[1].sum_ns < old_run[1].sum_ns, "{what}");
     }
+}
+
+/// The S24 Ultra's KGSL lists 80-1000 MHz (x12.50). With the way down judged at that bottom, a frame over 0.53 ms at the
+/// top never "fitted", so the level never came down: the session of 2026-11-23 20:23 logged `frames 548, at the top
+/// 548; up +0 down +0` while its frames took 2.3 ms at the top and 1.8 ms at the governor's. Now the way down uses the
+/// governor's clock in a burst (half the top's until measured, then what its frames took), and a frame that nearly
+/// misses there sends the level up again for longer.
+#[test]
+fn down_with_a_wide_clock_range() {
+    let wide = 16 * 1000 / 80; // 200: x12.50
+                               // The phone's case: 2.3 ms frames at 120 Hz, the governor's clock in a burst costing them 1.3 times (its own
+                               // choice for 28 % busy, not the 80 MHz bottom).
+    let s = Stream {
+        what: "steady redraw, 2.3 ms frames, governor x1.3",
+        hz: 120.0,
+        seconds: 10.0,
+        burst_ms: 0.0,
+        every_ms: 0.0,
+        top_us: 2300,
+        ratio: 1.3,
+    };
+    let (h_hold, l_hold, _) = run_kgsl(&s, Mode::Hold, wide);
+    let (h, l, f) = run_kgsl(&s, Mode::Deadline, wide);
+    println!("{}: hold {h_hold:.1} % ({l_hold} late), deadline {h:.1} % ({l} late of {f})", s.what);
+    assert!(h < 5.0, "the level comes down and stays down: {h:.1} % at the top");
+    assert!(l <= l_hold, "no frame later than at the top");
+    // A frame the governor's clock really cannot carry (it is at x12.5, as after a pause): the level goes back up at
+    // the first near miss, learns the ratio and stays at the top; a frame late, not more.
+    let s = Stream { what: "heavy 2.3 ms frames, governor at its bottom", ratio: 12.5, ..s };
+    let (h, l, f) = run_kgsl(&s, Mode::Deadline, wide);
+    println!("{}: deadline {h:.1} % ({l} late of {f})", s.what);
+    assert!(h > 95.0, "{h:.1} % at the top");
+    assert!(l <= 1, "{l} late");
+    // The ratio it learns is the governor's, bounded by KGSL's.
+    let mut p = Policy::new(Mode::Deadline);
+    p.ratio_x16 = wide;
+    p.top_us = 2000;
+    p.frame_done(&Frame { level: Level::Governor, cold: false, budget_us: 8333 }, 3000);
+    assert_eq!(p.gov_x16, 24); // x1.5
+    assert_eq!(p.at_governor(2000), 3000);
+    p.frame_done(&Frame { level: Level::Governor, cold: false, budget_us: 8333 }, 900_000);
+    assert!(p.gov_x16 <= wide);
+    // Unmeasured: half the top's clock, never more than KGSL's own ratio.
+    let mut p = Policy::new(Mode::Deadline);
+    p.ratio_x16 = wide;
+    assert_eq!(p.at_governor(2000), 4000);
+    p.ratio_x16 = 24;
+    assert_eq!(p.at_governor(2000), 3000);
 }

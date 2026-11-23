@@ -1878,6 +1878,10 @@ Limits:
 `oneios-tool log stacks|timeline|summary|diff|gpu|cpu|display|perf|pen LOG...` reads an xnuhost session log
 ([todo_rust.md](todo_rust.md) has each subcommand). No Python original.
 
+`log perf`'s table of the host vCPUs (`perf: cpuN` lines) has a column `host_wait%` since 2026-11-23: the vCPU thread's
+wait for a host CPU (schedstat, docs/booter.md 2.6a); empty for an older log. Tested: `cargo test -p oneios-log`
+(`synthetic.rs` `report_tables`).
+
 **`log summary` (2026-11-22): a session's health on one screen.** Its second line is xnuhost's last `versions:` line
 (docs/booter.md 2.9b: the runtime and its commit, the kernel's build id, the staged `kernel.kc`'s SHA-256, the image,
 the app's versionCode) with its line number and, when the log holds different ones, how many; a log from before

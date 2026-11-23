@@ -1,0 +1,155 @@
+diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
+--- a/osfmk/kern/thread_call.c
++++ b/osfmk/kern/thread_call.c
+@@ -53,6 +53,120 @@
+ #endif
+ #include <machine/machine_routines.h>
+ 
++
++#if XNU_HOSTED
++/*
++ * OneiOS hosted 0095 (thread-call-cpu, 2026-11-23): which callouts the thread call threads run, by function, with the
++ * CPU each took. In the session of 2026-11-23 20:23 (out/session-logs/2026-11-23-mac-s2023) 0051's kernel_task line had
++ * "thread call high #2 26553870" us in a 30 s period (88% of a vCPU) and "thread call high #1 14734207" in another, and
++ * nothing named the work: a high group thread runs any thread_call_allocate()d callout (mk_timer expiries, BSD
++ * timeout(), IOKit's and the kexts' calls). Each callout's thread CPU time (recount) and wall time are added to its
++ * function's slot (256, open addressing on the function's address; lock-free counters), and the oneios-perf report
++ * (hosted_user.c) prints the 8 that took most CPU in its period, by unslid address (name them with
++ * `oneios-tool sym kernel ADDR`), with the count, the mean CPU, the mean wall (a callout that blocks: wall above CPU)
++ * and the longest one:
++ *   oneios-perf:   thread calls: 91234 callouts, 26553870 us of CPU (88% of a vCPU), 30 functions; most:
++ *     0xfffffff007a1b2c4 81234 x 310 us (wall 320, max 9000) ...
++ * Two clock reads per callout; no lock, no allocation.
++ */
++#include <kern/recount.h>
++#if __has_feature(ptrauth_calls)
++#include <ptrauth.h>
++#endif
++
++#define HOSTED_TC_SLOTS 256
++static struct hosted_tc_slot {
++	uint64_t func, n, cpu, wall, max;
++} hosted_tc[HOSTED_TC_SLOTS];
++static uint64_t hosted_tc_full;
++
++static void
++hosted_tc_count(thread_call_func_t func, uint64_t cpu, uint64_t wall)
++{
++	uint64_t f = (uint64_t)func;
++#if __has_feature(ptrauth_calls)
++	f = (uint64_t)ptrauth_strip(func, ptrauth_key_function_pointer);
++#endif
++	unsigned h = (unsigned)(((f >> 2) * 0x9e3779b97f4a7c15ull) >> 56);
++	for (unsigned i = 0; i < 32; i++) {
++		struct hosted_tc_slot *s = &hosted_tc[(h + i) % HOSTED_TC_SLOTS];
++		uint64_t cur = os_atomic_load(&s->func, relaxed);
++		if (cur == 0 && os_atomic_cmpxchg(&s->func, 0, f, relaxed)) {
++			cur = f;
++		} else if (cur == 0) {
++			cur = os_atomic_load(&s->func, relaxed);
++		}
++		if (cur != f) {
++			continue;
++		}
++		os_atomic_inc(&s->n, relaxed);
++		os_atomic_add(&s->cpu, cpu, relaxed);
++		os_atomic_add(&s->wall, wall, relaxed);
++		uint64_t m = os_atomic_load(&s->max, relaxed);
++		while (cpu > m && !os_atomic_cmpxchgv(&s->max, m, cpu, &m, relaxed)) {
++		}
++		return;
++	}
++	os_atomic_inc(&hosted_tc_full, relaxed);
++}
++
++/* The report's line (hosted_user.c, after 0051's): this period's deltas, the top 8 by CPU. */
++void hosted_tc_report(uint64_t wall_us, uint64_t (*to_us)(uint64_t));
++void
++hosted_tc_report(uint64_t wall_us, uint64_t (*to_us)(uint64_t))
++{
++	static uint64_t last_n[HOSTED_TC_SLOTS], last_cpu[HOSTED_TC_SLOTS], last_wall[HOSTED_TC_SLOTS], last_full;
++	struct {
++		uint64_t func, n, cpu, wall, max;
++	} top[8];
++	uint64_t total_n = 0, total_cpu = 0, full = os_atomic_load(&hosted_tc_full, relaxed);
++	unsigned funcs = 0;
++	bzero(top, sizeof(top));
++	for (unsigned i = 0; i < HOSTED_TC_SLOTS; i++) {
++		struct hosted_tc_slot *s = &hosted_tc[i];
++		uint64_t f = os_atomic_load(&s->func, relaxed);
++		if (f == 0) {
++			continue;
++		}
++		uint64_t n = os_atomic_load(&s->n, relaxed), cpu = os_atomic_load(&s->cpu, relaxed);
++		uint64_t wall = os_atomic_load(&s->wall, relaxed), max = os_atomic_xchg(&s->max, 0, relaxed);
++		uint64_t dn = n - last_n[i], dcpu = cpu - last_cpu[i], dwall = wall - last_wall[i];
++		last_n[i] = n;
++		last_cpu[i] = cpu;
++		last_wall[i] = wall;
++		if (dn == 0) {
++			continue;
++		}
++		funcs++;
++		total_n += dn;
++		total_cpu += dcpu;
++		unsigned k = 8;
++		while (k > 0 && top[k - 1].cpu < dcpu) {
++			k--;
++		}
++		if (k < 8) {
++			memmove(&top[k + 1], &top[k], (7 - k) * sizeof(top[0]));
++			top[k].func = f;
++			top[k].n = dn;
++			top[k].cpu = dcpu;
++			top[k].wall = dwall;
++			top[k].max = max;
++		}
++	}
++	char line[900];
++	unsigned used = (unsigned)snprintf(line, sizeof(line), "thread calls: %llu callouts, %llu us of CPU (%llu%% of a vCPU), "
++	    "%u functions%s; most:", total_n, to_us(total_cpu), to_us(total_cpu) * 100 / (wall_us ? wall_us : 1), funcs,
++	    full != last_full ? " (table full: some not counted)" : "");
++	last_full = full;
++	for (unsigned k = 0; k < 8 && top[k].n != 0 && used < sizeof(line) - 90; k++) {
++		used += (unsigned)snprintf(line + used, sizeof(line) - used, " 0x%llx %llu x %llu us (wall %llu, max %llu)",
++		    (uint64_t)VM_KERNEL_UNSLIDE(top[k].func), top[k].n, to_us(top[k].cpu) / top[k].n,
++		    to_us(top[k].wall) / top[k].n, to_us(top[k].max));
++	}
++	printf("oneios-perf:   %s\n", line);
++}
++#endif /* XNU_HOSTED */
++
+ static KALLOC_TYPE_DEFINE(thread_call_zone, thread_call_data_t,
+     KT_PRIV_ACCT | KT_NOEARLY);
+ 
+@@ -1803,10 +1917,18 @@
+ 
+ 		enable_ints_and_unlock(group, s);
+ 
++#if XNU_HOSTED
++		uint64_t hosted_tc_cpu0 = recount_current_thread_time_mach();      /* 0095 */
++#endif
+ 		thc_state.thc_call_start = mach_absolute_time();
+ 
+ 		thread_call_invoke(func, param0, param1, call);
+ 
++#if XNU_HOSTED
++		hosted_tc_count(func, recount_current_thread_time_mach() - hosted_tc_cpu0,      /* 0095 */
++		    mach_absolute_time() - thc_state.thc_call_start);
++#endif
++
+ 		thc_state.thc_call = NULL;
+ 
+ 		if (get_preemption_level() != 0) {
+diff --git a/osfmk/arm64/hosted/hosted_user.c b/osfmk/arm64/hosted/hosted_user.c
+--- a/osfmk/arm64/hosted/hosted_user.c
++++ b/osfmk/arm64/hosted/hosted_user.c
+@@ -1377,6 +1377,8 @@
+ 		hosted_perf_top("bsd (number calls x mean)", c.bsd_n, c.bsd_t, c0->bsd_n, c0->bsd_t, HOSTED_PERF_BSD, 12, false);
+ 		hosted_perf_top("mach traps", c.mach_n, c.mach_t, c0->mach_n, c0->mach_t, HOSTED_PERF_MACH, 8, true);
+ 		hosted_perf_kernel_threads(wall_us);    /* 0051 */
++		extern void hosted_tc_report(uint64_t wall_us, uint64_t (*to_us)(uint64_t));
++		hosted_tc_report(wall_us, hosted_perf_us);  /* 0095 (thread_call.c) */
+ 		hosted_irq_report(wall_us);             /* 0081 */
+ 		extern void hosted_edge_report(void);
+ 		hosted_edge_report();                   /* 0091 (hosted_smp.c) */

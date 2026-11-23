@@ -303,9 +303,10 @@ fn policy_the_policy_does_not_contradict_itself() {
     assert!(!chosen.iter().any(|l| d.keep.contains(l)));
     assert!(!chosen.iter().any(|l| d.idle.iter().any(|(i, _)| i == l)));
     // vphone's base list of 134, less generativeexperiencesd (kept) and the four OTA jobs (replace)
-    // analyticsd (2026-11-12), navd (2026-11-22) and duetexpertd (2026-11-23) went to keep; 16 to telemetry (2026-11-23)
+    // analyticsd (2026-11-12), navd (2026-11-22) and duetexpertd (2026-11-23) went to keep; 16 to telemetry (2026-11-23), with
+    // osanalyticshelper and its second job, osanalyticshelper.agent (0094)
     assert_eq!(d.group("base").unwrap().labels.len(), 110);
-    assert_eq!(d.group("telemetry").unwrap().labels.len(), 17);
+    assert_eq!(d.group("telemetry").unwrap().labels.len(), 18);
     for label in ["com.apple.SpringBoard", "com.apple.backboardd", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.generativeexperiencesd", "com.apple.bluetoothd", "com.apple.locationd", "com.apple.navd", "com.apple.duetexpertd"] {
         assert!(d.keep.contains(label), "{label}");
     }
@@ -358,9 +359,10 @@ fn policy_the_kernels_enable_list_is_what_the_policy_runs_again() {
     assert!(telemetry.default, "telemetry is on by default");
     let mut gone = removed.clone();
     gone.sort();
-    let mut want_gone: Vec<String> = telemetry.labels.iter().filter(|l| *l != "com.apple.osanalytics.osanalyticshelper").cloned().collect();
+    let mut want_gone: Vec<String> =
+        telemetry.labels.iter().filter(|l| !l.starts_with("com.apple.osanalytics.osanalyticshelper")).cloned().collect();
     want_gone.sort();
-    assert_eq!(gone, want_gone, "0093 takes out of 0092's list the telemetry jobs it had (osanalyticshelper was kept, never in it)");
+    assert_eq!(gone, want_gone, "0093 takes out of 0092's list the telemetry jobs it had (osanalyticshelper and its agent job were never in it)");
     let mut want: Vec<String> = ["base", "extra", "signin"].iter().flat_map(|g| d.group(g).unwrap().labels.clone()).collect();
     for g in ["base", "extra", "signin"] {
         assert!(!d.group(g).unwrap().default, "{g} is off by default");
@@ -378,8 +380,15 @@ fn policy_the_kernels_enable_list_is_what_the_policy_runs_again() {
 
 #[test]
 fn policy_the_kernels_disable_list_is_the_loops_and_the_telemetry() {
-    // hosted 0053 and 0093: a Data store from an older seed gets the policy's crash loops and telemetry disabled.
+    // hosted 0053 and 0093: a Data store from an older seed gets the policy's crash loops and telemetry disabled. 0094 adds
+    // a label to the list (its "+" lines inside it).
     let mut kernel = patch_list(&hosted_patch("0093-telemetry-jobs-off.patch"), "oneios_jobs_disable_default");
+    kernel.extend(
+        hosted_patch("0094-osanalytics-agent-off.patch")
+            .lines()
+            .filter(|l| l.starts_with("+\t\"com.apple."))
+            .filter_map(|l| l.split('"').nth(1).map(|s| s.trim_end_matches(',').to_string())),
+    );
     assert!(kernel.join(",").len() < 1024, "0093's buffer is 1024 bytes");
     kernel.sort();
     let d = config::daemons(None).unwrap();

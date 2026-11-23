@@ -173,7 +173,10 @@ labels = ["com.apple.accessibility.axassetsd", "com.apple.aonsensed", "com.apple
 default = true
 source = "on by default since 2026-11-23 (the owner: turn off what a session does not need, analytics and crash-report submission). In the session of 2026-11-23 18:24 (runtime 0.1.18, kernel 0092) osanalyticshelper used 55-103 % of a CPU for minutes after the Wi-Fi join (oneios-cpu; oneios-top: 70895 page faults, 10.4 s of its 13.7 s), with every guest CPU busy (all 800 %) and the phone at its CPU limit. The others are the upload and diagnostics jobs of vphone's base27 (measured there with no feature lost): analytics agents, telemetry, diagnostic extensions and push, symptoms diagnostics, RTC reporting, power metrics. ReportCrash stays (keep): it writes a crash's .ips itself (24A446's OSAnalytics: +[OSALog createForSubmission:...writing:] with a writing block does not go through osanalyticshelper), so the crash reports of /private/var/mobile/Library/Logs/CrashReporter are still made; nothing is submitted. Costs: Settings > Privacy > Analytics has no new data; hang and power reports are not made. A Data store from an older seed gets the group from the kernel (hosted 0093, 0053's list)"
 labels = [
-  "com.apple.osanalytics.osanalyticshelper",
+# osanalyticshelper.agent: the same binary's second job ("agent-init", LaunchDaemons/com.apple.osanalytics.osanalyticshelper.agent.plist,
+# started by the notifyd event com.apple.trial.NamespaceUpdate.STEEL_ROSE_CHECK_IN_COHORT): with only the first label
+# disabled, osanalyticshelper still ran at 15-49 % of a CPU in the session of 2026-11-23 20:23 (hosted 0094).
+  "com.apple.osanalytics.osanalyticshelper", "com.apple.osanalytics.osanalyticshelper.agent",
   "com.apple.analyticsagent", "com.apple.audioanalyticsd", "com.apple.cloudtelemetryd", "com.apple.diagnosticextensionsd",
   "com.apple.diagnosticspushd", "com.apple.ecosystemanalyticsd", "com.apple.geoanalyticsd", "com.apple.hangtelemetryd",
   "com.apple.inputanalyticsd", "com.apple.libsqlite3.dbtelemetryd", "com.apple.perfpowermetricd", "com.apple.rtcreportingd",

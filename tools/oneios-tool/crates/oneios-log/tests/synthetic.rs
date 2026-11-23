@@ -369,7 +369,7 @@ fn reports_log() -> String {
     t += "[   341.000] xnuhost I perf: 30.0 s: 46936 task traps (1562/s): syscall 11002, fault 35575, interrupt 359, other 0; futex sleeps: vCPU 58193, iOS thread 16287 (of 46933 hand-offs each way); futex wakes 0 + 16288; task_map 35574 carried by a release, 3 ordered; timer_set 171011 (171012 to the host timer)\n";
     t += "[   341.000] xnuhost I perf:   up (trap->vCPU)    n    46933  mean   12.52  p50   14.34  p90   16.38  p99    49.15  max     949.1 us\n";
     t += "[   341.000] xnuhost I perf:   kernel: syscall    n    11001  mean  384.52  p50   40.96  p90  196.61  p99 10485.76  max  242913.6 us\n";
-    t += "[   341.000] xnuhost I perf: cpu3: 19% of a core; of its wall time 28% kernel, 6% an iOS thread's turn, 66% idle; 754 traps/s\n";
+    t += "[   341.000] xnuhost I perf: cpu3: 19% of a core; of its wall time 28% kernel, 6% an iOS thread's turn, 66% idle; 754 traps/s; last on host CPU 3; waited for a host CPU 12% (runnable, not running)\n";
     t
 }
 
@@ -435,7 +435,7 @@ fn report_tables() {
     assert_eq!(tables[2].rows[3][2..], [Cell::text("mach"), Cell::Int(-18), Cell::Int(6393), Cell::Int(11)]);
     assert_eq!(ints(&tables[3].rows[0]), [341_000, 45, 30_000, 46936, 1562, 11002, 35575, 359, 0, 58193, 16287, 46933, 0, 16288, 35574, 3, 171011, 171012]);
     assert_eq!(tables[4].rows[1], [Cell::Float(341.0, 3), Cell::Int(47), Cell::text("kernel: syscall"), Cell::Int(11001), Cell::Float(384.52, 2), Cell::Float(40.96, 2), Cell::Float(196.61, 2), Cell::Float(10485.76, 2), Cell::Float(242913.6, 1)]);
-    assert_eq!(ints(&tables[5].rows[0]), [341_000, 48, 3, 19, 28, 6, 66, 754]);
+    assert_eq!(ints(&tables[5].rows[0]), [341_000, 48, 3, 19, 28, 6, 66, 754, 12]);
 
     // The three formats of one table.
     let (tables, notes) = reports::cpu(&log);
