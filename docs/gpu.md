@@ -203,7 +203,15 @@ Core Animation's work-interval deadlines; nothing of that reached KGSL here.
   than 80 % of its budget at the governor's clock: after a pause, its time there if known, else its time at the top times
   KGSL's clock ratio (`/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies`, read once: top over lowest, 4.0 if unreadable);
   during a burst at the governor's, as soon as one frame (nearly) misses. At the top it comes back to the governor after 8
-  frames in a row that would fit at the lowest clock (32, then up to 64, after a frame missed at the governor's). Easy frames
+  frames in a row that would fit at the governor's clock in a burst (32, then up to 64, after a frame missed at the
+  governor's): their time at the top times what the governor's clock cost this work when its frames last ran there
+  (`gov_x16`, learned from each burst frame at the governor's, bounded by KGSL's top over lowest), or twice it before
+  that is measured. Until 2026-11-23 this used KGSL's top over lowest, x12.50 on the S24 Ultra (80-1000 MHz): only a
+  frame under 0.53 ms at the top could fit at 120 Hz, so the level never came down (the session of 2026-11-23 20:23:
+  `frames 548, at the top 548; up +0 down +0`, frames 2.3 ms at the top and 1.8 ms at the governor's), and every
+  vCPU and iOS thread carried drm2kgsl's `uclamp.min 1024` for most of the session (section 2.2: it follows the
+  constraint).
+  The 10 s line says the ratio in use: `the governor's N us (xR of the top's, measured|guessed)`. Easy frames
   (clock ticks, a still screen's redraws, typing, light animations) leave the clock to KGSL's governor; heavy ones (a
   120 Hz scroll of 3 ms frames) keep the top for as long as they come. Nothing new is written anywhere: KGSL's own
   `KGSL_PROP_PWR_CONSTRAINT` as before, on our own KGSL contexts, inside KGSL's thermal limit.

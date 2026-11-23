@@ -1032,11 +1032,15 @@ perf:   up (trap->vCPU)    n ... mean ... p50 ... p90 ... p99 ... max ... us    
 perf:   down (vCPU->task)  ...                                                     the release to the handler's wake
 perf:   kernel: syscall    ...      the kernel's work after a trap of that kind, to this vCPU's next thread_run, idle out
 perf:   kernel: fault / interrupt / other, order: map / unmap / protect / clone, maps by release, kick
-perf: cpuN: C% of a core; of its wall time K% kernel, U% an iOS thread's turn, I% idle; T traps/s
+perf: cpuN: C% of a core; of its wall time K% kernel, U% an iOS thread's turn, I% idle; T traps/s; last on host CPU H; waited for a host CPU W% (runnable, not running)
 ```
 
 "An iOS thread's turn" is the time `thread_run` waited (the thread's own code plus both hand-offs); "kernel" is the rest
-of the vCPU's wall time outside `cpu_idle`; "C% of a core" is the vCPU thread's CPU time (Linux's clock of that thread).
+of the vCPU's wall time outside `cpu_idle`; "C% of a core" is the vCPU thread's CPU time (Linux's clock of that thread). "Waited for a host CPU" (since 2026-11-23) is its
+run-queue wait from `/proc/self/task/TID/schedstat` (one file read per vCPU per report): the part of "kernel" that is
+the host's CPUs being busy with other work, not the guest kernel's own. In the session of 2026-11-23 20:23 the vCPUs
+showed 94% kernel at 44% of a core with nothing to say where the other half went; `oneios-tool log perf` has it as
+`host_wait%`.
 The kernel's side of the same trips (which system calls, the fills, the TLB lock) is the hosted kernel's
 `oneios-perf:` report (patch 0041, `kernel/patches/oneios-hosted/README.md`).
 

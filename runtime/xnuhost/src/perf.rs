@@ -5,7 +5,8 @@
 //! on SIGQUIT.
 //!   perf: 30.0 s: 112340 task traps (3745/s): syscall 80000, fault 20000, interrupt 9000, other 3340; ...
 //!   perf:   up        n ... mean ... p50 ... p90 ... p99 ... max ... (microseconds)
-//!   perf: cpu0: 56% of a core; of its wall time 31% kernel, 40% an iOS thread's turn, 29% idle; 3700 traps/s
+//!   perf: cpu0: 56% of a core; of its wall time 31% kernel, 40% an iOS thread's turn, 29% idle; 3700 traps/s; last on host
+//!     CPU 0; waited for a host CPU 3% (runnable, not running: schedstat)
 //! A step is a histogram of nanoseconds with four buckets per power of two, so a quantile is good to 19%.
 
 use crate::cpu::{self, Vcpu, MAX_CPUS};
@@ -314,6 +315,8 @@ struct Reporter {
     /// the previous report's values, for the deltas
     last: [Snapshot; MAX_CPUS],
     last_cpu_ns: [u64; MAX_CPUS],
+    /// each vCPU thread's time runnable but not running (schedstat), at the previous report
+    last_wait_ns: [u64; MAX_CPUS],
 }
 
 static REPORTER: Mutex<Option<Reporter>> = Mutex::new(None);
@@ -331,6 +334,7 @@ pub fn init(perf_log: Option<u32>) {
         start: now,
         last: Default::default(),
         last_cpu_ns: [0; MAX_CPUS],
+        last_wait_ns: [0; MAX_CPUS],
     });
 }
 
@@ -367,6 +371,21 @@ fn thread_cpu_ns(v: &Vcpu) -> u64 {
     } else {
         0
     }
+}
+
+/// How long a thread of this process waited runnable for a host CPU, in ns (/proc/self/task/TID/schedstat: run time,
+/// wait time, timeslices; CONFIG_SCHED_INFO), 0 if unknown. One named file per vCPU per report, as [`thread_psr`].
+fn thread_wait_ns(tid: i32) -> u64 {
+    if tid <= 0 {
+        return 0;
+    }
+    let Ok(text) = std::fs::read(format!("/proc/self/task/{tid}/schedstat")) else { return 0 };
+    schedstat_wait(&String::from_utf8_lossy(&text[..text.len().min(127)]))
+}
+
+/// The wait time (the second field) of a schedstat line.
+fn schedstat_wait(line: &str) -> u64 {
+    line.split_whitespace().nth(1).and_then(|f| f.parse().ok()).unwrap_or(0)
 }
 
 /// The host CPU a thread last ran on (/proc/self/task/TID/stat field 39, "processor"), -1 if unknown. A named file
@@ -464,6 +483,8 @@ pub fn log(since_start: bool) {
         let then = (!since_start).then(|| &r.last[i]);
         let cpu_ns = thread_cpu_ns(v);
         let cpu_then = if since_start { 0 } else { r.last_cpu_ns[i] };
+        let wait_ns = thread_wait_ns(v.tid.load(Relaxed));
+        let wait_then = if since_start { 0 } else { r.last_wait_ns[i] };
         let user = p.count(TicksUser) - then.map_or(0, |t| t.count(TicksUser));
         let idle = p.count(TicksIdle) - then.map_or(0, |t| t.count(TicksIdle));
         let t: u64 = (0..16).map(|k| p.traps[k] - then.map_or(0, |t| t.traps[k])).sum();
@@ -472,19 +493,21 @@ pub fn log(since_start: bool) {
         if v.started.load(Relaxed) && w > 0.0 {
             logi!(
                 "perf: cpu{}: {:.0}% of a core; of its wall time {:.0}% kernel, {:.0}% an iOS thread's turn, {:.0}% idle; \
-                 {:.0} traps/s; last on host CPU {}",
+                 {:.0} traps/s; last on host CPU {}; waited for a host CPU {:.0}% (runnable, not running)",
                 i,
                 if cpu_ns >= cpu_then { (cpu_ns - cpu_then) as f64 / 1e7 / seconds } else { 0.0 },
                 if kern > 0.0 { 100.0 * kern / w } else { 0.0 },
                 100.0 * user as f64 / w,
                 100.0 * idle as f64 / w,
                 t as f64 / seconds,
-                thread_psr(v.tid.load(Relaxed))
+                thread_psr(v.tid.load(Relaxed)),
+                if wait_ns >= wait_then { (wait_ns - wait_then) as f64 / 1e7 / seconds } else { 0.0 }
             );
         }
         if !since_start {
             r.last[i] = p.clone();
             r.last_cpu_ns[i] = cpu_ns;
+            r.last_wait_ns[i] = wait_ns;
         }
     }
     if !since_start {
@@ -558,5 +581,17 @@ mod tests {
         assert!(text.iter().any(|l| l.contains("perf:   queue: 5 maps and unmaps joined")));
         assert!(text.iter().any(|l| l.contains("perf:   up (trap->vCPU)    n        1  mean    2.50")), "{text:?}");
         assert!(!text.iter().any(|l| l.contains("kernel: fault")));
+    }
+
+    #[test]
+    fn schedstat_wait_time() {
+        // run time, wait time, timeslices (Linux's proc_pid_schedstat)
+        assert_eq!(schedstat_wait("123456789 98765 42\n"), 98765);
+        assert_eq!(schedstat_wait(""), 0);
+        assert_eq!(thread_wait_ns(0), 0);
+        // this thread's own file: a number (0 without CONFIG_SCHED_INFO), never a panic
+        // SAFETY: gettid has no arguments and cannot fail.
+        let me = unsafe { libc::gettid() };
+        let _ = thread_wait_ns(me);
     }
 }

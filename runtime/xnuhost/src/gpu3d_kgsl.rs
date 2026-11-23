@@ -254,7 +254,7 @@ impl St {
             say!(
                 1,
                 "gpu: {} s level: frames {}, at the top {}; up +{} down +{}; missed at the governor's +{}, over budget +{}; \
-                 GPU time at the top {} us, the governor's {} us, after a pause {} us; frame interval {} us; background \
+                 GPU time at the top {} us, the governor's {} us (x{}.{:02} of the top's{}), after a pause {} us; frame interval {} us; background \
                  submissions at the lowest +{} (kept off it: others' work queued, surfaces read, or waited {} ms +{}; ended by \
                  others' work +{})",
                 secs,
@@ -266,6 +266,9 @@ impl St {
                 p.late - s.late,
                 p.top_us,
                 p.gov_us,
+                p.at_governor(16) / 16,
+                p.at_governor(16) % 16 * 100 / 16,
+                if p.gov_x16 != 0 { ", measured" } else { ", guessed" },
                 p.cold_us,
                 p.interval_us,
                 self.lowest_n - s.lowest,

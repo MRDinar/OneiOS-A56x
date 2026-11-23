@@ -308,7 +308,7 @@ pub fn perf(log: &Log) -> (Vec<Table>, Vec<String>) {
         &["time", "line", "s", "task_traps", "per_s", "syscall", "fault", "interrupt", "other", "sleeps_vcpu", "sleeps_ios", "handoffs", "wakes_a", "wakes_b", "map_by_release", "map_ordered", "timer_set", "to_host_timer"],
     );
     let mut lat = Table::new("host latencies (xnuhost perf rows; us)", &["time", "line", "what", "n", "mean", "p50", "p90", "p99", "max"]);
-    let mut cpus = Table::new("host vCPUs (xnuhost perf: cpuN; percent)", &["time", "line", "cpu", "core%", "kernel%", "ios_thread%", "idle%", "traps_per_s"]);
+    let mut cpus = Table::new("host vCPUs (xnuhost perf: cpuN; percent)", &["time", "line", "cpu", "core%", "kernel%", "ios_thread%", "idle%", "traps_per_s", "host_wait%"]);
     for r in &log.recs {
         if let Some(text) = guest(r, "oneios-perf: ") {
             let body = text.trim_start();
@@ -377,6 +377,8 @@ pub fn perf(log: &Log) -> (Vec<Table>, Vec<String>) {
                 for label in [": ", "of its wall time ", "kernel, ", "turn, ", "idle; "] {
                     row.push(Cell::int(s.num(label)));
                 }
+                // since 2026-11-23: the vCPU thread's wait for a host CPU (schedstat); empty in older logs
+                row.push(Cell::int(s.num("waited for a host CPU ")));
                 cpus.push(row);
             } else if let Some(at) = body.find("  n ") {
                 // `up (trap->vCPU)    n    46933  mean   12.52  p50 ...`
