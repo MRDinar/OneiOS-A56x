@@ -87,6 +87,18 @@ fn settings_and_sizes() {
             && c.ram_task_cost == 3 << 20
     );
     assert!(c.set("ram-gpu-reserve", "?").is_err());
+    assert!(
+        c.set("task-trim", "x").is_err()
+            && c.set("task-trim-idle", "0").is_err()
+            && c.set("ram-tasks-awake", "4097").is_err()
+            && c.set("ram-task-idle-cost", "2T").is_err()
+    );
+    assert!(
+        c.set("task-trim-idle", "1").is_ok()
+            && c.task_trim_idle == 1
+            && c.set("task-trim", "0").is_ok()
+            && !c.task_trim
+    );
     assert!(c.set("ram-percent", "5").is_err() && c.set("ram-percent", "101").is_err() && c.set("ram", "0").is_err());
     assert!(
         c.set("ram", "lots").is_err() && c.set("ram-host-floor", "x").is_err() && c.set("host-mem-log", "-1").is_err()
@@ -425,11 +437,32 @@ fn ram_arithmetic() {
     // What fits as of 2026-11-14 (the arithmetic, with the terms of then: no tasks, 8% of the guest for page tables):
     // G + 8% of G + 256 MiB (GPU) + 1 GiB (headroom) <= MemAvailable at the start.
     let (r, gr, pt) = (G, RAM_GPU_RESERVE, 8);
-    let old = |r: u64| FitTerms { reserve: r, gpu: gr, tasks: 0, task_cost: 0, hold_percent: 0, pagetable_percent: pt };
+    let old = |r: u64| FitTerms {
+        reserve: r,
+        gpu: gr,
+        tasks: 0,
+        task_cost: 0,
+        awake: 0,
+        idle_cost: 0,
+        hold_percent: 0,
+        pagetable_percent: pt,
+    };
     assert_eq!(ram_fit(7 * G, &old(r)) / M, 5451); // (7168 - 1280) / 1.08
     assert!(ram_fit(r + gr + 108 * M, &old(r)) == 100 * M && ram_fit(r + gr, &old(r)) == 0 && ram_fit(0, &old(r)) == 0);
     assert_eq!(
-        ram_fit(6 * G, &FitTerms { reserve: 0, gpu: 0, tasks: 0, task_cost: 0, hold_percent: 0, pagetable_percent: 0 }),
+        ram_fit(
+            6 * G,
+            &FitTerms {
+                reserve: 0,
+                gpu: 0,
+                tasks: 0,
+                task_cost: 0,
+                awake: 0,
+                idle_cost: 0,
+                hold_percent: 0,
+                pagetable_percent: 0
+            }
+        ),
         6 * G
     );
     let floor = RAM_AUTO_FLOOR;
@@ -478,6 +511,8 @@ fn locked_terms(reserve: u64) -> FitTerms {
         gpu: RAM_GPU_RESERVE,
         tasks: RAM_TASKS,
         task_cost: RAM_TASK_COST,
+        awake: u32::MAX, // the terms of 2026-11-23, before the trim: every task at ram-task-cost
+        idle_cost: RAM_TASK_IDLE_COST,
         hold_percent: RAM_HOLD_PERCENT,
         pagetable_percent: RAM_PAGETABLE_PERCENT,
     }
@@ -494,6 +529,8 @@ fn ram_fit_sessions_2026_11_23() {
         gpu: RAM_GPU_RESERVE,
         tasks: 0,
         task_cost: 0,
+        awake: 0,
+        idle_cost: 0,
         hold_percent: 0,
         pagetable_percent: 8,
     };
@@ -540,6 +577,55 @@ fn ram_fit_sessions_2026_11_23() {
     // ram-tasks=0 and ram-hold-percent=0: only the headroom and the GPU's (the test kernel's check sets them small).
     let bare = FitTerms { tasks: 0, hold_percent: 0, ..t };
     assert_eq!(ram_fit(4 * G, &bare), 4 * G - RAM_SESSION_RESERVE_LOCKED - RAM_GPU_RESERVE);
+}
+
+#[test]
+fn ram_fit_with_the_trim() {
+    // The terms with task-trim (task.rs, "The trim", the default since 2026-11-23): of 400 tasks 150 awake at 4 MiB,
+    // 250 trimmed at 1 MiB: 850 MiB instead of 1600.
+    let t = FitTerms { awake: RAM_TASKS_AWAKE, ..locked_terms(RAM_SESSION_RESERVE_LOCKED) };
+    assert_eq!(t.tasks_bytes(), 850 * M);
+    // The S24 Ultra's starts of 2026-11-23 (MemAvailable 8561 and 8445 MiB): 5376 MiB both times, 768 MiB more than
+    // the 4608 MiB of the terms without the trim.
+    for (start, fit) in [(8561u64, 5531u64), (8445, 5423)] {
+        assert_eq!(ram_fit(start * M, &t) / M, fit); // (start - 1536 - 256 - 850) / 1.07
+        let (ram, bound) = ram_fit_auto(11084 * M, 90, RAM_AUTO_FLOOR, Some(ram_fit(start * M, &t)));
+        assert_eq!((ram, bound), (5376 * M, Some(RamBound::Available)), "{start}");
+        assert!(t.left_at_peak(start * M, ram) >= RAM_SESSION_RESERVE_LOCKED as i64);
+        assert_eq!(
+            ram_fit_auto(
+                11084 * M,
+                90,
+                RAM_AUTO_FLOOR,
+                Some(ram_fit(start * M, &locked_terms(RAM_SESSION_RESERVE_LOCKED)))
+            )
+            .0,
+            4608 * M
+        );
+    }
+    // 8561 - 5376 - 376.3 (7 %) - 256 - 850 = 1702 MiB left at the peak, 166 above the headroom.
+    assert_eq!(t.left_at_peak(8561 * M, 5376 * M) / M as i64, 1702);
+    // More awake than tasks: all of them at 4 MiB; none awake: all at 1 MiB.
+    assert_eq!(FitTerms { awake: 4096, ..t }.tasks_bytes(), 1600 * M);
+    assert_eq!(FitTerms { awake: 0, ..t }.tasks_bytes(), 400 * M);
+}
+
+#[test]
+fn host_change_by_user() {
+    // The hold line (memory.rs held_tick): the change by user between two looks, largest first, 1 MiB or more.
+    let before = [("page cache", 3000 * M), ("anonymous", 400 * M), ("page tables", 60 * M), ("the rest", 900 * M)];
+    let after = [
+        ("the guest's RAM", 5632 * M),
+        ("page cache", 2700 * M),
+        ("anonymous", 400 * M),
+        ("page tables", 71 * M),
+        ("the rest", 1180 * M),
+    ];
+    assert_eq!(
+        host_change_text(&before, 6000 * M, &after, 30 * M),
+        "free -5970, the guest's RAM +5632, page cache -300, the rest +280, page tables +11"
+    );
+    assert_eq!(host_change_text(&before, 0, &before, 0), "");
 }
 
 #[test]
@@ -649,15 +735,15 @@ fn ram_config() {
     };
     let go = |a: &[String], lock: bool| run_lock(&a.iter().map(String::as_str).collect::<Vec<_>>(), lock);
     // The default since fix-ram-locked (2026-11-15): ram-giveback=0, prefaulted and locked, with what fits: MemAvailable
-    // 7 GiB here. Where the lock cannot work (here) the headroom is 1792 MiB: (7168 - 1792 - 256 - 400 * 4) / 1.07 = 3289
-    // -> 3072 MiB.
+    // 7 GiB here. Where the lock cannot work (here) the headroom is 1792 MiB, and of the 400 tasks 150 awake at 4 MiB and 250
+    // trimmed at 1 MiB (task-trim, 850 MiB): (7168 - 1792 - 256 - 850) / 1.07 = 3990 -> 3840 MiB.
     let c = go(&with(&[]), false).unwrap();
-    assert!(c.ram_bytes == 3072 * M && c.ram_auto_total == PHONE && c.ram_auto_available == 7 * G);
+    assert!(c.ram_bytes == 3840 * M && c.ram_auto_total == PHONE && c.ram_auto_available == 7 * G);
     assert!(c.ram_percent == 90 && c.ram_host_floor == RAM_AUTO_FLOOR && c.host_mem_log == 30 && c.usb_log == 3);
     assert!(
         c.ready_content_wait == READY_CONTENT_WAIT && c.ram_auto_bound == Some(RamBound::Available) && c.ram_fit_on
     );
-    assert!(c.ram_fit / M == 3289 && c.ram_fit_available == 7 * G && !c.ram_giveback && c.ram_prefault && c.ram_lock);
+    assert!(c.ram_fit / M == 3990 && c.ram_fit_available == 7 * G && !c.ram_giveback && c.ram_prefault && c.ram_lock);
     assert!(!c.ram_lock_expected && c.ram_lock_fit == 0 && c.ram_session_reserve == RAM_SESSION_RESERVE);
     assert!(
         c.ram_unlock_below == RAM_UNLOCK_BELOW
@@ -666,18 +752,30 @@ fn ram_config() {
     );
     assert!(c.ram_hold_percent == RAM_HOLD_PERCENT && c.ram_tasks == RAM_TASKS && c.ram_task_cost == RAM_TASK_COST);
     assert!(c.return_graceful_ms == 0);
-    // Where the lock can work (the phone: root with CAP_IPC_LOCK): the headroom is 1536 MiB, (7168 - 3392) / 1.07 = 3528
-    // -> 3328 MiB.
+    // Where the lock can work (the phone: root with CAP_IPC_LOCK): the headroom is 1536 MiB, (7168 - 2642) / 1.07 = 4229
+    // -> 4096 MiB.
     let c = go(&with(&[]), true).unwrap();
-    assert!(c.ram_bytes == 3328 * M && c.ram_lock_expected && c.ram_session_reserve == RAM_SESSION_RESERVE_LOCKED);
-    assert!(c.ram_fit / M == 3528 && !c.ram_giveback && c.ram_lock);
-    assert!(c.ram_lock_fit == 3328 * M && c.ram_huge); // the locked size that fits; 2 MiB pages asked
-                                                       // The owner's boot of 2026-11-15 says the default explicitly: the same.
+    assert!(c.ram_bytes == 4096 * M && c.ram_lock_expected && c.ram_session_reserve == RAM_SESSION_RESERVE_LOCKED);
+    assert!(c.ram_fit / M == 4229 && !c.ram_giveback && c.ram_lock);
+    assert!(c.ram_lock_fit == 4096 * M && c.ram_huge); // the locked size that fits; 2 MiB pages asked
+    assert!(
+        c.task_trim
+            && c.task_trim_idle == TASK_TRIM_IDLE
+            && c.ram_tasks_awake == RAM_TASKS_AWAKE
+            && c.ram_task_idle_cost == RAM_TASK_IDLE_COST
+    );
+    // Without the trim every task counts at 4 MiB, as on 2026-11-23: (7168 - 1536 - 256 - 1600) / 1.07 = 3528 -> 3328.
+    let c = go(&with(&["task-trim=0"]), true).unwrap();
+    assert!(c.ram_bytes == 3328 * M && c.ram_fit / M == 3528 && !c.task_trim);
+    // The tasks' terms by hand: 400 tasks, 100 awake at 4 MiB, 300 at 512 KiB: (7168 - 1536 - 256 - 550) / 1.07 = 4510.
+    let c = go(&with(&["ram-tasks-awake=100", "ram-task-idle-cost=512K"]), true).unwrap();
+    assert!(c.ram_fit / M == 4510 && c.ram_bytes == 4352 * M);
+    // The owner's boot of 2026-11-15 says the default explicitly: the same.
     let c = go(&with(&["ram-giveback=0", "ram-prefault=1", "ram-lock=1"]), true).unwrap();
-    assert!(c.ram_bytes == 3328 * M && c.ram_lock_expected && c.ram_prefault);
+    assert!(c.ram_bytes == 4096 * M && c.ram_lock_expected && c.ram_prefault);
     // One setting flips it back: ram-giveback=1 is 0058's way, nothing prefaulted or locked, the 1 GiB headroom.
     let c = go(&with(&["ram-giveback=1"]), true).unwrap();
-    assert!(c.ram_bytes == 3072 * M && c.ram_giveback && !c.ram_prefault && !c.ram_lock && !c.ram_lock_expected);
+    assert!(c.ram_bytes == 3840 * M && c.ram_giveback && !c.ram_prefault && !c.ram_lock && !c.ram_lock_expected);
     assert_eq!(c.ram_session_reserve, RAM_SESSION_RESERVE);
     // The valve stays on with the lock: ram-unlock-below=0 or 64M becomes 128 MiB; a headroom under the valve's level
     // and 256 MiB is raised to that (else the valve would open as soon as the session is up).
@@ -688,7 +786,7 @@ fn ram_config() {
     // The RAM held fixed (ram-giveback=0 said): the same size; prefaulted and locked.
     let c = go(&with(&["ram-giveback=0"]), false).unwrap();
     assert!(
-        c.ram_bytes == 3072 * M
+        c.ram_bytes == 3840 * M
             && c.ram_auto_bound == Some(RamBound::Available)
             && !c.ram_giveback
             && c.ram_prefault
@@ -700,11 +798,11 @@ fn ram_config() {
     assert!(c.ram_bytes == 9728 * M && c.ram_giveback && !c.ram_prefault && !c.ram_lock);
     let no_prefault =
         ["ram-prefault=0", "ram-lock=1", "ram-session-reserve=512M", "ram-unlock-below=0", "ram-giveback=0"];
-    // (7168 - 512 - 256 - 1600) / 1.07 = 4486 -> 4352 MiB
+    // (7168 - 512 - 256 - 850) / 1.07 = 5186 -> 5120 MiB
     let c = go(&with(&no_prefault), false).unwrap(); // no prefault: no lock either
-    assert!(c.ram_bytes == 4352 * M && !c.ram_prefault && !c.ram_lock && c.ram_unlock_below == 0 && !c.ram_giveback);
+    assert!(c.ram_bytes == 5120 * M && !c.ram_prefault && !c.ram_lock && c.ram_unlock_below == 0 && !c.ram_giveback);
     let c = go(&with(&["ram-percent=50", "host-mem-log=0"]), false).unwrap();
-    assert!(c.ram_bytes == 3072 * M && c.host_mem_log == 0 && c.ram_auto_bound == Some(RamBound::Available));
+    assert!(c.ram_bytes == 3840 * M && c.host_mem_log == 0 && c.ram_auto_bound == Some(RamBound::Available));
     let c = go(&with(&["ram-host-floor=4G", "ram-fit=0"]), false).unwrap();
     assert_eq!(c.ram_bytes, 7168 * M);
     // a host too small for auto: say so, start nothing
@@ -723,12 +821,12 @@ fn ram_config() {
     assert!(c.ram_bytes == 3 * G && c.ram_percent == 80);
     let c = run(&["--image", &image, "--ram", "auto"]).unwrap();
     assert!(c.ram_bytes == 8960 * M && c.ram_auto_total == PHONE); // 80% of 11.2 GiB
-                                                                   // The image set's own ram-giveback=0 holds the RAM fixed, at what fits (3072 MiB of MemAvailable 7 GiB)
+                                                                   // The image set's own ram-giveback=0 holds the RAM fixed, at what fits (3840 MiB of MemAvailable 7 GiB)
     write(&path, &format!("boot-args=-v debug=0x8\nram-percent=80\nram-giveback=0\n{set_meminfo}\n"));
     let c = run(&["--image", &image, "--ram", "auto"]).unwrap();
-    assert!(c.ram_bytes == 3072 * M && !c.ram_giveback && c.ram_lock);
+    assert!(c.ram_bytes == 3840 * M && !c.ram_giveback && c.ram_lock);
     let c = run(&["--image", &image, "--set", "ram-giveback=1"]).unwrap(); // the command line wins
-    assert!(c.ram_bytes == 3072 * M && c.ram_giveback && !c.ram_lock);
+    assert!(c.ram_bytes == 3840 * M && c.ram_giveback && !c.ram_lock);
     let _ = fs::remove_dir_all(&dir);
 }
 

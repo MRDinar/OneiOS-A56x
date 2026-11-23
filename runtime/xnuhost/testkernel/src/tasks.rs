@@ -728,3 +728,61 @@ pub(crate) fn test_tasks() {
     check(host!(task_unmap(c, task, data_va, 0x4000)) == 0, "task_unmap");
     check(host!(task_destroy(c, task)) == 0, "task_destroy");
 }
+
+/// The trim (xnuhost's task.rs, "The trim"; check-arm64.sh's fifth boot: boot-args testkernel-trim, task-trim-idle=1):
+/// a task none of whose threads is released for a second loses its host mappings, like a flush of its whole pmap. Its
+/// next run faults at the code page, then at the data page; filled again, the load reads the page as the kernel left
+/// it. The script checks xnuhost's `tasks: trim: the first` line too.
+pub(crate) fn test_trim() {
+    let c = c0();
+    let (mut task, mut thread) = (0u64, 0u64);
+    if host!(task_create(c, &mut task)) < 0 || host!(thread_create(c, task, &mut thread)) != 0 {
+        check(false, "trim: a task and its thread");
+        return;
+    }
+    let (code_pa, data_pa) = (page_alloc(), page_alloc());
+    // load_once's code: ldr x0, [x1]; brk #1 at +32
+    let code = code_words(code_pa, &[(8, 0xf940_0020), (9, 0xd420_0020)]);
+    host!(text_fixup(c, code.cast(), 10 * 4));
+    let (code_va, data_va) = (0x1_0000_0000u64, 0x2_0000_0000u64);
+    let map_code = || host!(task_map(c, task, code_va, 0x4000, XH_PROT_READ | XH_PROT_EXEC, code_pa)) == 0;
+    let map_data = || host!(task_map(c, task, data_va, 0x4000, XH_PROT_READ, data_pa)) == 0;
+    write64(kva(data_pa), 0x7777);
+    let mut trap = XhTrap::default();
+    let mut got = 0u64;
+    check(
+        map_code()
+            && map_data()
+            && load_once(c, thread, code_va, data_va, &mut trap, Some(&mut got)) == BRK
+            && got == 0x7777,
+        "trim: a task's code and data pages mapped, and a load",
+    );
+    // Idle for 4 s (the trim looks every second and takes a task idle 1 s or more). A spin, not cpu_idle: nothing
+    // here needs an interrupt to end the wait.
+    let until = now() + 4 * info().timebase_hz;
+    while now() < until {
+        cpu_yield();
+    }
+    let ran = load_once(c, thread, code_va, data_va, &mut trap, None);
+    check(
+        ran == FAULT && trap.far == code_va + 32,
+        "trim: after 4 s idle the task's mappings are gone: its run faults at its pc",
+    );
+    if ran != FAULT {
+        put("  trap kind, far: ");
+        hex(ran as u64);
+        put(" ");
+        hex(trap.far);
+        put("\n");
+    }
+    check(
+        map_code() && load_once(c, thread, code_va, data_va, &mut trap, None) == FAULT && trap.far == data_va,
+        "trim: the code page filled again, the load faults at the data page",
+    );
+    write64(kva(data_pa), 0x8888);
+    check(
+        map_data() && load_once(c, thread, code_va, data_va, &mut trap, Some(&mut got)) == BRK && got == 0x8888,
+        "trim: the data page filled again, the load reads it as the kernel left it",
+    );
+    check(host!(thread_destroy(c, thread)) == 0 && host!(task_destroy(c, task)) == 0, "trim: the task destroyed");
+}

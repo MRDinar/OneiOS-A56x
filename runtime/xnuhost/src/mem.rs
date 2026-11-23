@@ -202,6 +202,19 @@ pub fn map(low21: u64, huge: bool) -> Result<(), SetupFailed> {
     unsafe { libc::madvise(p, length, libc::MADV_DONTDUMP) };
     // Before the first touch: shmem gives a 2 MiB folio to the first fault in a 2 MiB range through a mapping with
     // VM_HUGEPAGE (shmem_enabled "advise"), and 4 KiB pages to a range first touched through another mapping (a task's).
+    // A process with PR_SET_THP_DISABLE (MMF_DISABLE_THP, inherited across fork and exec from whoever started xnuhost)
+    // gets no shmem THP at all, though the madvise below still succeeds: the phone's sessions of 2026-11-23 said
+    // `2 MiB host pages: yes` and then `xnuhost maps 0 of 5632 MiB ... with 2 MiB entries`, the prefault taking one
+    // minor fault per 4 KiB (+1448977 for 5632 MiB). The flag is this process's own (and its children's): cleared
+    // here, nothing global is written. huge_report says what /proc/self/status and the THP counters show.
+    if huge && crate::ramfix::thp_disabled_self() == Some(true) {
+        // SAFETY: a prctl on this process's own flag.
+        let r = unsafe { libc::prctl(libc::PR_SET_THP_DISABLE, 0, 0, 0, 0) };
+        logi!(
+            "memory: this process had transparent huge pages turned off (THP_enabled 0, PR_SET_THP_DISABLE from its parent): {}",
+            if r == 0 { "turned on again for xnuhost (prctl)".to_owned() } else { format!("prctl failed: {}", strerror(errno())) }
+        );
+    }
     // SAFETY: as above.
     let huge_ok = huge && unsafe { libc::madvise(p, length, libc::MADV_HUGEPAGE) } == 0;
     MEM.huge.store(huge_ok, Relaxed);
