@@ -124,6 +124,15 @@ fn cpu() {
     d.write(7 * CPUFREQ_WINDOW + 0x04, 4, 480000); // the lowest entry drops the request
     assert_eq!(d.requested(7), 0);
     assert_eq!(d.read(9 * CPUFREQ_WINDOW + 0x08, 4), 0);
+    // A VMM that keeps the clamp itself (xnuhost): each change of a request reaches it once, as a uclamp.min.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let d = Cpufreq::with_apply(&plan, Box::new(move |cpu, util| log.lock().unwrap().push((cpu, util))));
+    d.write(7 * CPUFREQ_WINDOW + 0x04, 4, 1699200);
+    d.write(7 * CPUFREQ_WINDOW + 0x04, 4, 1699200); // the same request: nothing
+    d.write(7 * CPUFREQ_WINDOW + 0x04, 4, 480000);
+    assert_eq!(*seen.lock().unwrap(), [(7, 512), (7, 0)]);
+    assert_eq!(d.requested(7), 0);
 
     // The S25's shape: Oryon cores, two speeds, no little ones. All P on the host; the plan lends the slowest as E.
     // Each vCPU is described as its own core (cpu-pin): the E vCPUs are cpu4-5, the P ones cpu0-3 and cpu6-7.

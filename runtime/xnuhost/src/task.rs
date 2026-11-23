@@ -1557,6 +1557,9 @@ mod machine {
         unsafe { std::arch::asm!("yield", options(nomem, nostack, preserves_flags)) };
     }
 
+    /// The perf counts of an iOS thread's turn by its class (cpu::hint_class).
+    const CLASS_TICKS: [Count; 4] = [Count::TicksRt, Count::TicksUi, Count::TicksDefault, Count::TicksBg];
+
     /// Runs the thread from `state` until it traps; `state` is then the trapped state. Blocks the vCPU.
     pub fn thread_run(v: &Vcpu, handle: u64, state: &mut XhUserState, trap: &mut XhTrap) -> i64 {
         let Some(th) = thread_of(handle) else { return neg(libc::ESRCH) };
@@ -1599,29 +1602,29 @@ mod machine {
                 let tid = word!(tp, tid).load(Acquire);
                 if tid != 0 {
                     place(tid as i32, index);
+                    let was = th.placed.load(Relaxed) as usize;
+                    if was != 0 && was <= cpu::ncpu() && cpu::vcpu(was - 1).kind.load(Relaxed) != v.kind.load(Relaxed) {
+                        p.count(Count::PlacesAcross, 1);
+                    }
                     th.placed.store((index + 1) as u8, Relaxed);
                     th.epoch.store(epoch, Relaxed);
                     p.count(Count::Places, 1);
                 }
             }
         }
-        // Its vCPU's clamp (the uclamp hook): the host's governor picks a core's clock from what runs there, and what
-        // runs there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise.
-        // The kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and
-        // no ceiling of ours, whatever its vCPU asked for last (a ceiling stood here, XH_HINT_BG_MAX 512, until
-        // 2026-11-16; the owner's rule is no caps of ours on the cores, and it also slowed chronod's widget
-        // extensions, #57); a UI or realtime thread at least the floor it names. The ceiling of 1024 clears a stale
-        // one either way.
+        // Its clamp (cpu::release_floor): the host's governor picks a core's clock from what runs there, and what runs
+        // there while the vCPU waits is this thread. One sched_setattr when the value changes, none otherwise. The
+        // kernel's hint for this thread (hostcall.h perf_hint, kernel 0075): a background thread gets no floor and no
+        // ceiling of ours; a UI or realtime thread at least the floor it names; drm2kgsl's animation clamp only the
+        // frame's threads. The ceiling of 1024 clears a stale one either way. The vCPU's own thread takes the same
+        // floor (cpu::own_uclamp): the kernel's work after this thread's trap is done for it, and until 2026-11-23 the
+        // vCPU threads carried whatever the guest or drm2kgsl had set last, idle or not.
+        let hint = v.cpu.perf_hint.load(Relaxed);
+        let class = cpu::hint_class(hint);
         if let Some(uclamp) = cpu::uclamp_hook() {
-            let hint = v.cpu.perf_hint.load(Relaxed);
-            let (mut lo, hi) = (uclamp(index), 1024u32);
-            if hint & XH_HINT_VALID != 0 {
-                if hint & XH_HINT_BACKGROUND != 0 {
-                    lo = 0;
-                } else if xh_hint_floor(hint) > lo {
-                    lo = xh_hint_floor(hint).min(1024);
-                }
-            }
+            let lo = cpu::release_floor(hint, uclamp(index), cpu::GPU_VCPU_BOOST.load(Relaxed));
+            let hi = 1024u32;
+            cpu::own_uclamp(v, lo);
             let want = (lo | hi << 11) + 1;
             let tid = word!(tp, tid).load(Acquire);
             if th.uclamp.load(Relaxed) != want && tid != 0 {
@@ -1704,7 +1707,9 @@ mod machine {
                 trap.kind = XH_TRAP_EXITED;
                 trap.exit_status = t.exit_status.load(Relaxed);
                 t.running.fetch_sub(1, SeqCst);
-                p.count(Count::TicksUser, cpu::counter() - released);
+                let turn = cpu::counter() - released;
+                p.count(Count::TicksUser, turn);
+                p.count(CLASS_TICKS[class], turn);
                 run_done(v, trap.kind);
                 return 0;
             }
@@ -1781,6 +1786,7 @@ mod machine {
         }
         t.running.fetch_sub(1, SeqCst);
         p.count(Count::TicksUser, seen - released);
+        p.count(CLASS_TICKS[class], seen - released);
         // SAFETY: the thread trapped (to_host seen with acquire): its state and trap are written and stay until the
         // next release.
         unsafe {

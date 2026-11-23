@@ -12,11 +12,13 @@
 //! HAL android.hardware.thermal.IThermal/default (getTemperatures: CPU, GPU, SOC, BATTERY, SKIN). The policy
 //! ([`decide`], the step) is the same for both; the load line reads the same standard files in both.
 
+mod clocks;
 mod load;
 mod session;
 #[cfg(test)]
 mod tests;
 
+pub use clocks::{cpu_list, cpu_ticks, Clocks, PolicyClocks};
 pub use load::{stat_ticks, HostLoad, LOAD_MS};
 pub use session::{Listener, Options, Thermal};
 

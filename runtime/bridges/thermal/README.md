@@ -190,6 +190,20 @@ threads, zram's kswapd); `Charging` with a large current while the case rises is
 Tests: `cargo test -p onebridges thermal::tests::load` (the line from fake `/proc` and battery files, missing files, the
 worker's line at its period). Not run on the phone.
 
+**What the clocks did (2026-11-23):** with the load line, one more (`Clocks::read`, `Clocks::line` in `clocks.rs`):
+
+```
+thermal: 30 s clocks: policy0 (cpu0-1) busy 40%, mean 1478 of 2265 MHz, at the top 33%, under half 33%; policy2 (cpu2-4) ...
+```
+
+For each cpufreq policy that exists of policy0..policy15 (by name): its CPUs (`related_cpus`), their busy share over the
+period (`/proc/stat`'s `cpuN` lines: all ticks less idle and iowait), and its frequency residency from
+`policyN/stats/time_in_state` (every moment at a frequency, idle or not): the mean frequency, the top (`cpuinfo_max_freq`,
+or the highest listed when a boost frequency is above it), the share at 95% of the top or more and at half or less. A
+policy without time counted says so. Why and how to read it: docs/booter.md 2.6e (with One UI's power HAL gone the
+governor alone picks the clocks). Tests: `cargo test -p onebridges thermal::tests::clocks` (a fake S24 Ultra's four
+policies, the X4's boost frequency, two samples). Not run on the phone.
+
 **Charging.** The line shows the charge current and status; the bridge does not and will not change charging (nothing
 is written, nothing under `/sys/power`). Samsung's charger already limits current by the case sensor `lrp` (37-39 C,
 46 C). Limiting it further during a session (Samsung's `batt_slate_mode`, `siop_level` or a charge-current limit

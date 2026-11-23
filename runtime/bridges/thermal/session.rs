@@ -2,7 +2,7 @@
 //! The thermal bridge's session (thermal.c's second half): the worker that reads the sensors from the start (the cap
 //! is the host's own protection and does not wait for the guest), its two listeners, the load line.
 
-use super::{deci_text, decide, from_hal, level_name, parse_limits, HostLoad, Limits, Raw, Sensors, State};
+use super::{deci_text, decide, from_hal, level_name, parse_limits, Clocks, HostLoad, Limits, Raw, Sensors, State};
 use super::{BY_BATTERY, BY_SKIN, BY_SOC, LOAD_MS, POLL_MS, SOC_SAMPLES_MAX, UNKNOWN};
 use crate::hal::{self, Temperature};
 use crate::hw::{self, Backend, Bridge};
@@ -97,6 +97,8 @@ struct Run {
     cap_told: u32,
     /// The last load sample.
     load: HostLoad,
+    /// The last clocks sample (the "thermal: N s clocks:" line, with the load line).
+    clocks: Clocks,
     hal_failed: bool,
 }
 
@@ -179,6 +181,11 @@ impl Shared {
         let page = xh_core::sys::page_size();
         br_info!("thermal: {}", HostLoad::line(&run.load, &now, Some(&run.now.raw), page));
         run.load = now;
+        let clocks = Clocks::read(&self.sensors.root);
+        if let Some(line) = Clocks::line(&run.clocks, &clocks) {
+            br_info!("thermal: {line}");
+        }
+        run.clocks = clocks;
     }
 
     fn worker(&self) {
@@ -280,6 +287,7 @@ impl Thermal {
         let poll_ms = if o.poll_ms != 0 { o.poll_ms } else { POLL_MS };
         let load_ms = if o.load_ms != 0 { o.load_ms } else { LOAD_MS };
         let load = HostLoad::read(&sensors.root);
+        let clocks = Clocks::read(&sensors.root);
         let shared = Shared {
             sensors,
             source,
@@ -287,7 +295,7 @@ impl Thermal {
             poll: Duration::from_millis(poll_ms.into()),
             cap_off,
             load_ms,
-            run: Mutex::new(Run { load, ..empty_run() }),
+            run: Mutex::new(Run { load, clocks, ..empty_run() }),
             wake: Condvar::new(),
         };
         let raw = {
@@ -390,6 +398,7 @@ fn empty_run() -> Run {
         sent_ms: 0,
         cap_told: 0,
         load: HostLoad::default(),
+        clocks: Clocks::default(),
         hal_failed: false,
     }
 }

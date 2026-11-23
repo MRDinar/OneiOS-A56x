@@ -221,8 +221,17 @@ pub enum Count {
     /// thread_run spent before the release (placement, uclamp, the queue)
     Places,
     PrepTicks,
+    /// 2026-11-23: sched_setattr calls that set a vCPU thread's own uclamp.min (cpu::own_uclamp); of `Places`, those
+    /// that moved the iOS thread to the other kind of core (E <-> P); and the iOS threads' turns (counter ticks of
+    /// thread_run, as TicksUser) by the kernel's class of the thread (cpu::hint_class): realtime, UI, default, background
+    VcpuUclampSets,
+    PlacesAcross,
+    TicksRt,
+    TicksUi,
+    TicksDefault,
+    TicksBg,
 }
-const COUNTS: usize = 20;
+const COUNTS: usize = 26;
 
 /// `xh_perf`: a vCPU's histograms and counts, and thread_run's bookkeeping between two calls.
 #[derive(Debug)]
@@ -438,11 +447,12 @@ pub fn log(since_start: bool) {
     // host-overhead (2026-11-15): what the queue joined, the clamps given to iOS threads, the cross-vCPU signals.
     logi!(
         "perf:   queue: {} maps and unmaps joined to the one before (one host call less each); uclamp: {} given to iOS \
-         threads; interrupt lines raised on other vCPUs: {} signalled or woken ({} of them by a kick of the iOS thread \
+         threads, {} to vCPU threads (their own: 0 at each guest idle); interrupt lines raised on other vCPUs: {} signalled or woken ({} of them by a kick of the iOS thread \
          they wait for, sent by the raiser), {} already up (no signal); kicks of iOS threads sent again {} (not back 200 \
          ms after the first)",
         sum.count(OpsJoined),
         sum.count(UclampSets),
+        sum.count(VcpuUclampSets),
         sum.count(Kicks),
         sum.count(KicksDirect),
         sum.count(KicksSkipped),
@@ -452,13 +462,34 @@ pub fn log(since_start: bool) {
     // it), and how often an iOS thread was put on another vCPU's core (one sched_setaffinity each).
     let releases = sum.h[Step::Down as usize].n.max(1);
     logi!(
-        "perf:   release: {} iOS threads put with another vCPU's core (sched_setaffinity); the host's work before each \
-         release {:.2} us on average (placement, uclamp, the queue)",
+        "perf:   release: {} iOS threads put with another vCPU's core (sched_setaffinity), {} of them across E and P; the \
+         host's work before each release {:.2} us on average (placement, uclamp, the queue)",
         sum.count(Places),
+        sum.count(PlacesAcross),
         ticks_ns(sum.count(PrepTicks)) as f64 / releases as f64 / 1000.0
     );
     for (name, h) in STEP_NAMES.iter().zip(&sum.h) {
         hist_line(name, h);
+    }
+    // 2026-11-23: what ran where. The iOS threads' turns on each vCPU by the kernel's class of the thread, against the
+    // vCPU's wall time: background and utility work belongs on the E vCPUs, the UI's and the render server's on P.
+    let mut qos = String::new();
+    for (i, (v, p)) in vcpus.iter().zip(&snaps).enumerate() {
+        let then = (!since_start).then(|| &r.last[i]);
+        let at = |c: Count| p.count(c) - then.map_or(0, |t| t.count(c));
+        let pct = |c: Count| (at(c) as f64 * 100.0 / wall.max(1) as f64).round() as u64;
+        if v.started.load(Relaxed) {
+            let kind = match v.kind.load(Relaxed) {
+                0 => '?',
+                k => k as char,
+            };
+            let sep = if qos.is_empty() { "" } else { ", " };
+            let (rt, ui, def, bg) = (pct(TicksRt), pct(TicksUi), pct(TicksDefault), pct(TicksBg));
+            qos += &format!("{sep}cpu{i} {kind} {rt}/{ui}/{def}/{bg}");
+        }
+    }
+    if !qos.is_empty() {
+        logi!("perf: qos: the iOS threads' turns, % of each vCPU's wall time (realtime/UI/default/background): {qos}");
     }
     for (i, (v, p)) in vcpus.iter().zip(&snaps).enumerate() {
         let then = (!since_start).then(|| &r.last[i]);

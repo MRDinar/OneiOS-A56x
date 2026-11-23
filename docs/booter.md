@@ -1072,7 +1072,9 @@ page in the task's process), and the host at 482 % of 800 with 212 % in Linux's 
   utility one no floor and no ceiling of ours (a ceiling, `uclamp.max` 512, stood here until 2026-11-16; it also slowed
   chronod's widget extensions, newtodo's decision list). drm2kgsl's own clamp looked for threads named
   `crosvm_vcpu*` and logged `vCPU uclamp.min 1024: 0 of 0 threads`; its patch 0008 calls xnuhost's
-  `drm2kgsl_vcpu_uclamp` instead (the vCPU threads and, through `cpu.rs`' uclamp hook, the iOS threads).
+  `drm2kgsl_vcpu_uclamp` instead. Since 2026-11-23 (section 2.6e) that only stores the value, which reaches the frame's
+  threads at their release (`cpu::release_floor`), and a vCPU thread's own clamp is xnuhost's alone: the released
+  thread's floor at each release, 0 at the guest's idle, the guest's request at its `SET_PERF`.
 - **The same timer deadline again is not a host call** (`cpu.rs` `timer_set`): a future deadline equal to the
   armed one leaves the host timer as it is (`perf: ... timer_set N (M to the host timer)`: N - M saved; the PC's baseline
   boot made 4.8 million timer sets in 2,400 s, every one a `timer_settime`).
@@ -1122,8 +1124,8 @@ with its CPUs and the `cpufreq/boost` switch (`cpu: xnuhost's cpuset /..., CPUs 
 thread on an E or P vCPU (the Edge scheduler with DroidVMCpufreq's preferences), and cpu-pin keeps the vCPU, and the
 iOS thread it runs, on its core; and the clamp of section 2.6a: the kernel's `perf_hint` (hosted 0075) says the class of
 the thread a vCPU is about to run, and the release gives that Linux thread `uclamp.min` 1024 for realtime, UI and
-above-UI, 768 for user-initiated, the vCPU's own request for default, and 0 with no ceiling for utility,
-background and darwin-background threads (RunningBoard's background and suspended roles clamp an app's threads to
+above-UI, 768 for user-initiated, the vCPU's own request for default (drm2kgsl's animation clamp on top of any of
+these that is not 0: section 2.6e), and 0 with no ceiling for utility, background and darwin-background threads (RunningBoard's background and suspended roles clamp an app's threads to
 background QoS; the `uclamp.max` 512 that stood here until 2026-11-16 also slowed chronod's widget extensions, #57, and
 is gone: newtodo's decision list). The same word is readable by host code on the vCPU
 (the GPU path: the current vCPU's `perf_hint`, `Vcpu::current()` in `src/cpu.rs`, for fix-gpu-perf's per-context priority).
@@ -1291,6 +1293,83 @@ trap up to the vCPU's next user entry (0041), which for a call that blocks inclu
 back; the new `syscalls:` line says how much of it is which. On the phone (2026-11-12) each hand-off was 10-12 us at p50
 (2.6a). Not measured on the phone yet: the same bench there (the command lines of 2.6c step 2 with `testkernel-rpc
 testkernel-rpc-mode=0|1|2`).
+
+### 2.6e Clocks and clamps: who asks the host for its top clock (cpu-clocks, 2026-11-23)
+
+**What the session of 2026-11-23 20:23 showed** (`out/session-logs/2026-11-23-mac-s2023/xnuhost.log`, runtime 0.1.19):
+every vCPU 34-58% of a core with 0-17% idle and 2,200-19,700 traps/s in the busy periods; `thermal: 30 s: host CPU`
+637-760% of 800 (xnuhost about 400% of it, the iOS tasks' own processes the rest); the SoC at 92-98 C in 14 of 21
+periods. drm2kgsl logged `vCPU uclamp.min 1024: given to the VMM (8 vCPU threads, ...)` 41 s into the session and held
+it for 470 of the session's 651 s (the GPU's level never came down: `docs/gpu.md` 2.2). That clamp went:
+- on all eight vCPU threads directly (`drm2kgsl_vcpu_uclamp`), the E vCPUs' and the idle ones' too. A vCPU thread's
+  clamp counts whenever it runs, and an idle vCPU runs at each timer and IPI: every core was asked for its top clock
+  through every animation, for the guest kernel's own work as much as for the frame's;
+- through the release to every iOS thread that was not background or utility: the busiest processes of `oneios-cpu`
+  (lsd, PerfPowerServices, chronod, CommCenter) are default-class daemons, and they ran with 1024;
+- and it fought the guest's own request on the same thread: the cpufreq device set the vCPU thread's clamp at each
+  `SET_PERF`, drm2kgsl at each animation's start and end; the last one won. DroidVMCpufreq also keeps its request while
+  a vCPU idles, so a vCPU that last ran a UI thread kept 1024 for every wake of its idle loop.
+
+**The fix** (`src/cpu.rs`, `src/task.rs`, `src/session/bridges.rs`; `runtime/bridges/cpu` `Cpufreq::with_apply`):
+xnuhost alone sets a vCPU thread's clamp, on that thread, to the floor of the work it does now (`cpu::own_uclamp`, one
+`sched_setattr` per change):
+- at each release (`thread_run`): the released thread's floor, `cpu::release_floor(hint, request, boost)`, given to the
+  iOS thread and to the vCPU thread with it (the kernel's work after that thread's trap is done for it);
+- at the guest's idle (`cpu_idle`): 0. What wakes an idle vCPU is the kernel's own short work;
+- at the guest's `SET_PERF`: its value (the device records the request and hands it to xnuhost; it no longer sets a
+  clamp itself).
+
+`release_floor`: no hint (a kernel before 0075): the request or the boost, the higher (as before); utility, background,
+darwin-background: 0 and no ceiling; otherwise the class's floor (realtime, UI, above-UI 1024, user-initiated 768) or the
+vCPU's request, the higher, raised to drm2kgsl's boost only when that is not 0. So the boost reaches the frame's threads
+(their class, or an interactive group's default-class thread, for which DroidVMCpufreq asks the vCPU's top) and nothing
+else; a daemon's default-class thread on a vCPU nobody asked for gets 0. `drm2kgsl_vcpu_uclamp` now only stores the value
+(it returns the started vCPUs: its log line still says `8 vCPU threads`). Host-tested: `cpu::tests::release_floor` (each
+class, with and without the boost and a request) and the bridges' `cpu` test (the device hands each change of a request
+to the VMM once). `thread_run` and `cpu_idle` are aarch64 code: `runtime/host-tests.sh` builds and lints them and its
+boot part runs them (the test kernel under qemu-aarch64, without uclamp).
+
+What it does not change: a UI or realtime thread keeps 1024 while it runs, an interactive group's default thread the
+guest's request; no ceiling anywhere (the owner's rule; #57). Not covered: a kernel thread of the guest (no release) runs
+at the clamp of the last thread its vCPU released until the vCPU idles, releases another thread or gets a request (the
+guest does not tell the host when it switches to a kernel thread).
+
+**The topology** (which work runs where): two clusters as section 2.6b says, E = the A520s (vCPU 0-1), P = the A720s
+and the X4 (vCPU 2-7; the X4 is vCPU 7). Inside the P cluster XNU's Edge scheduler picks by idle state and the thread's
+last CPU (`choose_processor`, `osfmk/kern/sched_prim.c`), the lowest idle CPU first when the thread has no last CPU
+there; a CLPC can keep work off a core with `sched_perfcontrol_edge_cpu_rotation_bitmasks_set` (its migration mask),
+which DroidVMCpufreq does not call. In the 20:23 session the X4's vCPU had the most traps (15,000-19,700/s against
+2,900-10,400 on the A720s) at the same share of a core: the busiest UI thread lived there, where it should run. With
+the E vCPUs 0-7% idle in every busy period, background work spills to the P vCPUs through 0085's edges; after this fix it
+runs there with no floor. Whether light work should also be kept off the X4 (the migration mask) waits for the `perf:
+qos:` line below: not done here.
+
+**The governor**: One UI's power HAL is gone in a session, so the policy's governor (WALT on the S24 Ultra,
+`docs/hardware.md`) alone picks the clocks, from the load and the clamps above. xnuhost writes none of its tunables; it
+now logs them at the start, read only from named files: `cpu: policyN: governor walt; up_rate_limit_us ...,
+down_rate_limit_us ..., ...` (those that exist of `rate_limit_us`, `up_rate_limit_us`, `down_rate_limit_us`,
+`hispeed_load`, `hispeed_freq`, `target_loads`, `pl`, `boost`, `rtg_boost_freq`, `adaptive_high_freq`) and `cpu: WALT
+sched_boost N`. No tunable is changed: the measured cause of the top clocks is the clamps, and a tunable written blind
+would also need the fork's return to put it back. If the next session's clocks line still shows a P policy at its top
+while its busy share is low, the tunables line says what to change, and the fork's `clocks_save` / `clocks_tops` would
+carry it (as they carry `scaling_max_freq`).
+
+**Lasting lines** (cheap, in every session):
+- `perf: qos: the iOS threads' turns, % of each vCPU's wall time (realtime/UI/default/background): cpu0 E 0/2/10/40,
+  ...`: the time `thread_run` waited, by the kernel's class of the released thread (`perf_hint`; one add per release);
+- `perf:   queue: ... uclamp: U given to iOS threads, V to vCPU threads (their own: 0 at each guest idle)`;
+- `perf:   release: N iOS threads put with another vCPU's core (sched_setaffinity), M of them across E and P` (a
+  hand-off that crossed clusters);
+- `thermal: 30 s clocks: policy0 (cpu0-1) busy 40%, mean 1478 of 2265 MHz, at the top 33%, under half 33%; ...`: each
+  cpufreq policy's busy share (its CPUs' ticks in `/proc/stat`) and frequency residency over the period
+  (`policyN/stats/time_in_state`, `related_cpus`, `cpuinfo_max_freq`; named files, policy0..15;
+  `runtime/bridges/thermal/clocks.rs`). `oneios-tool log cpu` makes tables of the qos and clocks lines.
+
+**What to compare on the phone** (the 20:23 session against the next one, the same use): `thermal: 30 s` (host CPU, the
+SoC), the clocks line's `at the top` and `mean` of policy2, policy5 and policy7 against their `busy`, `perf: cpuN` (% of
+a core), the `uclamp:` counts (V a few thousand a period at most: each is one `sched_setattr` of a few microseconds), and
+`perf: qos:` (background on cpu0-1, UI and realtime on cpu2-7). The UI must not get slower: the `gpu:` frame times and
+the `display:` lines as before. Not measured on the phone yet.
 
 ### 2.7 Devices
 
