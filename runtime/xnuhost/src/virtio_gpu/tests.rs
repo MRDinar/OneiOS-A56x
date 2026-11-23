@@ -1098,6 +1098,53 @@ fn three_d() {
     lanes(&mut g);
 }
 
+/// The guest driver's blob sizes (DroidVMVirtioGpu3D.cpp MaxBlobEntries, a 1 MiB request): Unity2025Poster's 80 MiB
+/// blob of single pages (20480 entries) and 75022336 bytes (18316), refused on the phone on 2026-11-23 when the limit was
+/// the display's 16384, are made, and so is the largest request the guest sends (65532 entries); one entry more is
+/// refused, with its line. The 80 MiB blob's 20480 pages as udmabufs: three_d's udmabufs_here
+/// (process-wide limits, so in that test's thread).
+#[test]
+fn blob_entries_of_the_guest_driver() {
+    testing::install();
+    let ram = GuestRam::new(4 << 20);
+    let fake = Arc::new(Fake::default());
+    let board = Arc::new(FakeBoard::default());
+    board.st().frame_answer = true;
+    board.display(8, 4, 32, 0);
+    let dev = create_with(0, 43, 8, 4, Some(Box::new(fake.clone())), board.clone()).unwrap();
+    dev.mmio_write(0x14, 4, 0);
+    let d = Driver::up(dev.clone() as Arc<dyn MmioDevice>, 0x59, 2, 8, ram.pa(0x10000)).unwrap();
+    let mut g = Guest { ram, d, board: board.clone(), dev: dev.clone() };
+    let st = || fake.st();
+    g.clear();
+    for (i, v) in [(0, 0x200), (4, 5), (6, 4), (7, 6)] {
+        g.cmd(i, v);
+    }
+    g.cmd_bytes(8, b"test");
+    assert!(g.g(24, 0, 24) == 1 && g.resp(0) == 0x1100);
+    // Entry i: one page of 256 every second page from 2 MiB (none adjacent to the next), the guest's ordinary pages.
+    let base = g.pa(0);
+    let page = move |i: usize| base + 0x200000 + (i as u64 % 256) * 0x2000;
+    let segs = |n: usize| -> Vec<u64> { (0..n).flat_map(|i| [page(i), 0x1000]).collect() };
+    for (res, n, size) in [(20u32, 20480u32, 83886080u32), (21, 18316, 75022336), (22, 65532, 65532 << 12)] {
+        g.clear();
+        for (i, v) in [(0, 0x10c), (4, 5), (6, res), (7, 3), (8, 9), (9, n), (10, res), (12, size)] {
+            g.cmd(i, v);
+        }
+        g.extra_u64s(&segs(n as usize));
+        assert!(g.g(14, n * 16, 24) == 1 && g.resp(0) == 0x1100, "{n} entries: {:#x}", g.resp(0));
+        assert!(st().blob_size == size as u64 && st().entries.len() == n as usize && st().entries[1].addr == page(1));
+    }
+    // one more than the guest's request holds: refused before its entries are read
+    g.clear();
+    for (i, v) in [(0, 0x10c), (4, 5), (6, 23), (7, 3), (8, 9), (9, 65533), (10, 23), (12, 1 << 20)] {
+        g.cmd(i, v);
+    }
+    let (ok, lines) = xh_core::log::capture(|| g.g(14, 16, 24) == 1 && g.resp(0) == 0x1205);
+    assert!(ok && lines.iter().any(|(_, l)| l.contains("65533 entries") && l.contains("at most 65532")));
+    assert_eq!(st().blobs, 3);
+}
+
 /// A udmabuf over guest segments: refused without touching the device node when a segment is not the RAM's; and real
 /// ones where this host has /dev/udmabuf.
 fn udmabufs_here(g: &Guest) {
@@ -1197,6 +1244,13 @@ fn udmabufs_here(g: &Guest) {
         let many: Vec<Entry> = (0..1100).map(|i| Entry::new(base + i * 0x2000, 0x1000)).collect();
         let chunks = gpu3d::udmabufs(bfd, base, 96 << 20, &many).unwrap();
         assert!(chunks.len() == 2 && chunks[0].size == 1024 * 0x1000 && chunks[1].size == 76 * 0x1000);
+        drop(chunks);
+        // Unity2025Poster's 80 MiB blob of single pages (20480 entries, refused on the phone on 2026-11-23 when the
+        // device took 16384): 20 udmabufs of 1024 pages.
+        let poster: Vec<Entry> = (0..20480).map(|i| Entry::new(base + (i % 8192) * 0x2000, 0x1000)).collect();
+        let chunks = gpu3d::udmabufs(bfd, base, 96 << 20, &poster).unwrap();
+        let whole = |c: &Chunk| c.size == 0x40_0000 && seek_end(c.fd.as_raw_fd()) == 0x40_0000;
+        assert!(chunks.len() == 20 && chunks.iter().all(whole));
         drop(chunks);
         // A kernel that refuses a udmabuf over 16 MiB with ENOMEM (a 6.6 kernel's order-5 page array under
         // fragmentation, the S25 Ultra's `gpuctl large`): the limit halves, 64 -> 32 -> 16 MiB, and the same 72 MiB

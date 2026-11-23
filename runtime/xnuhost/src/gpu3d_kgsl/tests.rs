@@ -660,6 +660,60 @@ fn zero_ids() {
     });
 }
 
+/// What the phone did on 2026-11-23 18:35 (runtime 0.1.18, drm2kgsl 0009): Unity2025Poster's 80 MiB blobs were
+/// refused by the device (20480 entries, over its limit then), and xnuhost ended at the end of a poster's context
+/// (hash_table.c:311 "!key_pointer_is_reserved"). The guest's GEM_NEW had made the BO with its blob id; the device never
+/// passed the CREATE_BLOB on, so the BO had no res_id (0) and stayed in the blob table. At the context's end
+/// drm_context_deinit frees it (free_blob), and drm_context_remove_object looked its res_id 0 up in the resource table:
+/// 0 is mesa's reserved key. Hosted drm2kgsl patch 0010. Here: the guest's sequence (GEM_NEW, the refused blob, the
+/// unref of the refused resource, the destroy's GEM_SET_IOVA of res_id 0 and a submit naming 0), the context's end,
+/// and a new context's first submissions; a second refused BO in a context beside another, then both ends.
+#[test]
+fn refused_blob_then_context_end() {
+    scenario("refused_blob_then_context_end", || {
+        let r = renderer(kgsl::A750);
+        let c = r.context_open(1, 1).unwrap();
+        let q = r.queue_new(&c, 0);
+        assert_ne!(q, 0);
+        assert_eq!(r.guest_buffer(&c, 2, 1, c.slice + (16 << 20), 0x4000, &pages(1 << 20, 0x4000)), Ok(()));
+        // the BO of the refused blob: GEM_NEW with blob id 2, and no CREATE_BLOB (the device refused it)
+        let mut gem = Req::new(3);
+        gem.u64(c.slice + (32 << 20)).u64(80 << 20).u32(0x0002_0000 | 0x8000_0000).u32(2);
+        assert_eq!(r.ccmd(&c, gem), Ok(()));
+        assert_eq!(c.async_error(), 0);
+        r.gpu.unref(3); // the guest's unref of the refused resource (102, answered 1203 by the device)
+        let _ = r.set_iova(&c, 0, 0); // the BO's destroy: GEM_SET_IOVA of res_id 0 (patch 0009)
+        let _ = r.submit_one(&c, q, 0, 1);
+        c.clear_async_error();
+        assert!(r.submit_one(&c, q, 2, 2).is_ok()); // the context still works
+        r.gpu.unref(2);
+        r.gpu.unref(1);
+        r.gpu.ctx_destroy(1); // drm_context_deinit: the refused BO is freed from the blob table
+                              // a new context's first submissions, and a refused BO in it while another context is open
+        let a = r.context_open(4, 4).unwrap();
+        let b = r.context_open(5, 5).unwrap();
+        let qa = r.queue_new(&a, 0);
+        assert_ne!(qa, 0);
+        assert_eq!(r.guest_buffer(&a, 6, 1, a.slice + (16 << 20), 0x4000, &pages(2 << 20, 0x4000)), Ok(()));
+        assert!(r.submit_one(&a, qa, 6, 1).is_ok());
+        let mut gem = Req::new(3);
+        gem.u64(a.slice + (32 << 20)).u64(75022336).u32(0x0002_0000 | 0x8000_0000).u32(2);
+        assert_eq!(r.ccmd(&a, gem), Ok(()));
+        assert_eq!(a.async_error(), 0);
+        r.gpu.unref(7);
+        assert_eq!(r.guest_buffer(&b, 8, 2, b.slice + (16 << 20), 0x4000, &pages(3 << 20, 0x4000)), Ok(()));
+        assert!(r.submit_one(&a, qa, 6, 2).is_ok());
+        r.gpu.unref(6);
+        r.gpu.unref(4);
+        r.gpu.ctx_destroy(4);
+        r.gpu.unref(8);
+        r.gpu.unref(5);
+        r.gpu.ctx_destroy(5);
+        let s = stand();
+        assert!(s.objects.len() == 1 && s.objects[0].vbo, "{:?}", s.objects); // only the VBO is left
+    });
+}
+
 // ---- leaks: fds and KGSL objects back to where they were ----------------------------------------------------------------
 fn count_fds() -> usize {
     std::fs::read_dir("/proc/self/fd").map_or(0, |d| d.count()) - 1 // the directory's own

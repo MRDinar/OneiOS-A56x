@@ -1,0 +1,56 @@
+ONEIOS 0010: an object without a res_id is no abort at its context's end (drm_context.c, 2026-11-23).
+
+The phone's 18:24 session (runtime 0.1.18, drm2kgsl 0009) ended at 84283.8 with hash_table.c:311
+"!key_pointer_is_reserved". The device had refused 20 CREATE_BLOBs of Unity2025Poster (80 MiB, 20480 entries: over
+its limit then). The guest's GEM_NEW had made each BO with its blob id, but its CREATE_BLOB never reached the renderer,
+so the BO kept res_id 0 in the blob table. At the context's end drm_context_deinit frees it (free_blob ->
+drm_context_free_object -> drm_context_remove_object), and remove_object searched the resource table for res_id 0:
+mesa's reserved key. Host test: runtime/xnuhost/src/gpu3d_kgsl/tests.rs refused_blob_then_context_end (it aborted
+with the same line before this patch).
+
+Also the lookups any request reaches: res_id 0 names no object and is never free, and blob id 0 or one of more than 32
+bits is no object (the assert on the latter is gone: a guest's word, not an abort).
+--- a/src/drm/drm_context.c
++++ b/src/drm/drm_context.c
+@@ -227,6 +227,11 @@
+ static void
+ drm_context_remove_object(struct drm_context *dctx, struct drm_object *obj)
+ {
++   /* ONEIOS: an object without a res_id (0) is in no resource table: a GEM_NEW whose CREATE_BLOB the device
++    * refused, which drm_context_deinit frees from the blob table at the context's end. 0 is mesa's reserved key: the
++    * search for it asserted (hash_table.c:311) and ended xnuhost (Unity2025Poster's 80 MiB blobs, 2026-11-23 18:35). */
++   if (!obj->res_id)
++      return;
+    if (drm_context_res_id_unused(dctx, obj->res_id))
+       return;
+ 
+@@ -453,9 +458,9 @@
+ struct drm_object *
+ drm_context_retrieve_object_from_blob_id(struct drm_context *dctx, uint64_t blob_id)
+ {
+-   assert((blob_id >> 32) == 0);
+-
+-   if ((blob_id >> 32) != 0)
++   /* ONEIOS: a blob id of more than 32 bits, or 0 (mesa's reserved key, which the search asserts), is no object:
++    * a guest's word, not an abort. */
++   if ((blob_id >> 32) != 0 || !blob_id)
+       return NULL;
+ 
+    uint32_t id = blob_id;
+@@ -494,6 +499,8 @@
+ struct drm_object *
+ drm_context_get_object_from_res_id(struct drm_context *dctx, uint32_t res_id)
+ {
++   if (!res_id)   /* ONEIOS: 0, the reserved key, names no resource */
++      return NULL;
+    const struct hash_entry *entry = _mesa_hash_table_search(dctx->resource_table, (void *)(uintptr_t)res_id);
+    return likely(entry) ? entry->data : NULL;
+ }
+@@ -501,5 +508,7 @@
+ bool
+ drm_context_res_id_unused(struct drm_context *dctx, uint32_t res_id)
+ {
++   if (!res_id)   /* ONEIOS: 0, the reserved key, is never free to take */
++      return false;
+    return !_mesa_hash_table_search(dctx->resource_table, (void *)(uintptr_t)res_id);
+ }

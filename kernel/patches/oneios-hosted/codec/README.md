@@ -281,3 +281,22 @@ main's 65b7bd4 already anchors the same `vm_shared_region.c` hunk.
   `encoder=auto` in `xnuhost.conf` ("What a session on the phone must show", above). Not known before it [I]: that
   CMPhoto gives the tiles in 420v or 420f surfaces after `TEsa` (step 101 says the format if not), and that c2.qti
   takes 96x96 (`encctl hevc 96 96` tells beforehand).
+
+## The tile session on the phone (2026-11-23 18:24, runtime 0.1.18)
+
+The phone's session (`out/session-logs/2026-11-23-mac-s1824/xnuhost-final.log`) answered both questions above, and
+both are no:
+- **Step 101 [F]:** six `DroidVMVTHost: stage 101 failed: 2019963440` lines (and the counters' `errors N (last: step
+  101 value 2019963440)`). The value is the surface's format as four characters: 2019963440 = 0x78663230 = `'xf20'`,
+  `kCVPixelFormatType_420YpCbCr10BiPlanarFullRange` (10-bit 4:2:0, full range, two planes of 16-bit samples). So
+  CMPhoto hands the wallpaper posters' tiles in a 10-bit surface although `TEsa` asks for 420v, and the staged
+  `etil` (`staged/codec.rs`, the `failed(101, ...)` check) refuses it with -12902.
+- **96x96 [F]:** six `xnuhost E encoder: backend mediacodec-helper refused 96x96`: c2.qti refused the tile size the
+  session codes at (84x84 tiles coded 96x96).
+
+So no tile is coded; the guest's tile encode fails, and nothing else of the session is harmed (the line is the
+codec's, not the GPU's: the abort at the end of that session was drm2kgsl's, docs/gpu.md 2.4b). **Not fixed [I]:**
+the fix is two parts, both open: take `'xf20'` (and `'x420'`, its video-range twin) in `etil` and copy the high byte of
+each 16-bit sample into the NV12 frame (`OneiOSCodecPicture.h`, with a case in `tests/test_picture.c`), and find a
+size c2.qti takes for HEVC (`encctl hevc W H` on the phone: the smallest it codes), then pad the tiles to it as
+96x96 does now. Each needs a kernel build and a phone boot.

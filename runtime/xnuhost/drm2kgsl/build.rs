@@ -2,9 +2,10 @@
 //! Builds Droid-VM's drm2kgsl renderer from its C, as runtime/xnuhost/Makefile did: the renderer and the few
 //! virglrenderer and mesa-util sources under it from external/virglrenderer (the commit
 //! scripts/setup/get-references.sh pins; `VIRGL=DIR` another checkout), not virglrenderer.c (GL, libdrm).
-//! drm2kgsl_renderer.c is compiled from a copy in OUT_DIR with drm2kgsl/patches applied in name order: the checkout
-//! stays at its pin. `-imacros config.h` stands for what virglrenderer's meson.build would have found. Then our glue
-//! (glue/oneios_glue.c: the structures and va_lists Rust cannot reach). For Android the NDK's clang (runtime/ndk-cc)
+//! drm2kgsl_renderer.c and drm_context.c are compiled from copies in OUT_DIR with drm2kgsl/patches applied in name
+//! order (each patch names its one file on its `+++ b/` line): the checkout stays at its pin. `-imacros config.h`
+//! stands for what virglrenderer's meson.build would have found. Then our glue (glue/oneios_glue.c: the structures
+//! and va_lists Rust cannot reach). For Android the NDK's clang (runtime/ndk-cc)
 //! and llvm-ar; for the build host `$CC` (cc) and `$AR` (ar), with host_c11.h (mesa's C11 threads shim beside a new
 //! glibc) and glue/oneios_sys.h (every open and ioctl of the renderer through a table the tests set: no -Wl,--wrap).
 //!
@@ -135,11 +136,12 @@ fn build_renderer(manifest: &Path, out: &Path, virgl: &Path, tc: &Toolchain, obj
     for f in ["config.h", "host_c11.h", "oneios_drm2kgsl.h", "oneios_gpu_policy.h", "patches"] {
         println!("cargo:rerun-if-changed={}", d2k.join(f).display());
     }
-    for s in &SOURCES[1..] {
+    for s in SOURCES {
         println!("cargo:rerun-if-changed={}", virgl.join(s).display());
     }
 
-    // drm2kgsl/patches, in name order, on a copy.
+    // drm2kgsl/patches, in name order, each on a copy of the one source its `+++ b/` line names (drm2kgsl_renderer.c,
+    // or since 0010 drm_context.c); a source a patch names is compiled from its copy.
     let mut patches: Vec<PathBuf> = fs::read_dir(d2k.join("patches"))
         .expect("drm2kgsl/patches")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -147,10 +149,23 @@ fn build_renderer(manifest: &Path, out: &Path, virgl: &Path, tc: &Toolchain, obj
         .collect();
     patches.sort();
     let patched = out.join("patched");
+    let _ = fs::remove_dir_all(&patched); // copies of an earlier build: patched again from the pin
     fs::create_dir_all(&patched).unwrap();
-    let copy = patched.join("drm2kgsl_renderer.c");
-    fs::copy(virgl.join(SOURCES[0]), &copy).expect("copying drm2kgsl_renderer.c");
+    let mut copies: Vec<(&str, PathBuf)> = Vec::new();
     for p in &patches {
+        let text = fs::read_to_string(p).unwrap_or_else(|e| panic!("drm2kgsl: {}: {e}", p.display()));
+        let mut files = text.lines().filter_map(|l| l.strip_prefix("+++ b/")).map(|l| l.split('\t').next().unwrap());
+        let file = files.next().unwrap_or_else(|| panic!("drm2kgsl: {}: no +++ b/ line", p.display()));
+        assert!(files.all(|f| f == file), "drm2kgsl: {}: one source a patch", p.display());
+        let src = *SOURCES
+            .iter()
+            .find(|s| **s == file)
+            .unwrap_or_else(|| panic!("drm2kgsl: {}: {file} is not one of the sources built", p.display()));
+        let copy = patched.join(Path::new(src).file_name().unwrap());
+        if !copies.iter().any(|(s, _)| *s == src) {
+            fs::copy(virgl.join(src), &copy).unwrap_or_else(|e| panic!("drm2kgsl: copying {src}: {e}"));
+            copies.push((src, copy.clone()));
+        }
         let input = fs::File::open(p).unwrap();
         run(
             Command::new("patch").args(["-s", "--forward", "--no-backup-if-mismatch", "-F0"]).arg(&copy).stdin(input),
@@ -195,9 +210,11 @@ fn build_renderer(manifest: &Path, out: &Path, virgl: &Path, tc: &Toolchain, obj
         jobs.push((name, cmd.spawn().unwrap_or_else(|e| panic!("drm2kgsl: {}: {e}", tc.cc.display()))));
         objects.push(o);
     };
-    compile(copy, false);
-    for s in &SOURCES[1..] {
-        compile(virgl.join(s), false);
+    for s in SOURCES {
+        match copies.iter().find(|(c, _)| c == s) {
+            Some((_, copy)) => compile(copy.clone(), false),
+            None => compile(virgl.join(s), false),
+        }
     }
     compile(manifest.join("glue/oneios_glue.c"), true);
     if tc.host {

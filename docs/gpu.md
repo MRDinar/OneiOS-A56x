@@ -43,7 +43,7 @@ line and test case was kept ([runtime/RUST.md](../runtime/RUST.md)); the Rust GP
 | `src/gpu3d_kgsl/policy.rs` | The GPU's per-process policy as pure functions: each context's class, its KGSL priority, the level by frame deadline (section 2.2b); tests in `policy/tests.rs` |
 | `drm2kgsl/` (crate `drm2kgsl-sys`) | `build.rs` builds the renderer's C from `external/virglrenderer` (below) and a small glue; `src/` is the safe Rust front (one lock over the renderer's tables) |
 | `drm2kgsl/config.h` | The `config.h` of the virglrenderer sources `build.rs` compiles (`-imacros`) |
-| `drm2kgsl/patches/*.patch` | This project's changes to `drm2kgsl_renderer.c` (section 2.1). `build.rs` applies them, in name order, to a copy in cargo's `OUT_DIR` and compiles that; `external/virglrenderer` stays at its pin |
+| `drm2kgsl/patches/*.patch` | This project's changes to `drm2kgsl_renderer.c` (section 2.1) and, from 0010, `drm_context.c`. Each patch names its one file on its `+++ b/` line; `build.rs` applies them, in name order, to a copy of that file in cargo's `OUT_DIR` and compiles the copy; `external/virglrenderer` stays at its pin |
 | `drm2kgsl/oneios_drm2kgsl.h` | The functions the patches add for the renderer's front |
 | `drm2kgsl/oneios_gpu_policy.h` | The C policy header the patched renderer still includes for its own two uses (`og_class_name`, `og_kgsl_priority`); `policy.rs` is the policy, and its test `the_renderers_header_agrees` checks the two say the same |
 | `drm2kgsl/glue/oneios_glue.c`, `.h` | Only what Rust cannot reach: virglrenderer's C structures with function pointers (read and called by id) and the three variadic or `va_list` functions the sources expect of their surroundings (Android's liblog and mesa's `os_misc.c`), which go to xnuhost's log |
@@ -68,8 +68,9 @@ Without `external/virglrenderer` the crate still builds (`drm2kgsl_sys::AVAILABL
   address the guest chose. Nothing is copied.
 - **udmabuf's limits.** The kernel caps one udmabuf at `size_limit_mb` MiB and `list_limit` runs of adjacent pages:
   64 and 1024 on the S24 Ultra (the kernel's defaults). A guest blob can be 256 MiB of single pages
-  (`MaxBlobEntries` in `DroidVMVirtioGpu3D.cpp`), and an 18 MiB framebuffer of scattered 16 KiB pages is already 1152
-  runs. So `gpu3d::udmabufs` cuts a blob into chunks, in the blob's order: adjacent segments are joined, and a chunk
+  (`MaxBlobEntries` in `DroidVMVirtioGpu3D.cpp`, 65532 entries), which the device takes since 2026-11-23 (section
+  2.4b: an 80 MiB blob is 20480 entries and 20 udmabufs), and an 18 MiB framebuffer of scattered 16 KiB pages is
+  already 1152 runs. So `gpu3d::udmabufs` cuts a blob into chunks, in the blob's order: adjacent segments are joined, and a chunk
   ends where the next page would pass either limit (a run is cut in the middle when the chunk is full). Each chunk is
   one udmabuf and one KGSL object; drm2kgsl binds them one after another at the blob's GPU address with a single
   `BIND_RANGES`. A blob that fits is one udmabuf, as before. The limits used are the kernel's
@@ -420,19 +421,63 @@ GEM_UPLOAD, the BOs of GEM_SUBMIT, attach, export), `kgsl_object_from_blob_id` (
 obj: res_id=0`, `unknown submitqueue: 0`, `-EINVAL`). Host test: `zero_ids` in `src/gpu3d_kgsl/tests.rs` (section 3)
 aborted with the phone's assertion before the patch and passes with it. Not yet run on the phone.
 
-Why the two blobs were refused (`INVALID_PARAMETER`) is a fault of its own (README, Known issues): the guest logs only
-the response, and `virtio_gpu.rs` said nothing. Since this change each refused `RESOURCE_CREATE_BLOB` is one line with
-the check that failed (the first 32, then every 1024th; the answer is unchanged):
+Why the two blobs were refused (`INVALID_PARAMETER`): the guest logs only the response, and `virtio_gpu.rs` said
+nothing. Since this change each refused `RESOURCE_CREATE_BLOB` is one line with the check that failed (the first 32,
+then every 1024th; the answer is unchanged). The 18:24 session's lines then named the entry count (section 2.4b):
 
 ```
 virtio-gpu: blob R of context C refused (K so far): mem M flags F, S bytes, E entries: entry I at A, L bytes, is not guest RAM
 ```
 
-The other checks it names: no such blob memory; the size or entry count (at most 16384, and guest memory needs
-entries); the request holds fewer entry bytes than it says; an entry that is not whole 4 KiB pages; entries that hold
-less than the blob. Host test: `virtio_gpu::tests::three_d` (its not-guest-RAM case checks the line).
+The other checks it names: no such blob memory; the size or entry count (at most 65532, the guest driver's
+`MaxBlobEntries`, section 2.4b; guest memory needs entries); the request holds fewer entry bytes than it says; an entry
+that is not whole 4 KiB pages; entries that hold less than the blob. Host test: `virtio_gpu::tests::three_d` (its
+not-guest-RAM case checks the line). Every `gpu: 10 s: host blobs` line ends with `refused R`, the refused blobs since
+the start (2026-11-23).
 
-To change it: edit a copy of the pinned file, `diff -u` against the original into `drm2kgsl/patches/`, then `cargo build -p xnuhost` (`drm2kgsl/build.rs` applies the series again).
+### 2.4b `drm2kgsl/patches/0010-object-without-res-id.patch` and the guest's blob sizes (2026-11-23)
+
+0009 was not the whole fix. The phone ended again with the same `hash_table.c:311` line at 84283.8 s in the 18:24
+session (runtime 0.1.18 with 0009, `out/session-logs/2026-11-23-mac-s1824/xnuhost-final.log`). Before it the device
+refused 20 blobs of one wallpaper, Unity2025Poster (contexts 83 and 87), all with the entry-count check:
+`virtio-gpu: blob 9814 of context 83 refused (1 so far): mem 3 flags 0x9, 83886080 bytes, 20480 entries: size or
+entry count (at most 16384; guest memory needs entries)` (one was 75022336 bytes, 18316 entries).
+
+**Two causes.**
+- **The limit.** `virtio_gpu.rs` `MAX_BLOB_ENTRIES` was 16384, `DroidVMVirtioGpu.h` `MaxEntries`: the display's limit
+  for a 2D surface. The guest's 3D blobs have their own, `DroidVMVirtioGpu3D.cpp` `MaxBlobEntries =
+  (HugeRequest - sizeof(CreateBlob)) / sizeof(Entry)` = (1 MiB - 56) / 16 = **65532** (one entry a page, up to 256 MiB
+  of ordinary wired pages, `droidvm_virtgpu_contiguous = 0`). The device now takes that (the request is the 1 MiB
+  `command` already accepts). `udmabufs` makes an 80 MiB blob of 20480 single pages into 20 udmabufs of 1024 pages;
+  drm2kgsl binds them in one `BIND_RANGES` (section 2.1). `MAX_BACKING` (2D) and the display's `DIRECT_SEGS` stay
+  16384: they are the display's `MaxEntries` (a blob with more segments is copied, not posted).
+- **The abort.** The guest's `GEM_NEW` makes the BO with its blob id first (drm2kgsl puts it in the context's blob
+  table). The device refused the `CREATE_BLOB`, so the renderer never gave the BO a res_id: it stayed in the blob
+  table with res_id 0. At the context's end `drm_context_deinit` frees what is in the blob table (`free_blob` ->
+  `drm_context_free_object` -> `drm_context_remove_object`), and `remove_object` searched the resource table for
+  res_id 0: mesa's reserved key. The host test's backtrace is exactly that, from `ctx_destroy`
+  (`virgl_context_remove` -> `kgsl_renderer_destroy` -> `drm_context_deinit`). 0009 patched only
+  `drm2kgsl_renderer.c`; this is in `drm_context.c`, which `build.rs` now patches too.
+
+**The patch** (`drm_context.c`): `drm_context_remove_object` returns for an object with res_id 0 (in no resource
+table); `drm_context_get_object_from_res_id(0)` is NULL; `drm_context_res_id_unused(0)` is false (0 is never free to
+take); `drm_context_retrieve_object_from_blob_id` answers blob id 0, or one over 32 bits, with NULL (its assert is
+gone). So no res_id or blob id of the guest's reaches a search with the reserved key in `drm_context.c`; 0009 covers
+the queue table in `drm2kgsl_renderer.c`. The refused BO is freed at its context's end as before (KGSL keeps nothing:
+the test checks only the VBO is left).
+
+**Host tests** (section 3): `gpu3d_kgsl::tests::refused_blob_then_context_end` is the guest's sequence (`GEM_NEW`
+with a blob id, no `CREATE_BLOB`, the unref of the refused resource, `GEM_SET_IOVA` and a submit naming res_id 0, the
+context's end, then a new context's first buffers and submits, and a second refused BO beside another context). It
+aborted with the phone's `hash_table.c:311` line before the patch and passes with it. `virtio_gpu::tests::
+blob_entries_of_the_guest_driver`: blobs of 20480, 18316 and 65532 entries are made, 65533 is refused with its line;
+`three_d`'s `udmabufs_here` splits the 20480 single pages into 20 udmabufs of 1024 pages.
+
+**On the phone** (not booted yet): no `hash_table.c` line, no `virtio-gpu: blob ... refused` line for the 80 MiB
+blobs, and `gpu: 10 s: host blobs N (M MiB), made +A unref'd +B, refused 0`. The guest's `command 10c response 1205`
+lines for them go; a `command 102 response 1203` is then only an unref of an id the host never made.
+
+To change it: edit a copy of the pinned file, `diff -u` against the original into `drm2kgsl/patches/` (one file a patch, named on its `+++ b/` line), then `cargo build -p xnuhost` (`drm2kgsl/build.rs` applies the series again).
 A new pin of virglrenderer that the patch no longer applies to stops the build (`patch -F0`).
 
 **Threads and fences.** With a renderer the control queue is served by one thread of the device, never by a vCPU's
@@ -595,13 +640,16 @@ tests pass with drm2kgsl and in the 2D-only build); the numbers of checks below 
   generated stream: 4000 commands of every type and of none, with random lengths, ids, flags and segments; each gets
   exactly one answer or error (the C ran it under ASan and UBSan). `XNUHOST_TEST_SEED=N` changes the stream (144 seeds
   were run with the C).
+- `blob_entries_of_the_guest_driver`, same file: `CREATE_BLOB`s of 20480, 18316 and 65532 entries (the guest's
+  `MaxBlobEntries`) are made, 65533 is refused with its line (section 2.4b).
 - `gpu3d::udmabuf` against the real `/dev/udmabuf` of the PC: three segments of a sealed memfd read back in order
   through the dma-buf, a write seen in the memfd, an unsealed memfd refused.
 - The split, same file, real udmabufs read back page by page: with the limits set to 8 pages and 3 runs
   (`gpu3d::udmabuf_set_limits`), 20 pages in one run become 8 + 8 + 4, seven separate pages 3 + 3 + 1, two joined
   segments and a third are cut where the first udmabuf is full, exactly the limit is one udmabuf and one page more
-  is not; with the limits as on the phone, 72 MiB in one run become 64 + 8 MiB (the second begins where the first
-  ends) and 1100 separate pages 1024 + 76. The PC's own limit is 2147483647 MiB, and setting it to 64 needs root,
+  is not; with the limits as on the phone, 72 MiB in one run become 64 + 8 MiB (the second begins where the
+  first ends), 1100 separate pages 1024 + 76, and 20480 separate pages (an 80 MiB blob, section 2.4b) 20 udmabufs of
+  1024 pages. The PC's own limit is 2147483647 MiB, and setting it to 64 needs root,
   so the kernel *refusing* a 65 MiB udmabuf was not seen here; the phone's `gpuctl nodes` printed 64. The ENOMEM
   halving against a stand-in `UDMABUF_CREATE_LIST` (section 2). Without `/dev/udmabuf` these say so and are skipped.
 - `src/gpu3d_kgsl/tests.rs` (`tests/test_drm2kgsl.c` in the C; built when `external/virglrenderer` is there, else each
@@ -620,7 +668,9 @@ tests pass with drm2kgsl and in the 2D-only build); the numbers of checks below 
   shows the default is the WAITTIMESTAMP_CTXTID path (no TIMESTAMP_EVENT) while `NCTX_NO_WAITTS` asks for
   TIMESTAMP_EVENT(FENCE) (patch 0007's A/B switch). Also `coherence` (patch 0007's read-back, section 2.4), `classes`
   and `shown_surfaces` (section 2.2b), and `zero_ids` (patch 0009, section 2.4a: every device entry point and msm
-  request with resource, context, blob or queue id 0 is refused, and the context still makes a buffer and submits). The C had 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL from
+  request with resource, context, blob or queue id 0 is refused, and the context still makes a buffer and submits), and
+  `refused_blob_then_context_end` (patch 0010, section 2.4b: a BO whose blob the device refused, then its context's
+  end, and new contexts' first submits). The C had 36 checks in the memory scenarios (3 + 23 + 10). It models KGSL from
   its source; it is not KGSL. `layout_matches_msm_kgsl_h` checks the stand-in's mirror of `msm_kgsl.h` against the header
   (`glue/oneios_kgsl_layout.c`).
 - `leaks` in the same file (`tests/test_gpu_leaks.c` in the C, which ran under LeakSanitizer): the same renderer and

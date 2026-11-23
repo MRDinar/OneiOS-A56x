@@ -77,11 +77,15 @@ const F_CONTEXT_INIT: u64 = 1 << 4;
 const F_CREATE_GUEST_HANDLE: u64 = 1 << 6;
 
 const MAX_RES: usize = 64;
-/// as MAX_BLOB_ENTRIES: a 2D surface of scattered 4 KiB pages (1440x3120 has 4388)
+/// The guest display's MaxEntries (DroidVMVirtioGpu.h: 64 MiB in 4 KiB pages): a 2D surface of scattered 4 KiB pages
+/// (1440x3120 has 4388)
 const MAX_BACKING: u32 = 16384;
 const MAX_CTX: usize = 128;
-/// DroidVMVirtioGpu.h MaxEntries
-const MAX_BLOB_ENTRIES: u32 = 16384;
+/// The guest's 3D blobs: DroidVMVirtioGpu3D.cpp MaxBlobEntries, (HugeRequest - sizeof(CreateBlob)) / sizeof(Entry) =
+/// (1 MiB - 56) / 16, one entry a page of up to 256 MiB of scattered pages; the request is the 1 MiB `command` takes.
+/// It was 16384 (the display's MaxEntries), and an 80 MiB blob of single pages (20480 entries: Unity2025Poster,
+/// 2026-11-23 18:24) was refused. udmabufs() splits a blob into pieces of at most 1024 runs and 64 MiB.
+const MAX_BLOB_ENTRIES: u32 = ((1 << 20) - 56) / 16;
 /// The live blobs at most (C: an open-addressed table of 1 << 15 slots, three quarters full at most).
 const MAX_BLOBS: usize = (1 << 15) / 4 * 3;
 const WORKER_IOV: usize = 256;
@@ -480,8 +484,10 @@ impl Core {
     }
 
     /// The blobs the host holds, one line per 10 s while they change: `gpu: 10 s: host blobs N (M MiB), made +A unref'd
-    /// +B`. Against the guest's `oneios-gpu-memory` live count (and the sum of its own and wired MiB): the host holding
-    /// more than the guest has live is blobs the guest released and the host kept; the same is the guest's own holding.
+    /// +B, refused R` (R: the CREATE_BLOBs refused since the start; the first 32 each have a `virtio-gpu: blob ...
+    /// refused` line naming the check). Against the guest's `oneios-gpu-memory` live count (and the sum of its own and
+    /// wired MiB): the host holding more than the guest has live is blobs the guest released and the host kept; the same
+    /// is the guest's own holding.
     fn blob_note(&mut self) {
         let now = time::monotonic_ns() / 1000;
         if self.blob_note_us == 0 {
@@ -492,12 +498,13 @@ impl Core {
         }
         if self.blobs_made != self.noted_made || self.blobs_unref != self.noted_unref {
             logi!(
-                "gpu: {} s: host blobs {} ({} MiB), made +{} unref'd +{}",
+                "gpu: {} s: host blobs {} ({} MiB), made +{} unref'd +{}, refused {}",
                 (now - self.blob_note_us) / 1_000_000,
                 self.blobs.as_ref().map_or(0, |t| t.len()),
                 self.blob_bytes >> 20,
                 self.blobs_made - self.noted_made,
-                self.blobs_unref - self.noted_unref
+                self.blobs_unref - self.noted_unref,
+                BLOB_REFUSED.load(Ordering::Relaxed)
             );
         }
         self.blob_note_us = now;

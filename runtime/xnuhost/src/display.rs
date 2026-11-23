@@ -106,7 +106,7 @@ impl Frame {
 // guest does not draw into a surface the helper still reads; a helper that does not answer within DIRECT_TIMEOUT_MS is
 // answered for, so that a stuck helper costs frames but never the guest.
 const DIRECT_SLOTS: u32 = 4;
-const DIRECT_SEGS: usize = 16384; // virtio_gpu.rs MAX_BLOB_ENTRIES
+const DIRECT_SEGS: usize = 16384; // the guest display's MaxEntries (virtio_gpu.rs MAX_BACKING); a blob with more is copied
 const DIRECT_TIMEOUT_MS: i64 = 100;
 const DIRECT_SLOT_BYTES: usize = Slot::BYTES + DIRECT_SEGS * Seg::BYTES;
 const OUTSTANDING: usize = 16;
