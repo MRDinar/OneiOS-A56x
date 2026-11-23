@@ -1,0 +1,160 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8932,11 +8932,12 @@
+  * com.apple.fairplayd.H2 out of the hardware group). Without duetexpertd PosterBoard's "Add New Wallpaper" gallery
+  * waits for ATXFaceSuggestionClient's com.apple.proactive.FaceSuggestions.xpc ("No such process") and loads forever
+  * (phone, 2026-11-23); the other jobs' clients looked up their services the same way (kvsd 50, replicatorservices 30,
+- * mobilemail 27, proactive.infoSuggestion 10 in that boot). Still disabled: the crash loops (0053, the policy's loops
+- * group), the replace jobs (watchdogd, the OTA jobs) and aned. tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs
++ * mobilemail 27, proactive.infoSuggestion 10 in that boot). Still disabled: the crash loops and the telemetry (0053 and
++ * 0093, the policy's groups loops and telemetry: 0093 took the telemetry jobs out of this list), the replace jobs
++ * (watchdogd, the OTA jobs) and aned. tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs
+  * checks that this list is the policy's. One line per label enabled, one line for the rest:
+  *   oneios-jobs: com.apple.duetexpertd: enabled in disabled.plist (it was disabled)
+- *   oneios-jobs: 134 of 136 labels enabled in disabled.plist, 2 not disabled there (0092)
++ *   oneios-jobs: 118 of 120 labels enabled in disabled.plist, 2 not disabled there (0092; 134 of 136 before 0093)
+  */
+ static const char oneios_jobs_enable_default[] =
+ 	"com.apple.analyticsd,com.apple.navd,"          /* 0044, 0083: kept since then */
+@@ -8956,7 +8957,6 @@
+ 	"com.apple.accessoryupdaterd,"
+ 	"com.apple.adid,"
+ 	"com.apple.amsengagementd,"
+-	"com.apple.analyticsagent,"
+ 	"com.apple.ap.adprivacyd,"
+ 	"com.apple.ap.promotedcontentd,"
+ 	"com.apple.appstorecomponentsd,"
+@@ -8964,21 +8964,16 @@
+ 	"com.apple.assistant_cdmd,"
+ 	"com.apple.assistant_service,"
+ 	"com.apple.assistantd,"
+-	"com.apple.audioanalyticsd,"
+ 	"com.apple.batteryintelligenced,"
+ 	"com.apple.biomesyncd,"
+ 	"com.apple.bookassetd,"
+ 	"com.apple.callintelligenced,"
+ 	"com.apple.carkitd,"
+ 	"com.apple.cdpd,"
+-	"com.apple.cloudtelemetryd,"
+ 	"com.apple.cmfsyncagent,"
+ 	"com.apple.coreidvd,"
+ 	"com.apple.corespeechd,"
+-	"com.apple.diagnosticextensionsd,"
+-	"com.apple.diagnosticspushd,"
+ 	"com.apple.duetexpertd,"
+-	"com.apple.ecosystemanalyticsd,"
+ 	"com.apple.email.maild,"
+ 	"com.apple.eyereliefd,"
+ 	"com.apple.familycircled,"
+@@ -8988,8 +8983,6 @@
+ 	"com.apple.fitnesscoachingd,"
+ 	"com.apple.fitnessintelligenced,"
+ 	"com.apple.gamed,"
+-	"com.apple.geoanalyticsd,"
+-	"com.apple.hangtelemetryd,"
+ 	"com.apple.homed,"
+ 	"com.apple.homeeventsd,"
+ 	"com.apple.hybridsearchd,"
+@@ -9001,7 +8994,6 @@
+ 	"com.apple.imagent,"
+ 	"com.apple.imcore.imtransferagent,"
+ 	"com.apple.ind,"
+-	"com.apple.inputanalyticsd,"
+ 	"com.apple.intelligencecontextd,"
+ 	"com.apple.intelligenceflowd,"
+ 	"com.apple.intelligenceplatformd,"
+@@ -9009,7 +9001,6 @@
+ 	"com.apple.itunescloudd,"
+ 	"com.apple.jetpackassetd,"
+ 	"com.apple.knowledgeconstructiond,"
+-	"com.apple.libsqlite3.dbtelemetryd,"
+ 	"com.apple.maps.destinationd,"
+ 	"com.apple.mediaanalysisd,"
+ 	"com.apple.mediaanalysisd.service,"
+@@ -9024,14 +9015,12 @@
+ 	"com.apple.ospredictiond,"
+ 	"com.apple.parsec-fbf,"
+ 	"com.apple.peopled,"
+-	"com.apple.perfpowermetricd,"
+ 	"com.apple.photoanalysisd,"
+ 	"com.apple.photosface,"
+ 	"com.apple.powerexperienced,"
+ 	"com.apple.remindd,"
+ 	"com.apple.replicatord,"
+ 	"com.apple.routined,"
+-	"com.apple.rtcreportingd,"
+ 	"com.apple.safetyalertsd,"
+ 	"com.apple.seld,"
+ 	"com.apple.sensorkitd,"
+@@ -9045,7 +9034,6 @@
+ 	"com.apple.speechmaintenanced,"
+ 	"com.apple.spotlightknowledged,"
+ 	"com.apple.spotlightknowledged.updater,"
+-	"com.apple.symptomsd-diag,"
+ 	"com.apple.syncdefaultsd,"
+ 	"com.apple.systemvoiceassistant,"
+ 	"com.apple.terminusd,"
+@@ -9056,7 +9044,6 @@
+ 	"com.apple.uarpd,"
+ 	"com.apple.uarphidd,"
+ 	"com.apple.uarppersonalizationd,"
+-	"com.apple.usbctelemetryd,"
+ 	"com.apple.videosubscriptionsd,"
+ 	"com.apple.visioncompaniond,"
+ 	"com.apple.visualintelligenced,"
+@@ -9065,8 +9052,6 @@
+ 	"com.apple.watchlistd,"
+ 	"com.apple.watchpresenced,"
+ 	"com.apple.weatherd,"
+-	"com.apple.wifianalyticsd,"
+-	"com.apple.wirelessinsightsd,"
+ 	"com.apple.momentsd,"
+ 	"com.apple.coreduetd,"
+ 	"com.apple.modelcatalogd,"
+@@ -9167,6 +9152,35 @@
+  * launchd starts it again as the publisher of com.apple.proximity.launch, every 10-20 s. prngseedd: seputil
+  * --daemonize-reseed (a reseed from the SEP; there is none) is started again by its xpc activity about every 10 s.
+  */
++/*
++ * OneiOS hosted (0093): the default list also has the policy's telemetry group (daemons.toml `telemetry`, on by
++ * default since 2026-11-23): crash-report and analytics processing and upload, which a session does not need. In the
++ * session of 2026-11-23 18:24 osanalyticshelper used 55-103% of a CPU for minutes after the Wi-Fi join (oneios-top:
++ * 70895 page faults in 10.4 s of its 13.7 s), with every CPU of the guest busy (all 800%). ReportCrash stays: it
++ * writes a crash's .ips itself (OSALog createForSubmission with a writing block does not go through the helper).
++ * 0092's enable list no longer has these labels; tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs checks that
++ * this list is the policy's loops and telemetry groups.
++ */
++static const char oneios_jobs_disable_default[] =
++	"com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,"   /* 0053: the loops */
++	"com.apple.osanalytics.osanalyticshelper,"
++	"com.apple.analyticsagent,"
++	"com.apple.audioanalyticsd,"
++	"com.apple.cloudtelemetryd,"
++	"com.apple.diagnosticextensionsd,"
++	"com.apple.diagnosticspushd,"
++	"com.apple.ecosystemanalyticsd,"
++	"com.apple.geoanalyticsd,"
++	"com.apple.hangtelemetryd,"
++	"com.apple.inputanalyticsd,"
++	"com.apple.libsqlite3.dbtelemetryd,"
++	"com.apple.perfpowermetricd,"
++	"com.apple.rtcreportingd,"
++	"com.apple.symptomsd-diag,"
++	"com.apple.usbctelemetryd,"
++	"com.apple.wifianalyticsd,"
++	"com.apple.wirelessinsightsd"
++;
+ static void
+ oneios_jobs_disable(void)
+ {
+@@ -9174,7 +9188,8 @@
+ 	static const char empty[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+ 	    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+ 	    "<plist version=\"1.0\">\n<dict>\n</dict>\n</plist>\n";
+-	char labels[256] = "com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd";
++	static char labels[1024];                                               /* 0093: the default is 0.6 KiB */
++	strlcpy(labels, oneios_jobs_disable_default, sizeof(labels));
+ 	vfs_context_t ctx = vfs_context_current();
+ 	(void)PE_parse_boot_argn("oneios-disable-jobs", labels, sizeof(labels));
+ 	if (labels[0] == 0 || !strcmp(labels, "-")) {

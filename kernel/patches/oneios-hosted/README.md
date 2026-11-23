@@ -1963,7 +1963,8 @@ oneios-jobs: com.apple.duetexpertd: enabled in disabled.plist (it was disabled)
 oneios-jobs: 134 of 136 labels enabled in disabled.plist, 2 not disabled there (0092)
 ```
 
-The next boot after that shows `0 of 136 ... 136 not disabled there`. 0053's disable list runs after it, so the
+The next boot after that shows `0 of 136 ... 136 not disabled there` (118 and 120 since 0093 took the telemetry
+jobs out of the list). 0053's disable list runs after it, so the
 crash loops stay off. `tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs`
 (`policy_the_kernels_enable_list_is_what_the_policy_runs_again`) checks that the list is the policy's.
 
@@ -1971,3 +1972,33 @@ crash loops stay off. `tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs
 FairPlayIOKit kext; this kernel does not carry it either), and `oneios-cpu` / `oneios-mem` for the jobs that run again.
 A job that loops goes back with `boot-args-add=oneios-disable-jobs=` (0053's list and it) and then into the policy's
 loops group.
+
+## 0093-telemetry-jobs-off.patch (telemetry-jobs-off, 2026-11-23)
+
+**Why.** In the session of 2026-11-23 18:24 (kernel 0092, `out/session-logs/2026-11-23-mac-s1824/`) the host ran at
+700-735% of 800 and every guest CPU was busy (`oneios-cpu: ... (all 800%)`). After the Wi-Fi join osanalyticshelper
+used 55-103% of a CPU for minutes (`oneios-cpu`; `oneios-top: osanalyticshelper[259] cpu 82%, 95384 traps 13753485 us:
+vm_fault 70895 (10449945 us)`), after a `brk` trap (`tasks: pid 26474 ... insn 0xd4200020` at 83764.8; which process is
+not in that log) and ReportCrashService. 0092 had enabled the analytics and telemetry uploaders of vphone's base list
+too. The owner: turn off what a session does not need, analytics and crash-report submission.
+
+**What.** The daemon policy has a new group, `telemetry`, on by default (`userland/config/daemons.toml`: osanalyticshelper,
+out of `[keep]`, and 16 analytics, telemetry and diagnostics jobs out of base). For a Data store from an older seed:
+0053's default disable list (`oneios_jobs_disable_default`, 0.6 KiB in a static buffer of 1024) is the loops and the
+telemetry group, and 0092's enable list loses the 16 (otherwise 0092 enabled them and 0053 disabled them again: two
+writes of `disabled.plist` at each boot). ReportCrash stays: it writes a crash's `.ips` itself (24A446's OSAnalytics:
+`+[OSALog createForSubmission:metadata:options:error:writing:]` with a writing block does not go through
+osanalyticshelper). `oneios-disable-jobs=` still replaces the list. The first boot logs:
+
+```text
+oneios-jobs: 118 of 120 labels enabled in disabled.plist, 2 not disabled there (0092)
+oneios-jobs: com.apple.osanalytics.osanalyticshelper: disabled in disabled.plist (it was not)
+oneios-jobs: com.apple.analyticsagent: disabled in disabled.plist (it was enabled there)
+```
+
+`tools/oneios-tool/crates/oneios-tweaks/tests/roottweak.rs` checks both lists against the policy
+(`policy_the_kernels_enable_list_is_what_the_policy_runs_again`, `policy_the_kernels_disable_list_is_the_loops_and_the_telemetry`).
+Built on the Linux laptop with `ONEIOS_CRYPTO=original` (xnu.macho `22bf1532...`, 471 s) and prelinked (`kernel.kc`
+`40eb1263...`: audit 0 failures, stubs-check 666 good, 0 bad), with the Wi-Fi signal change of `net/`; not booted
+yet. **Watch in its first boot:** no
+osanalyticshelper in `oneios-cpu`; a crash still leaves an `.ips` under `/private/var/mobile/Library/Logs/CrashReporter`.

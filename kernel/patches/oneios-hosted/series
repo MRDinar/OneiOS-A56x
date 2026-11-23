@@ -437,3 +437,11 @@
 # "Add New Wallpaper" loaded forever, PosterBoard's gallery waits on duetexpertd's FaceSuggestions.xpc ("No such
 # process"). The roottweak test checks that the list is the policy's. README.md, "0092".
 0092-enable-jobs-policy.patch
+# telemetry-jobs-off (2026-11-23): the daemon policy's new telemetry group (userland/config/daemons.toml, on by
+# default: osanalyticshelper and the analytics, telemetry and diagnostics uploaders) is off in a Data store from an
+# older seed too: 0053's default disable list gets the group (0.6 KiB, a static buffer of 1024; oneios-disable-jobs=
+# still replaces it), and 0092's enable list loses those 16 labels (it enabled them before 0053 disabled them: two
+# writes of disabled.plist at each boot). Found: in the session of 2026-11-23 18:24 osanalyticshelper used 55-103% of a
+# CPU for minutes after the Wi-Fi join, every guest CPU busy. ReportCrash stays (it writes a crash's .ips itself). The
+# roottweak test checks both lists against the policy. README.md, "0093". Applies after 0092 (git apply --check).
+0093-telemetry-jobs-off.patch

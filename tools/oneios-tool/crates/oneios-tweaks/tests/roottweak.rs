@@ -303,12 +303,14 @@ fn policy_the_policy_does_not_contradict_itself() {
     assert!(!chosen.iter().any(|l| d.keep.contains(l)));
     assert!(!chosen.iter().any(|l| d.idle.iter().any(|(i, _)| i == l)));
     // vphone's base list of 134, less generativeexperiencesd (kept) and the four OTA jobs (replace)
-    assert_eq!(d.group("base").unwrap().labels.len(), 126); // analyticsd (2026-11-12), navd (2026-11-22) and duetexpertd (2026-11-23) went to keep
+    // analyticsd (2026-11-12), navd (2026-11-22) and duetexpertd (2026-11-23) went to keep; 16 to telemetry (2026-11-23)
+    assert_eq!(d.group("base").unwrap().labels.len(), 110);
+    assert_eq!(d.group("telemetry").unwrap().labels.len(), 17);
     for label in ["com.apple.SpringBoard", "com.apple.backboardd", "com.apple.CommCenter", "com.apple.sleepd", "com.apple.generativeexperiencesd", "com.apple.bluetoothd", "com.apple.locationd", "com.apple.navd", "com.apple.duetexpertd"] {
         assert!(d.keep.contains(label), "{label}");
     }
     // on by default: replace, hardware (aned) and the crash loops; base, extra and signin run since 2026-11-23
-    for label in ["com.apple.watchdogd", "com.apple.mobile.softwareupdated", "com.apple.aned", "com.apple.aonsensed", "com.apple.prngseedd"] {
+    for label in ["com.apple.watchdogd", "com.apple.mobile.softwareupdated", "com.apple.aned", "com.apple.aonsensed", "com.apple.prngseedd", "com.apple.osanalytics.osanalyticshelper"] {
         assert!(chosen.iter().any(|l| l == label), "{label}");
     }
     for label in ["com.apple.nfcd", "com.apple.seld", "com.apple.momentsd", "com.apple.coreduetd", "com.apple.fairplayd.H2", "com.apple.identityservicesd", "com.apple.weatherd", "com.apple.followupd"] {
@@ -325,17 +327,40 @@ fn policy_the_policy_does_not_contradict_itself() {
     assert!(d.selected(&["nonesuch".into()], &[], &[]).is_err());
 }
 
+/// A patch of the hosted series, as text.
+fn hosted_patch(name: &str) -> String {
+    std::fs::read_to_string(format!("{}/../../../../kernel/patches/oneios-hosted/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+/// The labels of a C string list `NAME[] =` ... `;` as a patch adds it ("+" lines).
+fn patch_list(patch: &str, name: &str) -> Vec<String> {
+    let start = patch.find(&format!("{name}[] =")).unwrap_or_else(|| panic!("the list {name}"));
+    let body = &patch[start..start + patch[start..].find("\n+;").expect("its end")];
+    let joined: String = body.lines().skip(1).filter_map(|l| l.split('"').nth(1)).collect();
+    joined.split(',').map(str::to_string).collect()
+}
+
 #[test]
 fn policy_the_kernels_enable_list_is_what_the_policy_runs_again() {
     // hosted 0092: a Data store from a seed made before 2026-11-23 has the groups base, extra and signin and
     // fairplayd.H2 in its disabled.plist; the kernel's built-in list enables them again. It must be the policy's.
-    let patch = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../kernel/patches/oneios-hosted/0092-enable-jobs-policy.patch")).unwrap();
-    let start = patch.find("oneios_jobs_enable_default[] =").expect("the list in 0092");
-    let body = &patch[start..start + patch[start..].find("\n+;").expect("its end")];
-    let joined: String = body.lines().skip(1).filter_map(|l| l.split('"').nth(1)).collect();
-    let mut kernel: Vec<String> = joined.split(',').map(str::to_string).collect();
+    // hosted 0093 takes the telemetry group's labels out of it again (its "-" lines).
+    let removed: Vec<String> = hosted_patch("0093-telemetry-jobs-off.patch")
+        .lines()
+        .filter(|l| l.starts_with("-\t\"com.apple."))
+        .filter_map(|l| l.split('"').nth(1).map(|s| s.trim_end_matches(',').to_string()))
+        .collect();
+    let mut kernel: Vec<String> =
+        patch_list(&hosted_patch("0092-enable-jobs-policy.patch"), "oneios_jobs_enable_default").into_iter().filter(|l| !removed.contains(l)).collect();
     kernel.sort();
     let d = config::daemons(None).unwrap();
+    let telemetry = d.group("telemetry").unwrap();
+    assert!(telemetry.default, "telemetry is on by default");
+    let mut gone = removed.clone();
+    gone.sort();
+    let mut want_gone: Vec<String> = telemetry.labels.iter().filter(|l| *l != "com.apple.osanalytics.osanalyticshelper").cloned().collect();
+    want_gone.sort();
+    assert_eq!(gone, want_gone, "0093 takes out of 0092's list the telemetry jobs it had (osanalyticshelper was kept, never in it)");
     let mut want: Vec<String> = ["base", "extra", "signin"].iter().flat_map(|g| d.group(g).unwrap().labels.clone()).collect();
     for g in ["base", "extra", "signin"] {
         assert!(!d.group(g).unwrap().default, "{g} is off by default");
@@ -348,7 +373,22 @@ fn policy_the_kernels_enable_list_is_what_the_policy_runs_again() {
     assert_eq!(kernel, want);
     let chosen: Vec<String> = d.selected(&[], &[], &[]).unwrap().into_iter().map(|(l, _)| l).collect();
     assert!(!kernel.iter().any(|l| chosen.contains(l)), "the kernel enables a job the policy disables");
-    assert!(joined.len() < 4096, "0092's buffer is 4096 bytes");
+    assert!(kernel.join(",").len() < 4096, "0092's buffer is 4096 bytes");
+}
+
+#[test]
+fn policy_the_kernels_disable_list_is_the_loops_and_the_telemetry() {
+    // hosted 0053 and 0093: a Data store from an older seed gets the policy's crash loops and telemetry disabled.
+    let mut kernel = patch_list(&hosted_patch("0093-telemetry-jobs-off.patch"), "oneios_jobs_disable_default");
+    assert!(kernel.join(",").len() < 1024, "0093's buffer is 1024 bytes");
+    kernel.sort();
+    let d = config::daemons(None).unwrap();
+    let mut want: Vec<String> = ["loops", "telemetry"].iter().flat_map(|g| d.group(g).unwrap().labels.clone()).collect();
+    want.sort();
+    assert_eq!(kernel, want);
+    let chosen: Vec<String> = d.selected(&[], &[], &[]).unwrap().into_iter().map(|(l, _)| l).collect();
+    assert!(kernel.iter().all(|l| chosen.contains(l)), "the kernel disables a job the policy runs");
+    assert!(!kernel.iter().any(|l| d.keep.contains(l)), "the kernel disables a kept job");
 }
 
 #[test]
