@@ -452,3 +452,10 @@
 # already" and then osanalyticshelper[268] at 15-49% of a CPU (oneios-cpu). The daemon policy's telemetry group has the
 # label too (userland/config/daemons.toml); the roottweak test checks the list. README.md, "0094". Applies after 0093.
 0094-osanalytics-agent-off.patch
+# thread-call-cpu (2026-11-23): a lasting oneios-perf line, "thread calls: N callouts, C us of CPU (P% of a vCPU), F
+# functions; most: 0xADDR n x mean us (wall W, max M) ...", the 8 callout functions that took most CPU in the period
+# (unslid; oneios-tool sym kernel ADDR names them). Found: the session of 2026-11-23 20:23 had "thread call high #2
+# 26553870" us of 30 s in 0051's kernel_task line (88% of a vCPU) and nothing said which callout it ran. Two clock reads
+# per callout (recount and mach_absolute_time), counters in 256 lock-free slots by function, no allocation. README.md,
+# "0095". Applies after 0094 (thread_call.c is no other patch's; hosted_user.c after 0091's report call).
+0095-thread-call-cpu.patch

@@ -2024,3 +2024,26 @@ up). 0093 disabled only the first.
 Tested: `cargo test -p oneios-tweaks` on the laptop. **Watch in its first boot:** `oneios-jobs:
 com.apple.osanalytics.osanalyticshelper.agent: disabled in disabled.plist (it was not)`, and no osanalyticshelper in
 `oneios-cpu` after the Wi-Fi join.
+
+## 0095-thread-call-cpu.patch (thread-call-cpu, 2026-11-23)
+
+**Why.** 0051's `kernel_task` line names threads, and a thread call thread runs any callout of its group. In the session
+of 2026-11-23 20:23 (`out/session-logs/2026-11-23-mac-s2023/`) the top of it was `thread call high #2 26553870` us in a
+30 s period (88% of a vCPU; `thread call high #1 14734207` in another, `thread call high #2 27749056` in the 18:24
+session), with every vCPU busy. The high group runs every `thread_call_allocate()`d callout: Mach timers (`mk_timer`),
+BSD `timeout()`, IOKit power management, the kexts' own calls. Nothing named the one that used the CPU.
+
+**What.** `thread_call_thread` (`osfmk/kern/thread_call.c`) takes the thread's CPU time (`recount_current_thread_time_mach`)
+and the wall time around each callout and adds them to the callout function's slot (256, open addressing on the unslid
+address, lock-free counters; `table full` in the line when a function found no slot). The oneios-perf report prints,
+after 0051's line:
+
+```text
+oneios-perf:   thread calls: 91234 callouts, 26553870 us of CPU (88% of a vCPU), 30 functions; most: 0xfffffff007a1b2c4 81234 x 310 us (wall 320, max 9000) ...
+```
+
+The 8 functions with the most CPU in the period: the count, the mean CPU, the mean wall (above the CPU: the callout
+blocks), the longest callout's CPU. Name an address with `oneios-tool sym kernel --kc kernel.kc --kernel xnu.macho
+--slide 0 ADDR` (the address is unslid). Cost: two clock reads and four atomic adds per callout. Tested: `git apply
+--check` on the patched tree; built and prelinked with the series (below). **Watch in its first boot:** the line every
+30 s; the function behind `thread call high #2`, then a fix of that cause.
