@@ -2171,3 +2171,75 @@ pairs (level normal throughout, 2804 MiB available at the end, no rise), each li
 counts, a phone boot. **Watch in its first boot:** the `oneios-wired` lines (`IOKIT` near the GPU's own +
 imported, `unnamed` small), and in `oneios-pressure` a warning round whose first notes are backboardd and the other
 large GPU clients (`big first` above 0), then `oneios-gpu-memory` own bytes falling within seconds of the rise.
+
+## 0098-disable-allowed.patch (fix/disable-allowed, 2026-11-24)
+
+**Why.** In the session of 2026-11-24 01:17 (`out/session-logs/2026-11-24-mac-gpumem/live.log`, kernel `e79886d9` with
+0093, 0094 and 0096) the boot logged `oneios-jobs: com.apple.osanalytics.osanalyticshelper: disabled there already`
+and `...osanalyticshelper.agent: disabled in disabled.plist`, and still `osanalyticshelper[263]` ran at 31-77% of a CPU
+from the first crash on (ReportCrash[259] at 108542.6, the helper right after), crossed its 15 MB limit (`process
+osanalyticshelpe [263] crossed memory high watermark (15 MB); EXC_RESOURCE`), was started again as `[441]` and ran at
+54-85%. **The cause** is in the sealed root, not in disabled.plist: 24A446's
+`/System/Library/LaunchDaemons/com.apple.jetsamproperties.V54.plist` marks 19 jobs `DisableAllowed = false`, and
+launchd (`Ignoring disabled state because DisableAllowed=false: %s`, a string of 24A446's `/sbin/launchd`) runs such a
+job whatever disabled.plist says. The 19: ReportCrash, ReportCrash.Root, ReportCrashService, osanalyticshelper and its
+`.agent`, analyticsd, diagnosticextensionsd, symptomsd-diag, OTATaskingAgent, mobile.softwareupdated, logd, logd_helper,
+logd_reporter, mobileactivationd, mobile.obliteration, DumpPanic, sysdiagnose, sysdiagnose_helper, pluginkit.pkd (read
+with `oneios-tool image apfs-copy` from `out/image/24A446/os.img` and plistutil). Of them the daemon policy disables
+osanalyticshelper, its agent, diagnosticextensionsd, symptomsd-diag (telemetry), OTATaskingAgent and softwareupdated
+(replace): all six could run. The image tool knew (`tweaks.rs`, the contract's `DisableAllowed` line); only the `rw`
+layout could act on it (vphone's `patch-jetsam-disable-allowed`). So 0094 (the agent label) was not the missing piece.
+
+**What.** Before launchd, in `native_gpu_addon_prepare` before 0031's daemons mount: the sealed plist (binary, 129739
+bytes) is read, every key string object `DisableAllowed` (marker `0x5e` and 14 bytes; the plist's writer did not unique
+them: 19 copies) becomes `OneiOSDisAllow`, of the same length, so no offset of the plist moves and every other property
+(priorities, memory limits) stays. The copy is written to `/private/var/ngpu/daemons` (only when it differs), which
+0031 already shows over `/System/Library/LaunchDaemons` as a read-only union (the sealed files stay visible beside it).
+launchd then honours disabled.plist for every job; no job is disabled that disabled.plist does not name. Switch
+`oneios-disable-allowed` (docs/switches.md): `1` (default, product type V54), `NAME` (another product type's plist), `0`
+(nothing written, an earlier boot's copy removed: iOS's rule again). One line, after the mount:
+
+```text
+oneios-disable-allowed: com.apple.jetsamproperties.V54.plist: 19 DisableAllowed marks renamed (written 0; -1: the same
+    as before), launchd sees 19 renamed through /System/Library/LaunchDaemons (daemons mount stage 4, status 2)
+```
+
+Stage 4 status 2 is expected: the union is mounted and shows the sealed `com.apple.backboardd.plist`; 0031's own probe
+(`org.blu-sharky.adrenoprobed.plist`) is not there. Not done when `sheng-gpu-addon=0` (0031's function returns first).
+
+Tested: `kernel/tests/host.sh` builds `oneios_disable_allowed_marks_in` from the patch's own lines with
+`tests/test_disable_allowed.c` (made-up plists: 3 marks renamed in place, a longer string, the bare bytes and a key at
+the end left alone, an XML plist refused). The same rename of the real 24A446 plist (sed on a copy in the scratch
+folder): 266 bytes changed (19 x 14), plistutil reads it, its XML is the original's with only the key renamed.
+`git apply --check` after 0097 on the patched tree; built and prelinked (see "0100"). **Not booted.** Watch in the first boot: the
+line above with 19 and 19; no `osanalyticshelper` in `oneios-cpu`; in iOS's log (`phone pull-log`) no `Ignoring disabled
+state because DisableAllowed=false` and `JetsamProperties loaded from path`; a crash still leaves an `.ips`. **Risk:**
+if launchd refused a plist from the union, it would run without jetsam properties (no priorities or limits): its
+`JetsamProperties not loaded` in iOS's log says so; `oneios-disable-allowed=0` takes the copy away.
+
+## 0100-kill-reason-line.patch (fix/disable-allowed, 2026-11-24)
+
+**Why.** In the same session PosterBoard's wallpaper extensions were started again every 7-22 s with no touch in
+between (MercuryPosterExtension 409, 417, 420, 429, 436 between 108666 and 108726; Collections, Aegir, Rhizome, Weather,
+Unity2025 likewise), at 50-206% of a CPU each. xnuhost logged no trap of theirs, `oneios-mem` no jetsam kill and no
+`crossed memory high watermark` of theirs: nothing said who ended them or why.
+
+**What.** A lasting line (no switch: logging) when a process ends another with a reason (`terminate_with_payload`, what
+`terminate_with_reason` calls: runningboardd, FrontBoard, launchd's extension watchdog) or sends another single process
+SIGKILL with kill(2), at most 600 lines a boot:
+
+```text
+oneios-kill: KILLER[pid] -> TARGET[pid]: namespace N code 0xC flags 0xF: "the caller's text, its first 80 bytes"
+oneios-kill: KILLER[pid] -> TARGET[pid]: SIGKILL (kill)
+```
+
+The namespace and code are XNU's `os_reason` ones (`sys/reason.h`: 15 RunningBoard, 10 SpringBoard, 7 libxpc, 20
+watchdog); the text is copied in only for the line. A process ending itself is not counted. In `kern_sig.c`, no other
+patch's file. Numbered 0100: 0099 is left to the audio fix (fix/audio-late).
+
+Tested: `git apply --check` after 0098 on the patched tree. Built with 0098 on the laptop (`HOSTED_OUT=disallow
+ONEIOS_CRYPTO=original`, 184 patches, 367 s): `xnu.macho` `7ecd6622`, releasable; prelinked to
+`out/kernel/24A446-disallow/kernel.kc` `a07f5426` (`.hashes` `80688378`), audit 0 failures, stubs-check 666 good 0 bad;
+the lines of 0098 and 0100 are in it (`strings`). **Not booted** (no phone boot yet; no qemu boot: the owner's rule of
+2026-11-24). Watch in the first boot: `oneios-kill` lines naming the posters' killer and reason (FrontBoard's scene
+watchdog, RunningBoard's, or launchd's), which decides the next fix.

@@ -120,6 +120,20 @@ if command -v "${CC:-cc}" > /dev/null; then
 else
   echo "skipped: codec picture helpers (no ${CC:-cc})"
 fi
+# Hosted 0098's rename of launchd's DisableAllowed marks: the function as the patch adds it (its + lines from
+# "static int" to the closing brace), built with a made-up plist test (kernel/patches/oneios-hosted/tests).
+if command -v "${CC:-cc}" > /dev/null; then
+  t=$(mktemp -d)
+  awk '/^\+oneios_disable_allowed_marks_in\(/ { print prev; on = 1 } on { print } on && /^\+}/ { exit } { prev = $0 }' \
+    kernel/patches/oneios-hosted/0098-disable-allowed.patch | sed 's/^+//' > "$t/marks.c"
+  grep -q 'memcpy(data + i + 1, to, 14)' "$t/marks.c" || fail "0098: oneios_disable_allowed_marks_in not found in the patch"
+  "${CC:-cc}" -std=c11 -Wall -Wextra -I "$t" kernel/patches/oneios-hosted/tests/test_disable_allowed.c -o "$t/test" || fail "0098: build"
+  "$t/test" || fail "0098: rename"
+  rm -rf "$t"
+  ok "0098: DisableAllowed marks renamed in place"
+else
+  echo "skipped: 0098's rename (no ${CC:-cc})"
+fi
 # The arm64e kernel's compiler line (kernel/linux/clang-wrapper): the PAC ABI (signed calls, returns, the intrinsics)
 # and function-pointer type discrimination reach cc1 whatever the host clang implies for the triple by itself.
 # A clang that refuses the kernel's own driver flags (CI's Ubuntu clang: an older release) builds no kernel either, and

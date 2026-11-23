@@ -477,7 +477,7 @@ fn sealed_disabled_jobs_go_to_the_data_volume_as_roots_file() {
     let mut jobs = strs(lp.get("disable_jobs").unwrap());
     jobs.sort();
     assert_eq!(jobs, keys(&disabled));
-    // iOS 27's DisableAllowed = false: said, since a sealed root cannot change it
+    // iOS 27's DisableAllowed = false: said, since a sealed root cannot change it (the kernel answers it: hosted 0098)
     assert_eq!(strs(lp.get("force_enabled").unwrap()), ["com.apple.OTATaskingAgent", "com.apple.mobile.softwareupdated"]);
     // labels the fake root does not have are reported, not written
     let r = c.read("report.json");
