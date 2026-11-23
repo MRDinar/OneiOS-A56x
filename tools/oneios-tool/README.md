@@ -1968,7 +1968,11 @@ oneios-tool phone pull-log DIR [--boot last|UUID] [--keep]   # iOS's log only: i
                                               #   oneios-tool on the staged store; an open session is fine, its newest
                                               #   checkpoint is read), only the gzipped text crosses adb; then DIR/ioslog.txt,
                                               #   ioslog-health.txt, ioslog-keyboard.txt, ioslog-haptics.txt. 2026-11-22: 615713 entries, 11 MB over
-                                              #   adb, 9.4 s (pull-data: 0.8-2.8 GB, about 7.5 min, the session ended first)
+                                              #   adb, 9.4 s (pull-data: 0.8-2.8 GB, about 7.5 min, the session ended first).
+                                              #   A boot with no entries in the store as read (2026-11-23 beside an open
+                                              #   session: a 20-byte gzip, nothing said) ends with an error that lists the
+                                              #   store's boots (the phone's ioslog boots) and what to try: after the return,
+                                              #   or --boot with a listed UUID
 oneios-tool phone pull-data OUT [--ioslog]    # data/data.img in chunks, each checked against the phone's sha256, zero runs as holes;
                                               #   run again after a stop and it goes on (OUT.part, OUT.part.progress)
                                               #   [--chunk MIB] [--retries 5] [--backoff 2] [--stall 120] [--verify chunk|end] [--restart]

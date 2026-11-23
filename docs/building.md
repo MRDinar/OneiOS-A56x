@@ -734,7 +734,9 @@ $T phone procs --seconds 30 --raw > procs.raw; $T phone procs --from procs.raw -
 $T phone pull-log DIR               # iOS's log only, in seconds and beside an open session: the runtime's oneios-tool
                                    #   reads the staged store on the phone (ioslog show), only the gzipped text crosses
                                    #   adb (11 MB for 615713 entries, 9.4 s on 2026-11-22), then DIR/ioslog.txt,
-                                   #   ioslog-health.txt, ioslog-keyboard.txt and ioslog-haptics.txt here. Use it, not pull-data, for logs
+                                   #   ioslog-health.txt, ioslog-keyboard.txt and ioslog-haptics.txt here. Use it, not pull-data, for logs.
+                                   #   An empty boot (beside an open session the newest file may not be in a checkpoint
+                                   #   yet) is an error that lists the store's boots: pull again after the return
 $T phone pull-data OUT --ioslog    # the Data store's copy (no session open), then ioslog boots, checks and health
                                    #   (the health report: ioslog-health.txt beside OUT, its lines printed). In chunks
                                    #   (--chunk 256 MiB), each checked against the phone's sha256 and tried again when its

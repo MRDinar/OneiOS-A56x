@@ -19,6 +19,9 @@ use std::time::Instant;
 pub const TEXT_FILE: &str = "ioslog.txt";
 pub const KEYBOARD_FILE: &str = "ioslog-keyboard.txt";
 pub const HAPTICS_FILE: &str = "ioslog-haptics.txt";
+/// What the phone says when the boot's text is empty; the store's boots table follows it (2026-11-23: a pull beside
+/// an open session gave "20 bytes", an empty gzip, and nothing said why).
+pub const EMPTY_SAID: &str = "pull-log: no entries of that boot in the store as read; its boots:";
 
 /// The phone's side: refuse without a runtime tool or a store, write the boot's text, gzip it, print its size.
 /// `tmp` is the text file's path on the phone (the `.gz` beside it is what is pulled).
@@ -30,6 +33,7 @@ pub fn phone_script(tool: &str, store: &str, tmp: &str, boot: &str) -> String {
          mkdir -p {dir}\n\
          rm -f {tmp} {tmp}.gz\n\
          {tool} ioslog show {store} --boot {boot} -o {tmp}\n\
+         [ -s {tmp} ] || {{ echo '{EMPTY_SAID}'; {tool} ioslog boots {store} || true; }}\n\
          {BUSYBOX} gzip -1 {tmp}\n\
          {BUSYBOX} stat -c %s {tmp}.gz\n",
         dir = Path::new(tmp).parent().map(|p| p.display().to_string()).unwrap_or_else(|| ".".into()),
@@ -68,6 +72,9 @@ pub fn pull_log(adb: &Adb, out_dir: &str, boot: &str, keep: bool) -> Result<()> 
     if !keep {
         let _ = adb.root(&format!("rm -f {tmp} {tmp}.gz\n"));
     }
+    if bytes == 0 {
+        bail!("{}", empty_text_help(&said, boot, open));
+    }
     println!(
         "pull-log: {} ({bytes} bytes of text from {gz} over adb, {:.1} s){}",
         text.display(),
@@ -89,9 +96,34 @@ pub fn pull_log(adb: &Adb, out_dir: &str, boot: &str, keep: bool) -> Result<()> 
     Ok(())
 }
 
+/// The error for a boot whose text came back empty: the store's boots as the phone listed them (the lines after
+/// [`EMPTY_SAID`], without the gzip's size), and what to try.
+pub fn empty_text_help(said: &str, boot: &str, open: bool) -> String {
+    let lines: Vec<&str> = said.lines().collect();
+    let table = match lines.iter().position(|l| l.trim() == EMPTY_SAID) {
+        Some(at) => lines[at + 1..lines.len().saturating_sub(1)].join("\n"),
+        None => String::new(),
+    };
+    format!(
+        "pull-log: boot {boot}: no entries in the store as read{}\n{}\n{}",
+        if open { " (a session is open: logd's newest file may not be in a checkpoint the reader takes yet)" } else { "" },
+        if table.is_empty() { "(the phone listed no boots)".to_owned() } else { table },
+        "try again after the return (`phone return`), or name a listed boot with --boot UUID-START"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_text_says_why() {
+        let said = format!("{EMPTY_SAID}\ndata.img: 4 tracev3 files\nboot  start\nABCD  2026-11-23\n20\n");
+        let help = empty_text_help(&said, "last", true);
+        assert!(help.starts_with("pull-log: boot last: no entries in the store as read (a session is open:"), "{help}");
+        assert!(help.contains("data.img: 4 tracev3 files\nboot  start\nABCD  2026-11-23\n") && !help.contains("\n20\n"), "{help}");
+        assert!(empty_text_help("20\n", "9A6A", false).contains("boot 9A6A: no entries in the store as read\n(the phone listed no boots)"));
+    }
 
     #[test]
     fn the_phone_script() {
@@ -101,6 +133,7 @@ mod tests {
         assert!(s.contains("[ -f /s/data/data.img ] ||"));
         assert!(s.contains("mkdir -p /s/logs\n"));
         assert!(s.contains("/s/runtime/bin/oneios-tool ioslog show /s/data/data.img --boot last -o /s/logs/pull-log.txt\n"));
+        assert!(s.contains(&format!("[ -s /s/logs/pull-log.txt ] || {{ echo '{EMPTY_SAID}'; /s/runtime/bin/oneios-tool ioslog boots /s/data/data.img || true; }}\n")));
         assert!(s.contains(&format!("{BUSYBOX} gzip -1 /s/logs/pull-log.txt\n")));
         assert!(s.ends_with(&format!("{BUSYBOX} stat -c %s /s/logs/pull-log.txt.gz\n")));
     }
