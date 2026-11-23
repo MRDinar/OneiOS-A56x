@@ -622,6 +622,39 @@ fn summary_of_a_boot() {
     }
     let args: Vec<String> = ["summary", &path, "--since", "soon"].iter().map(|a| a.to_string()).collect();
     assert!(run_inner(&args, f.loc(), &mut Vec::new()).is_err());
+    // a log from before the versions line says so
+    assert!(out.lines().nth(1).unwrap().starts_with("versions: no line"), "{out}");
+}
+
+/// `log summary`'s second line: xnuhost's `versions:` line (docs/booter.md 2.9b), the last one of the log, also from a
+/// tail that has only the stop summary's copy (OneiOS issue 73's report was the last 124 lines), and how many differ.
+#[test]
+fn summary_names_the_versions() {
+    let f = Fixture::new("versions");
+    let v1 = "versions: runtime 0.1.19 (git 973e8f7a1b2c), kernel xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3, \
+              kernel.kc a28fedfdf524, image iOS 27.0.1 24A446 format 1, app versionCode 209";
+    let mut t = String::new();
+    t += "[   100.000] xnuhost I xnuhost: session ABI 1, mode takeover, pid 100\n";
+    t += &format!("[   100.001] xnuhost I {v1}\n");
+    t += "[   101.000] xnuhost I cpu0: entering the kernel at 0x2003dbb488\n";
+    t += "[   200.000] xnuhost I stopping: return asked (reason 3, code 0)\n";
+    t += &format!("[   200.001] xnuhost I {v1}\n");
+    t += "[   200.500] xnuhost I exit 0\n";
+    let out = f.run(&["summary", &f.log("full.log", &t)]);
+    assert_eq!(out.lines().nth(1), Some(format!("{v1} (line 5)").as_str()), "{out}");
+    // the tail: no start line (one boot without one), the versions all the same
+    let tail: String = t.lines().skip(3).map(|l| format!("{l}\n")).collect();
+    let out = f.run(&["summary", &f.log("tail.log", &tail)]);
+    assert!(out.contains(": 3 lines, 1 boot(s)\n"), "{out}");
+    assert_eq!(out.lines().nth(1), Some(format!("{v1} (line 2)").as_str()), "{out}");
+    // a second boot with another kernel collection: the last line, and that the log holds two
+    let v2 = v1.replace("a28fedfdf524", "0123456789ab");
+    let two = format!("{t}[   300.000] xnuhost I xnuhost: session ABI 1, mode takeover, pid 200\n[   300.001] xnuhost I {v2}\n");
+    let out = f.run(&["summary", &f.log("two.log", &two)]);
+    assert_eq!(out.lines().nth(1), Some(format!("{v2} (line 8; 2 different ones in the log)").as_str()), "{out}");
+    // a guest line that says "versions: " is not xnuhost's
+    let guest = "[     1.000] guest     versions: of something else\n";
+    assert!(f.run(&["summary", &f.log("guest.log", guest)]).contains("versions: no line"));
 }
 
 /// `log pen`: the S Pen's stages in the formats of xnuhost's pen.rs and the guest's OneiOSHidInput.cpp (the lines of

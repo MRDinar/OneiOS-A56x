@@ -1818,7 +1818,11 @@ Limits:
 `oneios-tool log stacks|timeline|summary|diff|gpu|cpu|display|perf|pen LOG...` reads an xnuhost session log
 ([todo_rust.md](todo_rust.md) has each subcommand). No Python original.
 
-**`log summary` (2026-11-22): a session's health on one screen.** For the log's last boot (`--all`: every boot) it
+**`log summary` (2026-11-22): a session's health on one screen.** Its second line is xnuhost's last `versions:` line
+(docs/booter.md 2.9b: the runtime and its commit, the kernel's build id, the staged `kernel.kc`'s SHA-256, the image,
+the app's versionCode) with its line number and, when the log holds different ones, how many; a log from before
+v0.1.19 says `versions: no line`. A tail of a log has it too (xnuhost writes it again after `stopping:`). Then, for
+the log's last boot (`--all`: every boot) it
 prints the boot's stages with their time after the boot's start and their line (xnuhost starts, the RAM held, the
 kernel, BSD root, launchd loaded and its first line, the first virtio driver up, SpringBoard and backboardd first
 seen, backboardd's framebuffer, the first swap, the guest's first frame, guest ready, the first gesture, the end),

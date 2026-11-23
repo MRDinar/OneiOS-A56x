@@ -214,6 +214,18 @@ pub fn report(log: &Log, window: Window, all: bool) -> String {
     let mut out = String::new();
     let all_boots = boots(log);
     let _ = writeln!(out, "{}: {} lines, {} boot(s)", log.path, log.lines, all_boots.len());
+    // Which runtime, kernel, image and app made the log (xnuhost's `versions:` line, docs/booter.md 2.9b): the last one,
+    // which a tail of the log has too (xnuhost logs it again at the stop); a log of several says how many differ.
+    let versions: Vec<&Rec> = log.recs.iter().filter(|r| host(r, "versions: ")).collect();
+    if let Some(last) = versions.last() {
+        let mut texts: Vec<&str> = versions.iter().map(|r| r.text.as_str()).collect();
+        texts.sort_unstable();
+        texts.dedup();
+        let others = if texts.len() > 1 { format!("; {} different ones in the log", texts.len()) } else { String::new() };
+        let _ = writeln!(out, "{} (line {}{})", last.text, last.line, others);
+    } else {
+        let _ = writeln!(out, "versions: no line (an xnuhost before v0.1.19, or a part of the log without one)");
+    }
     if all_boots.is_empty() {
         return out;
     }

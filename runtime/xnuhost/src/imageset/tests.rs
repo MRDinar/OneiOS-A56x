@@ -255,3 +255,71 @@ fn real_image_set() {
         Err(e) => panic!("real set: trust caches: {e}"),
     }
 }
+
+#[test]
+fn the_versions_line() {
+    let dir = std::env::temp_dir().join(format!("test-versions-{}", std::process::id()));
+    let (rt, img) = (dir.join("runtime"), dir.join("image"));
+    fs::create_dir_all(&rt).unwrap();
+    fs::create_dir_all(&img).unwrap();
+    let (rts, imgs) = (rt.to_str().unwrap(), img.to_str().unwrap());
+    // Nothing there (a bench run without a stage, an old script): every field "unknown", never a failure.
+    assert_eq!(
+        versions_line(rts, imgs, None),
+        "versions: runtime unknown (git unknown), kernel unknown, kernel.kc unknown, image unknown unknown unknown format unknown, app unknown"
+    );
+    assert!(versions_line("", "", Some("")).ends_with("app unknown"));
+    // runtime.json and manifest.json as package.sh and `oneios-tool image manifest` write them (indent 2).
+    fs::write(
+        rt.join("runtime.json"),
+        "{\n  \"format\": 1,\n  \"name\": \"oneios-runtime\",\n  \"version\": \"0.1.19\",\n  \"git\": {\n    \"commit\": \
+         \"973e8f7a1b2c3d4e5f60718293a4b5c6d7e8f901\",\n    \"dirty\": false\n  },\n  \"placeholder\": false,\n  \"kernel\": \
+         {\n    \"path\": \"kernel/xnu.macho\",\n    \"build_id\": \"xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3\"\n  },\n  \
+         \"files\": [\n    {\n      \"path\": \"bin/xnuhost\",\n      \"sha256\": \"00\"\n    }\n  ]\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        img.join("manifest.json"),
+        "{\n  \"format\": 1,\n  \"name\": \"oneios-image\",\n  \"os\": \"iOS\",\n  \"version\": \"27.0.1\",\n  \"build\": \
+         \"24A446\",\n  \"kernel\": \"kernel.kc\",\n  \"files\": [\n    {\n      \"path\": \"data.seed\",\n      \"sha256\": \
+         \"1111111111111111111111111111111111111111111111111111111111111111\"\n    },\n    {\n      \"path\": \"kernel.kc\",\n      \
+         \"size\": 93323264,\n      \"sha256\": \"a28fedfdf52437f486ed8fb223398b17e333bdf6c8f9ff43e4b355a219a1c0d0\",\n      \
+         \"role\": \"kernel\"\n    }\n  ]\n}\n",
+    )
+    .unwrap();
+    let line = versions_line(rts, imgs, Some("208"));
+    println!("{line}");
+    assert_eq!(
+        line,
+        "versions: runtime 0.1.19 (git 973e8f7a1b2c), kernel xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3, \
+         kernel.kc a28fedfdf524, image iOS 27.0.1 24A446 format 1, app versionCode 208"
+    );
+    // A versionCode that is not a number is not printed; a dirty tree, a runtime and an image without a kernel.
+    assert!(versions_line(rts, imgs, Some("20 8; rm")).ends_with("app unknown"));
+    fs::write(
+        rt.join("runtime.json"),
+        r#"{"version": "0.1.19-dev", "git": {"commit": "973e8f7a1b2c3d4e5f60718293a4b5c6d7e8f901", "dirty": true}, "kernel": null}"#,
+    )
+    .unwrap();
+    fs::write(
+        img.join("manifest.json"),
+        r#"{"format": 1, "os": "iOS", "version": "27.0.1", "build": "24A446", "kernel": null, "files": []}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        versions_line(rts, imgs, Some("207")),
+        "versions: runtime 0.1.19-dev (git 973e8f7a1b2c dirty), kernel none, kernel.kc none, image iOS 27.0.1 24A446 format 1, app versionCode 207"
+    );
+    // Bad files: not JSON, a value with a space, a kernel.kc the files do not list.
+    fs::write(rt.join("runtime.json"), "{\"version\": \"0.1.19\", \"git\": ").unwrap();
+    fs::write(
+        img.join("manifest.json"),
+        r#"{"format": "1", "os": "i OS", "build": "24A446", "kernel": "kernel.kc", "files": [{"path": "os.img"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        versions_line(rts, imgs, None),
+        "versions: runtime unknown (git unknown), kernel unknown, kernel.kc unknown, image unknown unknown 24A446 format unknown, app unknown"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -767,5 +767,85 @@ pub fn describe(node: &mut Node, identity: &DiskIdentity) {
     }
 }
 
+// ---- the versions line (docs/booter.md 2.9b) ------------------------------------------------------------------------
+// One line that says which runtime, kernel, image and app made a log, at the start and again in the stop summary (a
+// user's log is often its last lines). It reads two small JSON files and never fails: a missing or bad value is
+// "unknown". The kernel collection is not hashed (100 MB): its SHA-256 is the image manifest's entry.
+
+/// The environment variable the OneOS fork's switch sets to the app's versionCode (its docs/oneios.md).
+pub const APP_VERSION_ENV: &str = "ONEIOS_APP_VERSION_CODE";
+
+/// A value fit for the line: 1 to 80 of `[A-Za-z0-9._+,-]`.
+fn token(value: Option<String>) -> Option<String> {
+    value.filter(|v| {
+        !v.is_empty() && v.len() <= 80 && v.bytes().all(|c| c.is_ascii_alphanumeric() || b"._+,-".contains(&c))
+    })
+}
+
+/// A JSON file of `dir` (at most 4 MiB) when it parses.
+fn json_file(dir: &str, name: &str) -> Option<Vec<u8>> {
+    if dir.is_empty() {
+        return None;
+    }
+    let text = slurp(dir, name, 4 << 20).ok()?;
+    (!text.contains(&0) && Json(&text).skip(0, 0).is_some()).then_some(text)
+}
+
+/// `versions: runtime V (git C[ dirty]), kernel ID, kernel.kc S, image OS V B format F, app versionCode N`: the
+/// runtime's `runtime.json` (beside `bin/`), the image's `manifest.json`, and `app` (the fork's versionCode, from
+/// APP_VERSION_ENV). Each value it cannot read is "unknown"; "none" is a runtime or image that says it has no kernel.
+pub fn versions_line(runtime: &str, image: &str, app: Option<&str>) -> String {
+    const UNKNOWN: &str = "unknown";
+    let or = |v: Option<String>| v.unwrap_or_else(|| UNKNOWN.to_string());
+    let is_null = |j: Json, p: Option<usize>| p.is_some_and(|p| j.0[p..].starts_with(b"null"));
+    let (mut version, mut commit, mut kernel) = (None, None, None);
+    let mut dirty = false;
+    if let Some(text) = json_file(runtime, "runtime.json") {
+        let j = Json(&text);
+        let root = Some(j.ws(0));
+        version = token(j.str(j.get(root, "version"), 64));
+        let git = j.get(root, "git");
+        commit = token(j.str(j.get(git, "commit"), 41).filter(|c| c.len() >= 12).map(|c| c[..12].to_string()));
+        dirty = j.get(git, "dirty").is_some_and(|p| j.0[p..].starts_with(b"true"));
+        let k = j.get(root, "kernel");
+        kernel = if is_null(j, k) { Some("none".to_string()) } else { token(j.str(j.get(k, "build_id"), 96)) };
+    }
+    let (mut kc, mut os, mut ios, mut build, mut format) = (None, None, None, None, None);
+    if let Some(text) = json_file(image, "manifest.json") {
+        let j = Json(&text);
+        let root = Some(j.ws(0));
+        os = token(j.str(j.get(root, "os"), 16));
+        ios = token(j.str(j.get(root, "version"), 32));
+        build = token(j.str(j.get(root, "build"), 16));
+        format = j.u64(j.get(root, "format")).map(|f| f.to_string());
+        let k = j.get(root, "kernel");
+        kc = if is_null(j, k) {
+            Some("none".to_string())
+        } else {
+            j.str(k, 96).and_then(|name| {
+                j.elements(j.get(root, "files"))
+                    .find(|&e| j.str(j.get(Some(e), "path"), 96).as_deref() == Some(name.as_str()))
+                    .and_then(|e| j.str(j.get(Some(e), "sha256"), 65))
+                    .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+                    .map(|s| s[..12].to_string())
+            })
+        };
+    }
+    let app = app.filter(|a| !a.is_empty() && a.len() <= 9 && a.bytes().all(|c| c.is_ascii_digit()));
+    format!(
+        "versions: runtime {} (git {}{}), kernel {}, kernel.kc {}, image {} {} {} format {}, app {}",
+        or(version),
+        or(commit),
+        if dirty { " dirty" } else { "" },
+        or(kernel),
+        or(kc),
+        or(os),
+        or(ios),
+        or(build),
+        or(format),
+        app.map_or_else(|| UNKNOWN.to_string(), |a| format!("versionCode {a}"))
+    )
+}
+
 #[cfg(test)]
 mod tests;

@@ -1776,6 +1776,27 @@ the boot's stages and their times, then each part's count of lines, its last lin
 `--since T` / `--last S` narrow it to a window. `oneios-tool log timeline` lists the same stages among the other
 milestones.
 
+**The versions line** (2026-11-23, v0.1.19; `imageset::versions_line`, logged by `session.rs`). Right after
+`xnuhost: session ABI`, and again right after `stopping:` (so the last lines of a log, all a user's report often has,
+carry it too), xnuhost writes which runtime, kernel, image and app made the log:
+
+```text
+versions: runtime 0.1.19 (git 973e8f7a1b2c), kernel xnu-12377.121.6-ios-27.0.1-24A446-c889b14b24f3, kernel.kc a28fedfdf524, image iOS 27.0.1 24A446 format 1, app versionCode 209
+```
+
+`runtime` and `git` (12 hex, ` dirty` when the package was) are `version` and `git.commit` of the runtime's
+`runtime.json` (beside `bin/`, `--runtime`); `kernel` is its `kernel.build_id`. `kernel.kc` is the first 12 hex of
+the SHA-256 that the image's `manifest.json` lists for its `kernel` file (the staged one: `phone manifest --stage`
+writes it; xnuhost does not hash the 100 MB file at the start); `image` is the manifest's `os`, `version`, `build`
+and `format`. `app` is `ONEIOS_APP_VERSION_CODE`, which the OneOS fork's root switch verb sets to the app's
+versionCode (the fork's docs/oneios.md "Session flow", from app 0.5.80 (209)); `app unknown` without it (a bench run,
+the scripts of app 0.5.78 and before). Each value that cannot be read (no file, not JSON, a value with a character
+other than `[A-Za-z0-9._+,-]`) is `unknown`, `none` a runtime or image that says it has no kernel; the line never
+stops the session. The two JSON files are read once, at the start (at most 4 MiB each). `oneios-tool log summary`
+prints the log's last versions line as its second line, or `versions: no line`. Tests:
+`imageset::tests::the_versions_line` (the line from files as `runtime/package.sh` and `image manifest` write them,
+missing and bad files), `oneios-log`'s `summary_names_the_versions` (a whole log, a tail, two different lines).
+
 **Boot stages** (summary's `stages:`; the first line that shows each): xnuhost starts (`xnuhost: session ABI`), the
 RAM is held and locked (`memory: the guest's RAM is held:`), the kernel starts (`cpu0: entering the kernel`, the
 guest's `Darwin Kernel Version`), BSD root (`BSD root:`), launchd is loaded (`load_init_program: attempting to load
@@ -1793,6 +1814,7 @@ before this change.
 | Part | The line | How often | Before | Now |
 | --- | --- | --- | --- | --- |
 | xnuhost start, the host phone | `xnuhost: session ABI`, `host:`, `hw: NAME: backend`, `placed:` | once | present | present |
+| which runtime, kernel, image and app (2026-11-23) | `versions: runtime ... app ...` | at the start and after `stopping:` | **missing** | present |
 | RAM held and locked, host memory | `memory: the guest's RAM is held: ... locked`, `memory: host MemAvailable ...`, `memory: fixed RAM: ...` | once; 30 s | present | present |
 | kernel start | `cpu0: entering the kernel`, guest `Darwin Kernel Version` | once | present | present |
 | BSD root, launchd | guest `BSD root:`, `load_init_program:`, `com.apple.xpc.launchd|... Doing boot task` | once each | present (launchd's console lines end with its boot tasks) | present |

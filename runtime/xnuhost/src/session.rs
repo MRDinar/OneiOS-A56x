@@ -303,6 +303,8 @@ fn mono_s() -> u64 {
 
 /// The session folder, "" for none: set at the start.
 static SESSION_DIR: OnceLock<String> = OnceLock::new();
+/// The versions line (imageset::versions_line), made once at the start and logged again in the stop summary.
+static VERSIONS: OnceLock<String> = OnceLock::new();
 /// ready-content-wait, set at the start.
 static READY_WAIT: AtomicU32 = AtomicU32::new(READY_CONTENT_WAIT);
 
@@ -605,6 +607,12 @@ pub fn main() -> i32 {
     let _ = SESSION_DIR.set(config.session.clone());
     READY_WAIT.store(config.ready_content_wait, Ordering::Relaxed);
     logi!("xnuhost: session ABI {}, mode {}, pid {}", config.session_abi, config.mode, std::process::id());
+    // Which runtime, kernel, image and app made this log (docs/booter.md 2.9b); again in the stop summary.
+    let app = std::env::var(crate::imageset::APP_VERSION_ENV).ok();
+    logi!(
+        "{}",
+        VERSIONS.get_or_init(|| crate::imageset::versions_line(&config.runtime, &config.image, app.as_deref()))
+    );
     // virtio's health lines (docs/booter.md 2.9b)
     xh_core::virtio::set_log(true);
     // who holds a device, in its "held by" line
@@ -836,6 +844,9 @@ fn end_session() -> i32 {
         logi!("return: iOS shut down in {} ms", ret.elapsed_ms(monotonic_ms()));
     }
     logi!("stopping: {} (reason {}, code {})", request.why, request.reason, request.code);
+    if let Some(v) = VERSIONS.get() {
+        logi!("{}", v); // a tail of the log has it too
+    }
     step(Step::StopReports);
     let config = config();
     // The session's own lines at the stop; never waited for: a main thread blocked in one of its ticks holds it (the
