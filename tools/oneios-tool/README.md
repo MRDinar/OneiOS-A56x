@@ -3110,7 +3110,7 @@ stale (`stage_tool` in `kernel/lib/stage.sh`; `ONEIOS_TOOL=PATH` for another bin
 | `kernel gen net` | `.../net/build-oneios-net.py` | `build_oneios_net.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel gen hid` | `.../hid/build-oneios-hid.py` | `build_oneios_hid.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel gen audio` | `.../audio/build-oneios-audio.py` | `build_oneios_audio.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
-| `kernel gen codec` | none: written in Rust (hevc-guest, 2026-11-15) | `build_oneios_codec.rs`, `staged/codec.rs` | the video encoder's archive `liboneioscodec.a` (below); its staged file's hash and its line are in `tests/kernelgen/golden/` |
+| `kernel gen codec` | none: written in Rust (hevc-guest, 2026-11-15) | `build_oneios_codec.rs`, `staged/codec.rs`, `staged/codec_decode.rs` (2026-11-24) | the video encoder's archive `liboneioscodec.a` (below); its staged file's hash and its line are in `tests/kernelgen/golden/` |
 | `kernel gen gpu` | `.../gpu/build-oneios-gpu.py` | `build_oneios_gpu.rs`, `class_record.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel gen display` | `.../display/build-oneios-display.py` | `build_oneios_display.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` |
 | `kernel build-record finish --host linux\|macos --work DIR --config NAME --out OUT [--repo CHECKOUT]`, `kernel build-record --self-test` | `kernel/build-record.py` | `build_record.rs` | **retired 2026-11-13**: deleted, its output frozen in `tests/kernelgen/golden/` (the frozen record gained `"linked"` on 2026-11-21, below) |
@@ -3152,8 +3152,10 @@ fresh checkout (not caused by this change). `cargo test -p oneios-kernel` alone 
 (`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`), its
 `AppleVideoToolboxParavirtualizationDriver` (`DroidVMVTParavirt.cpp`, the IOKit record; the late object without
 `__mod_init_func`, `__GLOBAL__sub_I_DroidVMVTParavirt.cpp` global), the sessions behind it (`DroidVMVTHost.cpp`,
-staged into the archive's folder with the one edit of `staged/codec.rs`: the hvcC's profile, tier and level bytes
-without the SPS's emulation prevention bytes) and `kernel/patches/oneios-hosted/codec/OneiOSCodec.c`. It requires
+staged into the archive's folder with the edits of `staged/codec.rs`, the encoder's 1 to 5 (the hvcC's profile,
+tier and level bytes without the SPS's emulation prevention bytes, the tile session, 10-bit pictures), and
+`staged/codec_decode.rs`, the decoder's 6 (2026-11-24: VP9 and AV1, `dcap`, `dcan`, the surfaces' kernel mappings
+kept, the decode counters; `kernel/patches/oneios-hosted/codec/README.md` "The decoder")) and `kernel/patches/oneios-hosted/codec/OneiOSCodec.c`. It requires
 eight definitions (the start, the transport, the registration and its initializer, and the four calls between the
 three files) and that neither C++ object has a static initializer left, and writes `objects.json`. It reads no
 record of the kernelcache and writes no bindings: the archive subclasses nothing of Apple's.
@@ -3267,7 +3269,7 @@ writes for the same build.
 | The staged copies of other projects' sources and of Apple's `IOBlockStorageDevice.cpp` (11: since hevc-guest, 2026-11-15, also `oneios-codec/DroidVMVTHost.cpp`) | SHA-256, size and name, `golden/staged.sha256` | `compare-golden.sh WORK` |
 | What the ten generators print (nine that were Python scripts, and `kernel gen codec`) | `golden/stdout.txt`, the tree's and the checkout's paths taken out | `compare-golden.sh WORK` |
 | Each edit list applied to a made-up source by the script's own staging function (8 lists; the Contact Identifier change of 2026-11-12 is in `hid_transport`) | `golden/synthetic/NAME.in` and `NAME.out` | `cargo test` |
-| The codec archive's edit list (`staged/codec.rs`, hevc-guest 2026-11-15; no Python original), on a made-up source and on the pinned `external/UniXNU-droidvm/package/DroidVMVTHost.cpp` | `golden/synthetic/codec.in` and `codec.out` (written by hand), and its results in the test | `cargo test` (`the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source`; the real file is skipped with a line when `external/` is not there) |
+| The codec archive's edit lists (`staged/codec.rs`, hevc-guest 2026-11-15; `staged/codec_decode.rs`, 2026-11-24; no Python original), on a made-up source and on the pinned `external/UniXNU-droidvm/package/DroidVMVTHost.cpp` | `golden/synthetic/codec.in` and `codec.out` (written by hand; the decoder's anchors and output added from the edit list, 2026-11-24), and its results in the test | `cargo test` (`the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source`; the real file is skipped with a line when `external/` is not there) |
 | The pen's edit list (`staged/hid_pen.rs`, spen 2026-11-15; no Python original), applied after `hid`'s to the pinned `external/NativeHidInput/NativeHidInput.cpp` | its anchors and results, in the test | `cargo test` (`the_pen_edits_fit_the_pinned_source`; skipped without `external/`) |
 | `drivers/build.py`'s command for a made-up record, C and C++ | `golden/synthetic/command.*.json` | `cargo test` |
 | `build-record.py`'s record of a made-up build (run from a made-up checkout; without the machine's part and the checkouts' commits) | `golden/synthetic/build-record.json`, `.series.txt` | `cargo test` |

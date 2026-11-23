@@ -20,6 +20,7 @@ use onebridges::thermal::{self, Thermal};
 use onecamera::link::Camera;
 use onecamera::proto::{OC_ROLE_FRONT, OC_ROLE_TELE5, OC_ROLE_WIDE};
 use oneencoder::backend::Backend as EncoderBackend;
+use oneencoder::decoder::{DecodeBackend, PoolMem, StubDecodeBackend};
 use xh_core::{loge, logi};
 use xnuloader::machine::{self as xm, Cluster, DeviceKind, Mac, Machine};
 
@@ -433,12 +434,21 @@ fn encoder_boot_argument(config: &mut Config) {
     }
 }
 
-/// The encoder device over a backend, in the media pool.
-fn encoder_device(slots: &mut Slots, machine: &mut Machine, pool: MediaPool, backend: Arc<dyn EncoderBackend>) -> bool {
+/// The encoder device over a backend, in the media pool, decoding with what `decoder` makes over the pool's host
+/// mapping (2026-11-24: the helper's MediaCodec in a session, the stand-in on a PC boot; none: an encoder only).
+fn encoder_device(
+    slots: &mut Slots,
+    machine: &mut Machine,
+    pool: MediaPool,
+    backend: Arc<dyn EncoderBackend>,
+    decoder: impl FnOnce(PoolMem) -> Option<Arc<dyn DecodeBackend>>,
+) -> bool {
     let host = crate::mem::ram(pool.pa, pool.bytes).map_or(std::ptr::null_mut(), |p| p.as_ptr());
-    let (base, spi) = slots.next();
     // SAFETY: the media pool is guest RAM mapped for the process's life (mem::map), pool.bytes long at `host`.
-    let dev = unsafe { oneencoder::media_device::create(base, spi, Some(backend), host, pool.pa, pool.bytes) };
+    let decoder = unsafe { PoolMem::new(host, pool.bytes) }.and_then(decoder);
+    let (base, spi) = slots.next();
+    // SAFETY: as above.
+    let dev = unsafe { oneencoder::media_device::create(base, spi, Some(backend), decoder, host, pool.pa, pool.bytes) };
     if dev.is_none() {
         return false;
     }
@@ -493,7 +503,8 @@ impl Bridges {
         // the phone. Never in a session on the phone (the bridges on) unless encoder=sim asks for it.
         if pool.bytes != 0 && (encoder_sim || !config.bridges) {
             let stub: Arc<dyn EncoderBackend> = Arc::new(oneencoder::backend_stub::StubBackend);
-            if !slots.full() && encoder_device(slots, machine, pool, stub) {
+            let standin = |pool| Some(Arc::new(StubDecodeBackend::new(pool)) as Arc<dyn DecodeBackend>);
+            if !slots.full() && encoder_device(slots, machine, pool, stub, standin) {
                 encoder_boot_argument(config);
                 logi!(
                     "encoder: the stand-in encoder ({}): no MediaCodec; every frame is coded as it is (I_PCM), no compression",
@@ -700,8 +711,15 @@ impl Bridges {
             match runtime_bin(&config.runtime, "oneios-encoder").filter(|_| !slots.full()) {
                 Some(helper) => {
                     onebridges::hw::select(Bridge::Encoder, Backend::Unset);
-                    let backend: Arc<dyn EncoderBackend> = oneencoder::backend_helper::HelperBackend::new(&helper);
-                    if encoder_device(slots, machine, pool, backend) {
+                    let helper = oneencoder::backend_helper::HelperBackend::new(&helper);
+                    // the decoder's pictures go straight into the pool: the helper maps it from the RAM's memfd
+                    let m = crate::mem::state();
+                    if m.fd >= 0 && pool.pa >= m.fd_phys {
+                        helper.set_pool(m.fd, pool.pa - m.fd_phys, pool.bytes);
+                    }
+                    let decoder = Some(helper.clone() as Arc<dyn DecodeBackend>);
+                    let backend: Arc<dyn EncoderBackend> = helper;
+                    if encoder_device(slots, machine, pool, backend, |_| decoder) {
                         encoder_boot_argument(config);
                     }
                 }
