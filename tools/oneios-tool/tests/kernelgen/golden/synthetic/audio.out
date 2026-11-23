@@ -83,6 +83,10 @@ extern "C" { volatile uint64_t oneios_actuator_frames; }
 uint32_t droidvm_snd_capture(int16_t *frames, uint32_t count);
 // OneiOS (fix-audio-latency): the speaker's ring (oneios-audio-ring) and its engine's timing (OneiOSAudio.c reports it).
 uint32_t oneios_speaker_ring = 1920;
+// OneiOS (fix-audio-late): oneios-audio-rt (the engines' threads realtime, their wait without slop) and the lateness counters.
+uint32_t oneios_audio_rt = 1;
+volatile uint32_t oneios_audio_rt_set, oneios_audio_rt_refused;
+volatile uint64_t oneios_speaker_late_1ms, oneios_speaker_late_5ms, oneios_speaker_late_20ms, oneios_speaker_short, oneios_actuator_late;
 // OneiOS (fix-audio-volume): the speaker's volume step (0..128, VirtualAudio's), its gain (Q16) and how often it changed.
 volatile uint32_t oneios_speaker_volume = 128, oneios_speaker_gain = 65536, oneios_speaker_volume_sets;
 volatile uint64_t oneios_speaker_periods, oneios_speaker_late_sum, oneios_speaker_late_max, oneios_speaker_leads,
@@ -93,6 +97,9 @@ volatile uint64_t oneios_speaker_periods, oneios_speaker_late_sum, oneios_speake
     bool speakerEngine() const { return !isInput && !isActuator; }   // OneiOS: hands a period on as it starts
     void oneiosSpeakerPeriod(uint64_t deadline, uint64_t done);
     uint32_t oneiosSetVolume(uint64_t value, IORegistryEntry *client);   // OneiOS: the speaker's volume control
+    bool oneiosRealtimeSaid = false;
+    void oneiosRealtime();                // OneiOS (fix-audio-late): the engine's thread realtime (oneios-audio-rt)
+    void oneiosWait(uint64_t deadline);   // OneiOS (fix-audio-late): to the period's deadline, no timer slop
 // (before anchor 21)
     ringFrames = speakerEngine() ? oneios_speaker_ring : RingFrames;   // OneiOS
     ring = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, Shared, ringFrames * 2 * channels(), page_size);
@@ -102,6 +109,42 @@ volatile uint64_t oneios_speaker_periods, oneios_speaker_late_sum, oneios_speake
     setNumber(e, "io buffer frame size", ringFrames);   // OneiOS: iOS's I/O buffer is at most 0.375 of it
 // (before anchor 24)
 void DroidVMAudioDevice::engineMain(void *self, wait_result_t) { static_cast<DroidVMAudioDevice *>(self)->run(); }
+
+// OneiOS (fix-audio-late): the engine's thread (the caller) as a time-constraint thread of one period: period and
+// constraint 5 ms, computation 2.5 ms (XNU raises a computation under half the constraint to that). A kernel thread
+// is at 81 otherwise, under the VM's pageout and compressor threads (91) and the high thread calls (93). The guest's
+// scheduler only: xnuhost's vCPUs stay SCHED_OTHER Linux threads. One line per device, at its first start.
+void DroidVMAudioDevice::oneiosRealtime() {
+    if (!oneios_audio_rt) return;
+    thread_time_constraint_policy_data_t policy;
+    policy.period = uint32_t(absolute(PeriodFrames));
+    policy.computation = uint32_t(absolute(PeriodFrames / 2));
+    policy.constraint = uint32_t(absolute(PeriodFrames));
+    policy.preemptible = TRUE;
+    const kern_return_t kr = thread_policy_set(current_thread(), THREAD_TIME_CONSTRAINT_POLICY,
+                                               reinterpret_cast<thread_policy_t>(&policy), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+    if (kr == KERN_SUCCESS) { const uint32_t n = oneios_audio_rt_set + 1; oneios_audio_rt_set = n; }
+    else { const uint32_t n = oneios_audio_rt_refused + 1; oneios_audio_rt_refused = n; }
+    if (oneiosRealtimeSaid && kr == KERN_SUCCESS) return;
+    oneiosRealtimeSaid = true;
+    if (kr == KERN_SUCCESS)
+        IOLog("DroidVMAudio: %s engine: realtime in the guest (period 5 ms, computation 2.5 ms, constraint 5 ms), its wait "
+              "without timer slop (oneios-audio-rt=1)\n", uid);
+    else
+        IOLog("DroidVMAudio: %s engine: thread_policy_set refused the time constraint (0x%x): kernel priority, its wait "
+              "without timer slop (oneios-audio-rt=1)\n", uid, kr);
+}
+
+// OneiOS (fix-audio-late): until the period's deadline. clock_delay_until waits with SYS_NORMAL urgency, which gives a
+// kernel thread's timer the kernel tier's slop (an eighth of the wait, at most 1 ms, more at a user idle level);
+// SYS_CRITICAL has none. oneios-audio-rt=0: clock_delay_until, as before.
+void DroidVMAudioDevice::oneiosWait(uint64_t deadline) {
+    if (!oneios_audio_rt) { clock_delay_until(deadline); return; }
+    if (mach_absolute_time() >= deadline) return;
+    assert_wait_deadline_with_leeway(reinterpret_cast<event_t>(&oneios_audio_rt), THREAD_UNINT, TIMEOUT_URGENCY_SYS_CRITICAL,
+                                     deadline, 0);
+    thread_block(THREAD_CONTINUE_NULL);
+}
 
 // OneiOS (fix-audio-latency): the speaker at the start of its period `done` (the deadline has passed): the zero time
 // stamp of a wrap the last period crossed (in the past now, as a DMA wrap's), and the timing counters: how late the
@@ -123,8 +166,14 @@ void DroidVMAudioDevice::oneiosSpeakerPeriod(uint64_t deadline, uint64_t done) {
     oneios_speaker_periods = oneios_speaker_periods + 1;
     oneios_speaker_late_sum = oneios_speaker_late_sum + late;
     if (late > oneios_speaker_late_max) oneios_speaker_late_max = late;
+    // OneiOS (fix-audio-late): the late ones by how late.
+    if (late > 1000) oneios_speaker_late_1ms = oneios_speaker_late_1ms + 1;
+    if (late > 5000) oneios_speaker_late_5ms = oneios_speaker_late_5ms + 1;
+    if (late > 20000) oneios_speaker_late_20ms = oneios_speaker_late_20ms + 1;
     const uint64_t written = s->writeEnd;
     oneios_speaker_lead_last = written;
+    // OneiOS (fix-audio-late): the HAL had written this period only in part (its I/O thread late, not the engine).
+    if (written > done && written < done + PeriodFrames) oneios_speaker_short = oneios_speaker_short + 1;
     if (written <= done) return;
     const uint64_t lead = written - done;
     oneios_speaker_leads = oneios_speaker_leads + 1;
@@ -193,6 +242,8 @@ uint32_t DroidVMAudioDevice::oneiosSetVolume(uint64_t value, IORegistryEntry *cl
     PE_parse_boot_argn("oneios-audio-ring", &oneios_speaker_ring, sizeof(oneios_speaker_ring));
     if (oneios_speaker_ring < 4 * PeriodFrames) oneios_speaker_ring = 4 * PeriodFrames;
     if (oneios_speaker_ring > RingFrames) oneios_speaker_ring = RingFrames;
+    // OneiOS (fix-audio-late): oneios-audio-rt=0: the engines at kernel priority, their wait clock_delay_until's.
+    PE_parse_boot_argn("oneios-audio-rt", &oneios_audio_rt, sizeof(oneios_audio_rt));
     droidvm_audio_stage = 3;
 // (before anchor 32)
     droidvm_audio_stage = 4;
@@ -256,4 +307,19 @@ void oneiosVolume(int16_t *s, uint32_t n) {
         if (a->scalarOutputCount >= 1) { a->scalarOutput[0] = v; a->scalarOutputCount = 1; }
         return kIOReturnSuccess;
     }
+// (before anchor 36)
+#include <kern/thread.h>
+#include <mach/thread_policy.h>   // OneiOS (fix-audio-late): the engines' time constraint
+#include <mach/thread_act.h>
+// (before anchor 37)
+    retain();
+    oneiosRealtime();   // OneiOS (fix-audio-late)
+    int16_t *buffer = static_cast<int16_t *>(ring->getBytesNoCopy());
+// (before anchor 38)
+        // OneiOS (fix-audio-late): a period taken over a period late is its device's (the Actuator's apart: the counter
+        // line's periods are the speaker's and the mic's), and the wait has no timer slop (oneios-audio-rt).
+        if (mach_absolute_time() > deadline + absolute(PeriodFrames)) {
+            if (isActuator) oneios_actuator_late = oneios_actuator_late + 1;
+            else droidvm_audio_late = droidvm_audio_late + 1;
+        } else oneiosWait(deadline);
 // (the end)

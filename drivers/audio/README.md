@@ -48,3 +48,12 @@ steps 0..128 over -64..0 dB in 0.5 dB steps, step 0 silence), the HAL's SetContr
 speaker engine scales each period by its gain before virtio-snd; the host's helper plays at full scale
 (`runtime/bridges/audio`). Log: `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain N of 65536), change N: ...`.
 The Mic and the Actuator have no control. `docs/hardware.md` section 6, "Volume".
+
+Since 2026-11-24 (fix-audio-late) the staged source (block "fix-audio-late") makes each engine thread (speaker, mic,
+Actuator) a time-constraint thread of the guest's scheduler at its start (period and constraint 5 ms, computation
+2.5 ms) and has it wait for its period with `TIMEOUT_URGENCY_SYS_CRITICAL` (no timer slop): boot-arg
+`oneios-audio-rt`, default 1; 0 is the kernel priority (81) and `clock_delay_until` of before. The counter line's
+`late` no longer counts the Actuator's periods (`oneios_actuator_late` apart), and `OneiOSAudio.c` prints `ONEIOS
+AUDIO: late periods: speaker N over 1 ms, N over 5 ms, N over 20 ms of N, N written by the HAL only in part; Actuator
+N over 5 ms; engine threads realtime N, refused N (oneios-audio-rt=1)`. No host thread is realtime. Cause, figures
+and the phone lines to look for: `docs/hardware.md` section 6, "Late periods".
