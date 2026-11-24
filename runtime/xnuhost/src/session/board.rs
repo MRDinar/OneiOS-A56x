@@ -18,7 +18,8 @@ use crate::ramfix::{self, Huge};
 use crate::{
     cpu, display, gic, gpu3d, gpu3d_amdgpu, hostcalls, input, input_script, mem, pen, sysreg, task, uart, virtio_blk,
 };
-use crate::{virtio_gpu, virtio_input};
+use crate::{motion, virtio_gpu, virtio_input};
+use onebridges::sensors;
 
 /// The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
 /// drm2kgsl keeps its first 2 MiB unused, the rest holds 16 KiB of response buffer per 3D context.
@@ -460,6 +461,85 @@ impl Session {
         } else if script_pen {
             logi!("pen: pen=off: the input script's pen lines are left out");
         }
+        // The motion sensors and the front light sensor (sensors=auto|ssc; off by default until a phone session proves
+        // it): the phone's sensor hub (SSC) over QRTR, no Android framework (onebridges::sensors). The hub is asked here,
+        // before the devices are counted: its accelerometer decides the guest's motion device (/arm-io/input-N, after
+        // the touch screen and the pen) and its light sensor the guest's SPU light sensor (oneios-als-spu=1). The
+        // streams start with the bridges; auto with no hub (no QRTR, no service 400, no answer) is the old path.
+        let mut motion_dev = None;
+        if config.sensors != config::Sensors::Off {
+            if !config.bridges {
+                logi!(
+                    "sensors: off: sensors={} reads the phone's sensor hub, and the bridges are off (no phone)",
+                    config.sensors.as_str()
+                );
+            } else {
+                let o = sensors::Options {
+                    hz: config.sensors_hz,
+                    light_index: config.sensors_light.map(|v| v as usize),
+                    ..sensors::Options::default()
+                };
+                match sensors::Hub::open(&o) {
+                    Ok(hub) => {
+                        let hub = std::sync::Arc::new(hub);
+                        let mut what: Vec<String> = Vec::new();
+                        for (kind, suid, desc) in &hub.found().sensors {
+                            what.push(format!("{} {suid} {desc}", kind.name()));
+                        }
+                        let mut guest = Vec::new();
+                        if hub.has(sensors::Kind::Accel) && !slots.full() {
+                            let input_n = slots.kinds.iter().filter(|k| **k == DeviceKind::Input).count();
+                            let (base, spi) = slots.next();
+                            let dev = virtio_input::create(base, spi).ok_or(BootFailed)?;
+                            let mag = hub.has(sensors::Kind::Mag);
+                            motion::guest_device(&dev, mag);
+                            slots.add(DeviceKind::Input);
+                            let mask = if mag { 0xf } else { 0x7 };
+                            if !config.boot_args.contains("oneios-motion=")
+                                && add_boot_arg(&mut config.boot_args, &format!("oneios-motion={mask}")).is_err()
+                            {
+                                loge!("sensors: no room in the boot arguments for oneios-motion={mask}");
+                                return Err(BootFailed);
+                            }
+                            guest.push(format!("motion device /arm-io/input-{input_n} at {} Hz", hub.hz()));
+                            motion_dev = Some(dev);
+                        }
+                        if hub.has(sensors::Kind::Light) {
+                            if !config.boot_args.contains("oneios-als-spu=")
+                                && add_boot_arg(&mut config.boot_args, "oneios-als-spu=1").is_err()
+                            {
+                                loge!("sensors: no room in the boot arguments for oneios-als-spu=1");
+                                return Err(BootFailed);
+                            }
+                            guest.push("the light for the brightness bridge, on change".into());
+                        }
+                        let args: Vec<&str> = config
+                            .boot_args
+                            .split_whitespace()
+                            .filter(|w| w.starts_with("oneios-motion=") || w.starts_with("oneios-als-spu="))
+                            .collect();
+                        let s = hub.found().service;
+                        logi!(
+                            "sensors: on: ssc (sensors={}): service 400 version {} at node {} port {:#x}; {}; {}; {}",
+                            config.sensors.as_str(),
+                            s.version(),
+                            s.node,
+                            s.port,
+                            what.join(", "),
+                            if guest.is_empty() { "nothing for the guest".to_string() } else { guest.join(", ") },
+                            if args.is_empty() { "no guest switch".to_string() } else { args.join(" ") }
+                        );
+                        self.sensors = Some(hub);
+                    }
+                    Err(why) if config.sensors == config::Sensors::Ssc => {
+                        loge!("sensors: off: sensors=ssc: {why}: no motion device, and no light sensor (the rear one is not used with ssc)");
+                    }
+                    Err(why) => {
+                        logi!("sensors: off: source old (sensors=auto): {why}: no motion device, the rear light sensor as before");
+                    }
+                }
+            }
+        }
         // The GPU: the 2D scanout always; with it the 3D half on the phone's Adreno (drm2kgsl on KGSL), when the host
         // has it, or on an amdgpu host without KGSL (the Galaxy A56's Xclipse) the amdgpu renderer when the kernel's
         // gpuaddon carries the A56's Metal plug-in and the renderer's self-test passes (gpu3d_amdgpu::choose,
@@ -632,6 +712,7 @@ impl Session {
             &mut slots,
             super::bridges::MediaPool { pa: media_pool_pa, bytes: media_bytes },
             self.pen_ic,
+            self.sensors.clone().map(|hub| (hub, motion_dev)),
         );
 
         // clusters=EEPPPPPP: the cluster types by hand (a bench run with no host topology to plan from).

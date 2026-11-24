@@ -16,6 +16,7 @@ pub mod phone;
 pub mod procs;
 pub mod pull;
 pub mod pulllog;
+pub mod qrtr;
 pub mod session;
 pub mod sparse;
 pub mod wifi;
@@ -99,6 +100,21 @@ pub enum Command {
     Wifi {
         #[command(subcommand)]
         command: WifiCommand,
+    },
+    /// Whether a root process beside One UI reaches the sensor hub (SSC) over Linux's QRTR, read only: the runtime's
+    /// `sensorctl qrtr` lists the QRTR nodes and services and asks the SNS service (400) one lookup; `--sensors` also
+    /// each data type's SUIDs and attributes (runtime/bridges/sensors/README.md). Settles whether sensors=auto can work
+    Qrtr {
+        /// Also every sensor the hub has (lookups and attributes only, no stream)
+        #[arg(long)]
+        sensors: bool,
+        /// This machine's sensorctl (STAGE/bin/sensorctl of runtime/build.sh), pushed to /data/local/tmp, run and
+        /// removed, for a phone whose staged runtime has none
+        #[arg(long, value_name = "FILE")]
+        binary: Option<String>,
+        /// Also write what the phone printed to FILE
+        #[arg(long, value_name = "FILE")]
+        save: Option<String>,
     },
     /// Every process with its CPU share and RAM, read only, with or without a session: the session's own processes,
     /// the fork's watchers, the kernel's threads, and each Android or vendor process that still runs beside iOS (its
@@ -362,6 +378,7 @@ pub fn main(cli: Cli) -> i32 {
         Command::Wifi { command: WifiCommand::Wonder { seconds, freq, country, save } } => {
             Adb::connect(serial).and_then(|adb| wifi::wonder(&adb, &wifi::Wonder { seconds, freq, country, save }))
         }
+        Command::Qrtr { sensors, binary, save } => Adb::connect(serial).and_then(|adb| qrtr::qrtr(&adb, sensors, binary.as_deref(), &save)),
         Command::Procs { seconds, sort, top, kernel, raw, from } => {
             let o = procs::Options { seconds, sort, top, kernel, raw, from };
             if o.from.is_some() {

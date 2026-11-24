@@ -39,6 +39,7 @@ pub mod display;
 pub mod display_header;
 pub mod gpu;
 pub mod hid;
+pub mod hid_motion;
 pub mod hid_pen;
 pub mod hid_transport;
 pub mod net_transport;
