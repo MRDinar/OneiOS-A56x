@@ -196,7 +196,9 @@ In `kern_descrip.c`, 0031's dyld lines also name `OneiOSRadeon*` files.
   `DroidVMVirtioGpu3D.cpp` and `NativeAdrenoAccelerator.cpp`: each anchor there once.
 - `HOSTED_OUT=a56gpu ONEIOS_CRYPTO=original kernel/build-hosted.sh` on the build laptop (main's series to 0108, 192
   patches): `xnu-12377.121.6-ios-27.0.1-24A446-b14aa6445129`, releasable, no warning in the GPU archive. Its prelink
-  `kernel.kc` `f090804d...`: audit 0 failures (`kernel/patches/oneios-hosted/README.md` "0108"). 0108 also applies on `release-kernel-a56`'s series
+  `kernel.kc` `f090804d...`: audit 0 failures. The same on `release-kernel-a56` (branch `a56gpu/release-kernel-a56`):
+  `...-f8def7dad866`, prelink audit 0 failures, prepared for the Mac to publish (`kernel/patches/oneios-hosted/README.md`
+  "0108"). 0108 also applies on `release-kernel-a56`'s series
   (to 0092 and 0102-0107: `git apply` of all 183 patches in order on a scratch tree).
 - **Not done:** any boot. There is no A56 here and no qemu boot (qemu has no 3D: none of these lines would show).
   The plug-in, Mesa and the host renderer are the other stages.
