@@ -899,3 +899,43 @@ The safe refusals:
   `boot-args=... oneios-gpu-amd-gl=0` in `xnuhost.conf` keeps the GL bundle unnamed (CPU composition, and the CoreImage
   fixup of docs/gpu.md 5.2 back). In iOS, `OneiOSRadeonGL.bundle/off` closes the gate in every process,
   `OneiOSRadeonGL.clients` names the processes, and `oneios-gl-softpipe=0|1` sets where softpipe stands in.
+
+### What an A56 user does today (2026-11-25), and what is left
+
+Every part is built and host-tested in main; **none has run on an A56** (no A56 here, no qemu boot). To try it:
+
+1. The runtime of the next release (xnuhost with `gpu3d_amdgpu`, the `galaxy-a56` row at `gpu=auto`, `early_2d`), and
+   the A56 kernel `xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa` ([releases.md](releases.md): built from
+   `release-kernel-a56` `4140abe`, packed, **not uploaded yet**; the pinned `181d8bf2d60a` has the Metal half, 0108,
+   but not the GL key of 4a). Update the kernel and Activate it in the app as before; the image stays.
+2. The gpuaddon with both bundles, built on the build laptop: `userland/metal-amd/build.sh all` (Mesa radeonsi, the
+   Metal layer's and the GL layer's hooks), then `userland/metal-amd/air/build.sh plugin out/metal-amd/build-ios` and
+   `userland/metal-amd/air/build.sh addon` (`out/metal-amd/OneiOSRadeonMetal.gpuaddon`, with `OneiOSRadeonGL.bundle`
+   when it is built). Check it with `gpuctl addon FILE 20F66`. Stage it on the phone with `oneios-tool phone addon FILE`
+   (it becomes `image/kernel.kc.gpuaddon`, its CDHashes go to owner-trust.json).
+3. Boot. Without step 2 the session is the 2D one of today (`gpu: 2D only: the gpuaddon has no OneiOSRadeonMetal
+   plug-in (the A56's Metal)`, laid out as `gpu=2d`). `gpu=2d` in the image's `xnuhost.conf` forces 2D at any time;
+   `boot-args-add=oneios-gpu-amd-gl=0` keeps backboardd off GL.
+
+The lines that prove each stage, in order: section 2 (xnuhost: the row's `gpu=auto`, the self-test's `PASS` lines,
+`gpu: 3D on amdgpu ...; oneios-gpu-amd=1`, `gpu: OpenGL ES: ...`, `gpu: context N xnu:backboardd: amdgpu ...`),
+section 5 (the kernel: `oneios-gpu-amd: the A56 accelerator: ...`, `oneios-gpu-open: ... type 0x4149 -> 0x0`),
+section 3 (iOS's log: `vdrm-darwin: connected: ...`, `oneios-radeonsi: screen "..."`), sections 4 and 4a (`RM I DEV
+screen ...` for Metal clients; `RG I CTX GLES 3 context ...` and `RG I GLI first frame drawn ...` for backboardd), then
+the frame rate in `display: 10 s:` lines against today's.
+
+**Left, exactly:**
+- **Distribution.** Only `oneios-tool phone addon` (a computer with adb) stages the gpuaddon. The runtime package
+  (`runtime/package.sh` `METAL_DIR`, `runtime.json` "metal") and the phone's `serve make-image` carry and place one
+  plug-in, the Adreno one (target `iPhone18,2 24A446`); for an A56 user without a computer they need a second entry for
+  `iPhone10,3 20F66` (the two A56 bundles, or their gpuaddon) and make-image writing `kernel.kc.gpuaddon` for a 20F66
+  image. Not started.
+- **The kernel upload** of `5966e71ce2aa` and its pin (one command each, [releases.md](releases.md)).
+- **A boot.** Unknowns only a boot shows: whether the Xclipse reads the guest's cached pages coherently (section 2),
+  whether radeonsi's screen opens over the Darwin vdrm (section 3), whether CoreAnimation's GL shaders compile on
+  Mesa and the per-frame IOSurface copies (4.5 MB written back per 720x1560 frame) beat CPU composition (4a), the
+  sandbox's verdicts on 20F66 (section 5).
+- **Not ported:** an in-place IOSurface import (the vdrm's `CREATE_BLOB_USER` exists, no winsys calls it), the shader
+  cache, timeline syncobjs, Jesvi-iOS's other CoreAnimation fixes (home indicator, colour matrices, blurs), Metal heaps,
+  fences, indirect command buffers and the rest of section 4's list; RADV on the same Darwin vdrm (section 3: three
+  small patches and the Vulkan runtime for Darwin, a guess) for NativeMetal/metal2vulkan later.

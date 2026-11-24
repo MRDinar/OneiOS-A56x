@@ -486,6 +486,25 @@ the stub, 0 failures. `kernel/tests/host.sh` there 9 of 9. **Not booted** on any
 The runtime half of the same fixes (the CoreImage text fixup, the iOS 16.5 product-id and serial number) is xnuhost's,
 on main: the next runtime release carries both.
 
+
+The A56 kernel built after v0.1.25 (2026-11-25, the a56-gpu work; **built, not uploaded, not pinned**: the upload was
+refused by this session's permission check, so the Mac publishes it). In the `out/a56gl-relwt` worktree, branch
+`a56gl/release-kernel-a56`, pushed as `release-kernel-a56` (`4140abe`, a fast-forward on `0888d97`): `181d8bf2d60a`'s
+branch plus the kernel part of main's `dde7daa` (the A56's OpenGL ES for CoreAnimation: with `oneios-gpu-amd-gl=1` the
+A56 accelerator names `IOGLESBundleName` `OneiOSRadeonGL`, and the `oneios-gpu-amd-cpu` processes see that key while the
+Metal keys stay hidden; [a56-gpu.md](a56-gpu.md) 4a). `GH_TOKEN=$(gh auth token) HOSTED_OUT=a56gl-rel
+ONEIOS_CRYPTO=original kernel/build-hosted.sh` (360 s): `xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa`, `xnu.macho`
+24,656,856 bytes, SHA-256 `ce002f1cf41e9ebd01b9ad14188d0d2d684ba6d58a35e7ac1b557c0d68847d03`, 185 patches,
+releasable. `kernel/publish.sh --hosted a56gl-rel` packed `out/a56gl-relwt/out/kernel/publish/xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa.tar.zst`,
+SHA-256 `e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18`. Its prelink
+(`out/kernel/24A446-a56gl-rel/kernel.kc`, 96,272,384 bytes, SHA-256 `f9bf8f7a82ef1d05...`): audit 2711 paired, 93 on the
+stub, 0 failures. `kernel/tests/host.sh` there 9 of 9, the golden test 15 of 15. The new switch is off for iOS 27 and
+for an A56 without the GL bundle (xnuhost adds `oneios-gpu-amd-gl=1` only when the gpuaddon carries it). To publish,
+on the build laptop: `cd out/a56gl-relwt && kernel/publish.sh --hosted a56gl-rel --upload`, then on main
+`kernel/release-kernel.txt` = `kernel-xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18`.
+Until then the pinned `181d8bf2d60a` has the Metal half (0108) but not this GL key: on it, backboardd stays on the CPU.
+**Not booted** on any phone.
+
 ## Released
 
 | Tag | Date | Commit | What |
