@@ -978,7 +978,7 @@ manifest and owner-trust: the parse, the sums and the file set agree; `gpuctl ad
 `gpuctl addon`, `early_2d`), guest Mesa radeonsi for Darwin, the AIR Metal layer, OpenGL ES (OneiOSRadeonGL), the
 kernel accelerator (0108 and the GL key), the integrated bundle build. `runtime/host-tests.sh` passed on main.
 
-**On branch `a56-gpu-ship`** (merged into main as `98e4a3b`):
+**On branch `a56-gpu-ship`** (in main as `ae30bc2`..`20f92c2`, linear: the merge commit was flattened by the push's rebase):
 `21f9293` the release carries the A56 bundles (package.sh 3c, `ios bundle-record`, runtime.json `metal_a56`,
 release.sh `--metal-amd-dir`/`--no-metal-amd`) and `image a56-gpu-place` (also in Make iOS image); `228678f` OpenGL ES
 only on a kernel that reads `oneios-gpu-amd-gl` (keeps SpringBoard's CoreImage fixup on 181d8bf2d60a); `c055978` the
@@ -990,7 +990,7 @@ Tests run on the branch: `runtime/package/test.sh` 31/31, `cargo test` of oneios
 on the 20F66 set's manifest and owner-trust, the app's parse, `gpuctl addon`) passed.
 
 **Done since (2026-11-25, the build laptop):**
-1. Merged: `98e4a3b` (`git merge --no-ff a56-gpu-ship`) on main; `METAL_AMD=1 runtime/host-tests.sh` there: workspace,
+1. Merged (`ae30bc2`..`20f92c2` on main; the tree of the `--no-ff` merge `98e4a3b`, flattened by the push's rebase); `METAL_AMD=1 runtime/host-tests.sh` on that tree: workspace,
    lint, lint-android, port, metal-amd, metal-amd-air, metal-amd-gl, links, package (31/31) pass, boot skipped
    (no qemu), exit 0 (`out/a56ship-hosttests.log`). Pushed; the worktree and branch `a56-gpu-ship` removed.
 2. The kernel: `kernel/publish.sh --hosted a56gl-rel --upload` in `out/a56gl-relwt`; downloaded back, SHA-256
