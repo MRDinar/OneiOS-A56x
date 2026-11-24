@@ -122,4 +122,4 @@ Left 3 and 4 done (2026-11-25, on `ios272/userland`, which has `ios272/base` mer
   failures (80 skipped).
 
 Not done: no phone boot (the phone is not on this laptop); the 24B156 kernel is uploaded and pinned (2026-11-25: `kernel/publish.sh --hosted ios272 --upload`, SHA-256
-`4d429519…`, the second line of `kernel/release-kernel.txt`; [releases.md](releases.md)); the release that carries it is next.
+`4d429519…`, the second line of `kernel/release-kernel.txt`; [releases.md](releases.md)); since then rebuilt from main `0f4ad03` as `1ff040fc5c9b` and released in **v0.1.29** with the app 0.5.93, which offers 27.2.1 (v0.1.28 had the kernel but the old app). Next: a phone boot of 27.2.1 (the steps above).
