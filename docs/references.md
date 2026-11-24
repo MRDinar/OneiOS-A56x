@@ -155,8 +155,14 @@ Rank is usefulness for the S24 Ultra under xnuhost. "State" is the repo's own cl
 | 15 | [tycykp/UniXNU-OnePlus-Ace5](https://github.com/tycykp/UniXNU-OnePlus-Ace5) aaa100d, [kerrinz/UniXNU-zorn](https://github.com/kerrinz/UniXNU-zorn) ef13dcc, [Asultop/UniXNU-NX769J](https://github.com/Asultop/UniXNU-NX769J) 2a265af, [loolooc/UniXNU-meizu21](https://github.com/loolooc/UniXNU-meizu21) f6b6aab, [Axiang-dev/UniXNU-caihong](https://github.com/Axiang-dev/UniXNU-caihong) 1e3d718, [SangLuoCN/UniXNU-Nubia-Z60U](https://github.com/SangLuoCN/UniXNU-Nubia-Z60U) df60483, [peiyuesheng666/UniXNU-PHY120](https://github.com/peiyuesheng666/UniXNU-PHY120) 0dfaf5f, [Fearless109/hakios-sm8650](https://github.com/Fearless109/hakios-sm8650) ea80367 | BSD-2-Clause-Patent or none | Bare-metal SM8650 boards (UEFI, UFS, touch, Wi-Fi on giulia) | SM8650 | iOS 16 / iPadOS 17 desktop at best, CPU-rendered; no Metal | Not useful under xnuhost |
 | 16 | [ediwiuwj/tahoe-on-linux](https://github.com/ediwiuwj/tahoe-on-linux) 2595c97 | MIT | macOS 26 x86_64 userland on Linux, BSD and Mach traps translated in user space | PC | launchd as pid 1, about 400 services, WindowServer starts | Design reference for the trap layer (approach 1a of docs/plan.md) |
 | 17 | [YahiaAngelo/vphone-linux](https://github.com/YahiaAngelo/vphone-linux) 9c75e88 | see repo | reims-vgpu + metal2vulkan for Apple's own ParavirtualizedGraphics | QEMU | Works on PCs | Fallback GPU path only |
-| 18 | [oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel) 63fc2b4 | see repo | HakiOS: own loader, drivers and "hakios-metal" (a Metal driver without Vulkan: 110 fps page swipes on A642L) | SM7325 | iOS 16.5 | Watch: a second Metal design, bare-metal and xnu-8796 today |
+| 18 | [oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel) 63fc2b4 (read at 62e09f8, 2026-11-25) | MIT for its own work, APSL-2.0 for what extends XNU or came from HakiOS (its README "Licence"; GitHub detects none) | HakiOS: own loader, drivers and "hakios-metal" (a Metal driver without Vulkan: 110 fps page swipes on A642L) | SM7325 | iOS 16.5 | Watch: a second Metal design, bare-metal and xnu-8796 today |
 | 19 | [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) 45263be and its forks | MIT | xnu-8796 bare-metal, iOS 16, CPU-rendered | SM7150 and many others | Home screen | Not useful: no PAC userland, no GPU through Linux |
+| 20 | [DenialOfGravity/ios-redfin](https://github.com/DenialOfGravity/ios-redfin) 23019ab4 `main` (cefcd91 `redfin-int`) | MIT | `phone/sensors/`: a Qualcomm SEE client (QMI service 400 over QRTR, protobuf), sensors as SPU HID services (0971, 0972), auto-brightness's cached re-post and True Tone (1298) | SM7250 Pixel 5 | iOS 16.7.16: every sensor, auto-brightness, cameras, 2-way audio | **Port** (2026-11-25): its `sns.c`/`pb.c` onto Linux's `AF_QIPCRTR` for the S24's sensor hub; [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) sections 1-2 |
+| 21 | [coreycusick/ios-guacamole](https://github.com/coreycusick/ios-guacamole) 53e6c5e `ios27` | MIT (camera files HakiOS MIT) | `userland/camera/`: an iOS 27.2 FigCaptureDevice plug-in and `capture_hooks.c` (the capture graph's start fixes) | SM8150 OnePlus 7 Pro | iOS 27.2: live preview and photos (2026-11-18), speakers | **Port** (2026-11-25): camera input for `fix/s24-fps-heat-camera`, [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) section 3 |
+
+The per-area plan for sensors, auto-brightness, camera, audio and Bluetooth taken from these and from UniXNU-sheng
+(`hal/ShengAudioPlugIn.c`'s volume curve, iPadOS 27.0.1) and UniXNU-droidvm (its motion HID classes) is
+[ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) (2026-11-25, research only: nothing ported then).
 
 ### The ios-sweet fork network
 
@@ -179,6 +185,26 @@ Rank is usefulness for the S24 Ultra under xnuhost. "State" is the repo's own cl
 
 The UniXNU catalogue (`Portsmith-iOS` 8794f29, `ports/catalog/unixnu-devices.toml`, 265 records) lists eight
 SM8650 boards (row 15 and `houji` forks); none has Metal.
+
+### Ports read for the GPU, heat and stability (2026-11-25)
+
+Read for [ports-2026-11-25-gpu.md](ports-2026-11-25-gpu.md) (what to port, ranked, with switches and proof lines). No
+pin changed; the commits are those read.
+
+| Repo, commit read | Licence | What is in it for us |
+| --- | --- | --- |
+| [Droid-VM/NativeMetal](https://github.com/Droid-VM/NativeMetal) `935c468` (`wip/hackintosh`, 153 commits past our b0d6a07) | MIT | purgeable discard, single-sample default, system shader cache, YCbCr planes, wallpaper freeze, the cameracaptured reflection crash fix `3c46b5e` |
+| [Droid-VM/UniXNU](https://github.com/Droid-VM/UniXNU) `8789b8d` (`wip/hackintosh`, 32 past our 62d0b11) | BSD-2-Clause-Patent | the stack on metal2vulkan `555b13d5` (`421e982`); Turnip's submit split at command buffers (`fb9fb47`, the render-server start hang) |
+| [Droid-VM/UniXNU-droidvm](https://github.com/Droid-VM/UniXNU-droidvm) `283f251` (70 past our f9121cd) | BSD-2-Clause-Patent | virtio-media and virtio-snd on completion interrupts (`96e8c1f`, `793bb45`, `2cd4c8e`) |
+| [Droid-VM/virglrenderer](https://github.com/Droid-VM/virglrenderer) `2529a9f` (`wip/hackintosh`) | MIT | no guest queue in Android UI's KGSL ringbuffer (`5faa56f`) |
+| [Droid-VM/NativeAdreno](https://github.com/Droid-VM/NativeAdreno) `cdaa0bb` | MIT | native sheng driver work only |
+| [Droid-VM/droidvm-meta-repo](https://github.com/Droid-VM/droidvm-meta-repo) `1b5dda8` | GPL-2.0-or-later (docs) | PROGRESS.md: the measurements behind the rows above |
+| [YumikoHayamato/OneiOS](https://github.com/YumikoHayamato/OneiOS) `273ed5e` (`s25-ultra-sm8750`) | none stated (a fork of this repo) | the display helper's write-only buffers (`cdb297bbf`); XNU in a crosvm VM under Gunyah on the S25 Ultra (`docs/native.md` there) |
+| [qiumochen/UniXNU-zizhan](https://github.com/qiumochen/UniXNU-zizhan) `88f4eeb` | BSD-2-Clause-Patent | the GPU's lowest level with the display off (`17ccd80`) |
+| [Allenwdk/UniXNU-uke](https://github.com/Allenwdk/UniXNU-uke) `55909f4` (`docs/GPU-IOS27.md`), [Allenwdk/AdrenoMetal](https://github.com/Allenwdk/AdrenoMetal), [UniXNU/AdrenoMetal](https://github.com/UniXNU/AdrenoMetal) | BSD-2-Clause-Patent; MIT; MIT | a 293-entry 24A446 priming list; the "R2507" runtime line |
+| [DenialOfGravity/ios-redfin](https://github.com/DenialOfGravity/ios-redfin) `23019ab` (NOTES.md), [oosexgang/hakios-metal](https://github.com/oosexgang/hakios-metal) | MIT | native-driver ideas only; the ALS repost on wake (1298) |
+| [superboyyy/hakios-arm64e-dada](https://github.com/superboyyy/hakios-arm64e-dada) `f1ae906` (`gpu2/`) | none stated | nothing new beyond 0101/0102 |
+| [kerrinz/UniXNU-zorn](https://github.com/kerrinz/UniXNU-zorn), [tenku-png/UniXNU-caihong](https://github.com/tenku-png/UniXNU-caihong), [alpersamur3/asoft-ios-android](https://github.com/alpersamur3/asoft-ios-android), [UniXNU/UniXNU-sheng](https://github.com/UniXNU/UniXNU-sheng) | BSD-2-Clause-Patent; none; MIT; BSD-2-Clause-Patent | nothing to take for these areas |
 
 ## 4. What the S24 Ultra still lacks that nobody has published
 

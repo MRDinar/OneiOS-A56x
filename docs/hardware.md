@@ -4365,6 +4365,7 @@ S24 Ultra it must say `galaxy-s24-ultra ... defaults: none (today's)`.
 | Other trees seen, not used: Samsung OSS builds with KernelSU, the Gunyah kernel | `YuzakiKokuban/android_kernel_samsung_sm8650` (7c7f8dd), `Andy312432/android_kernel_samsung_sm8650_gunyah` (bacbd93) |
 | iOS-side ports | iOSPlus10 (local, read-only): `patches/laurel/xnu/2700-laurel-pmi632-haptics.patch`, `2600-laurel-bluetooth-wcn3990.patch`, `docs/laurel_sprout/{haptics,bluetooth,camera,audio}.md` |
 | Guest drivers taken unchanged | UniXNU-droidvm f9121cd (`external/UniXNU-droidvm/package/`), `docs/references.md` |
+| What other ports would fix in the open areas (sensors, auto-brightness, camera, audio, Bluetooth), ranked, with licences, effort and proof lines (2026-11-25, research only: nothing ported then) | [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md): ios-redfin 23019ab4, ios-guacamole 53e6c5e, UniXNU-sheng c8f92b2, UniXNU-droidvm f9121cd, Jesvi-iOS a13e406 |
 | The owner's phone | board notes of 2026-11-10 in `docs/agents.md` (shell and root reads) |
 
 Only single files were fetched from the kernel and device repositories (raw downloads at the pinned commit) and one
