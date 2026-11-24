@@ -4070,7 +4070,10 @@ the stand-in encoder (below).
   session ever closed: the two slots were gone after the guest's start-up check and one encode); ENUM_FMT answered
   nothing; a coded unit larger than the guest's buffer came back as an error at every poll for the session's life.
   The device's worker also polled its backend 50 times a second for ever with nobody using it; it now sleeps until a
-  command with no session open. `runtime/bridges/encoder/README.md` has each.
+  command with no session open. Until 2026-11-25 it still asked an encoder session's backend every millisecond for
+  2 s after each command; now the helper backend's receive thread wakes it with each coded unit (`Session::wakes`;
+  50 ms guard), and `media: 30 s: worker woken N: by data ..., by the timeout N; 1 ms looks N` says its wake-ups
+  (fix/codec-irq, not booted). `runtime/bridges/encoder/README.md` has each.
 - **The stand-in encoder [F]:** for a host with no MediaCodec (the PC). It writes a real stream that decodes to the
   frame it was given: HEVC with every coding unit I_PCM (the frame's samples, raw, at the PCM bit depth that fits the
   guest's buffer, dithered), H.264 as I_PCM or a grey picture. xnuhost runs it in its own process with

@@ -1581,7 +1581,13 @@ driver's `VIRTQ_AVAIL_F_NO_INTERRUPT`; the driver's acknowledgement (0x64) lower
 whose flag the transport honours (`Device::quiet_queues`, 2026-11-25; none by default): a return there with the flag
 set raises nothing. Only the media device names any (both its queues): the codec's transport polls the command queue,
 which xnuhost answers inside the guest's notify, and waits on the event queue's interrupt
-(`kernel/patches/oneios-hosted/codec/README.md`, "The transport on the interrupt").
+(`kernel/patches/oneios-hosted/codec/README.md`, "The transport on the interrupt"). The media device's own worker thread
+(the event queue's producer, `runtime/bridges/encoder/media_device.rs`) sleeps on a condition variable until a command,
+a kick of the event queue, a decoder's result or an encoder's coded unit wakes it (the helper backend's socket receive
+thread wakes it with each unit, `Session::wakes`, since 2026-11-25; before, it looked every 1 ms for 2 s after each
+command), 50 ms at most while an encoder session is open or an event waits for a guest buffer; it says its wake-ups in
+`media: 30 s: worker woken N: by data ..., by the timeout N; 1 ms looks N` (`runtime/bridges/encoder/README.md`, "The
+worker waits for the encoder").
 
 A task trap that no page-in can resolve is logged by xnuhost itself with the registers (`tasks: pid N (tid T):
 trap kind K signal S far ... esr ... insn ...; pc ... lr ... sp ... fp ... x0 ...`): a fault address outside what an
@@ -1650,8 +1656,9 @@ mediacodec-helper backend, media pool 48 MiB at 0x... (4 sessions)`, then `decod
 the runtime (the MediaCodec helper)` when the runtime has none). With the bridges off (a PC boot) it is the stand-in
 encoder inside xnuhost (`encoder: on: stand-in backend, ...`, then `encoder: the stand-in encoder (encoder=auto with
 the bridges off: no phone): no MediaCodec; every frame is coded as it is (I_PCM), no compression`); `sim` is the
-stand-in always, also in a session. `encoder: session N: HEVC WxH on <backend>` at each encoder session
-([hardware.md](hardware.md) section 7g, `runtime/bridges/encoder/README.md`).
+stand-in always, also in a session. `encoder: session N: HEVC WxH on <backend>` at each encoder session, and every
+30 s while the device's worker wakes `media: 30 s: worker woken N: ...; 1 ms looks N` (2026-11-25; `log summary`'s
+encoder part) ([hardware.md](hardware.md) section 7g, `runtime/bridges/encoder/README.md`).
 The network (`wifi=` in `xnuhost.conf`, `--set wifi=...`): `auto`, the default, makes the phone's wlan0 the guest's
 en0 (`wlan::prepare` of `runtime/bridges/wifi/wlan.rs`, [hardware.md](hardware.md) section 3): the `net` window's virtio-net device carries wlan0's
 address in its configuration, its frames go to and from wlan0 by AF_PACKET, and the guest driver's station messages

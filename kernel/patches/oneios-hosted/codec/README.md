@@ -202,7 +202,10 @@ Since 2026-11-25 (edit 7), on the interrupt: `DroidVMVirtioMedia.c`'s event work
 most its guard (1 s with no session streaming, 25 ms while one streams): one wake a second when idle. With
 `oneios-codec-irq=0` (or no SPI) it looks at the event queue's used ring every 50 ms (every 1 ms while a session
 streams), as the pin did: each look is a read of guest memory, but each sleep a host timer and a wake of a vCPU.
-xnuhost's side sleeps until a command or a kick with no session open (`media_device.rs`).
+xnuhost's side (`media_device.rs`) sleeps until a command, a kick, a decoder's result or (since 2026-11-25) an
+encoder's coded unit, which the helper backend's receive thread wakes it with; with an encoder session open, or an
+event waiting for a guest buffer, 50 ms at most (its guard). Until 2026-11-25 it asked an encoder session's backend
+every 1 ms for 2 s after each command (`runtime/bridges/encoder/README.md`, "The worker waits for the encoder").
 
 ## The transport on the interrupt (fix/codec-irq, 2026-11-25)
 
@@ -265,6 +268,11 @@ registers, `ArmCpu's trapped registers` in `oneios-perf`) for nothing.
   `oneios-codec-irq=0`; `thermal: 30 s` cooler or the same for the same video.
 - Failure signs: `transport: polled (ArmCpu did not attach the SPI)` (no slot left: polled as before); `by the timer`
   with events climbing (interrupts lost); a video that stalls (then boot with `oneios-codec-irq=0`).
+- xnuhost's worker (the second fix, `runtime/bridges/encoder/README.md` "The worker waits for the encoder"; no
+  switch, the same on both values of `oneios-codec-irq`): `media: 30 s: worker woken N: by data (commands, kicks,
+  results, coded units) N, by the timeout N; 1 ms looks 0` in xnuhost.log while the video plays (and while the camera
+  records or a photo is saved: the encoder), "by the timeout" in the tens at most. `1 ms looks` above 0 only with a
+  backend that cannot wake the worker (`encoder: session N: ...; asked every 1 ms`), never with `mediacodec-helper`.
 
 **Built on the build laptop (2026-11-25, origin/main a1200e5 plus this work). Not booted** (the phone was not
 connected; CLAUDE.md 2026-11-24: no qemu boots).

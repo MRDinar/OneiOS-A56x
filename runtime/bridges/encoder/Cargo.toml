@@ -54,6 +54,12 @@ path = "tests/decoder.rs"
 name = "interrupt"
 path = "tests/interrupt.rs"
 
+# The worker waits for an encoder's units (2026-11-25): its wake-ups over a 2 s stream through a backend that wakes it,
+# one that cannot (the old 1 ms looks), and the helper process.
+[[test]]
+name = "wakes"
+path = "tests/wakes.rs"
+
 # MediaCodec's numbers and AMediaCodecBufferInfo's layout against the NDK's headers.
 [[test]]
 name = "headers"
