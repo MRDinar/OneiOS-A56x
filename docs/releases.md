@@ -467,6 +467,25 @@ row), so the S24 Ultra runs v0.1.22's kernel code. Main's 0093-0101 are still le
 failures. `kernel/tests/host.sh` 12 of 12 (with 0103's conversion test). **Not booted** on any phone. (A first build
 without 0107, `...-8b2943c5003a`, was uploaded an hour before and deleted when 0107 came; nothing had pinned it.)
 
+The kernel pinned after v0.1.24 (2026-11-24, fix/a56-ios16-faults; for the next release; v0.1.24 has `16bd44f9d737`):
+built on the build laptop in the `a56-ios16-relk` worktree, branch `a56ios16/release-kernel-a56`, pushed as
+`release-kernel-a56` (`0888d97`): `16bd44f9d737`'s branch (`82fa3b0`) plus main's 0108 (`b5e706a` cherry-picked as
+`2786c3d`: the A56's GPU accelerator, the kernel part the a56-gpu work had prepared on `a56gpu/release-kernel-a56` as
+`f8def7dad866` and not published; this kernel carries it, so there is one A56 kernel) and hosted 0109 (an iOS 16
+userland's fat binaries run their arm64 slice: webbookmarksd's crash loop, [a56.md](a56.md) "The faults of the v0.1.24
+boot"). `GH_TOKEN=$(gh auth token) HOSTED_OUT=a56ios16-rel ONEIOS_CRYPTO=original kernel/build-hosted.sh` (325 s; the
+token because the DriverKit headers' GitHub API fetch had hit the anonymous rate limit), uploaded from there with
+`kernel/publish.sh --hosted a56ios16-rel --upload`: `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a`, `xnu.macho`
+24,676,528 bytes, SHA-256 `3a57807cd4ec5a9e9ac93bbed620ac3bb97d23cfb921efd1623310bded645814`, 185 patches,
+`"releasable": true`. Archive 6,481,558 bytes, SHA-256 `e5ec24121664951a7f6f1c71a2a49996b5244519062642fc6b864f91be5122b0`
+(downloaded again from the release and checked), release `kernel-xnu-...-181d8bf2d60a`. Both new patches are off for
+iOS 27: 0108 acts only with `oneios-gpu-amd=1` on an AMDGPU capset, 0109 only with 0068's
+`oneios-legacy-registered-ports=1`, which only a 20F66 image passes. Its prelink
+(`out/kernel/24A446-a56ios16-rel/kernel.kc`, 96,288,768 bytes, SHA-256 `0dc78acf9d5df493...`): audit 2711 paired, 93 on
+the stub, 0 failures. `kernel/tests/host.sh` there 9 of 9. **Not booted** on any phone (no A56 here, no qemu boot).
+The runtime half of the same fixes (the CoreImage text fixup, the iOS 16.5 product-id and serial number) is xnuhost's,
+on main: the next runtime release carries both.
+
 ## Released
 
 | Tag | Date | Commit | What |

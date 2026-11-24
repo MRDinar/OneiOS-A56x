@@ -2473,3 +2473,35 @@ it: the fault, the rule, the sandbox, the lines).
     3. On main, `kernel/release-kernel.txt` gets
        `kernel-xnu-12377.121.6-ios-27.0.1-24A446-f8def7dad866 <the archive's SHA-256>`, and docs/releases.md its paragraph.
   - Not booted.
+  - **Superseded, not published** (2026-11-24, fix/a56-ios16-faults): `release-kernel-a56` is now `0888d97`, this
+    kernel part (`2786c3d`, the same change as `b5e706a`) plus 0109, published as
+    `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a` and pinned in `kernel/release-kernel.txt` (docs/releases.md): one
+    A56 kernel with both. `f8def7dad866` was never uploaded, and the push above would no longer be a fast-forward.
+
+## 0109-ios16-arm64-slices.patch (fix/a56-ios16-faults, 2026-11-24)
+
+- **The fault** (OneiOS issue 73, the A56 user's boot of 2026-11-24 21:47: runtime 0.1.24, kernel `16bd44f9d737`, our
+  20F66 image): webbookmarksd died 27 times in the boot, about every 10 s, `trap kind 2 signal 11 far 0x61f80001c0b0
+  esr 0x92000004 ... pc 0x1dfc9056c` (the first one at pc 0x100a3b56c), and it was the only process with
+  `shared_region: ... [216(webbookmarksd)] check_np(...) vm_shared_region_start_address() returned 0x1` (two lines,
+  as from launchd before the first cache is mapped). 20F66 is iOS 16.5 of the iPhone X, an A11 without pointer
+  authentication: its shared cache is `dyld_shared_cache_arm64` (no arm64e cache) and `/usr/lib/dyld` is arm64 only.
+  Its App cryptex (`/System/Cryptexes/App`) is shared across iPhones, and `/System/Cryptexes/App/usr/libexec/
+  webbookmarksd` is fat: arm64 and arm64e (caps PAC00). An A11's kernel grades arm64e 0 (its host subtype is
+  ARM64_V8) and runs the arm64 slice. This kernel is arm64e: `ml_grade_binary` gave the arm64e slice 12 and the arm64
+  one 9, so the arm64e slice ran, in a shared region of its own (the region is keyed by the CPU subtype) with no cache
+  in it, and the first arm64e chained pointer nobody had resolved faulted (`far` = `x0` = 0x61f80001c0b0, a pointer
+  with its fixup bits still in it). The 20F66 cache's slide and the slices were read on the build laptop
+  (`oneios-tool sym find|callers`, `file`).
+- **The fix**: with `oneios-arm64e-slices=0`, `grade_arm64e_binary` (bsd/dev/arm/kern_machdep.c) answers 0: a fat
+  binary runs its arm64 slice, as on the iPhone X, and an arm64e-only one is refused at exec (it could not run on an
+  arm64 userland anyway). The default is 0 when `oneios-legacy-registered-ports` (hosted 0068) is on, which every
+  20F66 image's boot arguments carry (roottweak's 20F66 `xnuhost.conf`), and 1 otherwise: iOS 27 grades as before
+  and the S24 Ultra's binaries (arm64e) run as they do. So the A56 user only updates the kernel. One line at boot:
+  `oneios-arm64e-slices: off: fat binaries run their arm64 slice, arm64e-only ones are refused (iOS 16 userland, arm64
+  shared cache)`. OneiOS's own guest helpers are arm64e builds for iOS 27; the A56's seed has none (`OneiOS launch
+  policy: no /private/var/oneios/bin/oneios-init in this seed`), and the A56's Metal plug-in is arm64 (docs/a56-gpu.md).
+- **The proof on the A56**: that line; no `check_np` line for webbookmarksd; no `trap ... far 0x61f80001c0b0` and no
+  `Process[N] crashed: webbookmarksd`. Built into the release kernel `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a` (`release-kernel-a56`
+  `0888d97`, with 0108; prelink audit 0 failures; docs/releases.md); not booted (no A56 here, no
+  qemu boot).
