@@ -1552,7 +1552,13 @@ conf keeps it too. Test: `ios16_coreimage_fixup_is_left_out_only_with_the_a56_gl
 **Build notes (2026-11-23, integration-switches; docs/switches.md "Found while building the Metal plug-in").**
 `build.sh turnip` removes `build/mesa-tu-ios27` when the inputs of its cross file changed (the SDK, the compilers,
 the base script), since an existing directory only gets `meson configure`. The `9xxx` copies of
-`patches/metal2vulkan` (0101-0103) are in no list of the base's bridge script and are not applied; `stage` says so.
+`patches/metal2vulkan`: since 2026-11-25 90101, 90102 and the switch 90110 are in the bridge's list (`ios
+metal-stage-edit`), **off by default** behind the boot argument `oneios-m2v-shader-fix=1` (docs/switches.md, the
+plug-in's `ShaderFix.inc` sets `METAL2VULKAN_SHADER_FIX=1`); 90103 is in none (it does not apply on the bridge's
+stack). With the switch, a run-time-indexed constant table past 4 KiB is read from the constant blob (an Adreno backs a
+thread's private copy per fiber) and constant GEP and cast pointers into that blob are lowered; the device profile's
+fingerprint takes the switch, so the shader cache never serves a translation of the other setting. Ported from
+orumanayurpanjayat-ux/OneiOS `d157b43`, which applied both in every build; not booted with the switch on.
 
 **metal2vulkan's upstream (2026-11-23, fix/m2v-update): the pin stays 624bab3.** Upstream `development` at
 `6462199fa` (2026-11-23) is 9,217 commits newer. It is a new runtime: `metal2vulkan-rt`, written from 2026-11-17
@@ -1649,7 +1655,7 @@ scripts/bg.sh metal userland/metal/build.sh      # stage, turnip, plugin, finish
 | Piece | Source | Notes |
 |---|---|---|
 | `libvulkan_freedreno.dylib` | `external/mesa-droidvm` cecc0e9 (Droid-VM/mesa, `droidvm`) + the 30 patches listed in Droid-VM-UniXNU `scripts/data/adreno-compiler-inputs.json` (`patches/mesa/`: `turnip-darwin-kmd`, `turnip-darwin-virtgpu`, ...), then this project's `userland/metal/trace-turnip-init.patch` and `turnip-idle-bo-cache.patch` (appended to the staged list by `ios metal-stage-edit`) | meson cross build, `-Dvulkan-drivers=freedreno -Dfreedreno-kmds=darwin`, release. Its 5633 weak flat-namespace imports are bound to the image itself (`macho-weak-self-binds.py`) |
-| `libadreno_metal_bridge.a` | `external/metal2vulkan` 624bab3 + NativeMetal `bridge/patches` 0001-0024 (without 0020) + Droid-VM-UniXNU `patches/metal2vulkan` 0011-0038 + this project's `userland/metal/trace-metal-vulkan-init.patch`, `m2v-spare-command-pools.patch` and `m2v-idle-memory.patch` (appended to the bridge script's list by `ios metal-stage-edit`) + `userland/metal/patches/metal2vulkan/` 0101-0103 (staged as 9xxx, in no list, not applied so they sort last: the Adreno-generic shader-translation fixes of hakios-arm64e-dada; `0104…NEEDS-REBASE` stays out, and the Mesa/nativemetal sets stay out as the wrong tree), behind `bridge/NativeMetalBridge.rs` | Rust 1.98.0, target `arm64e-apple-ios`, std built from `rust-src`, fat LTO. No `Cargo.lock` is pinned upstream: the crates are the newest that fit at build time |
+| `libadreno_metal_bridge.a` | `external/metal2vulkan` 624bab3 + NativeMetal `bridge/patches` 0001-0024 (without 0020) + Droid-VM-UniXNU `patches/metal2vulkan` 0011-0038 + this project's `userland/metal/trace-metal-vulkan-init.patch`, `m2v-spare-command-pools.patch` and `m2v-idle-memory.patch` (appended to the bridge script's list by `ios metal-stage-edit`) + `userland/metal/patches/metal2vulkan/` 0101, 0102 and 0110 (staged as 9xxx and appended after those, the Adreno-generic shader-translation fixes of hakios-arm64e-dada and their switch, off without `oneios-m2v-shader-fix=1`; 0103 staged but in no list; `0104…NEEDS-REBASE` stays out, and the Mesa/nativemetal sets stay out as the wrong tree), behind `bridge/NativeMetalBridge.rs` | Rust 1.98.0, target `arm64e-apple-ios`, std built from `rust-src`, fat LTO. No `Cargo.lock` is pinned upstream: the crates are the newest that fit at build time |
 | `NativeAdrenoMetal` | `external/NativeMetal` b0d6a07 (`NativeAdrenoMetalPlugin.mm`, `NativeBridgeMetalFrontend.mm`), `external/AdrenoPM4`, the bridge | The Rust objects' callback imports go through `RustPacBoundary.c`; their indirect branches through its trampolines (`rust-pac-rewrite.py`) |
 
 The steps are the kernel base's own scripts (`build-turnip-darwin.py`, `build-adreno-metal-bridge.py`,

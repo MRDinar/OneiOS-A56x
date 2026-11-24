@@ -207,24 +207,27 @@ public final class OneiOSDisplay {
      */
     private static int[] panel(Object transaction, boolean project, boolean takeover, int[] logical) {
         Object token = null;
-        int[] mode = null;                 // active width, height, hz; native width, height, hz, mode id
+        int[] mode = null;                 // pick(): active width, height, hz; native width, height, hz, id; active id
         try {
             Object[] display = display();
             token = display[1];
             mode = mode((Long) display[0], token);
-            log("panel modes: active " + mode[0] + "x" + mode[1] + " (up to " + mode[2] + " Hz), native " + mode[3] + "x" + mode[4]
-                + " at " + mode[5] + " Hz");
-            if (takeover && (mode[0] != mode[3] || mode[1] != mode[4])) {
-                if (nativeMode(token, mode[6], mode[5])) {
+            log("panel modes: active " + mode[0] + "x" + mode[1] + " (mode id " + mode[7] + ", up to " + mode[2] + " Hz), native "
+                + mode[3] + "x" + mode[4] + " at " + mode[5] + " Hz (mode id " + mode[6] + ")");
+            if (takeover) {
+                // Asked in every takeover, not only when the size differs: One UI can leave the panel at its native
+                // resolution with the refresh ranges capped at 60 Hz (Motion smoothness: Standard), which neither the
+                // size nor the mode id shows (the port of orumanayurpanjayat-ux/OneiOS 84cb2ef).
+                boolean was = isNative(mode);
+                boolean asked = nativeMode(token, mode[6], mode[5]);
+                if (asked && !was) {
                     // the switch happens at a vsync of surfaceflinger's: wait for it to be the active mode
-                    for (int tries = 0; tries < 20; tries++) {
+                    for (int tries = 0; tries < 20 && !isNative(mode); tries++) {
                         Thread.sleep(50);
                         mode = mode((Long) display[0], token);
-                        if (mode[0] == mode[3] && mode[1] == mode[4]) break;
                     }
                 }
-                if (mode[0] == mode[3] && mode[1] == mode[4]) log("the panel is in its native mode " + mode[0] + "x" + mode[1]);
-                else log("the panel stays at " + mode[0] + "x" + mode[1] + ": the guest's frame is scaled to it");
+                log(takeoverLine(mode, asked, was));
             }
         } catch (Throwable unavailable) {
             log("the display's modes are not readable (" + unavailable + ")");
@@ -318,7 +321,7 @@ public final class OneiOSDisplay {
 
     /**
      * {active width, height, the highest refresh rate among the modes of that size;
-     *  native width, height, its highest refresh rate, the id of the native mode at that rate}.
+     *  native width, height, its highest refresh rate, the id of the native mode at that rate; the active mode's id}.
      * The native mode is the largest the panel has, not the one it is in.
      */
     private static int[] mode(long id, Object token) throws Exception {
@@ -404,6 +407,22 @@ public final class OneiOSDisplay {
             long area = (long) widths[i] * heights[i], most = nativeAt < 0 ? 0 : (long) widths[nativeAt] * heights[nativeAt];
             if (nativeAt < 0 || area > most || (area == most && widths[i] == widths[nativeAt] && rates[i] > rates[nativeAt])) nativeAt = i;
         }
-        return new int[]{width, height, best, widths[nativeAt], heights[nativeAt], rates[nativeAt], ids[nativeAt]};
+        return new int[]{width, height, best, widths[nativeAt], heights[nativeAt], rates[nativeAt], ids[nativeAt], active};
+    }
+
+    /** pick()'s answer: the active mode is the native one, by id (the same size at a lower rate is another mode). */
+    static boolean isNative(int[] mode) {
+        return mode[0] == mode[3] && mode[1] == mode[4] && mode[7] == mode[6];
+    }
+
+    /** The takeover's line after the request: pick()'s answer, whether surfaceflinger took the specs, was it native before. */
+    static String takeoverLine(int[] mode, boolean asked, boolean was) {
+        String active = mode[0] + "x" + mode[1] + " (mode id " + mode[7] + ")";
+        boolean sameSize = mode[0] == mode[3] && mode[1] == mode[4];
+        String frame = sameSize ? "the frame is shown 1:1" : "the guest's frame is scaled to it";
+        if (!asked) return "the native mode was not asked for: the panel stays at " + active + "; " + frame;
+        if (isNative(mode)) return "the panel is in its native mode " + active + ", refresh ranges open to " + mode[5] + " Hz"
+            + (was ? " (it was already in that mode: only the ranges were asked for)" : "");
+        return "the native mode (id " + mode[6] + ") is not active after 1 s: the panel stays at " + active + "; " + frame;
     }
 }

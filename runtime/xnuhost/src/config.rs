@@ -2343,6 +2343,8 @@ impl Config {
             ("oneios-compile-s", arg("oneios-compile-s", "120"), "120"),
             ("oneios-snapshot-astc", arg("oneios-snapshot-astc", "0"), "0"),
             ("oneios-camera-notify", arg("oneios-camera-notify", "1"), "1"),
+            // main 166a22c: the Adreno shader fixes 0101 and 0102 (ShaderFix.inc, 90110-shader-fix-switch.patch), off by default.
+            ("oneios-m2v-shader-fix", arg("oneios-m2v-shader-fix", "0"), "0"),
             // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
             ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
             ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),

@@ -1557,7 +1557,7 @@ fn the_switches() {
     c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 \
                    oneios-disable-allowed=0 oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 \
                    oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-keep-room=0 oneios-dl-full=0 sheng-vsync-min=24 \
-                   oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-dont-care=0 oneios-queue-priority=0"
+                   oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-m2v-shader-fix=1 oneios-dont-care=0 oneios-queue-priority=0"
         .into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
@@ -1567,7 +1567,7 @@ fn the_switches() {
             " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0 \
              oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 oneios-idle-spares=0 \
              oneios-bo-cache-idle=0 oneios-keep-room=0 oneios-dl-full=0 sheng-vsync-min=24 oneios-compile-s=0 \
-             oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-dont-care=0 oneios-queue-priority=0 (docs/switches.md)"
+             oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-m2v-shader-fix=1 oneios-dont-care=0 oneios-queue-priority=0 (docs/switches.md)"
         ),
         "{line}"
     );
@@ -1578,7 +1578,7 @@ fn the_switches() {
              oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut oneios-pressure-big oneios-disable-allowed \
              oneios-nested-exact oneios-upgrade-flush oneios-fill-fast-fault oneios-idle-spares oneios-bo-cache-idle \
              oneios-keep-room oneios-dl-full sheng-vsync-min oneios-compile-s oneios-snapshot-astc oneios-camera-notify \
-             oneios-dont-care oneios-queue-priority"
+             oneios-m2v-shader-fix oneios-dont-care oneios-queue-priority"
         ),
         "{line}"
     );
