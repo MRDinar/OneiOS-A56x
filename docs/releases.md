@@ -425,6 +425,19 @@ failures, `kernel/tests/host.sh` 8 of 8. **Booted on the phone before the releas
 0092's 134 jobs, the wallpaper gallery loads; that session ended in xnuhost's GPU renderer, the fault v0.1.18's
 runtime fixes, not in the kernel).
 
+The kernel of v0.1.22 (2026-11-24, built on the build laptop in the `release-kernel-a56` worktree and branch:
+`096f1e76`, the commit that pinned c889b14b24f3, plus main's 0004 (`a59eb64`) and 0012 (`54f47be`), uploaded from
+there with `kernel/publish.sh --hosted release-a56 --upload`): `xnu-12377.121.6-ios-27.0.1-24A446-7d540ae9e518`,
+`xnu.macho` 24,656,672 bytes, SHA-256 `0a37d06ed64d61b7e66d13f97fd90ca97348ff57c66f0f983685d1b83d8dbdf4`, the same
+hosted series to 0092 as v0.1.18's kernel, with one change: hosted 0004 runs `newfs_apfs` again without `-x` when it
+exits 64 (usage). iOS 16.5's `newfs_apfs` has no `-x`, and the Galaxy A56's first boot of our image panicked with
+"offline scratch Data mount failed: 5" (issue 73, [a56.md](a56.md)). 0012's hunk is moved onto that loop. Main's later
+patches (0093 to 0101) are left out on purpose: the S24 Ultra keeps the kernel it booted. Original corecrypto,
+`"releasable": true`, 177 patches. Archive 6,460,689 bytes, SHA-256 `4ffa3f609ff15f35c3de47d19561197629ad752c36a4c50b5819c65230cf3e64`,
+release `kernel-xnu-...-7d540ae9e518`. Its prelink (`out/kernel/24A446-release-a56/kernel.kc`, SHA-256
+`f5ddb36983d81c60...`): audit 2711 paired, 93 on the stub, 0 failures. **Not booted** on any phone before the release
+(the owner's 2026-11-24 rule: no qemu boot; the A56 user's boot is the test).
+
 ## Released
 
 | Tag | Date | Commit | What |
