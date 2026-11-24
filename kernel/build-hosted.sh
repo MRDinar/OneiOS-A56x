@@ -1,4 +1,6 @@
-#!/bin/bash
+# (made again when stale, or when a link of it is broken: the layout was written from a worktree that is gone)
+  [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/xnu-host-cc" ] && [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/ld" ] &&
+    [ "$TOOLCHAIN/unixnu" -nt "$ROOT/kernel/linux/clang-wrapper" ] || "$ROOT/kernel/linux/unixnu-layout.sh"#!/bin/bash
 # Build the hosted OneiOS XNU: the kernel of kernel/build-linux.sh plus the hosted machine layer
 # (kernel/patches/oneios-hosted), which runs as a Linux process under xnuhost instead of at EL1.
 #   scripts/bg.sh kernel-hosted env HOSTED_OUT=<name> kernel/build-hosted.sh
@@ -36,7 +38,9 @@ T0=$(date +%s)
 if [ "$HOST" = Linux ]; then
   TOOLCHAIN=${XNU_LINUX_PREFIX:-$ROOT/out/toolchain}
   "$ROOT/kernel/linux/setup-toolchain.sh"
-  [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/xnu-host-cc" ] && [ "$TOOLCHAIN/unixnu" -nt "$ROOT/kernel/linux/clang-wrapper" ] || "$ROOT/kernel/linux/unixnu-layout.sh"
+  # made again when stale, or when its ld link is broken (a layout written from a worktree that is gone, 2026-11-25)
+  [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/xnu-host-cc" ] && [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/ld" ] &&
+    [ "$TOOLCHAIN/unixnu" -nt "$ROOT/kernel/linux/clang-wrapper" ] || "$ROOT/kernel/linux/unixnu-layout.sh"
 else
   xcode_setup build-hosted
 fi

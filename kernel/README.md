@@ -85,7 +85,10 @@ projects' scripts the build runs as they are (UniXNU's `./unixnu` driver and its
   `909990e`) into `out/toolchain`: cctools-port ld64-956.6, mig, lzfse, unifdef, tcsh and the Python `iig`, all at
   pinned commits (its own bootstrap clones branch heads). A few minutes, once.
 - `linux/unixnu-layout.sh` arranges those tools the way UniXNU's Linux kernel step expects its own toolchain
-  (`out/toolchain/unixnu`), with the host's clang in place of the clang UniXNU builds from LLVM.
+  (`out/toolchain/unixnu`), with the host's clang in place of the clang UniXNU builds from LLVM. Its links name the
+  real path of `out/toolchain` (since 2026-11-25: a worktree whose `out/` linked to the main checkout's wrote its own
+  path, and every link broke when that worktree was removed), and `build-hosted.sh` makes the layout again when its
+  `ld` link is broken.
 - `linux/clang-wrapper` is the compiler xnu's makefiles get: the arm64e triple, the ptrauth and destructor flags
   Apple's clang has by default, ARMv8.5 for the assembler, ld64 for links, warnings off. The PAC ABI flags
   (`-fptrauth-intrinsics -fptrauth-calls -fptrauth-returns`, from the A56 fork, 2026-11-21) are explicit: clang 23
