@@ -85,3 +85,18 @@ Left (in order):
 5. The Mac's phone boot of 27.2.1 (make the image on the phone: this laptop has no room for the OS image).
 
 No tmux job of this work is running (`tmux ls | grep ios272`: none). Logs: `logs/ios272-*.log` in the worktree.
+
+## After the hand-off (2026-11-25, the implementation sub-agent)
+
+Left 1 and 2 done, on `ios272/base` (kernel/prelink/README.md "Another build" has the commands and counts):
+- `prelink port` run: 211,361 functions paired; `early_security_init` -> `0xfffffe000927b430` (as derived by hand);
+  pairs 2,703 kept / 9 left out, stubs 100 / 1, reviewed 650 / 2, lead 308 / 0, user 4 / 0, the display record 397 / 0.
+  Two port bugs fixed: `linked` addresses (0xfffffff0...) were not carried, and a record whose `slots` are objects
+  (the hid layout) stopped the run.
+- The class records read again from 24B156 (`classes-24B156-v54.json`, the aes, gpu, hid and net layouts): the same
+  as 24A446's but for addresses; the port of the same four records agrees with them address for address.
+- The display record: `instance_size` 0x1dd8 -> 0x1de0 (the port had kept 24A446's); `kernel gen display` now
+  checks the record against the class record. Every field offset we use is the same.
+- The kernel build picks the build: `ONEIOS_OS_PROFILE=ios-27.2.1-24B156 kernel/build-hosted.sh` (written into the
+  device copy's `board.toml`; the generators read `<Class>-<build>-v54.json` from it); `BUILD=24B156
+  kernel/prelink/build.sh`.

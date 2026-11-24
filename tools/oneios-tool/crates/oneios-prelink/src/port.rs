@@ -29,6 +29,17 @@
 //! the two functions have the same shape, else at the instruction the longest common subsequence of the two shapes
 //! puts it on (`same: false`: such a record is marked for review).
 //!
+//! A data address no walk voted for carries over when it lies up to 64 bytes before one that did and the bytes
+//! between are the same in FROM and TO (a vtable's symbol, 16 zero bytes before the slots its constructor stores);
+//! such a record is marked for review.
+//!
+//! `--fields KEY` (with a record that has `"family_text": [low, high]`, the display record): every integer of the
+//! record's object KEY is a struct field offset. Each FROM instruction of the paired functions in [low, high) that
+//! reaches one of them (LDR/STR, LDUR/STUR, LDP/STP or ADD immediate off a register other than SP) votes for the
+//! offset its TO instruction uses (the same instruction when the shapes are the same; else the one the longest common
+//! subsequence of the two shapes, field offsets masked, puts it on). A field with votes for several offsets, or none,
+//! fails, unless `--fields-loose` (the most voted; none: unchanged). The votes are printed and in the report.
+//!
 //! `--record IN=OUT` rewrites a JSON record: every string that is an address of FROM's mapped segments (and every
 //! `linked` one, FROM's address plus the collection slide 0x1f000000000) becomes TO's, FROM's kernelcache SHA-256
 //! becomes TO's, and every check object (`{"address", "size", "sha256"}`, or `[address, size, sha256]`) is read again
@@ -71,6 +82,13 @@ pub struct Args {
     /// Fail when a record is left out
     #[arg(long)]
     strict: bool,
+    /// KEY: in a record with "family_text" [low, high], the object KEY of struct field offsets is read again from
+    /// TO's code (repeatable; the display record's "display" and "request")
+    #[arg(long = "fields")]
+    fields: Vec<String>,
+    /// With --fields: take the most voted offset when TO's code uses several
+    #[arg(long = "fields-loose")]
+    fields_loose: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -362,14 +380,39 @@ impl<'a> Porter<'a> {
             let at = lcs(&fa.shape, &fb.shape)?.get(&(offset as usize / 4)).copied()?;
             return Some(Carried { to: fb.start + 4 * at as u64, sure: false, how: format!("{} (+{offset:#x}), shape changed: the instruction the two shapes have in common", how.name()) });
         }
-        let b = self.map.data(a)?;
-        Some(Carried { to: b, sure: true, how: "data".into() })
+        if let Some(b) = self.map.data(a) {
+            return Some(Carried { to: b, sure: true, how: "data".into() });
+        }
+        // near: a data address no walk voted for (a vtable symbol, 16 bytes before the slots the constructor
+        // stores) up to 64 bytes before a paired one, the words between the same on both sides: the same bytes, or
+        // both chained-fixup pointers of the same kind to paired targets
+        for d in (8..=64u64).step_by(8) {
+            let Some(q) = self.map.data(a + d) else { continue };
+            let b = q.checked_sub(d)?;
+            let same = (0..d).step_by(8).all(|w| match (self.from.fixups.get(&(a + w)), self.to.fixups.get(&(b + w))) {
+                (Some(x), Some(y)) => x.meta() == y.meta() && self.pairs(x.target, y.target),
+                (None, None) => self.from.image.read(a + w, 8).is_some() && self.from.image.read(a + w, 8) == self.to.image.read(b + w, 8),
+                _ => false,
+            });
+            return same.then(|| Carried { to: b, sure: false, how: format!("data, {d} bytes before the pair {} -> {}, the words between the same", hex(a + d), hex(q)) });
+        }
+        None
+    }
+
+    /// Whether FROM's `a` and TO's `b` are a pair (two functions' starts, or two data addresses).
+    fn pairs(&self, a: u64, b: u64) -> bool {
+        match (self.from.by_start.get(&a), self.to.by_start.get(&b)) {
+            (Some(ia), Some(ib)) => self.map.function.get(ia).is_some_and(|&(j, _)| j == *ib),
+            _ => self.map.data(a) == Some(b),
+        }
     }
 }
 
 fn is_address(text: &str) -> Option<u64> {
     let t = text.strip_prefix("0x")?;
-    if t.len() != 16 || !t.starts_with("fffffe") && !t.starts_with("fffff0") {
+    // an original address (0xfffffe...) or a linked one (0xfffffff0...: original + LINKED_SLIDE). "fffff0" until
+    // 2026-11-25 matched neither, so the layouts' "linked" addresses kept FROM's values.
+    if t.len() != 16 || !t.starts_with("fffffe") && !t.starts_with("fffffff0") {
         return None;
     }
     u64::from_str_radix(t, 16).ok()
@@ -477,9 +520,129 @@ impl<'a> Porter<'a> {
     }
 }
 
-fn port_record(porter: &Porter, input: &str, output: &str) -> Result<Value> {
+
+/// A struct field an instruction reaches: (the instruction with its registers and offset masked out, the byte
+/// offset), for LDR/STR (unsigned offset), LDUR/STUR, LDP/STP (signed offset) and ADD (immediate, 64-bit) off a
+/// register other than SP. Read from a shape word, whose ADRP-based offsets are already 0 (`image::scan`).
+fn field_offset(word: u32) -> Option<(u32, u64)> {
+    let rn = (word >> 5) & 31;
+    if rn == 31 {
+        return None;
+    }
+    if word & 0x3b00_0000 == 0x3900_0000 {
+        let (size, vector, opc) = (word >> 30, (word >> 26) & 1, (word >> 22) & 3);
+        let scale = if vector == 1 && opc >= 2 { 4 } else { size };
+        return Some((word & 0xffc0_0000, (((word >> 10) & 0xfff) as u64) << scale));
+    }
+    if word & 0x3b20_0c00 == 0x3800_0000 {
+        let offset = crate::image::signed(((word >> 12) & 0x1ff) as u64, 9);
+        return (offset > 0).then_some((word & 0xffe0_0c00, offset as u64));
+    }
+    if word & 0x3b80_0000 == 0x2900_0000 {
+        let (opc, vector) = (word >> 30, (word >> 26) & 1);
+        let scale = if vector == 1 { 2 + opc } else { 2 + (opc >> 1) };
+        let offset = crate::image::signed(((word >> 15) & 0x7f) as u64, 7) << scale;
+        return (offset > 0).then_some((word & 0xffc0_0000, offset as u64));
+    }
+    if word & 0xff80_0000 == 0x9100_0000 {
+        let shift = if word & 0x40_0000 != 0 { 12 } else { 0 };
+        return Some((word & 0xffc0_0000, (((word >> 10) & 0xfff) as u64) << shift));
+    }
+    None
+}
+
+/// A shape with every field offset masked out, so that two builds' functions align across a moved field.
+fn coarse(shape: &[u32]) -> Vec<u32> {
+    shape.iter().map(|&w| match field_offset(w) {
+        Some((class, _)) => class | 0x3e0 & w | 0x1f & w,
+        None => w,
+    }).collect()
+}
+
+/// One field's votes: TO offset -> (sure votes, unsure votes).
+type Votes = BTreeMap<u64, (u64, u64)>;
+
+impl<'a> Porter<'a> {
+    /// The offsets the TO build's code uses where FROM's uses each field, in FROM's functions of [low, high).
+    fn field_votes(&self, low: u64, high: u64, fields: &[(String, u64)]) -> BTreeMap<String, Votes> {
+        let mut votes: BTreeMap<String, Votes> = fields.iter().map(|(n, _)| (n.clone(), Votes::new())).collect();
+        let lo = self.from.sorted.partition_point(|&(start, _)| start < low);
+        for &(start, ia) in &self.from.sorted[lo..] {
+            if start >= high {
+                break;
+            }
+            let Some(&(ib, how)) = self.map.function.get(&ia) else { continue };
+            let (fa, fb) = (&self.from.functions[ia], &self.to.functions[ib]);
+            let wanted: Vec<(usize, u32, &String)> = fa.shape.iter().enumerate().filter_map(|(i, &w)| {
+                let (class, offset) = field_offset(w)?;
+                fields.iter().find(|(_, v)| *v == offset).map(|(n, _)| (i, class, n))
+            }).collect();
+            if wanted.is_empty() {
+                continue;
+            }
+            let same = fa.key == fb.key;
+            let align: HashMap<usize, usize> = if same {
+                (0..fa.shape.len()).map(|i| (i, i)).collect()
+            } else {
+                match lcs(&coarse(&fa.shape), &coarse(&fb.shape)) {
+                    Some(a) => a,
+                    None => continue,
+                }
+            };
+            let sure = same && how != How::Order;
+            for (i, class, name) in wanted {
+                let Some(&j) = align.get(&i) else { continue };
+                let Some((class_to, offset_to)) = fb.shape.get(j).and_then(|&w| field_offset(w)) else { continue };
+                if class_to != class {
+                    continue;
+                }
+                let slot = votes.get_mut(name).unwrap().entry(offset_to).or_default();
+                if sure { slot.0 += 1 } else { slot.1 += 1 }
+            }
+        }
+        votes
+    }
+}
+
+/// `--fields KEY`: the record's KEY object of field offsets, read again from TO's code (see the header). Returns the
+/// report lines; a field with no vote, or with votes for several offsets, is an error unless `loose`.
+fn port_fields(porter: &Porter, record: &mut Value, keys: &[String], low: u64, high: u64, loose: bool) -> Result<Vec<Value>> {
+    let mut lines = Vec::new();
+    for key in keys {
+        let Some(Value::Dict(items)) = record.get(key) else { bail!("--fields {key}: the record has no object \"{key}\"") };
+        let fields: Vec<(String, u64)> = items.iter().filter_map(|(n, v)| v.as_int().map(|i| (n.clone(), i as u64))).collect();
+        let votes = porter.field_votes(low, high, &fields);
+        let mut new = Value::dict();
+        for (name, old) in &fields {
+            let tally = &votes[name];
+            let shown = tally.iter().map(|(o, (s, u))| format!("{o}: {s} sure + {u}")).collect::<Vec<_>>().join(", ");
+            let best = tally.iter().max_by_key(|(_, (s, u))| (*s, *u)).map(|(o, _)| *o);
+            let line = format!("{key}.{name} {old} -> {} (votes {shown})", best.map_or("?".into(), |b| b.to_string()));
+            println!("port: {line}");
+            lines.push(Value::str(line));
+            match best {
+                Some(b) if tally.len() == 1 || loose => new.set(name.as_str(), b as i128),
+                _ if loose => new.set(name.as_str(), *old as i128),
+                None => bail!("--fields {key}.{name}: no instruction of FROM's [{}, {}) uses offset {old}", hex(low), hex(high)),
+                _ => bail!("--fields {key}.{name}: TO's code uses several offsets where FROM's uses {old} ({shown}); --fields-loose takes the most voted"),
+            }
+        }
+        record.set(key.as_str(), new);
+    }
+    Ok(lines)
+}
+
+fn port_record(porter: &Porter, input: &str, output: &str, fields: &[String], loose: bool) -> Result<Value> {
     let mut record = json::load(input)?;
     let mut summary = Value::dict();
+    // the field offsets first, while "family_text" still names FROM's range
+    let from_vtable = record.get("vtable").and_then(Value::as_str).and_then(|v| unhex(v).ok());
+    let range = record.get("family_text").and_then(Value::as_list).and_then(|l| Some((unhex(l.first()?.as_str()?).ok()?, unhex(l.get(1)?.as_str()?).ok()?)));
+    match (fields.is_empty(), range) {
+        (true, _) => {}
+        (false, Some((low, high))) => summary.set("fields", Value::List(port_fields(porter, &mut record, fields, low, high, loose)?)),
+        (false, None) => {}
+    }
     summary.set("in", input);
     summary.set("out", output);
     let (mut kept, mut left, mut marked, mut checks) = (0u64, Vec::new(), Vec::new(), 0u64);
@@ -519,6 +682,52 @@ fn port_record(porter: &Porter, input: &str, output: &str) -> Result<Value> {
                 }
             }
         }
+    }
+    // a record with "vtable" and "slots" ([function, diversity] per slot, the display record's): every slot is read
+    // again from the two vtables themselves (their chained-fixup pointers from vtable + 16 on, as `prelink classes`
+    // reads them). A slot whose pointer is of another kind in TO (another diversity or key: another method) is an
+    // error; a slot whose two functions are not a pair of the map is marked. A slot the record holds as FROM's vtable
+    // does takes TO's function; one it holds otherwise (a pure slot under its callers' diversity) keeps the record's
+    // diversity and its function as carried. Slots of another shape (the hid layout's objects) were walked above.
+    let pairs = |slots: &Value| slots.as_list().is_some_and(|l| l.iter().all(|s| matches!(s.as_list(), Some([Value::Str(_), Value::Str(_)]))));
+    if let (Some(from_vtable), Some(vtable), Some(Value::List(slots))) = (from_vtable, record.get("vtable").and_then(Value::as_str).map(str::to_string), record.get("slots").filter(|s| pairs(s)).cloned()) {
+        let vtable = unhex(&vtable)?;
+        let (mut moved, mut fixed) = (0u64, Vec::new());
+        for (i, slot) in slots.iter().enumerate() {
+            let at = |v: u64| v + 16 + 8 * i as u64;
+            let (Some(fa), Some(fb)) = (porter.from.fixups.get(&at(from_vtable)), porter.to.fixups.get(&at(vtable))) else {
+                bail!("{input}: slot {i}: no pointer in FROM's vtable {} or TO's {}", hex(from_vtable), hex(vtable));
+            };
+            if fa.meta() != fb.meta() {
+                bail!("{input}: slot {i}: TO's pointer is {:?}, FROM's {:?} (another method)", fb.meta(), fa.meta());
+            }
+            if !porter.pairs(fa.target, fb.target) {
+                marked.push(Value::str(format!("slots[{i}]: {} -> {}: not a pair of the map (taken from TO's vtable)", hex(fa.target), hex(fb.target))));
+            }
+            let ported = slot.as_list().and_then(|s| Some((s.first()?.as_str()?.to_string(), s.get(1)?.as_str()?.to_string())));
+            let Some((target, diversity)) = ported else { bail!("{input}: slots[{i}] is not [function, diversity]") };
+            let as_vtable = u64::from(fa.diversity) == unhex(&diversity)?;
+            let mut row = Value::list();
+            if as_vtable {
+                if unhex(&target)? != fb.target {
+                    moved += 1;
+                }
+                row.push(hex(fb.target));
+            } else {
+                row.push(target);
+            }
+            row.push(diversity);
+            fixed.push(row);
+        }
+        if let Some(next) = porter.to.fixups.get(&(vtable + 16 + 8 * slots.len() as u64)) {
+            if porter.to.by_start.contains_key(&next.target) && next.auth {
+                marked.push(Value::str(format!("slots: TO's vtable {} has a pointer after slot {} (a slot more?)", hex(vtable), slots.len() - 1)));
+            }
+        }
+        record.set("slots", Value::List(fixed));
+        summary.set("slots_read_again", slots.len() as i128);
+        summary.set("slots_not_as_carried", moved as i128);
+        println!("port: {input}: {} vtable slots read again from the two vtables, {moved} not where the map put them", slots.len());
     }
     let mut ported = Value::dict();
     ported.set("from_kernelcache_sha256", porter.from.sha256.as_str());
@@ -595,7 +804,8 @@ pub fn run(args: Args) -> Result<()> {
         porter.map.conflicts
     );
     if let Some(path) = &args.map {
-        let mut functions = Value::dict();
+        // keys are distinct (one per FROM start or data address): pushed, not `set` (a linear search per key: quadratic over 200,000)
+        let mut functions: Vec<(String, Value)> = Vec::new();
         let mut pairs: Vec<(&usize, &(usize, How))> = porter.map.function.iter().collect();
         pairs.sort_by_key(|(a, _)| porter.from.functions[**a].start);
         for (&a, &(b, how)) in pairs {
@@ -607,28 +817,28 @@ pub fn run(args: Args) -> Result<()> {
             row.set("size", (fa.end - fa.start) as i128);
             row.set("size_to", (fb.end - fb.start) as i128);
             row.set("entry", porter.from.entries[fa.entry].as_str());
-            functions.set(hex(fa.start), row);
+            functions.push((hex(fa.start), row));
         }
-        let mut data = Value::dict();
+        let mut data: Vec<(String, Value)> = Vec::new();
         let mut keys: Vec<&u64> = porter.map.data_votes.keys().collect();
         keys.sort_unstable();
         for a in keys {
             if let Some(b) = porter.map.data(*a) {
-                data.set(hex(*a), hex(b));
+                data.push((hex(*a), Value::str(hex(b))));
             }
         }
         let mut out = Value::dict();
         out.set("from_kernelcache_sha256", porter.from.sha256.as_str());
         out.set("to_kernelcache_sha256", porter.to.sha256.as_str());
-        out.set("functions", functions);
-        out.set("data", data);
+        out.set("functions", Value::Dict(functions));
+        out.set("data", Value::Dict(data));
         std::fs::write(path, json::dumps(&out, Some(1), false) + "\n").with_context(|| path.clone())?;
     }
     let mut report = Vec::new();
     let mut left_total = 0;
     for spec in &args.records {
         let (input, output) = spec.split_once('=').ok_or_else(|| anyhow!("--record IN=OUT, not {spec}"))?;
-        let summary = port_record(&porter, input, output)?;
+        let summary = port_record(&porter, input, output, &args.fields, args.fields_loose)?;
         let left = summary.get("left_out").and_then(Value::as_list).map_or(0, |l| l.len());
         let review = summary.get("review").and_then(Value::as_list).map_or(0, |l| l.len());
         println!("port: {input} -> {output}: {} kept ({review} to review), {left} left out, {} checks read again", summary.get("kept").and_then(Value::as_int).unwrap_or(0), summary.get("checks_read_again").and_then(Value::as_int).unwrap_or(0));

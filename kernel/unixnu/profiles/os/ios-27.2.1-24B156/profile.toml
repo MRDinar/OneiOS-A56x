@@ -1,7 +1,7 @@
 # UniXNU OS profile of OneiOS: iOS 27.2.1 (24B156), iPhone18,2 (iPhone 17 Pro Max, V54AP, T8150), arm64e.
 # Copied into the UniXNU checkout (profiles/os/) by kernel/lib/stage.sh. A copy of ios-27.0.1-24A446 (2026-11-25) with
-# the IPSW and kernelcache of profiles/ios-27.2.1-iPhone18,2.toml; the same XNU, series and roots. Not built yet:
-# kernel/lib/stage.sh still sets OS_PROFILE=ios-27.0.1-24A446 (docs/ios-27.2.1.md, "State at the hand-off").
+# the IPSW and kernelcache of profiles/ios-27.2.1-iPhone18,2.toml; the same XNU, series and roots. Built with
+# ONEIOS_OS_PROFILE=ios-27.2.1-24B156 kernel/build-hosted.sh (kernel/prelink/README.md, "Another build").
 [os]
 name = "ios-27.2.1-24B156"
 arch = "arm64e"

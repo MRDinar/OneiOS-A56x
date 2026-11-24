@@ -2955,7 +2955,11 @@ builds the binary when it is missing or stale (`scripts/lib/oneios-tool.sh`).
 | `audit` (audit.py's options, `--against` and `--draft` too; exit 1 on a failure) | `audit.py` | `audit.rs` |
 | `record --work DIR ... [--repo CHECKOUT] [--no-git] [--oneios-commit C] [--xnuprelink-commit C]` | `record.py` | `record.rs` (the three last options, 2026-11-15: the record's two commits given, or null, without starting `git`: the phone has none) |
 | `pin PROFILE` | the `tomllib` one-liner of `build.sh` | prints `[kernel.prelink] kernelcache_sha256` |
+| `port --from KC --to KC [--map OUT] [--report OUT] [--record IN=OUT]... [--fields KEY]... [--fields-loose] [--strict]` | new (2026-11-25, ios272) | `port.rs`: carries the address-keyed records (pairs, stubs, the reviewed files, the class layouts, the display record) from one kernelcache build to another (24A446 to 24B156), every check read again from TO's bytes; header of the file and kernel/prelink/README.md "Another build". Not a step of `build.sh`: run by hand once per new build |
 | `build --kernel K --kernelcache C --profile P --reviewed F [--more-reviewed F]... --pairs F --stubs F --xnuprelink DIR [--reference K] --out DIR [--repo DIR] [--no-git] [--remove-work]` | the whole of `kernel/prelink/build.sh` (new, 2026-11-15) | `build.rs`: every step in this process, for the phone and `serve` ("prelink build", below) |
+
+`prelink classes` refuses a class argument with a space in it (2026-11-25): a list passed as one word (zsh does not
+split an unquoted `$LIST`) was looked up as one name and recorded as "no static initializer" under the first class.
 
 What the Rust steps still read from the matcher folder (`--xnuprelink`: `external/XnuPrelink`, or the OneOS app's
 `kb/match`): its reviewed fixtures (`fixtures/fileset-*-symbols.json`), nothing else; a folder without one is refused

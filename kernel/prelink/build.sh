@@ -12,10 +12,14 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE=$ROOT/kernel/prelink
-BUILD=24A446
+# BUILD=24B156: the collection for iOS 27.2.1 (default 24A446): its kernelcache, profile, known-good pairs, stubs and
+# reviewed records (the *-24B156* files, `oneios-tool prelink port`: README.md "Another build"), and KERNEL= the hosted
+# kernel built for it (ONEIOS_OS_PROFILE=ios-27.2.1-24B156 kernel/build-hosted.sh). Output in out/kernel/$BUILD.
+BUILD=${BUILD:-24A446}
 KERNEL=${KERNEL:-$ROOT/out/kernel/current-hosted/xnu.macho}
 CACHE=${KERNELCACHE:-$ROOT/out/kernel-inputs/$BUILD/kernelcache.macho}
-PROFILE=$ROOT/kernel/unixnu/profiles/os/ios-27.0.1-$BUILD/profile.toml
+PROFILE=$(ls -d "$ROOT"/kernel/unixnu/profiles/os/ios-*-"$BUILD" 2>/dev/null | head -1)/profile.toml
+[ -f "$PROFILE" ] || { echo "prelink: no OS profile kernel/unixnu/profiles/os/ios-*-$BUILD" >&2; exit 1; }
 REVIEWED=$HERE/reviewed-$BUILD-v54.json
 # The known-good pairs and the stub list (the audit step checks the collection against both; README "Known-good pairs").
 PAIRS=$HERE/pairs-$BUILD.json
