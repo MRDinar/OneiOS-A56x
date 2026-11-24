@@ -130,17 +130,21 @@ pub fn write(placed: &Placed, dir: &Path, flat: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The line of a placing (the root script's last line, Make iOS image's log).
+/// The line of a placing: the root script reads it as the tool's last line, word for word (the app's `a56_gpu_place`):
+/// `@@A56GPU placed: kernel.kc.gpuaddon SHA BYTES; owner-trust.json SHA; manifest.json SHA`. Nothing else on it.
 pub fn placed_line(p: &Placed) -> String {
     format!(
-        "@@A56GPU placed: {ADDON} {} {}; owner-trust.json {} ({} CDHashes, {} new); manifest.json {}",
+        "@@A56GPU placed: {ADDON} {} {}; owner-trust.json {}; manifest.json {}",
         sha256_hex(&p.addon),
         p.addon.len(),
         sha256_hex(p.trust.as_bytes()),
-        p.cdhashes,
-        p.new,
         sha256_hex(p.manifest.as_bytes())
     )
+}
+
+/// What the placing put in owner-trust.json: the line before [`placed_line`].
+pub fn counts_line(p: &Placed) -> String {
+    format!("a56gpu: the addon's {} CDHashes, {} of them new in owner-trust.json", p.cdhashes, p.new)
 }
 
 const USAGE: &str = "usage: oneios-tool image a56-gpu-place --stage STAGE --out DIR
@@ -181,6 +185,7 @@ pub fn place_cmd(args: &[String]) -> i32 {
             Err(why) => Ok(format!("@@A56GPU none: {why}")),
             Ok(placed) => {
                 write(&placed, out, true)?;
+                println!("{}", counts_line(&placed));
                 Ok(placed_line(&placed))
             }
         }

@@ -864,6 +864,7 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
         match a56gpu::for_set(&set, plugins.as_ref()).map_err(failed)? {
             Ok(placed) => {
                 a56gpu::write(&placed, &set, false).map_err(failed)?;
+                println!("{}", a56gpu::counts_line(&placed));
                 println!("{}", a56gpu::placed_line(&placed));
                 a56_addon = Some(oneios_image::sha256_of(&format!("{set_s}/{}", a56gpu::ADDON)).map_err(image)?);
             }
