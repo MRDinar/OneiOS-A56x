@@ -147,3 +147,19 @@ fn the_trust_merge_keeps_every_key_and_each_cdhash_once() {
     assert!(v.get("files").is_some() && v.get("schema").is_some());
     assert!(trust_with("{\"files\": []}", &[]).is_err());
 }
+
+/// The placed line is the app's interface (oneios_root.sh a56_gpu_place reads its words with `read`): exactly
+/// `@@A56GPU placed: kernel.kc.gpuaddon SHA BYTES; owner-trust.json SHA; manifest.json SHA`, seven words after the tag.
+#[test]
+fn the_placed_line_is_the_apps_seven_words() {
+    let p = Placed { addon: b"NGPUADD2".to_vec(), trust: "{}".into(), manifest: "{}".into(), cdhashes: 3, new: 2 };
+    let line = placed_line(&p);
+    let words: Vec<&str> = line.strip_prefix("@@A56GPU placed: ").unwrap().split_whitespace().collect();
+    assert_eq!(words.len(), 7, "{line}");
+    assert_eq!((words[0], words[3], words[5]), ("kernel.kc.gpuaddon", "owner-trust.json", "manifest.json"));
+    assert_eq!(words[2], "8;");
+    for w in [words[1], words[4].trim_end_matches(';'), words[6]] {
+        assert!(w.len() == 64 && w.bytes().all(|b| b.is_ascii_hexdigit()), "{w}");
+    }
+    assert_eq!(counts_line(&p), "a56gpu: the addon's 3 CDHashes, 2 of them new in owner-trust.json");
+}
