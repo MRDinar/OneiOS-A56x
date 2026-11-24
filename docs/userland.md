@@ -389,6 +389,10 @@ overrides). Also read there: `<Name>.publish` and `<Name>.primelist` are looked 
 is where they are placed; `<Name>.clients` is read by the kernel's GPU driver, not the plug-in; and the
 plug-in's debug switches are fixed paths under `/private/var/ngpu/debug`, not under `/private/var/oneios`.
 GPU tests once it runs: droidvm `package/metalcheck`, `gfxprobe`, `gfxbench`.
+Where the bundle comes from: on a PC `--metal-plugin` (`scripts/image/build.sh`: `out/userland/NativeAdrenoMetal.bundle`); on
+the phone (Make iOS image, `serve make-image`, since 2026-11-24) the staged runtime's `lib/guest/` copy, with the
+capture plug-in, when its `oneios-target` is the image's ([image-format.md](image-format.md), "The Metal plug-in of an
+image made on the phone").
 
 **It also carries backboardd's brightness mode** (since 2026-11-12): `build.sh stage` appends
 `drivers/brightness/BacklightMode.inc` to the staged `NativeAdrenoMetalPlugin.mm`. In backboardd only, its constructor

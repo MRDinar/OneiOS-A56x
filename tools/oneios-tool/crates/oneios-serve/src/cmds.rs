@@ -1169,6 +1169,20 @@ fn stage_kernel(stage: &str) -> Result<String, Fail> {
     }
 }
 
+/// The staged runtime's guest plug-ins (`runtime.json` "metal" `bundle` and "camera" `path`, below the runtime:
+/// runtime/package.sh's lib/guest/), each when it is there. Older runtimes have neither.
+fn stage_guest(stage: &str) -> (Option<String>, Option<String>) {
+    let Some(v) = std::fs::read_to_string(format!("{stage}/runtime/runtime.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+        return (None, None);
+    };
+    let below = |path: Option<&str>| {
+        path.filter(|p| !p.is_empty() && !p.starts_with('/') && !p.split('/').any(|s| s == ".."))
+            .map(|p| format!("{stage}/runtime/{p}"))
+            .filter(|p| Path::new(p).is_dir())
+    };
+    (below(v["metal"]["bundle"].as_str()), below(v["camera"]["path"].as_str()))
+}
+
 /// The whole image set (`image build`): scripts/image/build.sh's steps in this process (README "make-image").
 fn make_image(rq: &Rq) -> Result<Done, Fail> {
     use oneios_imagebuild::{Args, Kernel, Prelink, Stop};
@@ -1195,6 +1209,9 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
             None => Ok(None),
         }
     };
+    // the staged runtime's Metal bundle and capture plug-in (lib/guest/) stand in for the ones not given, when the
+    // bundle is for this image (Tweak::for_image); "runtime_plugins": false leaves them out
+    let (runtime_metal, runtime_camera) = if rq.req.opt_flag("runtime_plugins")?.unwrap_or(true) { stage_guest(&stage) } else { (None, None) };
     let tweak = oneios_imagebuild::Tweak {
         helpers: read_opt("helpers")?,
         metal_plugin: read_opt("metal_plugin")?,
@@ -1203,6 +1220,8 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
         scale: rq.req.opt_str("scale")?,
         config: read_opt("tweaks_config")?,
         args: rq.req.list("tweak_args")?,
+        runtime_metal,
+        runtime_camera,
     };
     let no_kernel = rq.req.flag("no_kernel")?;
     let kc = match rq.req.opt_str("kc")? {
@@ -1284,7 +1303,8 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
         .f("out", out.as_str())
         .f("bytes", built.bytes)
         .f("manifest_sha256", built.manifest_sha256.as_str())
-        .f("seed_sha256", built.seed_sha256.as_str());
+        .f("seed_sha256", built.seed_sha256.as_str())
+        .f("metal", built.metal.as_str());
     if let Some(sha) = &built.kernel_sha256 {
         done = done.f("kernel_sha256", sha.as_str());
     }

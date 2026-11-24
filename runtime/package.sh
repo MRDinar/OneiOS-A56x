@@ -12,9 +12,13 @@
 #                          SurfaceControl layer that bin/oneios-display runs with app_process)
 #   scripts/               runtime/scripts/* (session helpers), when there are any
 #   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record
+#   lib/guest/             the iOS plug-ins, when METAL_DIR (and CAMERA_DIR) are given: NativeAdrenoMetal.bundle with its
+#                          build record, camera/H9ISP.mediacapture, and NOTICE (their sources' licences and pins); the
+#                          phone's Make iOS image seeds them into the image (step 3b)
 #   NOTICE, LICENSE        licences; the APSL notice when a kernel is inside
 # Nothing of Apple's goes in: `oneios-tool package` (tools/oneios-tool/crates/oneios-package) refuses firmware names
-# and containers, and any Mach-O that is not our own source-built XNU (docs/releases.md).
+# and containers, and any Mach-O that is not our own source-built XNU or, under lib/guest/, our own ad hoc signed iOS
+# plug-in (docs/releases.md).
 # Nothing that Android cannot load goes in either: runtime/package/elf-check.sh reads every dynamic ELF file of the
 # stage (the display helper's library, the dynamic helpers) and the package is refused (exit 3) when one needs a
 # library that is no API 30 stub of the NDK, or has an undefined symbol that none of its NEEDED libraries defines.
@@ -26,6 +30,7 @@
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release; a relative one is taken from the current folder), SOURCE_DATE_EPOCH (default: the commit time),
+#      METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -163,12 +168,74 @@ else
   echo "package: no kernel at $KERNEL_DIR (runtime only)"
 fi
 
+# 3b. The guest's own plug-ins, when given: METAL_DIR (userland/metal/build.sh's output folder: NativeAdrenoMetal.bundle
+# and NativeAdrenoMetal.build.json) and CAMERA_DIR (userland/camera/build.sh's: H9ISP.mediacapture), as lib/guest/.
+# The phone's Make iOS image (`serve make-image`) seeds them into the image it makes when the bundle's oneios-target is
+# that image's (docs/image-format.md, "The Metal plug-in"). `package manifest` takes a Mach-O there only as our own
+# plug-in (ad hoc signed for iOS, not com.apple.*, a bundle's files with its record's CDHashes) and names them in
+# runtime.json ("metal", "camera"). lib/guest/NOTICE has the licences of the sources the bundle is built from, and
+# their pins (the record's "sources"). REQUIRE_METAL=1: no METAL_DIR is an error (scripts/release/release.sh).
+GUEST=$STAGE/lib/guest
+HAVE_METAL=0
+if [ -n "${METAL_DIR:-}" ]; then
+  B=$METAL_DIR/NativeAdrenoMetal.bundle
+  [ -f "$B/NativeAdrenoMetal" ] && [ -f "$B/oneios-target" ] && [ -f "$METAL_DIR/NativeAdrenoMetal.build.json" ] ||
+    { echo "package: METAL_DIR=$METAL_DIR holds no whole NativeAdrenoMetal.bundle (NativeAdrenoMetal, oneios-target) with NativeAdrenoMetal.build.json beside it (userland/metal/build.sh)" >&2; exit 1; }
+  mkdir -p "$GUEST"
+  cp -R "$B" "$GUEST/"
+  cp "$METAL_DIR/NativeAdrenoMetal.build.json" "$GUEST/"
+  HAVE_METAL=1
+  echo "package: Metal plug-in for $(cat "$B/oneios-target") from $METAL_DIR"
+  {
+    echo "lib/guest/: OneiOS's iOS plug-ins, run by the guest (iOS), never on Android. NativeAdrenoMetal.bundle is built"
+    echo "from these sources (NativeAdrenoMetal.build.json \"sources\"; this repository's userland/metal/ has the patches"
+    echo "applied to them, at the commit runtime.json names), linked against stubs of the SDK, with no Apple code in it:"
+    echo
+    # (the pins of the bundle's record; the URL of each as scripts/setup/get-references.sh or kernel/pins.sh fetches it)
+    for name in NativeMetal metal2vulkan mesa-droidvm Droid-VM-UniXNU NativeAdreno AdrenoPM4 NativeMobileDisplay; do
+      ref=$(awk -v n="$name" '$1 == n && $2 ~ /^https:/ { print $2, $3; exit }' "$ROOT/scripts/setup/get-references.sh" "$ROOT/kernel/pins.sh")
+      pin=$("$ONEIOS_TOOL" json get --default "${ref#* }" "$METAL_DIR/NativeAdrenoMetal.build.json" "sources.$name")
+      echo "  $name ${ref%% *} $pin"
+    done
+    echo
+    echo "metal2vulkan is GPL-2.0-or-later or LGPL-3.0-or-later; Mesa (Turnip) MIT and the licences of its LICENSING.md;"
+    echo "NativeMetal, NativeAdreno and AdrenoPM4 MIT; Droid-VM-UniXNU and NativeMobileDisplay BSD-2-Clause-Patent."
+    echo "The corresponding source is at the URLs and commits above. Their licence texts follow."
+    for f in NativeMetal/LICENSE metal2vulkan/LICENSE metal2vulkan/LICENSE-GPL-2.0 metal2vulkan/LICENSE-GPL-3.0 \
+             metal2vulkan/LICENSE-LGPL-3.0 mesa-droidvm/LICENSING.md mesa-droidvm/licenses Droid-VM-UniXNU/LICENSE \
+             NativeAdreno/LICENSE AdrenoPM4/LICENSE NativeMobileDisplay/LICENSE; do
+      p=$ROOT/external/$f
+      [ -e "$p" ] || { echo "package: no $p: the Metal plug-in's licence texts come from external/ (scripts/setup/get-references.sh)" >&2; exit 1; }
+      # (a folder: every file below it, sorted)
+      while IFS= read -r q; do
+        printf '\n==== %s\n\n' "${q#"$ROOT"/external/}"; cat "$q"
+      done < <(find "$p" -type f | LC_ALL=C sort)
+    done
+  } > "$GUEST/NOTICE"
+elif [ "${REQUIRE_METAL:-0}" = 1 ]; then
+  echo "package: REQUIRE_METAL=1 and no METAL_DIR (userland/metal/build.sh's output folder)" >&2; exit 1
+else
+  echo "package: no METAL_DIR: no Metal plug-in (an image made on the phone with this runtime composites on the CPU)"
+fi
+if [ -n "${CAMERA_DIR:-}" ]; then
+  [ "$HAVE_METAL" = 1 ] || { echo "package: CAMERA_DIR without METAL_DIR: the bundle's oneios-target says which iOS both are for" >&2; exit 1; }
+  [ -f "$CAMERA_DIR/H9ISP.mediacapture" ] || { echo "package: CAMERA_DIR=$CAMERA_DIR has no H9ISP.mediacapture (userland/camera/build.sh)" >&2; exit 1; }
+  mkdir -p "$GUEST/camera"
+  cp "$CAMERA_DIR/H9ISP.mediacapture" "$GUEST/camera/"
+  echo "package: capture plug-in from $CAMERA_DIR"
+fi
+
 # 4. Notices.
 {
   echo "OneiOS runtime $VERSION (https://github.com/akshaynexus/OneiOS)"
   echo
   echo "This package holds OneiOS's own code and builds only. It holds no Apple firmware: the iOS image set is"
   echo "built by its owner from Apple's restore files and is never part of a release."
+  if [ "$HAVE_METAL" = 1 ]; then
+    echo
+    echo "lib/guest/ holds OneiOS's iOS plug-ins (the Metal plug-in, the capture plug-in), built from source: their"
+    echo "licences and sources are in lib/guest/NOTICE."
+  fi
   if [ "$HAVE_KERNEL" = 1 ]; then
     cat "$ROOT/kernel/NOTICE.kernel"
   fi

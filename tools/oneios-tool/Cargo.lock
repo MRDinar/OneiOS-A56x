@@ -1388,6 +1388,8 @@ dependencies = [
  "anyhow",
  "clap",
  "oneios-common",
+ "oneios-testkit",
+ "oneios-tweaks",
  "sha2 0.10.9",
  "tar",
 ]

@@ -195,8 +195,13 @@ SM8650 boards (row 15 and `houji` forks); none has Metal.
 
 ## 5. Licences and rules
 
-- Kernel-linked sources we take are BSD-2-Clause-Patent or MIT. metal2vulkan (GPL/LGPL parts) and Mesa (MIT) are
-  user-space files in the overlay, built on the owner's machine; they are never linked into `kernel.kc`.
+- Kernel-linked sources we take are BSD-2-Clause-Patent or MIT. metal2vulkan (GPL-2.0-or-later or LGPL-3.0-or-later)
+  and Mesa (MIT) are user space, never linked into `kernel.kc`: built into the Metal plug-in. Since 2026-11-24 a
+  release's runtime package carries that plug-in as a binary (`lib/guest/`, [releases.md](releases.md)), so it is
+  distributed: `lib/guest/NOTICE` holds the licence texts of every source it is built from and each source's URL and
+  commit (the corresponding source; OneiOS's own patches to them are in `userland/metal/` at the package's commit).
+  Not checked: the licence notices of the Rust crates metal2vulkan's Cargo.lock pulls in (most say MIT or Apache-2.0;
+  a guess, not read one by one).
 - `droidvm-meta-repo` and `gunyah_host_mod` are GPL: read the plans, do not copy text or code into MIT files.
 - `macOS-DroidVM`, `UniXNU-shennong`, `hakios-sm8650`, `UniXNU-NX769J`, `UniXNU-meizu21`, `UniXNU-PHY120` state no
   licence: read only.

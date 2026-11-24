@@ -82,7 +82,10 @@ oneios-tool image build "$P" --indir inputs/24A446 --out out/image/24A446-rust \
   --xnu RUNTIME/kernel/xnu.macho --repo . --kernelcache -        # RUNTIME: an unpacked runtime package (v0.1.12 has the kernel)
 ```
 
-The root tweaks run in it (oneios-tweaks; `--repo` gives image-hook's defaults, `--no-tweaks` leaves them out). It
+The root tweaks run in it (oneios-tweaks; `--repo` gives image-hook's defaults, `--no-tweaks` leaves them out). On the
+phone (`serve make-image`) the Metal plug-in and the capture plug-in are the staged runtime's `lib/guest/` ones when the
+request gives none and the bundle is for the image; the build says which in its `Metal plug-in: ...` line
+([image-format.md](image-format.md), "The Metal plug-in of an image made on the phone"). It
 decrypts the AEA images itself since 2026-11-21 (`image aea-decrypt`'s library, the key from Apple's key service
 kept in INDIR/.aea-keys/, the plain SHA-256 the profile's pin), when INDIR does not hold them decrypted already.
 Compared on the Linux PC: without tweaks the set is build.sh's `--no-hook` set, every file's SHA-256
@@ -253,6 +256,8 @@ runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static, the task stub 
 runtime/package.sh 0.1.0-dev      # -> out/release/oneios-runtime-0.1.0-dev-arm64.tar.zst + .sha256 + runtime.json,
                                   #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256;
                                   #    OUT_DIR=DIR KERNEL_DIR=DIR for another output and kernel (relative: from the current folder)
+                                  #    METAL_DIR=DIR (userland/metal/build.sh's output) CAMERA_DIR=DIR (userland/camera/build.sh's):
+                                  #    the iOS plug-ins as lib/guest/, which the phone's Make iOS image seeds (releases.md)
 runtime/package/elf-check.sh DIR  # can Android load every library and dynamic helper under DIR? (a stage, or one file)
 runtime/host-tests.sh             # every host test of the runtime, one summary line per part (below)
 runtime/build.sh --test           # the same as runtime/host-tests.sh
@@ -1095,7 +1100,9 @@ once, and attaches both with their `.sha256` to the release. No kernel, no image
 [releases.md](releases.md).
 `scripts/release/release.sh VERSION [--build-only]` (run under `scripts/bg.sh`) builds the same files on the build
 machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the
-runners. It signs the APK with the debug key CI uses, `secrets/oneios-debug.keystore`, which is git-ignored (releases.md,
+runners. Its runtime carries the Metal plug-in and the capture plug-in, built from HEAD in the runtime lane
+(`userland/metal/build.sh`, `userland/camera/build.sh`; `--metal-dir DIR` takes a built one, `--no-metal` leaves them
+out); CI's runtime has neither, so a phone-made image with a CI runtime composites on the CPU. It signs the APK with the debug key CI uses, `secrets/oneios-debug.keystore`, which is git-ignored (releases.md,
 "Releasing from a build machine" and "The debug key").
 `runtime/package.sh VERSION` builds the phone's `bin/oneios-tool` with `ONEIOS_VERSION=VERSION`: its `serve` hello's
 `tool` is the release's version (up to v0.1.16 every release said the crate's `0.1.0`; issue 75).
@@ -1285,7 +1292,7 @@ original, the image tool, `scripts/ios/` and the scripts' inline `python3`). The
 | `scripts/image/kernel-inputs.sh` | none needed; `IM4P_TOOL=PATH` forces it | without the `lzfse` program the kernelcache is decoded by `oneios-tool image im4p`; the result is checked against the pinned SHA-256 either way (section 1) |
 | `kernel/build-hosted.sh`, `kernel/build-linux.sh`, `kernel/build-macos.sh` | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | the board archives (`storage`, `board`, `aes`, `keystore`, `net`, `hid`, `audio`, `codec`, `gpu`, `display`) are built by `oneios-tool kernel gen NAME`, which UniXNU's driver runs from `board.toml`, and the VM kernel's build record by `oneios-tool kernel build-record`; the Python generators were deleted after every file they write was compared byte for byte, and their outputs are frozen in `tests/kernelgen/golden/` (README "kernel"); since 2026-11-13 `kernel gen gpu` compiles a staged `DroidVMVirtioGpu3D.cpp` with the GPU report's blob and surface-trail hooks (`staged/gpu.rs` `GPU3D`); since 2026-11-21 `build-hosted.sh`'s two edits of its device copy (the hosted series in `board.toml`, the archives and the defconfig) are `oneios-tool kernel hosted-series` and `kernel hosted-archives`, `kernel/linux/unixnu-layout.sh`'s `xnu-host-cc` is `kernel host-cc` and `kernel/hosted-dev.sh patch` sets the patch's hash with `oneios-tool json set` (inline Python blocks until then; the same bytes: README "kernel"). The kernel build still runs other projects' Python as it is: UniXNU's driver and scripts, Droid-VM's `build-droidvm-gpu.py`, xnu-linux-toolchain's `iig` |
 | `kernel/prelink/build.sh` | none: Rust only since 2026-11-12 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool prelink` runs all twelve steps; the Python steps were deleted after every step's output was compared byte for byte, and `tests/prelink/compare-golden.sh` checks the chain against a recorded run (the released kernel, since 2026-11-22; the matcher signature is over the Rust matcher and the fixtures, no Python file is read). 14 s instead of two minutes |
-| `runtime/package.sh` (and CI) | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool package check\|manifest\|archive`: the Apple-file check, `runtime.json`, the archive without GNU tar; `runtime/package/pack.py` was deleted after 91 frozen cases and the 19 package tests gave the same |
+| `runtime/package.sh` (and CI) | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool package check\|manifest\|archive`: the Apple-file check, `runtime.json`, the archive without GNU tar; since 2026-11-24 the check takes our ad hoc signed iOS plug-ins under `lib/guest/` (a bundle's files with its record's CDHashes) and `runtime.json` names them (`metal`, `camera`; `debug fixture guest-*` makes the tests' signed Mach-Os); `runtime/package/pack.py` was deleted after 91 frozen cases and the 19 package tests gave the same |
 | `kernel/tests/host.sh`, `drivers/tests/host.sh`, by hand | none | `oneios-tool kernel series-check`, `kernel hosted-series` and `kernel hosted-archives` on copies of the committed `board.toml` and hosted defconfig, `kernel drivers --check`, `kernel hosted-fixup`, `kernel kdk-headers`, `kernel iig-fix`, `prelink classes\|stubs-check\|unmapped\|port-fixture\|lead-between\|lead-imports`: the scripts of those names were deleted on 2026-11-13 (README, the group 2 section); since 2026-11-23 `kernel/tests/host.sh` also refuses a hosted patch that reads recount's current-thread time with interrupts on, or strips a typed function pointer with `ptrauth_strip` (shell and awk; the two 0095 panics, kernel/patches/oneios-hosted/README.md) |
 
 `oneios-tool image seed-pack` writes `data.seed`'s members in parallel, each at its own offset (the same bytes as

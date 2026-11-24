@@ -37,6 +37,7 @@ window) around a ustar archive of regular files, `runtime.json` first, no top fo
 | `lib/profiles/*.toml` | this repository's IPSW profiles (`profiles/`: the members' names, sizes and hashes, no Apple file), and its host records (`profiles/host-*.toml`: what is known of each host phone, read by no code; the S24 Ultra's names every model number, the SM-S928W too), for the phone's `oneios-tool serve` `fetch`: the OneOS app's Make iOS image fetches the IPSW's members with `$STAGE/runtime/lib/profiles/ios-27.0.1-iPhone18-2.toml`, and on a Galaxy A56 with `ios-16.5-a56.toml` (iOS 16.5 20F66, Apple's pins since 2026-11-23; docs/a56.md; `runtime/package/test.sh` checks it is packed) (a package path has no comma; `runtime/package.sh` step 1c) |
 | `scripts/*` | `runtime/scripts/*`, when there are any |
 | `kernel/xnu.macho`, `kernel/xnu.macho.build.json` | the XNU that `kernel/` builds from Apple's open source, and its build record. Only when a kernel was built |
+| `lib/guest/NativeAdrenoMetal.bundle/*`, `lib/guest/NativeAdrenoMetal.build.json`, `lib/guest/camera/H9ISP.mediacapture`, `lib/guest/NOTICE` | the guest's own iOS plug-ins (since 2026-11-24, when `runtime/package.sh` is given `METAL_DIR` and `CAMERA_DIR`; `scripts/release/release.sh` builds them from HEAD): the Metal plug-in as `userland/metal/build.sh` leaves it, with its build record (target, CDHashes, the sources' pins), and the capture plug-in. Our builds from source, linked against stubs of the SDK, signed ad hoc; no Apple code (the check below). The phone's Make iOS image seeds them into the image it makes when the bundle's `oneios-target` is that image's ([image-format.md](image-format.md), "The Metal plug-in of an image made on the phone"). `lib/guest/NOTICE`: the licences of the sources (metal2vulkan GPL-2.0-or-later or LGPL-3.0-or-later, Mesa MIT and the rest of its LICENSING.md, NativeMetal, NativeAdreno, AdrenoPM4 MIT, Droid-VM-UniXNU, NativeMobileDisplay BSD-2-Clause-Patent; their texts from `external/`) and where their source is (URL and commit). About 36 MB unpacked |
 | `NOTICE`, `LICENSE` | licences; with a kernel, the APSL notice (`kernel/NOTICE.kernel`) |
 
 ## What is never in a release
@@ -56,6 +57,14 @@ enforces this on every package, and `runtime/package/test.sh` tests it:
   (`<name>.build.json`) written by `oneios-tool kernel build-record`: `builder` is `oneios-kernel`, `sha256` is the file's,
   `prelinked` and `kernelcache_kexts_added` are false, `apple_binary_inputs` is empty. A kernel collection
   (`MH_FILESET`) is refused with or without a record.
+- the other Mach-Os allowed are under `lib/guest/` only: our iOS plug-ins. Each must be a thin arm64 `MH_DYLIB` or
+  `MH_BUNDLE` (an executable, a kext, a kernel collection or a fat file is refused), signed ad hoc for iOS (Apple's
+  own code is never ad hoc signed) with an identifier that is not `com.apple.*`; a file of `NAME.bundle` must have the
+  CDHash that `NAME.build.json` beside the bundle lists for it. The Metal bundle goes whole (its `oneios-target`
+  and a record of the same target), the capture plug-in only with it. On the bundle the laptop built on
+  2026-11-24 (main c62f974) and on the capture plug-in the check passes; `oneios-package`'s tests and
+  `runtime/package/test.sh` part 5 refuse a `com.apple.*` library that is not ad hoc, an executable, an unsigned
+  library, a bundle file whose CDHash is not its record's, and a bundle without its record or target.
 
 A refusal ends with exit code 3 and no package. CI also refuses firmware-like names, Mach-O files and files over
 5 MiB in git (`.github/scripts/check-tracked-files.sh`), and a package with a member outside `runtime.json`,
@@ -131,7 +140,9 @@ The first seven keys and `files` are the fork's format 1. Added by this reposito
 package was built from; `dirty` when `runtime/` or `kernel/` had uncommitted changes), `min_oneos_fork`
 (`runtime/package/min-oneos-fork`: the lowest version of the fork that can run this package; the oneos agent
 raises it when the session ABI or the package layout changes), `placeholder` (true while `bin/xnuhost` is the
-placeholder), `kernel` (null without one). `files` lists every file except `runtime.json`.
+placeholder), `kernel` (null without one), `metal` (`{"bundle": "lib/guest/NativeAdrenoMetal.bundle", "record":
+"lib/guest/NativeAdrenoMetal.build.json", "target": "iPhone18,2 24A446", "cdhashes": [...]}`, null without one) and `camera`
+(`{"path": "lib/guest/camera", "cdhash": "..."}`, null without one): what the phone's `serve make-image` takes. `files` lists every file except `runtime.json`.
 
 ## Versions
 
@@ -486,9 +497,12 @@ fork may have downloaded it (the workflow refuses to: an asset with other bytes 
 
 `scripts/release/release.sh` builds the same files on this machine and publishes them, without waiting for the
 runners. It runs three lanes in parallel, each with its log in `out/release-local/VERSION/logs/`:
-- **runtime**: `runtime/package.sh` with the kernel pinned in `kernel/release-kernel.txt` (downloaded and checked
-  as CI does, cached in `out/release-local/kernel/`), then CI's package checks (drm2kgsl, `elf-check.sh`, the
-  members, `check-phone-tool.sh`);
+- **runtime**: the Metal plug-in and the capture plug-in built from HEAD (`userland/metal/build.sh` with
+  `METAL_OUT=out/release-local/VERSION/guest`, its work in `out/metal`; `userland/camera/build.sh`), then
+  `runtime/package.sh` with them (`METAL_DIR`, `CAMERA_DIR`, `REQUIRE_METAL=1`) and the kernel pinned in
+  `kernel/release-kernel.txt` (downloaded and checked as CI does, cached in `out/release-local/kernel/`), then CI's
+  package checks (drm2kgsl, `elf-check.sh`, the members, `check-phone-tool.sh`) and the bundle in runtime.json
+  (its target and CDHashes go into the notes);
 - **apk**: `app/` as it is checked out, signed with the debug key below, then `check-apk.sh`, plus a check that
   the APK's signer is that key;
 - **tests**: `check-tracked-files.sh`, `bash -n`, shellcheck when it is installed, and the host tests.
@@ -512,6 +526,12 @@ Options:
 - `--runtime-only` and `--apk-only` are CI's "runtime only" and "apk only"; an APK-only release is not marked
   latest.
 - `--skip-tests` leaves out the tests lane.
+- `--metal-dir DIR` packs a Metal plug-in built before (`userland/metal/build.sh`'s output folder; `DIR/camera/` with
+  `H9ISP.mediacapture` packs the capture plug-in too) instead of building one; `--no-metal` makes a runtime without
+  them, and the notes say that an image made on the phone with it composites on the CPU. The Metal build needs the
+  iOS cross toolchain and the guest's stubs ([building.md](building.md) section 9: `scripts/setup/ios-toolchain.sh`
+  says "ok"); on the build laptop it took 7 minutes on 2026-11-24 with `out/metal` from an earlier build. A runtime
+  that CI builds (`release.yml`) has no `METAL_DIR`, so no Metal plug-in: publish runtimes from the build machine.
 
 The script refuses:
 - uncommitted changes to tracked files, in OneiOS or in `app/`;

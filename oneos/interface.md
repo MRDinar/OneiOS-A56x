@@ -48,6 +48,12 @@ Anything below that the booter, release-kernel or image-build cannot meet: chang
   the whole package. `xnuhost` must be one of `files` with mode `0755`. `image_formats` are the image-set
   `format` values this runtime boots; the switch refuses an image set whose format is not listed.
 - Only OneiOS's own code. Nothing of Apple's: the kernel collection with Apple's kexts is part of the image set.
+- Optional, since 2026-11-24: `lib/guest/` holds our iOS plug-ins (the Metal plug-in `NativeAdrenoMetal.bundle` with
+  its build record, the capture plug-in `camera/H9ISP.mediacapture`, their `NOTICE`), and `runtime.json` names them
+  as `"metal": {"bundle", "record", "target", "cdhashes"}` and `"camera": {"path", "cdhash"}` (null without them).
+  The app reads neither: `oneios-tool serve make-image` takes them from the staged runtime (OneiOS's
+  `docs/image-format.md`, "The Metal plug-in of an image made on the phone"). They are ordinary `files` entries, so
+  the app's unpacker and the switch's `runtime.sha256` check cover them; the switch hashes about 36 MB more.
 
 ### Phone checks in the package
 

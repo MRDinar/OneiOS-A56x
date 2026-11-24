@@ -993,6 +993,25 @@ out/userland/NativeAdrenoMetal.bundle --camera out/userland/camera` writes one s
 leaves the seed's Metal plug-in in place; `oneios-camera-addon: boot addon: N files (-1 none), C of the capture plug-in
 (camera/), M of the Metal plug-in (addons/)` says what this boot's addon held. `phone addon --remove` takes it away.
 
+**An image made on the phone gets the Metal plug-in from the runtime (2026-11-24).** Before this, the phone's Make
+iOS image (`serve make-image`) placed no plug-in (the app gives none, the runtime carried none), and iOS composited
+on the CPU unless a developer staged the boot add-on from the Mac. Now a release's runtime carries the bundle and
+the capture plug-in in `lib/guest/` (`scripts/release/release.sh` builds them from HEAD; `runtime/package.sh`
+`METAL_DIR`, `CAMERA_DIR`; [releases.md](releases.md)), and `make-image` seeds the staged runtime's into the image
+when the bundle's `oneios-target` is the image's, with their CDHashes in `owner-trust.json`
+([image-format.md](image-format.md), "The Metal plug-in of an image made on the phone"). The same log lines as
+above prove it on such an image: `oneios-gpu-addon: ... stage 5`, `oneios-gpu-plugin: backboardd[N] code signature
+of NativeAdrenoMetal: error 0`, `oneios-gpu-open: backboardd[N] AGXAccelerator type 0x4149 -> 0x0,
+AGXDeviceUserClient`.
+
+Not done: the switch staging the runtime's plug-in as `image/kernel.kc.gpuaddon`, so that a runtime update brings a
+new plug-in to an image made before it. The add-on runs only with its CDHashes in `overlay/userland/owner-trust.json`,
+which is a file of the image set: `manifest.json`, `image.sha256` and `image.ids` list it, xnuhost builds the owner
+trust module from it, and the switch's preflight refuses a set whose files are not the ones those lists name. The
+switch would have to rewrite a listed file and its lines as root at every switch, in shell, and a mistake there
+stops the switch. Until xnuhost takes the runtime's add-on and its CDHashes itself (a change to the trust path,
+docs/booter.md), a new plug-in reaches an old image by making the image again or by `oneios-tool phone addon`.
+
 **What the camera needs (fix-camera-preview-stream, 2026-11-23).** cameracaptured's capture graph (CMCapture,
 CMImaging) is a Metal client; on the phone (main 44d9c49) two answers of the frontend at b0d6a07 stopped it, and
 cameracaptured crashed (SIGSEGV) about 2 s later, again at each restart. Both are fixed as text edits of the staged
@@ -1011,11 +1030,13 @@ stage step prints one `metal: staged ...` line for each):
   function with that selector when it has a pipeline library. NBLibrary answers it (and its `completionHandler:` form)
   with the function `newFunctionWithName:constantValues:error:` makes; the pipeline library is not used.
 Tested: the edits' unit test (`cargo test -p oneios-ios`), and on the build laptop `userland/metal/build.sh` staged all ten
-edits (one `metal: staged ...` line each). **Not built yet:** the laptop's Mesa step stops before the frontend is
-compiled, in `ir3_lexer.c` (`use of undeclared identifier 'Dl_info'`, `disk_cache.h:86`): the laptop's flex 2.6.10 writes
+edits (one `metal: staged ...` line each). **Built:** the laptop's Mesa step stopped before the frontend was
+compiled (2026-11-23), in `ir3_lexer.c` (`use of undeclared identifier 'Dl_info'`, `disk_cache.h:86`): the laptop's flex 2.6.10 writes
 `#define _POSIX_C_SOURCE 1` into the lexer, and Darwin's `dlfcn.h` then hides `Dl_info` and `dladdr` (`_DARWIN_C_SOURCE`
-would show them). Not caused by these edits; the Metal bundle with them still has to be built (that fix, or the
-Mac's Xcode path), then `oneios-tool ios addon OUT --metal ... --camera ...` and `phone addon OUT`.
+would show them). Not caused by these edits. Fixed since (031edda: Mesa's cross c, cpp and objc args get
+`-D_DARWIN_C_SOURCE`, a `metal: staged ...` line): on 2026-11-24 the laptop built the whole bundle from main c62f974
+in 7 minutes with its work in `out/metal` (Turnip set up again; CDHashes `acba1d3c...` NativeAdrenoMetal,
+`1078358a...` libvulkan_freedreno.dylib), and the capture plug-in after it.
 The stage step also stopped at once in a fresh `METAL_WORK` (the Turnip trace patch was applied before the Mesa
 clone); `build.sh` applies it after the clone now.
 

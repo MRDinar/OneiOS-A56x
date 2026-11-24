@@ -1,13 +1,16 @@
 #!/bin/bash
 # Build, check and publish a OneiOS release from this machine, without waiting for GitHub Actions: the runtime
 # package, the phone's oneios-tool and the OneOS APK, the same files and checks as .github/workflows/release.yml.
-#   scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests]
+#   scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests] [--metal-dir DIR | --no-metal]
 #   scripts/bg.sh release scripts/release/release.sh 0.1.14     (it takes 10-20 minutes: run it in tmux)
 # VERSION is N.N.N or N.N.N-suffix; the release is the tag vVERSION, made at HEAD (which must be on origin/main).
 # Three lanes run at the same time, each with its log in out/release-local/VERSION/logs/:
-#   runtime  runtime/package.sh VERSION with the kernel pinned in kernel/release-kernel.txt (downloaded and checked as
-#            CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, and
-#            .github/scripts/check-phone-tool.sh;
+#   runtime  the Metal plug-in and the capture plug-in built from HEAD (userland/metal/build.sh with METAL_OUT
+#            OUT/guest, its work in out/metal, about 7 minutes after the first; userland/camera/build.sh OUT/guest/camera),
+#            then runtime/package.sh VERSION with them as lib/guest/ (METAL_DIR, CAMERA_DIR, REQUIRE_METAL=1) and the
+#            kernel pinned in kernel/release-kernel.txt (downloaded and checked as
+#            CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, the Metal
+#            bundle in runtime.json, and .github/scripts/check-phone-tool.sh;
 #   apk      app/ as it is checked out (its commit must be on the fork's origin/oneios): the guest app, then
 #            ./gradlew test assembleFullDebug signed with secrets/oneios-debug.keystore, .github/scripts/check-apk.sh,
 #            and the APK's signer must be that key;
@@ -17,6 +20,10 @@
 # release that exists alone (the plan job's "published from a machine" check), so nothing is uploaded twice.
 # --build-only builds and checks, and publishes nothing. --runtime-only and --apk-only are CI's "runtime only" and
 # "apk only" (an APK-only release is not marked latest). --skip-tests leaves out the tests lane.
+# --metal-dir DIR takes a Metal plug-in built before (userland/metal/build.sh's output folder, with camera/ holding
+# H9ISP.mediacapture when the capture plug-in goes too) instead of building one; --no-metal makes a runtime without
+# them (the phone's Make iOS image then composites on the CPU; the notes say so). The Metal build needs the iOS cross
+# toolchain and the guest's stubs (scripts/setup/ios-toolchain.sh says "ok"; docs/building.md section 9).
 # The debug key: secrets/oneios-debug.keystore (git-ignored; store and key password "android", alias
 # androiddebugkey), the same key as the secret ONEIOS_DEBUG_KEYSTORE_B64 of akshaynexus/OneiOS and akshaynexus/OneOS,
 # so an APK from here and one from CI install over each other (docs/releases.md, "The debug key").
@@ -31,9 +38,13 @@ FORK_REPO=akshaynexus/OneOS
 KEYSTORE=$ROOT/secrets/oneios-debug.keystore
 die() { echo "release: $*" >&2; exit 1; }
 
-VERSION= PUBLISH=1 RUNTIME=1 APK=1 TESTS=1
+VERSION= PUBLISH=1 RUNTIME=1 APK=1 TESTS=1 METAL=build METAL_FROM=
+want_dir=0
 for a in "$@"; do
+  if [ "$want_dir" = 1 ]; then METAL=dir METAL_FROM=$a want_dir=0; continue; fi
   case $a in
+  --metal-dir) want_dir=1 ;;
+  --no-metal) METAL=none ;;
   --build-only) PUBLISH=0 ;;
   --runtime-only) APK=0 ;;
   --apk-only) RUNTIME=0 ;;
@@ -42,8 +53,13 @@ for a in "$@"; do
   *) [ -z "$VERSION" ] || die "one VERSION only"; VERSION=${a#v} ;;
   esac
 done
+[ "$want_dir" = 0 ] || die "--metal-dir needs a folder"
+if [ "$METAL" = dir ]; then
+  METAL_FROM=$(cd "$METAL_FROM" 2>/dev/null && pwd) || die "--metal-dir: no such folder"
+  [ -f "$METAL_FROM/NativeAdrenoMetal.bundle/NativeAdrenoMetal" ] || die "--metal-dir $METAL_FROM holds no NativeAdrenoMetal.bundle"
+fi
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]] \
-  || die "usage: scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests]"
+  || die "usage: scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests] [--metal-dir DIR | --no-metal]"
 [ "$RUNTIME$APK" != 00 ] || die "--runtime-only and --apk-only together build nothing"
 TAG=v$VERSION
 
@@ -113,7 +129,19 @@ lane_runtime() {
   fi
   test -f external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c \
     || { echo "no external/virglrenderer with drm2kgsl (scripts/setup/get-references.sh virglrenderer)"; return 1; }
-  OUT_DIR=$OUT/files KERNEL_DIR=$KERNEL_DIR runtime/package.sh "$VERSION"
+  # The guest's plug-ins as lib/guest/ (the phone's Make iOS image seeds them): built from HEAD, or --metal-dir's.
+  local guest=() g=$OUT/guest
+  case $METAL in
+    build)
+      METAL_OUT=$g userland/metal/build.sh
+      userland/camera/build.sh "$g/camera"
+      guest=(METAL_DIR="$g" CAMERA_DIR="$g/camera" REQUIRE_METAL=1) ;;
+    dir)
+      guest=(METAL_DIR="$METAL_FROM" REQUIRE_METAL=1)
+      [ ! -f "$METAL_FROM/camera/H9ISP.mediacapture" ] || guest+=(CAMERA_DIR="$METAL_FROM/camera") ;;
+    none) echo "--no-metal: no Metal plug-in in this runtime" ;;
+  esac
+  env ${guest[@]+"${guest[@]}"} OUT_DIR="$OUT/files" KERNEL_DIR="$KERNEL_DIR" runtime/package.sh "$VERSION"
   local a=$OUT/files/oneios-runtime-$VERSION-arm64.tar.zst d=$OUT/runtime-unpacked b
   rm -rf "$d"; mkdir -p "$d"; zstd -dc "$a" | tar -x -C "$d"
   for b in bin/xnuhost bin/gpuctl; do
@@ -125,6 +153,15 @@ lane_runtime() {
     echo "the package has members outside the runtime's folders (above)"; return 1
   fi
   [ "$(head -n 1 "$OUT/members.txt")" = runtime.json ] || { echo "runtime.json is not the first member"; return 1; }
+  # the Metal bundle as runtime.json names it (`package manifest` checked its files against its record): for the notes
+  if [ "$METAL" != none ]; then
+    . scripts/lib/oneios-tool.sh && oneios_tool "$ROOT"
+    "$ONEIOS_TOOL" json get "$d/runtime.json" metal.target > "$OUT/metal.txt" \
+      || { echo "runtime.json names no Metal plug-in"; return 1; }
+    "$ONEIOS_TOOL" json get "$d/runtime.json" metal.cdhashes >> "$OUT/metal.txt"
+    "$ONEIOS_TOOL" json get --default none "$d/runtime.json" camera.cdhash >> "$OUT/metal.txt"
+    echo "runtime: Metal plug-in for $(head -n 1 "$OUT/metal.txt"), capture plug-in $(tail -n 1 "$OUT/metal.txt")"
+  fi
   OUT_DIR=$OUT/files .github/scripts/check-phone-tool.sh "$VERSION"
   echo "runtime: $(wc -l < "$OUT/members.txt") members, kernel $( [ -f "$KERNEL_DIR/xnu.macho" ] && echo in || echo none)"
 }
@@ -217,6 +254,11 @@ cd "$ROOT"
   if [ "$RUNTIME" = 1 ]; then
     echo "- **Runtime** \`oneios-runtime-$VERSION-arm64.tar.zst\` (+ \`.sha256\`): the runtime package for the OneOS fork (branch \`oneios\`). OneiOS's own code only: no Apple firmware; the iOS image set is built locally. See [docs/releases.md](https://github.com/$REPO/blob/$SHA/docs/releases.md)."
     echo "- **oneios-tool for the phone** \`oneios-tool-$VERSION-android-arm64\` (+ \`.sha256\`): the package's \`bin/oneios-tool\` by itself (OneiOS's Rust tools for Android arm64, stripped), which the OneOS app runs as root from the staged runtime."
+    if [ -s "$OUT/metal.txt" ]; then
+      echo "- **Metal plug-in** in the runtime (\`lib/guest/\`, built from source; its licences and sources in \`lib/guest/NOTICE\`): NativeAdrenoMetal for \`$(sed -n 1p "$OUT/metal.txt")\`, CDHashes \`$(sed -n 2p "$OUT/metal.txt")\`; the capture plug-in \`$(sed -n 3p "$OUT/metal.txt")\`. An image made on the phone with this runtime (Make iOS image) has them in its Data seed and their CDHashes in its owner trust list, so iOS composites on the GPU."
+    else
+      echo "- **No Metal plug-in** in this runtime (built with \`--no-metal\`): an image made on the phone with it composites on the CPU."
+    fi
   else
     echo "- **No runtime** in this release (built as \"apk only\"): it is not marked latest, so the app's runtime download keeps the latest release that has one."
   fi
