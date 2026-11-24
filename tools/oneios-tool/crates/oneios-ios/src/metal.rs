@@ -565,6 +565,88 @@ pub fn addon(output: &Path, metal: Option<&Path>, camera: Option<&Path>, gl: Opt
 }
 
 
+/// The Galaxy A56's boot addon in memory: the Metal plug-in (`OneiOSRadeonMetal.bundle`) and, when given, its OpenGL ES
+/// (`OneiOSRadeonGL.bundle`) under addons/, as `ios gpuaddon BUNDLE OUT --gl GL` writes it, and the CDHash of every Mach-O
+/// in it (sorted, each once): what the image's owner-trust.json must list. The phone's Update the kernel and Make iOS image
+/// build it from the staged runtime's lib/guest/ (oneios-imagebuild a56gpu; docs/a56-gpu.md 6).
+pub fn a56_addon(metal: &Path, gl: Option<&Path>) -> Result<(Vec<u8>, Vec<String>)> {
+    if addon_bundle_name(metal) != RADEON_BUNDLE {
+        bail!("{}: not an OneiOSRadeonMetal.bundle folder (userland/metal-amd/air/build.sh plugin)", metal.display());
+    }
+    let mut files = metal_files(metal)?;
+    if let Some(gl) = gl {
+        files.extend(gl_files(gl)?);
+    }
+    let mut cdhashes: Vec<String> = Vec::new();
+    for (_, _, data) in &files {
+        if data.get(..4) == Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+            let slices = oneios_tweaks::macho::describe(data).map_err(|e| anyhow!("{e}"))?;
+            cdhashes.extend(slices.into_iter().map(|s| s.cdhash));
+        }
+    }
+    cdhashes.sort();
+    cdhashes.dedup();
+    Ok((pack(&files)?, cdhashes))
+}
+
+/// `ios bundle-record ROOT BUNDLE RECORD TARGET [SOURCE...]`: the build record of one of our guest bundles (the Galaxy
+/// A56's OneiOSRadeonMetal and OneiOSRadeonGL), in the shape of NativeAdrenoMetal.build.json that runtime/package.sh
+/// and the package's guest check read: "bundle", "target", "files" (each Mach-O of the bundle: bytes, cdhash, arch,
+/// page_size, identifier, minos), "cdhashes" and "sources" (each SOURCE `NAME` is external/NAME's HEAD in ROOT, or
+/// `NAME=COMMIT` as given: a source outside external/, as iOSPlus10's NegroniGL).
+pub fn bundle_record(root: &Path, bundle: &Path, record: &Path, target: &str, sources: &[String]) -> Result<()> {
+    let mut files = Map::new();
+    let mut stack = vec![(bundle.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir).with_context(|| dir.display().to_string())?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            if p.is_dir() {
+                stack.push((p, r));
+                continue;
+            }
+            let data = std::fs::read(&p).with_context(|| p.display().to_string())?;
+            if data.get(..4) != Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+                continue;
+            }
+            let info = oneios_tweaks::macho::describe(&data).map_err(|e| anyhow!("{}: {e}", p.display()))?.into_iter().next().ok_or_else(|| anyhow!("{}: no slice", p.display()))?;
+            let mut f = Map::new();
+            f.insert("bytes".into(), Value::Number(data.len().into()));
+            f.insert("cdhash".into(), Value::String(info.cdhash));
+            f.insert("arch".into(), Value::String(info.arch));
+            f.insert("page_size".into(), Value::Number(info.page_size.into()));
+            f.insert("identifier".into(), Value::String(info.identifier));
+            f.insert("minos".into(), info.minos.map(Value::String).unwrap_or(Value::Null));
+            files.insert(r, Value::Object(f));
+        }
+    }
+    if files.is_empty() {
+        bail!("{}: no Mach-O in the bundle", bundle.display());
+    }
+    let mut cdhashes: Vec<String> = files.values().filter_map(|f| if let Value::Object(m) = f { m.get("cdhash").map(Value::text) } else { None }).collect();
+    cdhashes.sort();
+    let mut pins = Map::new();
+    for s in sources {
+        match s.split_once('=') {
+            Some((name, commit)) => pins.insert(name.into(), Value::String(commit.into())),
+            None => pins.insert(s.clone(), Value::String(git_head(&root.join("external").join(s)))),
+        };
+    }
+    let mut r = Map::new();
+    r.insert("bundle".into(), Value::String(addon_bundle_name(bundle).to_string() + ".bundle"));
+    r.insert("target".into(), Value::String(target.into()));
+    r.insert("files".into(), Value::Object(files));
+    r.insert("cdhashes".into(), Value::Array(cdhashes.into_iter().map(Value::String).collect()));
+    r.insert("sources".into(), Value::Object(pins));
+    let text = oneios_json::to_pretty(&Value::Object(r)) + "\n";
+    std::fs::write(record, text).with_context(|| record.display().to_string())?;
+    println!("metal: {}: the build record of {}", record.display(), bundle.display());
+    Ok(())
+}
+
 /// The files of a sidecar: (name, mode, the unpacked bytes). The reader the tests check `gpuaddon` with.
 pub fn read_gpuaddon(blob: &[u8]) -> Result<Vec<(String, u32, Vec<u8>)>> {
     use std::io::Read;
