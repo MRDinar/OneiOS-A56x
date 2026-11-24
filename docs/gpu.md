@@ -1,5 +1,7 @@
 # GPU: virtio-gpu 3D on the phone's Adreno
 
+> **The Galaxy A56 (Xclipse 540, iOS 16.5)** has its own GPU port, Metal on Mesa radeonsi without Vulkan: [a56-gpu.md](a56-gpu.md) (2026-11-24).
+
 Owner: fable-gpu. Date: 2026-11-10. The Metal path of OneiOS, as Droid-VM runs it on the same SoC: the guest's
 Metal plug-in runs Turnip, Turnip speaks the drm/msm protocol over virtio-gpu's DRM native context, and the host
 serves that protocol on `/dev/kgsl-3d0` with Droid-VM's `drm2kgsl`.
