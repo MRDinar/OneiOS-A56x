@@ -44,6 +44,9 @@ Helpers started 2026-11-25 (T3 delegate tasks, each on its own branch; they repo
 - app: fork akshaynexus/OneOS, worktree `/home/akshay/Documents/GitHub/OneiOS-wt/ios272-app`, branch
   `ios272/app`: Make iOS image offers both builds (sizes 10.59 / 10.91 GiB, room 30 / 32 GiB), Update the kernel
   pairs the staged set's build's kb, names follow the staged set.
+  **Stopped at the hand-off**, just before its own commit: saved as `38dc4f1` on the fork's `ios272/app` (pushed,
+  not reviewed). Its last report: `./gradlew test` 750 tests, 0 failures (80 skipped), the app compiles. Not merged
+  into `oneios`; the OneiOS submodule is not bumped.
 - userland: worktree `/home/akshay/Documents/GitHub/OneiOS-wt/ios272-user`, branch `ios272/userland`: per-build
   userland tables (`scale_fixups`, the Metal plug-in's staged edits, the camera plug-in, both targets in the
   package, make-image's target pick), from 24B156's SystemOS image.
