@@ -971,3 +971,36 @@ back; since the same commit Restore also sets `image.ids` again for every file i
 failed the switch's preflight with "kernel.kc changed since it was staged", on the S24 Ultra too). The real tool's line
 was checked against the script's parse on the build laptop (the integrated bundles, a stage of the 20F66 set's
 manifest and owner-trust: the parse, the sums and the file set agree; `gpuctl addon` accepts the addon).
+
+## State at the hand-off of 2026-11-25
+
+**In main** (pushed): stages 1-5 of this file: references, the host renderer (`gpu3d_amdgpu`, `gpuctl amdgpu`,
+`gpuctl addon`, `early_2d`), guest Mesa radeonsi for Darwin, the AIR Metal layer, OpenGL ES (OneiOSRadeonGL), the
+kernel accelerator (0108 and the GL key), the integrated bundle build. `runtime/host-tests.sh` passed on main.
+
+**On branch `a56-gpu-ship`** (this branch, not merged yet; worktree `/home/akshay/Documents/GitHub/OneiOS-wt/a56-gpu-ship`):
+`21f9293` the release carries the A56 bundles (package.sh 3c, `ios bundle-record`, runtime.json `metal_a56`,
+release.sh `--metal-amd-dir`/`--no-metal-amd`) and `image a56-gpu-place` (also in Make iOS image); `228678f` OpenGL ES
+only on a kernel that reads `oneios-gpu-amd-gl` (keeps SpringBoard's CoreImage fixup on 181d8bf2d60a); `c055978` the
+placed line matches the app's parse, section 6's user steps; the hand-off commit: this note and the `app` pin moved to
+the fork's `oneios` `99a7b0e` (already pushed there, a fast-forward of 976b1fc: Update the kernel places the addon).
+Tests run on the branch: `runtime/package/test.sh` 31/31, `cargo test` of oneios-ios, oneios-package, oneios-imagebuild
+(a56gpu 5), oneios-serve; xnuhost 133 with fmt and clippy (host, android); the app's `./gradlew test` 742, 0 failures
+(the helper's run, on 99a7b0e). The end-to-end check (out/a56-e2e: a package of the real bundles, `image a56-gpu-place`
+on the 20F66 set's manifest and owner-trust, the app's parse, `gpuctl addon`) passed.
+
+**Next, in order:**
+1. Merge: `cd /home/akshay/Documents/GitHub/OneiOS && git merge --no-ff a56-gpu-ship`, then `runtime/host-tests.sh`
+   (tmux, `tmux wait-for`), push main; remove the worktree `../OneiOS-wt/a56-gpu-ship` and the branch.
+2. The kernel (this session's permission check refused the upload twice): in `out/a56gl-relwt`,
+   `kernel/publish.sh --hosted a56gl-rel --upload`, download it back and check its SHA-256
+   (`e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18`), then on main `kernel/release-kernel.txt` =
+   `kernel-xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18`
+   with docs/releases.md's paragraph moved from "built, not uploaded" to uploaded. `release-kernel-a56` is already at
+   `4140abe` (pushed).
+3. The release (the Mac or the owner): `scripts/release/release.sh VERSION` (builds the A56 bundles in the runtime
+   lane) or `--metal-amd-dir out/metal-amd` (the tested path; `out/metal-amd` holds the integrated build of main).
+4. Not done by owner's choice of this session: the licence rule change relayed on 2026-11-25 (code from repos with no
+   stated licence) was refused by the permission check; the owner sets it in docs/references.md section 5 directly.
+
+No tmux job of this work is running (the `hold` session keeps the server alive). Logs: `out/a56-gpu-helpers/`.
