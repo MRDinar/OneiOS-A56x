@@ -539,7 +539,9 @@ scripts/bg.sh -s release                                               # its sta
 
 The script exports `ANDROID_HOME` as the SDK it found, `~/Android/Sdk` included. Gradle reads the SDK from that
 variable or from `local.properties` only. A run under tmux started from ssh had neither, and v0.1.21's first run
-failed in the guest's build with "SDK location not found".
+failed in the guest's build with "SDK location not found". It also puts `~/.cargo/bin` first in `PATH` when rustup
+is there: the Metal bridge's build runs `cargo +1.98.0`, which only rustup's proxy takes, and under tmux from ssh
+`/usr/bin/cargo` came first (v0.1.24's first run: "error: no such command: `+1.98.0`" in the runtime lane).
 
 Options:
 - `--runtime-only` and `--apk-only` are CI's "runtime only" and "apk only"; an APK-only release is not marked
