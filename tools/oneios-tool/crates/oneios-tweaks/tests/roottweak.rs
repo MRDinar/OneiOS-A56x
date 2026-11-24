@@ -1202,3 +1202,27 @@ fn macho_fat_files_and_files_that_are_not_signed() {
     assert!(macho::describe(&a[..a.len() - 10]).is_err());
     assert!(!macho::is_macho(b"\x7fELF...."));
 }
+
+/// The S24 Ultra's Metal preflight: no bundle passes (the phone's Make iOS image never has one: the add-on reaches the
+/// phone on its own), a bundle built for this image passes, and one built for another image or with no record is
+/// refused (merged from orumanayurpanjayat-ux/OneiOS 3311e38, 2026-11-24, with the missing-bundle refusal taken out).
+#[test]
+fn the_metal_preflight_refuses_only_a_mismatched_bundle() {
+    let dir = std::env::temp_dir().join(format!("oneios-metal-preflight-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let bundle = dir.join("NativeAdrenoMetal.bundle");
+    fs::create_dir_all(&bundle).unwrap();
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24A446", None, false).is_ok());
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24A446", Some(&dir.join("absent.bundle")), false).is_ok());
+    // a bundle with no target or record is refused for the S24 Ultra
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24A446", Some(&bundle), false).is_err());
+    fs::write(bundle.join("oneios-target"), "iPhone18,2 24A446\n").unwrap();
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24A446", Some(&bundle), false).is_err()); // no record
+    fs::write(dir.join("NativeAdrenoMetal.build.json"), r#"{"target": "iPhone18,2 24A446"}"#).unwrap();
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24A446", Some(&bundle), false).is_ok());
+    // built for another image
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24B5070a", Some(&bundle), false).is_err());
+    // the explicit CPU-only image places no bundle and checks nothing
+    assert!(oneios_tweaks::preflight_metal("iPhone18,2", "24B5070a", Some(&bundle), true).is_ok());
+    let _ = fs::remove_dir_all(&dir);
+}

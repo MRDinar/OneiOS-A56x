@@ -153,12 +153,11 @@ fn validate_metal_target(expected: &str, bundle: &str, record: Option<&str>) -> 
 /// image when the profile identity is available. The explicit CPU-only escape is for deliberate fallback builds.
 fn check_metal_target(h: &Hook) -> Result<()> {
     let required = h.device.as_deref() == Some("iPhone18,2") && !h.allow_no_metal;
+    // No bundle given: nothing to check. The phone's Make iOS image (`serve make-image`, the app's only image path)
+    // never passes one: the Metal add-on reaches the phone on its own (`oneios-tool phone addon`, hosted 0090's boot
+    // add-on). Refusing here stopped every S24 Ultra image made on the phone. A PC build that must have Metal is
+    // refused earlier, by scripts/image/build.sh's own check (ONEIOS_ALLOW_NO_METAL=1 skips it).
     let Some(plugin) = metal_plugin_to_place(h) else {
-        if required {
-            bail!(Refused(
-                "image-hook: the S24 Ultra image requires a matching NativeAdrenoMetal.bundle; build it with scripts/bg.sh metal userland/metal/build.sh (set ONEIOS_ALLOW_NO_METAL=1 only for an intentional CPU-only image)".into()
-            ));
-        }
         return Ok(());
     };
     let (Some(device), Some(build)) = (h.device.as_deref(), h.build.as_deref()) else {
