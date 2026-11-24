@@ -180,6 +180,26 @@ Rank is usefulness for the S24 Ultra under xnuhost. "State" is the repo's own cl
 The UniXNU catalogue (`Portsmith-iOS` 8794f29, `ports/catalog/unixnu-devices.toml`, 265 records) lists eight
 SM8650 boards (row 15 and `houji` forks); none has Metal.
 
+### Ports read for the GPU, heat and stability (2026-11-25)
+
+Read for [ports-2026-11-25-gpu.md](ports-2026-11-25-gpu.md) (what to port, ranked, with switches and proof lines). No
+pin changed; the commits are those read.
+
+| Repo, commit read | Licence | What is in it for us |
+| --- | --- | --- |
+| [Droid-VM/NativeMetal](https://github.com/Droid-VM/NativeMetal) `935c468` (`wip/hackintosh`, 153 commits past our b0d6a07) | MIT | purgeable discard, single-sample default, system shader cache, YCbCr planes, wallpaper freeze, the cameracaptured reflection crash fix `3c46b5e` |
+| [Droid-VM/UniXNU](https://github.com/Droid-VM/UniXNU) `8789b8d` (`wip/hackintosh`, 32 past our 62d0b11) | BSD-2-Clause-Patent | the stack on metal2vulkan `555b13d5` (`421e982`); Turnip's submit split at command buffers (`fb9fb47`, the render-server start hang) |
+| [Droid-VM/UniXNU-droidvm](https://github.com/Droid-VM/UniXNU-droidvm) `283f251` (70 past our f9121cd) | BSD-2-Clause-Patent | virtio-media and virtio-snd on completion interrupts (`96e8c1f`, `793bb45`, `2cd4c8e`) |
+| [Droid-VM/virglrenderer](https://github.com/Droid-VM/virglrenderer) `2529a9f` (`wip/hackintosh`) | MIT | no guest queue in Android UI's KGSL ringbuffer (`5faa56f`) |
+| [Droid-VM/NativeAdreno](https://github.com/Droid-VM/NativeAdreno) `cdaa0bb` | MIT | native sheng driver work only |
+| [Droid-VM/droidvm-meta-repo](https://github.com/Droid-VM/droidvm-meta-repo) `1b5dda8` | GPL-2.0-or-later (docs) | PROGRESS.md: the measurements behind the rows above |
+| [YumikoHayamato/OneiOS](https://github.com/YumikoHayamato/OneiOS) `273ed5e` (`s25-ultra-sm8750`) | none stated (a fork of this repo) | the display helper's write-only buffers (`cdb297bbf`); XNU in a crosvm VM under Gunyah on the S25 Ultra (`docs/native.md` there) |
+| [qiumochen/UniXNU-zizhan](https://github.com/qiumochen/UniXNU-zizhan) `88f4eeb` | BSD-2-Clause-Patent | the GPU's lowest level with the display off (`17ccd80`) |
+| [Allenwdk/UniXNU-uke](https://github.com/Allenwdk/UniXNU-uke) `55909f4` (`docs/GPU-IOS27.md`), [Allenwdk/AdrenoMetal](https://github.com/Allenwdk/AdrenoMetal), [UniXNU/AdrenoMetal](https://github.com/UniXNU/AdrenoMetal) | BSD-2-Clause-Patent; MIT; MIT | a 293-entry 24A446 priming list; the "R2507" runtime line |
+| [DenialOfGravity/ios-redfin](https://github.com/DenialOfGravity/ios-redfin) `23019ab` (NOTES.md), [oosexgang/hakios-metal](https://github.com/oosexgang/hakios-metal) | MIT | native-driver ideas only; the ALS repost on wake (1298) |
+| [superboyyy/hakios-arm64e-dada](https://github.com/superboyyy/hakios-arm64e-dada) `f1ae906` (`gpu2/`) | none stated | nothing new beyond 0101/0102 |
+| [kerrinz/UniXNU-zorn](https://github.com/kerrinz/UniXNU-zorn), [tenku-png/UniXNU-caihong](https://github.com/tenku-png/UniXNU-caihong), [alpersamur3/asoft-ios-android](https://github.com/alpersamur3/asoft-ios-android), [UniXNU/UniXNU-sheng](https://github.com/UniXNU/UniXNU-sheng) | BSD-2-Clause-Patent; none; MIT; BSD-2-Clause-Patent | nothing to take for these areas |
+
 ## 4. What the S24 Ultra still lacks that nobody has published
 
 1. **drm2kgsl without crosvm.** It is written against virglrenderer's context API and crosvm's guest-memory memfd.
