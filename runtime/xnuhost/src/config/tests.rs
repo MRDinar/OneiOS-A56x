@@ -1649,4 +1649,40 @@ fn ios16_boot_args_are_roottweaks_20f66_words() {
         apply.lines().find(|l| l.contains("boot-args=debug=0x14e") && l.contains("oneios-legacy-bootstrap-replies=1"));
     let line = line.expect("roottweak's 20F66 boot-args line");
     assert!(line.contains(&format!(" {IOS16_BOOT_ARGS}\\n")), "{line}");
+    // ... and that line carries oneios-legacy-registered-ports=1, which turns hosted 0107 and 0109 on for 20F66
+    assert!(line.contains(" oneios-legacy-registered-ports=1 "), "{line}");
+}
+
+#[test]
+fn ios16_fixups_only_for_20f66_once_and_switchable() {
+    // the image's own (roottweak's keybagd and QuartzCore entries) stay first; CoreImage's GL fallback after them
+    let mut list = TextFixups::default();
+    list.push_within("keybagd,cf5c,600000b4,1f2003d5", TEXT_FIXUPS_SIZE);
+    assert_eq!(ios16_fixups(Some("20F66"), &mut list), 1);
+    let f = list.entries();
+    assert!(f.len() == 2 && f[0] == "keybagd,cf5c,600000b4,1f2003d5");
+    // +[CIContext internalGLContextWithOptions:] in 20F66's cache file .07 (0x1949bd62c - 0x19491c000 = 0xa162c):
+    // mov x3, x2; adrp x8, ... -> mov x0, #0; ret
+    assert_eq!(f[1], "dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6");
+    assert_eq!(f[1].split(',').count(), 4);
+    // once only (an image set or a command line that already names it), and never for another build
+    assert_eq!(ios16_fixups(Some("20F66"), &mut list), 0);
+    assert_eq!(list.entries().len(), 2);
+    let mut other = TextFixups::default();
+    for build in [Some("24A446"), Some("20H392"), None] {
+        assert_eq!(ios16_fixups(build, &mut other), 0);
+    }
+    assert!(other.is_empty());
+    // no room: nothing added
+    let mut full = TextFixups::default();
+    while full.push_within("f,0,00,00", TEXT_FIXUPS_SIZE) {}
+    assert_eq!(ios16_fixups(Some("20F66"), &mut full), 0);
+    // ios16-fixup=0 is the A/B switch (default on)
+    let mut c = Config::default();
+    assert!(c.ios16_fixup);
+    c.set("ios16-fixup", "0").unwrap();
+    assert!(!c.ios16_fixup);
+    // the identity: 20 bytes (MobileGestalt's product-id length), a serial the loader's layout takes
+    assert_eq!(IOS16_PRODUCT_ID.len(), 20);
+    assert!(xnuloader::machine::serial_number_property(IOS16_SERIAL).is_some());
 }

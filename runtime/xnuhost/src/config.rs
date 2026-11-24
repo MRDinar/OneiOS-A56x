@@ -450,6 +450,7 @@ const GIVEN_KEYS: &[&str] = &[
     "panel-fallback",
     "scale",
     "scale-fixup",
+    "ios16-fixup",
     "display-direct",
     "touch-exclusive",
     "session-mode",
@@ -615,6 +616,8 @@ pub struct Config {
     pub scale: u32,
     /// the QuartzCore text fixups a scale of 3 needs (scale_fixups): on by default
     pub scale_fixup: bool,
+    /// the iOS 16.5 (20F66) text fixups (ios16_fixups: CoreImage's OpenGL ES fallback answers no context): on by default
+    pub ios16_fixup: bool,
     pub text_fixups: TextFixups,
     /// read /dev/input
     pub input: bool,
@@ -899,6 +902,7 @@ impl Config {
             panel_fallback: None,
             scale: 3,
             scale_fixup: true,
+            ios16_fixup: true,
             text_fixups: TextFixups::default(),
             input: true,
             display_direct: true,
@@ -1076,6 +1080,7 @@ impl Config {
                 self.scale = scale;
             }
             "scale-fixup" => self.scale_fixup = flag(value)?,
+            "ios16-fixup" => self.ios16_fixup = flag(value)?,
             "text-fixup" => {
                 // FILE,OFFSET,ORIGINAL,REPLACEMENT in hex, as UniXNU's [payload] text_fixups (the kernel checks them again)
                 let commas = value.bytes().filter(|&b| b == b',').count();
@@ -1445,6 +1450,7 @@ impl Config {
             }
         }
         take!(self, image, "scale-fixup", scale_fixup);
+        take!(self, image, "ios16-fixup", ios16_fixup);
         if self.text_fixups.is_empty() {
             self.text_fixups = image.text_fixups.clone();
         }
@@ -2096,6 +2102,58 @@ pub fn scale_fixups(build: Option<&str>, scale: u32, list: &mut TextFixups) {
         }
     }
 }
+
+/// The text fixups an iOS 16.5 (20F66) userland needs (docs/gpu.md, "iOS 16.5 without a Metal device"). Read in
+/// 20F66's dyld_shared_cache_arm64 (out/ios16-cache, `oneios-tool sym find` / `sym callers`): CoreImage's
+/// -[CIContext initWithOptions:] makes a Metal context when MTLCreateSystemDefaultDevice has a device, and else falls
+/// back to +[CIContext internalGLContextWithOptions:] (0x1949bd62c unslid, reached from nowhere else), an OpenGL ES
+/// context through internalContextWithEAGLContext:nil. On iOS 16 there is no CPU renderer (kCIContextUseSoftwareRenderer
+/// still takes GL) and CIGLIsUsable answers 1 always. With no GL driver (the Galaxy A56: no Apple GPU, no GL of ours)
+/// the context has no EAGL macro context, GetMacroContext leaves its dispatch table zero, and CI::GLContext::init calls
+/// glDisable(GL_DEPTH_TEST) through it: pc 0, lr CI::GLContext::init + 0xcc. SpringBoard died so 9 times in the A56's
+/// boot of 2026-11-24 21:47, at each start after Bold Text was turned on (UIKit's styled images: +[CUIShapeEffectStack
+/// sharedCIContext], iOSPlus10 docs/boldtext-crash.md, the same fault on 20H392); any app reaching that context can.
+/// The fixup makes the GL fallback answer no context (mov x0, #0; ret): initWithOptions: then returns nil, as it does
+/// when GL is not usable, and CoreUI renders into a blank bitmap through a nil context (-[CUIShapeEffectStack
+/// _newFlattenedImageFromShapeCGImage:...] sends render:toBitmap: to it) instead of crashing. A Metal device (the
+/// Metal plug-in, docs/a56-gpu.md) is taken before the fallback, so it keeps working. Appends to `list` what fits and
+/// is not there yet; the kernel applies an entry only where its original bytes match. The number of entries added.
+pub fn ios16_fixups(build: Option<&str>, list: &mut TextFixups) -> usize {
+    const FIXUPS_20F66: &[&str] = &[
+        // +[CIContext internalGLContextWithOptions:]: mov x3, x2; adrp x8, ... -> mov x0, #0; ret
+        "dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6",
+    ];
+    if build != Some("20F66") {
+        return 0;
+    }
+    let mut added = 0;
+    for f in FIXUPS_20F66 {
+        if list.entries().iter().any(|e| e == f) {
+            continue;
+        }
+        if !list.push_within(f, TEXT_FIXUPS_SIZE) {
+            break;
+        }
+        added += 1;
+    }
+    added
+}
+
+/// iOS 16.5's (20F66) product: the iPhone X's /product product-id (DeviceTree.d22ap of the restore file the image is
+/// made from, iPhone10,3/iPhone10,6 16.5, read with `oneios-tool remotezip get`, `image im4p` and `xnuloader-inspect
+/// adt`), entry 36 of 20F66 libMobileGestalt's table of 363 products (product type 0x669eebc5). MobileGestalt finds
+/// the product by it; without it MGGetProductType is -1, Settings has no model name, and bluetoothd's chip factory
+/// (MGIsDeviceOneOfType against lists of these ids) leaves its chip null and dies on it (status 11 every 10 s:
+/// [chip + 0x260] at 0x100274cf0 of 20F66's /usr/sbin/bluetoothd). With it the factory makes the iPhone X's chip (15).
+/// The root's model and target-type stay the generic machine's (docs/userland.md, "The iOS 16.5 identity").
+pub const IOS16_PRODUCT_ID: [u8; 20] = [
+    0xfd, 0x07, 0x9b, 0x29, 0x81, 0x44, 0xa7, 0xde, 0xb4, 0xd7, 0xc8, 0x7f, 0xef, 0x3e, 0xb4, 0x74, 0xd8, 0xf0, 0xe7,
+    0xeb,
+];
+
+/// The serial number an iOS 16.5 guest shows (Settings > General > About): OneiOS's own, made up, the same on every
+/// phone; never an Apple serial. 11 characters, the most XNU's IODTPlatformExpert gives from serial-number.
+pub const IOS16_SERIAL: &str = "ONEIOS16A56";
 
 /// xh_panel_native: the panel's native mode among the modes of its connector: the largest, at its highest refresh
 /// rate. Not the current one: One UI's resolution setting may run the panel at 1080x2340.

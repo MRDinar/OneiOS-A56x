@@ -1435,6 +1435,47 @@ mapping of `0024` (no pool property without a renderer); an open from a user pro
 grant, the user client's method filter); the accelerator's destructor path; anything on the phone. The static
 member `AGXAccelerator::superClass` keeps the parent's unslid link address (nothing read it in this boot).
 
+### 5.2 iOS 16.5 without a Metal device: CoreImage's OpenGL ES fallback (fix/a56-ios16-faults, 2026-11-24)
+
+**The fault (the Galaxy A56, OneiOS issue 73, boot of 2026-11-24 21:47, v0.1.24):** after the user turned Bold Text on
+(Settings > Accessibility > Display & Text Size; iOS restarts SpringBoard for it), SpringBoard died at every start, 9
+times: `trap kind 2 signal 11 far 0x0 esr 0x82000005 access 4; pc 0x0 lr 0x1c261c58c ... x0 0x0 x1 0xb71`, status 0xb.
+Read in 20F66's `dyld_shared_cache_arm64` on the build laptop (`out/ios16-cache`; the shared region's slide 0x2db08000,
+from the `oneios-srprot` lines' `vm_protect 0x203478000-0x208960000`, which is the `.27.dylddata` mapping
+0x1d5970000 + 0x54e8000, slid; `oneios-tool sym --slide 0x2db08000`, `sym find`, `sym callers`, `ipsw dyld a2s`):
+
+- lr = `CI::GLContext::init() + 0xcc`: `blr x8` with `x8` = the GL dispatch table's glDisable and `w1` = 0xb71
+  (`GL_DEPTH_TEST`). The table comes from `GetMacroContext` -> `wrapGetMacroContext`, which zeroes 712 bytes and fills
+  them only when `-[EAGLContext getMacroContextPrivate]` answers; there was no EAGL context, so the table stayed zero.
+- How it got there: `-[CIContext initWithOptions:]` (0x19497ef1c unslid) makes a Metal context when
+  `CIMetalCopyDefaultDevice` has a device, and otherwise calls `+[CIContext internalGLContextWithOptions:]`
+  (0x1949bd62c), which tail-calls `internalContextWithEAGLContext:nil options:` -> `CI::GLContext(ShareContextInfo,
+  ...)` -> `init`. `kCIContextUseSoftwareRenderer` (`software_renderer`) does not avoid it, `CIGLIsUsable` is
+  `mov w0, #1` (`wrapGLIsUsable`), and iOS 16's CoreImage has no CPU renderer. The A56 has no Metal device on iOS
+  16.5 (`oneios-adreno: no Metal accelerator ...`, gpu=2d) and no OpenGL ES driver of any kind.
+- Who asked: with Bold Text, UIKit's styled images, `+[CUIShapeEffectStack sharedCIContext]` -> `contextWithOptions:`
+  (the owner's iOSPlus10 port found the same fault on 20H392, its `docs/boldtext-crash.md`, with a whole backtrace:
+  the same `CI::GLContext::init() + 204`). Any app that reaches a CIContext without Metal can die the same way.
+
+**The fix:** a text fixup xnuhost adds for an image set of build 20F66 (`config::ios16_fixups`,
+`runtime/xnuhost/src/config.rs`): `dyld_shared_cache_arm64.07,a162c,e30302aa88512490,000080d2c0035fd6`, the first two
+instructions of `internalGLContextWithOptions:` (`mov x3, x2; adrp x8, ...`) become `mov x0, #0; ret`. The GL
+fallback answers no context, `initWithOptions:` returns nil (its own path when the GL context is NULL), and CoreUI's
+`_newFlattenedImageFromShapeCGImage:...` sends `render:toBitmap:...` to nil: the styled image is a blank bitmap instead
+of a crash [I: read in the code, not seen]. A Metal device is taken before the fallback, so the A56's Metal plug-in
+(docs/a56-gpu.md) is not affected when it is there, and no other caller of the fallback exists in the cache (`sym
+callers`). `--set ios16-fixup=0` leaves it out (the A/B switch). The runtime alone: no image remake, no kernel.
+
+**What it does not do:** draw. With Bold Text on, glyphs or symbols that UIKit styles through CoreUI may show blank
+[I]. The full fix is a GL that works without a GPU or a Metal device: iOSPlus10's `userland/negronigl` (EAGL on
+Mesa: freedreno, or softpipe on the CPU, with the GLI dispatch slots CoreImage reads) is that, written for 20H392
+(its GLI table offsets are 20H392's, its route for apps untested on a phone there): a port to 20F66 and to the A56
+(softpipe, or radeonsi with the Metal work) is a separate job, not done. iOSPlus10's other stop-gap, Bold Text kept
+off in the root, is not taken: a fresh 20F66 Data store has the switch off already, and the user's own choice stays.
+**The proof on the A56:** `ios16: 1 text fixup(s) added: ...` and `text fixups: 3 for /chosen text-fixups`, the kernel's
+`text-fixup: dyld_shared_cache_arm64.07+0xa162c (8 bytes) applied`, and with Bold Text on no `trap ... pc 0x0 lr
+0x1c261c58c` (the lr moves with the slide: `CI::GLContext::init + 0xcc`) and no `crashed: SpringBoard`.
+
 ## 6. Not done
 
 1. **Anything on the phone.** Run `gpuctl` first; then `xnuhost --gpu 3d` with a kernel that has `0005` and

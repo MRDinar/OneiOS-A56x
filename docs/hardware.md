@@ -1505,6 +1505,42 @@ stack (for example `Filter Accept List add error`, `BT VSC init failed`).
 3. Settings > Bluetooth shows on and lists devices nearby; Control Center's AirDrop toggle switches (sharingd's `AirDrop
    not ready` no longer for Bluetooth; AirDrop itself still needs `awdl0`, section 4a).
 
+### iOS 16.5's bluetoothd on the Galaxy A56: no chip without a product (fix/a56-ios16-faults, 2026-11-24)
+
+**The fault [F]** (OneiOS issue 73, the A56's boot of 2026-11-24 21:47, v0.1.24): 29 bluetoothd crashes, one every
+~10 s. Each start: `oneios-bt: bluetoothd gets BT_HCI_TRANSPORT=H4:POSIX`, `match {IONameMatch=marconi-bt ...} -> none`
+(an Apple chip's node; bluetoothd then asks for `bluetooth` and finds ours), `local-mac-address -> found`, `property
+"product-id" ... of IOPlatformDevice "product" -> not found`, then `trap ... far 0x260 esr 0x92000005 ... pc
+0x100...cf0 lr 0x100...cf0` and `Process[N] crashed: bluetoothd`. The host side was up (`bluetooth: on: the phone's
+controller through its HAL (AIDL)`).
+
+**The cause [F, read in 20F66's `/usr/sbin/bluetoothd` on the build laptop: `oneios-tool image apfs-copy`,
+`llvm-objdump`, `ipsw macho disass`; unslid addresses]:** the crash is `ldr w23, [x0, #0x260]` at 0x100274cf0 (the only
+instruction at a page offset 0xcf0 that reads 0x260 off a register, right after a call, so lr = pc), on the result of
+the chip singleton's getter (0x10029a9d4). Its `dispatch_once` block (0x10029aa14) is the chip factory: `BT_CHIP`
+(only `ACI BT`: chip 2000), then dozens of `MGIsDeviceOneOfType` lists; nothing else (16.5's factory has no VM chip,
+unlike 24A446's `APPLE_VIRTUAL`). MobileGestalt knew no product: 16.5 finds it by `/product product-id`, which our tree
+did not have (docs/userland.md, "The iOS 16.5 identity"). So the factory logged "Unknown platform", the chip stayed
+null and the first reader of `[chip + 0x260]` died. The `marconi-bt` miss is not it: bluetoothd falls back to
+`bluetooth`, as 24A446's does.
+
+**The fix:** xnuhost gives a 20F66 image set the iPhone X's `product-id` (the runtime alone). With it the factory makes
+the iPhone X's chip (15: the list at 0x10029b110 holds that id).
+
+**What comes next is not known [U]:** chip 15 is a Broadcom chip, and 16.5's power init has no VM path: it asks
+BlueTool (`com.apple.BlueTool`, XPC `RunBuiltinScript`) to boot the chip with its Broadcom script, over the transport
+bluetoothd chose. Our transport answers Broadcom vendor commands in the kernel (`oneios_bt_h4.c`, and in 0087's
+default mode `vsc_empty`), so the script may pass; if it does not, bluetoothd logs `BlueTool failed to run %s script
+with result %ld` and restarts (its `HWRepair` / `BlueToolBTResult` setting overrides the result, read at 0x100271eb0,
+only behind a check not followed here). 0087's `transport-encoding` 1 -> 10 (written for 24A446's VM path) is what 16.5
+reads too; `oneios-bt-hci=0` gives it 1 and the iOS 16 answer table instead (the A/B switch). The owner's iOSPlus10
+(iOS 16.7) ran bluetoothd with a BlueTool stand-in that answers `result 0` (its `docs/bluetooth-plan.md` 4.1): the
+next step here if the A56's log shows BlueTool failing. **The proof lines** (the A56's next boot): `property
+"product-id" ... -> found`, no `trap ... far 0x260`, then `oneios-iokit: bluetoothd[N] kernel control
+"com.apple.uart.sk.bluetooth" -> id N` and `ONEIOS BT: ios: client ...` if it opens the transport, and in iOS's log
+(`oneios-tool phone pull-log`, `ioslog show ... --proc bluetoothd --grep "BlueTool|Unknown platform|HCI Transport|
+PowerState|restarting"`) which of the two it was.
+
 ### Missing, unknown
 
 - [U] **SELinux**: hwservicemanager checks `find` for the caller's context, and the HAL's domain must be allowed to

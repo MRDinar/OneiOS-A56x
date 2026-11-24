@@ -623,6 +623,19 @@ impl Session {
                                                   // The cameras iOS is told about (the loader's /arm-io/isp and /product/camera): the roles the helper lists;
                                                   // with them cameracaptured's owner-hide-vmm and /product unique-model (camera-vm=, camera-model=).
         self.bridges.describe_cameras(config, &mut machine);
+        // iOS 16.5 (20F66) finds its product by /product product-id (the iPhone X's) and shows the root's serial-number:
+        // without them bluetoothd had no chip and crashed every 10 s, and About had no model name and no serial
+        // (docs/userland.md, "The iOS 16.5 identity"). iOS 27 reads neither, so its tree is unchanged.
+        let build = self.image_set.as_ref().map(|s| s.build.as_str());
+        if build == Some("20F66") {
+            machine.product_id = Some(config::IOS16_PRODUCT_ID);
+            machine.serial_number = Some(config::IOS16_SERIAL.into());
+            logi!(
+                "ios16: /product product-id {} (the iPhone X's, MobileGestalt's product), serial-number {}",
+                config::IOS16_PRODUCT_ID.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                config::IOS16_SERIAL
+            );
+        }
         machine.display_width = fb_width;
         machine.display_height = fb_height;
         machine.display_scale = config.scale;
@@ -635,6 +648,16 @@ impl Session {
                 config.scale,
                 &mut config.text_fixups,
             );
+        }
+        // iOS 16.5: CoreImage's OpenGL ES fallback answers no context (no GL driver here; docs/gpu.md).
+        if config.ios16_fixup {
+            let added = config::ios16_fixups(build, &mut config.text_fixups);
+            if added != 0 {
+                logi!(
+                    "ios16: {} text fixup(s) added: CoreImage's GL fallback answers no context (ios16-fixup=0: off)",
+                    added
+                );
+            }
         }
         if !config.text_fixups.is_empty() {
             machine.text_fixups = Some(config.text_fixups.to_bytes());

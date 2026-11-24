@@ -273,6 +273,39 @@ argument `oneios-mg-cache=2`: removed at every boot (the old way, the A/B switch
 after a change has `cache kept` and no `Could not open .../com.apple.MobileGestalt.plist` line in iOS's log. Not run
 on the phone yet. A new Data seed carries no cache (the root tweaks remove it) and no marker.
 
+**The iOS 16.5 identity (fix/a56-ios16-faults, 2026-11-24; the Galaxy A56, OneiOS issue 73).** iOS 16.5's
+MobileGestalt (20F66, read in `libMobileGestalt.dylib` of its cache on the build laptop) does not take the product
+from the root's `model`: `MGGetProductType` and `MGIsDeviceOfType` copy `IODeviceTree:/product product-id` (a 20-byte
+value) and look it up in a table of 363 products (20 bytes, flags, the product type). The tree xnuhost made for
+iOS 27 has no `product-id` (24A446 does not read it), so on 20F66 the product type was -1:
+
+- bluetoothd (`/usr/sbin/bluetoothd` of 20F66) picks its chip in one function (0x10029aa14) by `getenv("BT_CHIP")`
+  (only `ACI BT`) and then dozens of `MGIsDeviceOneOfType` lists of these ids; none matched, it logged "Unknown
+  platform", left the chip null, and its caller read `[chip + 0x260]` (`ldr w23, [x0, #0x260]` at 0x100274cf0): `trap
+  ... far 0x260 ... pc ...cf0 lr ...cf0` and `Process[N] crashed: bluetoothd` every 10 s, 29 times. Its xnuhost log
+  had the lookup: `oneios-iokit: bluetoothd[N] property "product-id" (no plane) of IOPlatformDevice "product" -> not
+  found`. The iPhone X's id is in one of the factory's lists (at 0x10029b110, chip 15) and in two other functions' (0x1002dcafc, 0x1002fbe74): with it the factory makes chip 15.
+- Settings > General > About had no Model Name. [I] MobileGestalt reads the marketing name from `/product
+  product-name` (and `product-description`), but only once it knows the product.
+- The Serial Number was N/A: MobileGestalt answers it from `IOPlatformExpertDevice`'s `IOPlatformSerialNumber`, which
+  XNU publishes from the root's `serial-number` (`IOPlatformExpert::publishPlatformUUIDAndSerial`). Our tree had
+  none, for iOS 27 too.
+
+What xnuhost gives a 20F66 image set now (the runtime alone, no image remake; `runtime/xnuhost/src/config.rs`
+`IOS16_PRODUCT_ID`, `IOS16_SERIAL`, the loader's `Machine::product_id` and `serial_number`, docs/booter.md):
+`/product product-id` = the iPhone X's (`fd079b298144a7deb4d7c87fef3eb474d8f0e7eb`, from `DeviceTree.d22ap` of the
+same restore file, `oneios-tool remotezip get` + `image im4p` + `xnuloader-inspect adt`; entry 36 of the table),
+`/product product-description` = `product-name` = "OneiOS guest" (ours), and the root's `serial-number` for the
+made-up serial `ONEIOS16A56` (never an Apple serial; 11 characters, laid out as XNU's IODTPlatformExpert reads them:
+ArmDTPlatform is one). The root's `model` (iPhone18,2) and `target-type` (V54) stay as they are, so the jetsam
+properties and every per-board table follow what they followed before; whether 16.5 wants D22's there too is open.
+The tree changes, so `/chosen oneios-identity` changes and MobileGestalt's cache is made again once (hosted 0084).
+iOS 27 (any other build): no `product-id`, no `product-description`, no `serial-number`; its tree is the same bytes.
+**The proof on the A56** (not booted here): xnuhost's `ios16: /product product-id fd079b29... serial-number
+ONEIOS16A56`; `oneios-iokit: bluetoothd[N] property "product-id" ... -> found`; no `trap ... far 0x260` and no
+`crashed: bluetoothd`; About shows a Model Name and Serial Number `ONEIOS16A56`. What bluetoothd does after the chip
+(its BlueTool chip boot, the transport) is docs/hardware.md section 4.
+
 **Layout risks. None of this has been seen: no frame of SpringBoard's has been rendered at any size.**
 
 Both scales:
