@@ -24,6 +24,9 @@ use onebridges::sensors;
 /// The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
 /// drm2kgsl keeps its first 2 MiB unused, the rest holds 16 KiB of response buffer per 3D context.
 const GPU_POOL_BYTES: u64 = 8 << 20;
+/// Whether the sensor hub's accelerometer becomes the guest's motion device (and `oneios-motion=7|15` a boot argument).
+/// Off since v0.1.29's panic (2026-11-25): the kernel's AppleSPUHIDDevice clashes with com.apple.driver.AppleSPU's.
+const MOTION_TO_GUEST: bool = false;
 /// The video encoder's media pool (runtime/bridges/encoder): the V4L2 OUTPUT (NV12) and CAPTURE (bitstream) buffers
 /// the guest maps. 48 MiB fits 1080p-class widget/screenshot snapshots across the device's session slots; with the 8
 /// MiB GPU pool it stays under the hosted kernel's 64 MiB mappable-pool bound (the RAM layout below).
@@ -487,7 +490,18 @@ impl Session {
                             what.push(format!("{} {suid} {desc}", kind.name()));
                         }
                         let mut guest = Vec::new();
-                        if hub.has(sensors::Kind::Accel) && !slots.full() {
+                        // No motion device for now (v0.1.29's panic, phone 2026-11-25 05:05): with oneios-motion the
+                        // kernel registers AppleSPUHIDDevice, and com.apple.driver.AppleSPU (in the collection) loads
+                        // after it with its own class of that name: "OSMetaClass: Kext com.apple.driver.AppleSPU class
+                        // AppleSPUHIDDevice is a duplicate" at kernel start, on 24A446 and 24B156 alike. The light
+                        // sensor below is not affected. Back when the kernel's motion class no longer clashes.
+                        if hub.has(sensors::Kind::Accel) {
+                            logi!(
+                                "sensors: motion: not given to the guest (its kernel class clashes with \
+                                 com.apple.driver.AppleSPU's AppleSPUHIDDevice: v0.1.29's panic); the light sensor only"
+                            );
+                        }
+                        if MOTION_TO_GUEST && hub.has(sensors::Kind::Accel) && !slots.full() {
                             let input_n = slots.kinds.iter().filter(|k| **k == DeviceKind::Input).count();
                             let (base, spi) = slots.next();
                             let dev = virtio_input::create(base, spi).ok_or(BootFailed)?;
