@@ -19,6 +19,9 @@ Each is one switch in docs/switches.md, at its new behaviour by default (that fi
 | **App snapshots not ATX.** With ASTC on, SplashBoard would compress each snapshot to ASTC on the CPU (blank switcher cards, the 10 s scene watchdog). JPEG or PNG instead, from ios-garnet | `userland/metal/SnapshotFormat.inc` (SpringBoard) | `oneios-snapshot-astc=0`; `1` | iOS's log: `OneiOS snapshots: JPEG or PNG, not ATX (hooked)`; no app killed by the scene-update watchdog when it leaves the screen |
 | **Camera: the compile deadline.** cameracaptured's compute pipelines failed `Compile(Budget(Time))` at 20 s; every client but backboardd now has 120 s | `userland/metal/m2v-compile-deadline.patch` (`Budget::standard`), `CompileDeadline.inc` | `oneios-compile-s=120`; `0` (20 s) | no `oneios-gpu-text: cameracaptured[N] problem compute pipeline ...: Compile(Budget(Time))` |
 | **Camera: the stream's notifications.** StreamStarting/Started around a Start, StreamStopping/Stopped around a Stop, as H10ISP's; from Jesvi-iOS | `userland/camera/OneiOSCaptureDevice.c` `post()` | `oneios-camera-notify=1`; `0` | `ONEIOS CAMERA: ios: cameracaptured[N]: stream: posted StreamStarting`, `... the graph starts the stream (format N)`, `posted StreamStarted`, `... the first frame`, `PrimaryScaler: the first picture given`; xnuhost `virtio: 60 s` with `camera#0 q0 +N` while the app is open |
+| **The display helper's buffers write-only** (round 2). Each `ANativeWindow_lock` and post cleaned and invalidated the CPU caches over the whole 18 MB buffer (85% of the helper's time on the fork's S25); now three `CPU_WRITE_RARELY` AHardwareBuffers on a child of the layer, posted with ASurfaceTransaction, falling back to the window by itself. From YumikoHayamato/OneiOS cdb297bbf (CREDITS.md), rewritten in Rust | `runtime/display/src/xhd/present.rs`, `src/jni.rs`; xnuhost's `options` bit 1 (`runtime/xnuhost/src/display.rs`) | `display-present=ahb`; `window` | the helper's `oneios-display: display-present=ahb: 3 write-only buffers (1440x3120 BGRA_8888, ...) on a child surface of the layer` (or `...: WHY: the window path`); its 10 s line's `this process P% of a core` and `copy mean` down and frames per 10 s up against a `display-present=window` boot; at the end `display-present=ahb: N posts, C completed; ...` |
+| **GPU hang at a render server's start** (round 2). Turnip cut a submission of more than 128 buffers every 128, sometimes inside a command buffer, which then ran on BV and BR without its thread control: `gmu: GPU hang detected`, the guest stalled 1-2 s (Droid-VM: 5-10% of backboardd's starts). From Droid-VM/UniXNU fb9fb47 | `userland/metal/turnip-submit-split.patch` (after `turnip-idle-bo-cache.patch`) | none (a hang fix) | no GPU hang or fault in xnuhost's `gpu:` lines and KGSL's log at a render server start (`oneios-tool log gpu`); no `darwin: N command buffers' streams with no beginning among them` in iOS's log. Turnip's build id changes: every driver pipeline compiles once at its first use after this add-on |
+| **cameracaptured's crash in the reflection** (round 2). A compute pipeline rebuilt with its unset constants zero freed its function before `nmb_compute_pipeline_reflection` read it (SIGSEGV at 0, CCPortrait's kernels). From Droid-VM/NativeMetal 3c46b5e | a frontend edit in `ios metal-stage-edit` (`frontend_camera_edits`) | none (a crash fix) | no cameracaptured crash report naming `nmb_compute_pipeline_reflection`; no `oneios-kill` exit of cameracaptured with the Camera app open |
 
 The two Metal switches `oneios-keep-room` and `oneios-compile-s` act in the default (624bab3) add-on only; the rt
 runtime has neither (userland/metal/rt/README.md). Every switch is in xnuhost's `switches:` line.
@@ -43,16 +46,21 @@ stages LEGACY into the pinned NativeLegacyDisplay.cpp); `userland/camera/tests/h
 `runtime/loader/tests/loader.rs` `machine_identity_tree` (both feature-set lists), `config::tests::host_device` (the
 A56's `astc=0`, a command line's `astc=1` wins) and `config::tests::the_switches` (the line with the seven new words).
 
-### The zero-copy panel pool (plan, not code)
+### The zero-copy panel pool (step 1 in code since round 2; steps 2 and 3 a plan)
 
 Today the display helper copies each changed frame from guest pages into the layer's buffer on the CPU (up to 18 MB,
 5.5-6.8 ms a frame; docs/gpu.md 2.5 item 2). zizhan's panel pool (128 MiB: 1 copy buffer and 6 zero-copy slots) is
-the DPU scanning out the render server's own surfaces. Ours, in three steps, each behind `display-zero-copy=0|1`:
+the DPU scanning out the render server's own surfaces. Ours, in three steps:
 
-1. **The helper's buffers to xnuhost.** The helper allocates a pool of AHardwareBuffers (RGBA8, the frame's size, 3
-   to 6; `AHardwareBuffer_allocate` with `GPU_FRAMEBUFFER | COMPOSER_OVERLAY`) and sends their dma-buf fds over
-   `display.sock` (SCM_RIGHTS, a new `XHDB` message after the hello; `runtime/display/src/xhd`). It posts a buffer with
-   `ASurfaceTransaction_setBuffer` and an acquire fence instead of `ANativeWindow_lock`/`unlockAndPost`.
+1. **The helper's own buffers, posted with ASurfaceTransaction: done in code (round 2, not booted).** The helper
+   allocates three AHardwareBuffers of the frame's size and posts them on a child of its layer with
+   `ASurfaceTransaction_setBuffer` and the unlock's acquire fence instead of `ANativeWindow_lock`/`unlockAndPost`
+   (`runtime/display/src/xhd/present.rs`, switch `display-present=ahb|window`, the default `ahb`). YumikoHayamato's
+   measurement made this the first step: the helper's time was the CPU caches' maintenance of the window's buffer, not
+   the copy, so the buffers are `CPU_WRITE_RARELY | CPU_READ_NEVER | GPU_SAMPLED_IMAGE | COMPOSER_OVERLAY` (the CPU
+   still fills them; no cache to maintain). What step 2 adds to it: `GPU_FRAMEBUFFER` usage (a GPU writes them) and
+   the buffers' dma-buf fds to xnuhost over `display.sock` (SCM_RIGHTS, a new `XHDB` message after the hello); the
+   slot ring, the release fences and the fallback to the window stay as they are.
 2. **A GPU copy instead of the CPU's.** xnuhost imports each fd into KGSL (`IOCTL_KGSL_GPUOBJ_IMPORT`, dma-buf type)
    beside the guest surface's blob (already a KGSL object, drm2kgsl's), and at each flush submits a 2D blit from the
    surface to the next free pool buffer on drm2kgsl's own context; the helper gets the buffer's index and a sync-file
@@ -63,6 +71,10 @@ the DPU scanning out the render server's own surfaces. Ours, in three steps, eac
    guest as a blob, so backboardd renders into what the panel shows (zizhan's zero-copy slots). Needs the guest to
    allocate its framebuffer surfaces from that pool (IOSurface backing in the virtio GPU path) and the helper to hold a
    buffer until the guest's next swap retires it. Larger; only after 2 is measured.
+
+Steps 2 and 3 get a switch of their own (`display-zero-copy=0|1`) when they are code; step 1's is `display-present`.
+Measure step 1 first (a boot with `ahb` against one with `window`): if the helper's share of a core and its copy time
+fall as on the S25, the CPU copy left is the 5.5-6.8 ms read of the guest's pages, which step 2 removes.
 
 Watch zizhan's warning: answering the swap before the latch (their `pong_zc_async=1`) took vsync pacing away from
 backboardd (frames over 25 ms 7% -> 31%). Step 2 answers when the blit is queued, as `display-post=apart` does now;

@@ -1530,12 +1530,14 @@ fn the_switches() {
         ("stop-loop", "poll"),
         ("uclamp-rule", "all"),
         ("display-post", "serial"),
+        ("display-present", "window"),
         ("timer-coalesce", "0"),
         ("astc", "0"),
     ] {
         assert!(c.set(k, v).is_ok(), "{k}={v}");
     }
-    assert!(c.display_post_serial);
+    assert!(c.display_post_serial && !c.display_present_ahb);
+    assert!(Config::default().display_present_ahb, "display-present=ahb by default");
     for (k, v) in [
         ("gpu-blob-entries", "65533"),
         ("gpu-blob-entries", "1024"),
@@ -1549,6 +1551,7 @@ fn the_switches() {
         ("uclamp-rule", "some"),
         ("wifi-buffers", "off"),
         ("display-post", "1"),
+        ("display-present", "1"),
         ("timer-coalesce", "sometimes"),
         ("astc", "on"),
     ] {
@@ -1561,7 +1564,10 @@ fn the_switches() {
         .into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
-    assert!(line.contains(" decoder=off decoder-codecs=vp9,av1 astc=0 "), "{line}");
+    assert!(
+        line.contains(" display-post=serial display-present=window decoder=off decoder-codecs=vp9,av1 astc=0 "),
+        "{line}"
+    );
     assert!(
         line.contains(
             " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0 \
@@ -1574,7 +1580,7 @@ fn the_switches() {
     assert!(
         line.ends_with(
             "not at the default: stop-loop timer-coalesce uclamp-rule gpu-down gpu-blob-entries wifi-ring-wait wifi-send-wait \
-             wifi-buffers wifi-joined-scan encoder-10bit encoder-warmup display-post decoder decoder-codecs astc \
+             wifi-buffers wifi-joined-scan encoder-10bit encoder-warmup display-post display-present decoder decoder-codecs astc \
              oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut oneios-pressure-big oneios-disable-allowed \
              oneios-nested-exact oneios-upgrade-flush oneios-fill-fast-fault oneios-idle-spares oneios-bo-cache-idle \
              oneios-keep-room oneios-dl-full sheng-vsync-min oneios-compile-s oneios-snapshot-astc oneios-camera-notify \

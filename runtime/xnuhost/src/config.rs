@@ -698,6 +698,10 @@ pub struct Config {
     /// display-post (apart): the display helper reads and answers each frame while it waits for a buffer and posts
     /// the last (fix/frame-path); serial: it reads no frame until the last is posted (before 2026-11-24)
     pub display_post_serial: bool,
+    /// display-present (ahb, 2026-11-25): the helper posts its frames in write-only AHardwareBuffers on a child of the
+    /// layer (oneios-display xhd::present, ported from YumikoHayamato/OneiOS cdb297bbf: no CPU cache maintenance of the
+    /// whole buffer at each lock and post); window: through the layer's window, as before
+    pub display_present_ahb: bool,
     /// decoder (auto), decoder-codecs (h264,hevc,vp9,av1; bits of oneencoder::proto::DECODER_CODECS): the video decoder
     pub decoder: Decoder,
     pub decoder_codecs: u32,
@@ -944,6 +948,7 @@ impl Config {
             encoder_warmup: true,
             astc: true,
             display_post_serial: false,
+            display_present_ahb: true,
             decoder: Decoder::Auto,
             decoder_codecs: oneencoder::switches::ALL_CODECS,
             gpu_blob_entries: GPU_BLOB_ENTRIES,
@@ -1151,6 +1156,13 @@ impl Config {
                 self.display_post_serial = named(match value {
                     "apart" => Some(false),
                     "serial" => Some(true),
+                    _ => None,
+                })?
+            }
+            "display-present" => {
+                self.display_present_ahb = named(match value {
+                    "ahb" => Some(true),
+                    "window" => Some(false),
                     _ => None,
                 })?
             }
@@ -1395,6 +1407,7 @@ impl Config {
         take!(self, image, "encoder-10bit", encoder_10bit);
         take!(self, image, "encoder-warmup", encoder_warmup);
         take!(self, image, "display-post", display_post_serial);
+        take!(self, image, "display-present", display_present_ahb);
         take!(self, image, "decoder", decoder);
         take!(self, image, "decoder-codecs", decoder_codecs);
         take!(self, image, "astc", astc);
@@ -2320,6 +2333,7 @@ impl Config {
             ("encoder-10bit", self.encoder_10bit.as_str().to_string(), "main10"),
             ("encoder-warmup", on(self.encoder_warmup).to_string(), "1"),
             ("display-post", (if self.display_post_serial { "serial" } else { "apart" }).to_string(), "apart"),
+            ("display-present", (if self.display_present_ahb { "ahb" } else { "window" }).to_string(), "ahb"),
             ("decoder", self.decoder.as_str().to_string(), "auto"),
             ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
             ("astc", on(self.astc).to_string(), "1"),

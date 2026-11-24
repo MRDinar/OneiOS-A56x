@@ -75,6 +75,7 @@ xnuhost --selftest            # on the phone: page size, address bits, PAC keys 
 | `--set panel-fallback=WxH[@HZ]` (or `panel-fallback=` in `xnuhost.conf`) | 1440x3120@120 | the mode assumed only where the panel cannot be read (no helper report in time, no DRM panel; a bench run): section 2.8 step 4. For a phone whose panel is not the S24 Ultra's: the Galaxy S25 and A56 are 1080x2340@120 (`docs/s25.md`, `docs/a56.md`). A read panel still wins |
 | `--set display-direct=0` (or `display-direct=0` in `xnuhost.conf`) | 1 | 0: xnuhost copies every frame into the memfd, even for a helper that can copy from guest RAM (section 2.8, direct frames) |
 | `--set display-post=apart\|serial` (or in `xnuhost.conf`) | apart | serial: the display helper reads no frame until it has posted the last, the one loop before 2026-11-24 (section 2.8, docs/switches.md) |
+| `--set display-present=ahb\|window` (or in `xnuhost.conf`) | ahb | ahb: the display helper posts into write-only AHardwareBuffers on a child of its layer (no CPU cache maintenance of the whole buffer at each lock and post; it falls back to the window by itself when they cannot be had); window: it locks and posts the layer's window as before 2026-11-25 (section 2.8, docs/switches.md) |
 | `--scale 2\|3` (`--set scale=2`) | the image set's, else 3 | the UI scale: pixels per point |
 | `DIR/os.img`, `systemos.img`, `app.img` | as present | read-only disks, in this order |
 | `--data DIR` | none | `data.img`: the Data store, sparse, created on the first start; `unique-chip-id` |
@@ -1734,7 +1735,10 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   read the next frame only after the post (its start 5.5 ms late on the phone, 2026-11-23). `display-post=serial`
   (docs/switches.md) gives the old timing back: xnuhost sends `options {"XHDO", flags, 0, 0, 0}` after the hello with
   bit 0 set, and the reader reads nothing more until the last change is posted; a helper older than the message
-  ignores it. `XHDS`'s fifth word is xnuhost's send time (the low 32
+  ignores it. Bit 1 (`OPTION_PRESENT_AHB`, `display-present=ahb`, the default since 2026-11-25, so the message now goes at
+  every start unless `display-present=window` and `display-post=apart`): the poster posts into three write-only
+  AHardwareBuffers on a child of its layer instead of locking the layer's window (`runtime/display/src/xhd/present.rs`,
+  `runtime/display/README.md` "Write-only buffers"); a helper older than that bit keeps the window. `XHDS`'s fifth word is xnuhost's send time (the low 32
   bits of `CLOCK_MONOTONIC` in us), and the helper's 10 s line says how long after it the read began. The guest does
   not draw into a surface while the helper reads it: the guest's display driver completes the swap for the
   compositor once the flush is posted (`DroidVMVirtioGpuDisplay.cpp` `droidvm_virtio_complete_on_post`), but it

@@ -194,7 +194,10 @@ SM8650 boards (row 15 and `houji` forks); none has Metal.
 ### Ports read for the GPU, heat and stability (2026-11-25)
 
 Read for [ports-2026-11-25-gpu.md](ports-2026-11-25-gpu.md) (what to port, ranked, with switches and proof lines). No
-pin changed; the commits are those read.
+pin changed; the commits are those read. Taken since (fix/s24-fps-heat-camera, 2026-11-25, not booted): Turnip's submit split
+(`fb9fb47`, `userland/metal/turnip-submit-split.patch`), the reflection crash fix (`3c46b5e`, a frontend edit of
+`ios metal-stage-edit`) and the write-only present buffers (`cdb297bbf`, rewritten in Rust in
+`runtime/display/src/xhd/present.rs`; CREDITS.md).
 
 | Repo, commit read | Licence | What is in it for us |
 | --- | --- | --- |

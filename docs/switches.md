@@ -16,7 +16,7 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 xnuhost logs every switch once, after the `versions:` line:
 
 ```text
-switches: session-mode=hosted stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 timer-coalesce=1 ram-fit-terms=tasks ram-ondemand=0 uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 display-post=apart decoder=auto decoder-codecs=h264,hevc,vp9,av1 astc=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-nested-exact=1 oneios-upgrade-flush=0 oneios-fill-fast-fault=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 oneios-keep-room=8 oneios-dl-full=1 sheng-vsync-min=60 oneios-compile-s=120 oneios-snapshot-astc=0 oneios-camera-notify=1 oneios-dont-care=1 oneios-queue-priority=1 (docs/switches.md); all at their defaults
+switches: session-mode=hosted stop-loop=wait takeover-reclaim=1 takeover-swappiness=keep task-trim=1 timer-coalesce=1 ram-fit-terms=tasks ram-ondemand=0 uclamp-rule=work gpu-down=governor gpu-blob-entries=65532 wifi-ring-wait=1 wifi-send-wait=1 wifi-buffers=1 wifi-joined-scan=cache encoder-10bit=main10 encoder-warmup=1 display-post=apart display-present=ahb decoder=auto decoder-codecs=h264,hevc,vp9,av1 astc=1 oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-nested-exact=1 oneios-upgrade-flush=0 oneios-fill-fast-fault=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 oneios-keep-room=8 oneios-dl-full=1 sheng-vsync-min=60 oneios-compile-s=120 oneios-snapshot-astc=0 oneios-camera-notify=1 oneios-m2v-shader-fix=0 oneios-dont-care=1 oneios-queue-priority=1 (docs/switches.md); all at their defaults
 ```
 
 When some are changed, the end says which: `not at the default: wifi-send-wait gpu-down`. Kernel switches are read
@@ -48,6 +48,7 @@ change (the default value), and whether one has run the other value.
 | `encoder-10bit` | `main10\|8bit\|nv12` | `main10` | main10: the device takes P010 (iOS's 10-bit tiles) and the helper codes HEVC Main10 where the encoder offers it, else 8-bit of the high bytes; 8bit: P010 taken, Main10 never tried; nv12: the device lists and takes no P010, the guest sends NV12 (its high bytes). Not exact: before b3da193 the guest refused 10-bit tiles itself (stage 101), which the kernel no longer does | b3da193 + this build | no |
 | `encoder-warmup` | `0\|1` | `1` | 1: the encoder helper starts at the guest's first virtio-media session and opens one HEVC encoder at once; 0: it starts at the first encode, no warm-up (its binder threads start either way: that is the fix of the hang, not a choice) | b3da193 + this build | no |
 | `display-post` | `apart\|serial` | `apart` | apart: the display helper reads and answers each frame as it comes (a reader thread) while its poster waits for the layer's buffer, fills it and posts the newest picture; serial: xnuhost sends the helper `options` (`XHDO`, bit 0) and its reader reads nothing more until the last change is posted, the one loop's timing before 2026-11-24 (exact: the same order of read, answer, lock, fill, post). A helper older than this build ignores the message (it has the one loop anyway) | fix/frame-path | no |
+| `display-present` | `ahb\|window` | `ahb` | ahb: xnuhost's `options` message carries bit 1 (`OPTION_PRESENT_AHB`) and the display helper posts its frames into three write-only AHardwareBuffers (`CPU_WRITE_RARELY \| CPU_READ_NEVER \| GPU_SAMPLED_IMAGE \| COMPOSER_OVERLAY`) on a child of its layer with ASurfaceTransaction, at most two in flight, each refilled after its release fence: no CPU cache maintenance of the whole buffer at each lock and post (ported from YumikoHayamato/OneiOS cdb297bbf, whose S25 went from 60 frames a second at 49.5% of a core to 114 at 17.1%; `runtime/display/src/xhd/present.rs`). Where anything of it is missing (half-float frames, no such buffers, no child surface, an allocation, lock or post refused) the helper says why once and takes the window path by itself. The helper's log: `oneios-display: display-present=ahb: 3 write-only buffers (...) on a child surface of the layer` or `...: WHY: the window path`. window: it locks and posts the layer's window, as before (exact). The helper's `ONEIOS_DISPLAY_PRESENT=ahb\|window` wins over both. A helper older than this build ignores the bit | fix/s24-fps-heat-camera | no |
 | `decoder` | `auto\|off` | `auto` | auto (2026-11-24): the video device decodes too (card `oneios-encoder+decoder`): iOS's paravirtualized VideoToolbox decoder gets the phone's MediaCodec for H.264, HEVC, VP9 and AV1 (8-bit 4:2:0; a 10-bit stream, a size outside 96..4096 or above 4096x2304 is refused and decoded in software). Needs `encoder=auto` or `sim` (the device and media pool are the encoder's). off: an encoder only, `decs` lists nothing and iOS decodes in software (videocodecd, WebKit), as before. Exact: the guest's decoder half is the same code either way, it finds no device | fix/hw-decode | no |
 | `decoder-codecs` | `h264,hevc,vp9,av1` (any of them, comma separated) | all four | the codecs the device offers (ENUM_FMT of OUTPUT, so `decs` and `dcap`); one left out is decoded in software. Pins a codec whose MediaCodec decoder misbehaves | fix/hw-decode | no |
 | `boot-args-add=oneios-wifi-rssi=0` | `0\|1` | `1` | 1: the Wi-Fi driver posts RSSI_CHANGED records (the bars follow the signal); 0: none, wifid reads the signal at the join only (before cbf97ea). Kernel (net/OneiOSWifi.cpp) | cbf97ea + this build (db2eb42) | no |
@@ -121,10 +122,12 @@ wifi-joined-scan=cache
 encoder-10bit=main10
 encoder-warmup=1
 display-post=apart
+display-present=ahb
 decoder=auto
 decoder-codecs=h264,hevc,vp9,av1
-# kernel and plug-in switches (boot-args-add appends to boot-args; one line, all twelve words):
-# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-nested-exact=1 oneios-upgrade-flush=0 oneios-fill-fast-fault=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 oneios-dont-care=1 oneios-queue-priority=1
+astc=1
+# kernel and plug-in switches (boot-args-add appends to boot-args; one line, all nineteen words):
+# boot-args-add=oneios-wifi-rssi=1 oneios-telemetry-jobs=0 oneios-pool-cut=1 oneios-pressure-big=512 oneios-disable-allowed=1 oneios-nested-exact=1 oneios-upgrade-flush=0 oneios-fill-fast-fault=1 oneios-idle-spares=1 oneios-bo-cache-idle=1 oneios-keep-room=8 oneios-dl-full=1 sheng-vsync-min=60 oneios-compile-s=120 oneios-snapshot-astc=0 oneios-camera-notify=1 oneios-m2v-shader-fix=0 oneios-dont-care=1 oneios-queue-priority=1
 ```
 
 ## Tests
@@ -175,6 +178,15 @@ decoder-codecs=h264,hevc,vp9,av1
   `a821fd1e` (`.hashes` `196e4c94`), audit 0 failures, stubs 666 good 0 bad. Add-on (624bab3 with
   `m2v-compile-deadline.patch` and the four new `.inc` files, + the camera plug-in): NativeAdrenoMetal `25bfacc8`,
   Turnip `ffee9a7c`, H9ISP `59c042c5`; 12,333,520 bytes. Not booted.
+- fix/s24-fps-heat-camera round 2 (2026-11-25, build laptop, after the merge of main a1200e5): `runtime/host-tests.sh`
+  (no qemu part): workspace (404 passed, 0 failed, `audio::test_audio_helper::audio_helper` among them), lint,
+  lint-android, port, links (the cdylib with the AHardwareBuffer and ASurfaceTransaction imports links with `-z defs`),
+  package pass. `display-present`: `config::tests::the_switches` (its values, a refusal, the default `ahb`, the word in
+  the line, with `oneios-m2v-shader-fix`), `display::tests::the_serial_post_option` (the options after the hello: bit 1
+  alone at the defaults, both bits with `serial`, no message with `window`), the helper's `test_present_choice`,
+  `test_present_fallbacks`, `test_present_ring`, `test_present_in_flight_and_release`, `test_present_gives_up`,
+  `test_present_run`. The Metal ports: `cargo test -p oneios-ios` (`the_camera_edits_apply_once_each` with the 3c46b5e
+  edit), `git apply --check` of `turnip-submit-split.patch` on the staged Mesa. Not booted.
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").
 
 ## Found while building the Metal plug-in (2026-11-23)
@@ -190,3 +202,11 @@ decoder-codecs=h264,hevc,vp9,av1
   now keeps the cross file's inputs (the SDK, the four tools `xcrun --find` gives, the script's `cksum`) in
   `build/mesa-tu-ios27.cross-inputs` and removes the directory when they changed; a directory with no record is kept
   and recorded.
+- (2026-11-25, fix/s24-fps-heat-camera) After the merge of main's 90101, 90102 and 90110 the bridge script stopped:
+  `Translator source differs from the pinned revision plus its recorded patches`. The staged translator
+  (`out/metal/root/.cache/gpu-reference/metal2vulkan`) had this branch's `m2v-compile-deadline.patch` applied right
+  after `m2v-idle-memory.patch`, and the script takes only the pin plus a prefix of its list, which now has the three
+  shader patches first. `build.sh stage` now keeps a checksum of the staged bridge script and every translator patch
+  in `build/m2v-patches.stamp`; when it changed (or no stage recorded one and the tree has changes) the source goes back
+  to the pin, said in a `metal: the translator's patch list or a patch changed since the last stage: ...` line, and
+  the script applies the whole list.
