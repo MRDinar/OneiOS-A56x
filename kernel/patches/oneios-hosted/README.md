@@ -675,7 +675,8 @@ stereo). `drivers/haptics` publishes `/product/haptics closed-loop` only when th
 No numbered patch: an archive (`oneios-tool kernel gen codec`, hooked into `kernel/build-hosted.sh` after `audio/`)
 whose start, `oneios_codec_start` (`codec/OneiOSCodec.c`), is the last call of `oneios_drivers_start` (weak in
 `drivers/bridge/OneiOSBridge.c`). It holds UniXNU-droidvm's virtio-media transport (`DroidVMVirtioMedia.c`,
-unchanged, `-DDROIDVM_DEVICE_DYNAMIC=1`), its `AppleVideoToolboxParavirtualizationDriver` and user client
+`-DDROIDVM_DEVICE_DYNAMIC=1`; since 2026-11-25 staged with edit 7, its event queue on the device's interrupt with a
+guard, `oneios-codec-irq=0` the poll: `codec/README.md` "The transport on the interrupt"), its `AppleVideoToolboxParavirtualizationDriver` and user client
 (`DroidVMVTParavirt.cpp`, unchanged; its static initializer out of `__mod_init_func`, as the audio archive's:
 `droidvm_vt_paravirt_attach` runs it in its own module load), and the sessions behind it (`DroidVMVTHost.cpp`, staged
 with five edits, `codec/README.md`: the hvcC's profile, tier and level bytes taken from the SPS without its emulation

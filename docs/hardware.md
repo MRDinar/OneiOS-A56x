@@ -4091,7 +4091,9 @@ the stand-in encoder (below).
 ### The guest side (`kernel/patches/oneios-hosted/codec`)
 
 `oneios-tool kernel gen codec` builds `liboneioscodec.a` between the two kernel passes (`kernel/build-hosted.sh`,
-after `audio`): UniXNU-droidvm's `DroidVMVirtioMedia.c` and `DroidVMVTParavirt.cpp` unchanged, `DroidVMVTHost.cpp`
+after `audio`): UniXNU-droidvm's `DroidVMVTParavirt.cpp` unchanged, `DroidVMVirtioMedia.c` (since 2026-11-25 its event queue on the
+device's interrupt instead of a 1 ms poll, `oneios-codec-irq=0` the poll; `codec/README.md` "The transport on the
+interrupt"), `DroidVMVTHost.cpp`
 with four edits (the hvcC's level, below; iOS 27's tile session, a small HEVC session coded larger and cropped, `jcap`:
 "On the phone, 2026-11-22" below), and `OneiOSCodec.c` (`oneios_codec_start`, which `oneios_drivers_start`
 calls; a weak default in `drivers/bridge/OneiOSBridge.c` stands for a kernel without the archive). The hvcC edit: its

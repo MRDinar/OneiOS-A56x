@@ -1164,6 +1164,14 @@ impl Device for MediaDevice {
         self.wake.wake();
     }
 
+    /// Both queues honour the guest's VIRTQ_AVAIL_F_NO_INTERRUPT (2026-11-25): the staged DroidVMVirtioMedia.c (edit 7)
+    /// sets it on the command queue, whose answers it reads as soon as its notify returns (commands are answered inside
+    /// it, [`Self::command`]), and clears it on the event queue, whose interrupt wakes its event worker. With
+    /// oneios-codec-irq=0 it sets it on both and polls: the line then stays down, as nothing waits for it.
+    fn quiet_queues(&self) -> u32 {
+        1 << MEDIA_QUEUE_COMMAND | 1 << MEDIA_QUEUE_EVENT
+    }
+
     fn reset(&self, _dev: &MediaVirtio) {
         let mut st = self.state.borrow_mut();
         for slot in 0..MEDIA_SESSIONS {

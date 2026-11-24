@@ -148,6 +148,35 @@ fn the_codec_edit_writes_its_frozen_text_and_fits_the_pinned_source() {
 }
 
 #[test]
+fn the_transport_edit_fits_the_pinned_source() {
+    // fix/codec-irq, 2026-11-25 (edit 7, staged/codec_transport.rs): DroidVMVirtioMedia.c's event queue on the device's
+    // interrupt. On the real file where external/ has it; applied twice it fails (each anchor is gone).
+    let source = repo().join("external/UniXNU-droidvm/package/DroidVMVirtioMedia.c");
+    if !source.exists() {
+        eprintln!("external/UniXNU-droidvm is not here: the transport's edit was not checked");
+        return;
+    }
+    let staged = build_oneios_codec::staged_transport(std::fs::read_to_string(&source).unwrap()).unwrap();
+    assert!(build_oneios_codec::staged_transport(staged.clone()).is_err());
+    for text in ["#include \"OneiOSCodecWait.h\"", "static void media_interrupt(void *context) {",
+                 "static bool reap_events(struct media_device *d) {", "if (sink) sink(context, copy, sizeof copy);",
+                 "attach = armcpu_spi_attach(d->interrupt_id, false, media_interrupt, d, NULL, NULL);",
+                 "if (d->irq) *(volatile uint16_t *)(media_rings[device][MEDIA_EVENTQ] + 1024) = 0;",
+                 "oneios_media_wait_ms(polled, fast), NSEC_PER_MSEC);",
+                 "oneios_media_count_wake(oneios_media_counts, woke == THREAD_TIMED_OUT, any);",
+                 "PE_parse_boot_argn(\"oneios-codec-irq\", &media_irq_enabled, sizeof(media_irq_enabled));",
+                 "SecureDTGetProperty(node, \"droidvm,intid\", &value, &size) == kSuccess ||"] {
+        assert_eq!(staged.matches(text).count(), 1, "{text}");
+    }
+    // the pin's poll is gone: no IOSleep in the event worker, no reap inside a command's wait (it holds the lock)
+    assert!(!staged.contains("IOSleep(fast ? 1 : 50);") && !staged.contains("        reap_events(d);\n        IOSleep(1);"));
+    // both queues start NO_INTERRUPT; only the event queue's flag is cleared, once the SPI is attached
+    let at = |text: &str| staged.find(text).unwrap_or_else(|| panic!("{text}"));
+    assert!(at("= 1;   // VIRTQ_AVAIL_F_NO_INTERRUPT: we poll") < at("if (d->irq) *(volatile uint16_t *)"));
+    assert!(at("static bool media_pending;") < at("static void media_interrupt(") && at("static void media_interrupt(") < at("static const char *bring_up("));
+}
+
+#[test]
 fn the_display_edits_fit_the_pinned_sources() {
     // The edit lists against the real upstream files, where external/ has them (a checkout without the references
     // skips this; the kernel build applies the same lists and stops on a missing anchor).

@@ -1576,6 +1576,13 @@ and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order
 | Bridge channel, network, sound | `runtime/bridges` (the bridges agent's; `docs/hardware.md`) | haptics and Bluetooth HCI; a tap with built-in DHCP; an AAudio helper process | `drivers/bridge`, `DroidVMVirtioNet.c`, `DroidVMVirtioSnd.c` |
 | CPU frequency | `runtime/bridges` | a plain MMIO window per vCPU at `0x09000000` (`/arm-io/cpufreq`) | `DroidVMCpufreq.c` |
 
+Interrupts: a chain returned on the used ring sets the interrupt status (0x60) and raises the device's SPI, whatever the
+driver's `VIRTQ_AVAIL_F_NO_INTERRUPT`; the driver's acknowledgement (0x64) lowers it. A device model may name queues
+whose flag the transport honours (`Device::quiet_queues`, 2026-11-25; none by default): a return there with the flag
+set raises nothing. Only the media device names any (both its queues): the codec's transport polls the command queue,
+which xnuhost answers inside the guest's notify, and waits on the event queue's interrupt
+(`kernel/patches/oneios-hosted/codec/README.md`, "The transport on the interrupt").
+
 A task trap that no page-in can resolve is logged by xnuhost itself with the registers (`tasks: pid N (tid T):
 trap kind K signal S far ... esr ... insn ...; pc ... lr ... sp ... fp ... x0 ...`): a fault address outside what an
 iOS task may use (below 4 GiB or at and above the stub region), an undefined instruction, a breakpoint; the first 64

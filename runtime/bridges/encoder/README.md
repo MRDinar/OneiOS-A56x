@@ -252,6 +252,18 @@ bytes); `8bit`: P010 is taken and coded 8-bit, Main10 never tried (`backend_ndk`
 line: `oneios-encoder 3 [no-main10] [no-warmup]`; `no-warmup` skips the warm-up thread and `prepare()` (the helper starts
 at the first encode). The binder threads start either way.
 
+## The interrupt (fix/codec-irq, 2026-11-25)
+
+The device raises its SPI through xh-core's transport on every used-ring write, as every device does. Since 2026-11-25
+it honours the guest's `VIRTQ_AVAIL_F_NO_INTERRUPT` on both its queues (`quiet_queues` in `media_device.rs`, the
+transport's `Device::quiet_queues`): the staged `DroidVMVirtioMedia.c` (edit 7) sets it on the command queue, whose
+answers it reads as soon as its notify returns (`command` answers inside the notify), and clears it on the event
+queue, whose interrupt wakes its event worker (a DQBUF or a V4L2 event pushed by the worker). With
+`oneios-codec-irq=0`, or an older kernel, the guest sets it on both and polls: the line stays down. Test:
+`tests/interrupt.rs` (commands raise nothing, the decoder's SOURCE_CHANGE raises the SPI once, the ack lowers it, both
+flags set: no line and the event still comes). The guest side: `kernel/patches/oneios-hosted/codec/README.md`, "The
+transport on the interrupt".
+
 ## The decoder (fix/hw-decode, 2026-11-24)
 
 **Why:** YouTube in Safari decoded on the CPU, and the phone got hot. The device was an encoder only, so iOS's

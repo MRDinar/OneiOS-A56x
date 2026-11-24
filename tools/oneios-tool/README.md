@@ -3180,7 +3180,9 @@ golden` in `crates/oneios-kernel`, 15 of 15.
 
 **`kernel gen codec`** (hevc-guest, 2026-11-15; the tenth archive, after `audio` in `kernel/build-hosted.sh`) builds
 `build/oneios-codec/liboneioscodec.a`, the hosted kernel's video encoder: UniXNU-droidvm's virtio-media transport
-(`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`), its
+(`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`; staged since 2026-11-25 with the edit of
+`staged/codec_transport.rs`, 7: the event queue on the device's interrupt, `-I` the codec folder for
+`OneiOSCodecWait.h`; checked by `the_transport_edit_fits_the_pinned_source`), its
 `AppleVideoToolboxParavirtualizationDriver` (`DroidVMVTParavirt.cpp`, the IOKit record; the late object without
 `__mod_init_func`, `__GLOBAL__sub_I_DroidVMVTParavirt.cpp` global), the sessions behind it (`DroidVMVTHost.cpp`,
 staged into the archive's folder with the edits of `staged/codec.rs`, the encoder's 1 to 5 (the hvcC's profile,
