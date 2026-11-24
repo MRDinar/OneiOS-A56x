@@ -949,7 +949,8 @@ thread; none was seen.) Boot arguments:
 | `oneios-gpu-read-wait=1` | a test switch (widgets, 2026-11-13; off by default): the render server's command buffers wait, as they name the IOSurfaces they sample, for other processes' GPU work begun before them that writes those surfaces (the driver's own `awaitWriters`, at most 100 ms: what a newer plug-in asks for and this pin does not). One line at the render server's first surface ticket: `oneios-gpu-read-wait: on ...` or `off`; its waits are `oneios-gpu-sync`'s "reads that waited for writers" |
 | `oneios-adreno-selftest=1` | after the publish: IOKit's match of `IOAcceleratorES`, an in-kernel open with type `0x4149`, `GETPARAM(ABI_VERSION)` through the tunnel; two `oneios-adreno: selftest:` lines |
 | `oneios-gpu-amd=1` | (a56-gpu, 2026-11-24; xnuhost adds it when, and only when, it picks its amdgpu renderer) with 3D and an AMDGPU DRM capset: the Galaxy A56's accelerator instead of the Adreno one: the same `AGXAccelerator` with `MetalPluginName` `OneiOSRadeonMetal`, `MetalPluginClassName` `OneiOSRadeonMetalDevice`, `OneiOSDrmContext` `amdgpu`, serving open type `0x4149` (and the plug-in's markers) alone; published whatever `oneios-gpu-metal` says (20F66's `=0` is against the Adreno accelerator only). With anything else (no 3D, an MSM capset): nothing, never the Adreno accelerator. Not given or `=0`: the rule above. [a56-gpu.md](a56-gpu.md) 5, `gpu/OneiOSGpuChoice.h` |
-| `oneios-gpu-amd-cpu=a,b,...` | the processes that keep CPU composition on the A56's accelerator: its five discovery keys (`MetalPluginName`, `MetalPluginClassName`, `IOGLESBundleName`, `IOGLESMetalBundleName`, `IOGLESDefaultUseMetal`) read as absent there, as Jesvi-iOS's kernel does for its "incompatible core renderers". Not given: `backboardd,SpringBoard,mediaserverd,PosterBoard,CollectionsPoster,WeatherPoster,SBRendererService,MobileSlideShow`; empty: none (the test of backboardd on that Metal); `X*` a prefix, `*` every process. One `oneios-gpu-amd: NAME[PID] keeps CPU composition: KEY hidden` line for each of the first 32 processes. No effect on the Adreno accelerator |
+| `oneios-gpu-amd-cpu=a,b,...` | the processes that keep CPU composition on the A56's accelerator: its five discovery keys (`MetalPluginName`, `MetalPluginClassName`, `IOGLESBundleName`, `IOGLESMetalBundleName`, `IOGLESDefaultUseMetal`) read as absent there, as Jesvi-iOS's kernel does for its "incompatible core renderers". Not given: `backboardd,SpringBoard,mediaserverd,PosterBoard,CollectionsPoster,WeatherPoster,SBRendererService,MobileSlideShow`; empty: none (the test of backboardd on that Metal); `X*` a prefix, `*` every process. One `oneios-gpu-amd: NAME[PID] kept off the Metal plug-in: KEY hidden (oneios-gpu-amd-cpu); ...` line for each of the first 32 processes. With `oneios-gpu-amd-gl=1` they see `IOGLESBundleName` (only the four Metal keys hidden). No effect on the Adreno accelerator |
+| `oneios-gpu-amd-gl=1` | (the A56 GPU port's GL stage, 2026-11-25; [a56-gpu.md](a56-gpu.md) 4a) on the A56's accelerator: `IOGLESBundleName` `OneiOSRadeonGL` (the A56's OpenGL ES, `userland/metal-amd/gl`) for every process instead of `AppleMetalGLRenderer`, and the `oneios-gpu-amd-cpu` processes see it, so backboardd's CoreAnimation composites on OpenGL ES (no Metal device: its GL renderer). xnuhost adds it with `oneios-gpu-amd=1` when the gpuaddon carries `OneiOSRadeonGL.bundle`; `=0` or not given: as before. Rule: `gpu/OneiOSGpuChoice.h` `oneios_gpu_gles_bundle_for`, `oneios_gpu_cpu_hides` (`test_choice.c`). No effect on the Adreno accelerator |
 
 **How iOS finds the plug-in (`0031-gpu-addon-mount.patch`).** Metal loads
 `/System/Library/Extensions/<MetalPluginName>.bundle`. That folder is on the sealed system volume, so UniXNU's
@@ -1475,6 +1476,15 @@ off in the root, is not taken: a fresh 20F66 Data store has the switch off alrea
 **The proof on the A56:** `ios16: 1 text fixup(s) added: ...` and `text fixups: 3 for /chosen text-fixups`, the kernel's
 `text-fixup: dyld_shared_cache_arm64.07+0xa162c (8 bytes) applied`, and with Bold Text on no `trap ... pc 0x0 lr
 0x1c261c58c` (the lr moves with the slide: `CI::GLContext::init + 0xcc`) and no `crashed: SpringBoard`.
+
+**With the A56's OpenGL ES** ([a56-gpu.md](a56-gpu.md) 4a, 2026-11-25) the fixup is left out. That holds when xnuhost
+picked the amdgpu renderer, found `OneiOSRadeonGL.bundle` in the same gpuaddon, and the guest's boot arguments say
+`oneios-gpu-amd-gl=1` (`config::ios16_gl_driver`). The bundle answers CoreImage's EAGLContext: on radeonsi, or on
+softpipe when radeonsi does not open in that process (every process but backboardd). So CoreImage draws Bold Text's
+styled images instead of a blank bitmap: the full fix this section names. Its line is `ios16: CoreImage's GL fallback
+fixup left out: oneios-gpu-amd-gl=1, OneiOSRadeonGL answers its EAGLContext`. A hand-written `oneios-gpu-amd-gl=1`
+without the bundle keeps the fixup (the kernel would name a bundle that is not there). `oneios-gpu-amd-gl=0` in the
+conf keeps it too. Test: `ios16_coreimage_fixup_is_left_out_only_with_the_a56_gl_driver`.
 
 ## 6. Not done
 
