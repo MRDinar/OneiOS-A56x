@@ -695,7 +695,7 @@ section 9.
 ```sh
 oneios-tool ios sign [--identifier ID] [--entitlements PLIST] [--json] FILE...   # ad hoc, in place; CDHASH ARCH pages=4096 ID FILE
 oneios-tool ios macho-check [--tbd DIR | --sdk] [--local DYLIB]... [--arch A] FILE...  # will it load in the guest? exit 1 if not
-oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd)
+oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd; an arm64 cache, iOS 16.5's, gives arm64-ios stubs)
 oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            # two stub trees, by what the linker reads
 oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
 oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list, turnip-idle-bo-cache.patch in the Mesa list, the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
