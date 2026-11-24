@@ -1,0 +1,203 @@
+# S24 Ultra: frame rate, CPU heat and the camera (branch fix/s24-fps-heat-camera)
+
+The owner's goal of 2026-11-25: on the Galaxy S24 Ultra (iOS 27.0.1 24A446) raise Metal compositing to 60 fps, then
+120 (today 40-58 fps on the idle lock screen, 20-32 in launches and Control Center, about 10 fps in app open and close
+animations); bring the CPU down from every cluster at its top clock and a 92-95 C SoC; and get a camera preview that is
+not black. Use what other ports on the iOSOnAnd tracker already solved.
+
+## State at the hand-off of 2026-11-25
+
+No code changed yet on this branch: this file holds the findings so far. Nothing built, nothing booted.
+
+### Our own log: why the CPU is hot (read, `out/session-logs/2026-11-24-mac-gpumem/live.log`)
+
+Kernel.kc `e79886d9`, runtime 0.1.21-dev `74c56ef`, takeover mode, 5376 MiB of guest RAM. Line numbers are of that
+file.
+
+- **The guest runs out of free memory, and GPU blobs are most of what is wired.** `oneios-mem: free` falls from 3928
+  MiB (line 915) to 23-36 MiB from +97 s (lines 2109, 2932, 4392) and 1 MiB (4080); `wired` 2173-3105 MiB of 5129. The
+  `oneios-wired` line counts `GPU blobs: own 1476, imported 304` (2425) up to `own 1859, imported 624` (4087), that is
+  about 2-3 GiB of GPU blobs. xnuhost's own count agrees: `gpu: 10 s: host blobs 2773 (2542 MiB)` (4093).
+- **That pressure is what drives the unmap storm and the CPU.** With free near 0 the pageout and the compressor run all
+  the time: `oneios-perf: kernel_task ... VM_compressor 3746618 VM_compressor 3527132 ... VM_pageout_scan 2081473` us
+  per 30 s (2623), `compressor 253 MiB holding 899 MiB` (4080). The pageout's reference clears unmap pages that are
+  touched again at once: per 30 s 661,738-1,091,450 faults go to vm_fault (26-38 s of CPU, more than one vCPU), nearly
+  all `refilled` (a page that was there; 2392, 4361). The 11-12 M unmaps per 30 s of the earlier periods are this
+  plus the shared-region fan-out that hosted 0101 narrows (kernel README "0101"). 0101 makes each such fault and
+  flush cheaper; it does not remove the pressure. The host: 680-724% of 800, xnuhost 300-409%, SoC 93.8-95.7 C, every
+  policy at its top clock 95-100% of the time (lines 1435-3074).
+- **Who holds the GPU memory.** `oneios-gpu-clients` (2776): backboardd 1080+395 MiB, WebKit's GPU process 376+300,
+  WidgetRenderer 204+31, the posters 73+52 each. backboardd's own blobs at the end: 755 MiB (`oneios-gpu-kinds`, 4640);
+  its metal2vulkan census `GM p 13/440M u 264M e 0/0M d 8/246M s 0/0M` (4660): 440 MiB of pooled blocks with only 264
+  MiB placed in them (176 MiB of room, 40%), and 8 dedicated blocks of 246 MiB (about 30 MiB each: screen-sized render
+  targets, a guess); 976 blobs under 1 MiB. So about 176 MiB of backboardd alone is room in 64 MiB pooled blocks.
+- **The posters restart.** MercuryPosterExtension pids 247, 409, 420, 429, 436; CollectionsPoster 425, 428, 451, 461,
+  490; AegirPoster, WeatherPoster, RhizomePoster likewise, with ReportCrashService and osanalyticshelper running beside
+  them (`oneios-cpu-sys` lines 1706-4617). Who ends them is not in this log: hosted 0100's `oneios-kill` line (on main,
+  not booted) names the killer and the reason in the next boot. 0098 (`oneios-disable-allowed`) stops
+  osanalyticshelper and the other disabled jobs that ran.
+- **The host's own memory is tight too.** `host MemAvailable 1942 MiB of 11084` (2007, 2856); xnuhost's trim then ran
+  under pressure (idle time 2 s): `tasks: trim: 60 s: +797 trimmed (+796 under pressure) ... the unmaps 14020 ms`
+  (line after 2370). The refaults it causes are the cheap kind (`filled from the tables`, about 3 us each), so it is not
+  the main cost, but 14 s of unmaps a minute on the trim thread is not nothing.
+- **Frames.** `display: 10 s:` 2-454 frames per 10 s, the helper's answer 5-18.5 ms mean, max 25-52 ms (lines
+  1430-3681). The guest's frame is 1440x3120 at @3x (line 32): every full read is 18 MB on the CPU.
+
+### Where the fixes on main stand (not booted)
+
+hosted 0098 (`oneios-disable-allowed`; that log's kernel `e79886d9` had none of 0098, 0100, 0101), 0100 (`oneios-kill`, logging), 0101 (`oneios-nested-exact`,
+`oneios-upgrade-flush`, `oneios-fill-fast-fault`), xnuhost `timer-coalesce`, the Metal plug-in's `oneios-pool-cut`,
+`oneios-idle-spares`, `oneios-bo-cache-idle`, the display helper's two threads (`display-post=apart`), the camera's
+`ModuleInfo` sensor ID, format rule and front-camera formats (`a5c244d`), hosted 0090. All in the integration build
+(docs/switches.md "Tests"), handed to the Mac as `out/handoff/integration2-d3b802f/`, not booted.
+
+### What the leads gave
+
+See "The leads" below: the three research helpers' reports of 2026-11-25, each stopped early at the hand-off.
+
+### What is left, and the next step
+
+1. Boot the integration build on the S24 first: it carries every fix above. Read `frame: 10 s`, `display: 10 s`,
+   `thermal: 30 s`, `oneios-perf:   pmap:` and `0101:`, `oneios-kill`, `oneios-mem: free`, the `GM` rows, and the
+   camera's `ONEIOS CAMERA`, `oneios-camera` and CMCapture lines in `phone pull-log`.
+2. CPU and heat (a fix, next): take the memory pressure away at its source. Candidates, in order: (a) metal2vulkan's
+   pooled block room (backboardd's 176 MiB of 440 unplaced: a smaller top block size or less room kept ahead, behind a
+   switch; the plug-in's note that a 16 MiB block hung the render server on the iPadOS guest must be checked first);
+   (b) the render server's screen-sized dedicated targets; (c) the guest's RAM size in takeover (5376 MiB with host
+   MemAvailable at about 2 GiB: the owner's fixed-RAM rule, `ram-session-reserve`).
+3. Frame rate: the CPU copy of up to 18 MB per frame (docs/gpu.md 2.5 item 2) is the step the leads remove (a
+   zero-copy panel pool); see the leads below for what it would take in our display path.
+4. Camera: after the boot of step 1, the first stop in the capture plug-in's or CMCapture's lines.
+
+## The leads
+
+### Camera (research helper, stopped early: the leads Jesvi-iOS, darwin-lisa, ios-redfin, hakios-metal and iOSPlus10's camera notes are NOT read yet)
+
+From our own logs and code:
+
+- **No frame was ever asked for in the gpumem boot.** `camera#0 q0` moves only in the first `virtio: 60 s` line (+2:
+  the camera list at the device's creation); no later line lists `camera#0`, also while the Camera app was open
+  (+280-400 s). `ONEIOS CAMERA: user client opened by cameracaptured` (108506, 108746, 108838) is a device creation
+  (`cameras_there()`), not a stream start. So the graph never called the stream's Start (`OneiOSCaptureDevice.c`
+  `stream_start` -> `worker`, about lines 1249-1345): the preview is black before frame delivery. cameracaptured ran at
+  143-158% CPU meanwhile. That boot has no iOS log (`phone pull-log` was not run), so its plug-in lines are missing.
+- **The Metal plug-in failed CMCapture's compute pipelines on time.** The heap fix works (`problem heap options
+  0x600... made without them`, no `heap refused`), but with the app open: `oneios-gpu-text: cameracaptured[62] problem
+  compute pipeline ...: Compile(Budget(Time))` five times and more (function constants `kMotionThreshold`,
+  `kDirection_float`, `kIIRUpdateCoefficient`: temporal noise reduction or stabilisation kernels, which can be in the
+  preview graph: a guess). `Budget(Time)` is metal2vulkan's 20 s per compile
+  (`external/metal2vulkan/crates/metal2vulkan-air/src/budget/mod.rs` `STANDARD_DEADLINE`, through `pipeline/options.rs`
+  and `sources.rs`). Guess, not checked: the 20 s also counts the time a compile waits for a turn
+  (`pipeline/budget.rs`).
+- **The boot of 2026-11-23 13:45 (its iOS log, `~/handoff-2026-11-23b/session-logs/boot-jobs/ioslog.txt`)** still has
+  `Fig assert: "function" ... function is nil (FigMetalContext.m:565)` four times with no `missing NBLibrary` line
+  (so not the selector fixed then), `binary archive refused: InvalidFile` 19 times, `Failed to prewarm PTRenderPipeline
+  (-1)`. Those are Portrait and SDOF, not the preview.
+- **What could still keep it black after main's fixes (guesses from the code, ranked):** (1) the graph never reaches
+  Start (failed pipelines make a node fail to prepare); (2) `stream_set_property` (`OneiOSCaptureDevice.c` about
+  1092-1131) takes the handler only from `VideoOutputHandlers`' `PixelBufferHandler` and the outputs only as
+  `PrimaryScaler`, `SecondaryScaler`, `StillImage`: iOS 16's names, never seen on iOS 27; (3) the pool key `BufferPool`;
+  (4) frames carry only PortType metadata; (5) the time base of `f->time` against `mach_absolute_time` (not checked in
+  `drivers/camera`); (6) `all_streams[]` is overwritten at each of the about eight device creations a boot.
+- **Fixes to make (ranked):** (1) the compile deadline from when the compile runs, not from its queueing, or a longer
+  budget for clients other than the render server (`userland/metal/rt/bridge/src/abi/shader.rs` `budget()`, the
+  runtime's `pipeline/options.rs`, `sources.rs`), with a lasting line per failed pipeline (function, constants, wait
+  and compile time); (2) NBLibrary's `newFunctionWithName:constantValues:*` says once per name why it gave nil, then
+  fix that cause; (3) read in the 24A446 cache what BWFigCaptureStream sets for `VideoOutputHandlers` and
+  `VideoOutputConfigurations` and take those names; (4) a lasting session-progress line in the plug-in (Start, Stop,
+  `FormatIndex`, each output configured, enabled, handled); (5) fuller per-frame metadata. Proof lines: no
+  `Compile(Budget(Time))` for cameracaptured, no `function is nil`, `the graph starts the stream`, `the first frame`,
+  `PrimaryScaler: the first picture given`, `camera#0 q0 +N` in `virtio: 60 s` with the app open.
+
+### Metal and frame rate (research helper, stopped early: only qiumochen/UniXNU-zizhan was read)
+
+Licences (from their LICENSE and NOTICE files; GitHub detects none): UniXNU-zizhan, UniXNU-peridot, UniXNU-sheng,
+UniXNU-uke "BSD-2-Clause-Patent" (UniXNU contributors); oosexgang/hakios-metal MIT; rafsanbasunia/ios-garnet APSL 2.0
+for XNU, MIT/Apache/BSD third-party parts, Linux ath11k for Wi-Fi (read its THIRD_PARTY_LICENSES.md before taking a
+file). The tracker files the Poco F6 120 fps claim under `slayedkaito/xnu-kernel-peridot-amiaxf` (branch
+peridot-2.3.4, on hakios-metal), not hoshikv/UniXNU-peridot. zizhan runs iPadOS 18.7.10 (22H374) with its own kernel
+GPU driver and DPU scanout, and measures "moving fps" of a synthetic swipe, not the panel's.
+
+- **"g298" is zizhan's GPU test round 298, not a patch.** The change in it: commit `42629e5`, `userland/ui_compat18.c`
+  `link_with`, `display_link_rates()`, ported from hakios `7caa457` (claimed right swipe 78 -> 115 fps). It hooks
+  `+[CADisplayLink displayLinkWithTarget:selector:]`, `-setPreferredFramesPerSecond:` and
+  `-setPreferredFrameRateRange:`; for a link whose target is `UIKit.InProcessAnimationManager` (or
+  `UIViewInProcessAnimationManager`) the rate asked (UIKit asks 20..120, 30 preferred) becomes 0, the panel's rate.
+  Switch `pong_dl_full=0`. Their result (`docs/evidence/2026-11-04-g298-displaylink.txt`): moving fps 56.7-58.4 -> 95.3,
+  the frame interval p50 after a release 33.2 -> 8.3 ms. Their reading (`docs/progress/2026-11-01-120hz-and-cadence.md`):
+  most slow frames were CoreAnimation itself choosing 60/40/30 Hz for light animations (GPU 0.3-2.5 ms a frame), and
+  telling CA the panel is 60 Hz made it worse (44.6 -> 40.3). **Ours:** not present, and our guest's vsync reports a
+  24..120 Hz range (`sheng-vsync=120`, `getRefreshAttributes`), which invites the same choice. The hook needs code in
+  SpringBoard and the apps; the Metal plug-in's constructors (`DisplayWide.inc`, `BacklightMode.inc`, appended in
+  `userland/metal/build.sh stage`) are the nearest injection we have (a guess that every UI process loads it).
+  `sheng-vsync-fixed=1` (an existing switch) is worth one boot beside it.
+- **ASTC on** (`73df2a4`, `e3be892`, `bf7d7f2`, `636bf6f`): MobileGestalt answers DeviceSupportsASTC true in
+  SpringBoard and backboardd, so CA uploads ASTC images to the GPU instead of decoding them in ImageIO; NativeMetal's
+  frontend got `NBBlockTextureLayout` (compressed, mip and array textures, copied with bounds checks). Their result:
+  moving fps 46.9 -> 88.6. **Ours:** forced off in `runtime/loader/src/machine.rs` `set_featuresets` (APPLE2 and MTL2,2
+  dropped: SplashBoard's snapshots in AGX's ASTC layout). To do: port `NBBlockTextureLayout` into our staged
+  `NativeBridgeMetalFrontend.mm` (a patch in userland/metal), keep APPLE2 and MTL2,2 behind a loader switch.
+- **Swap-fence snapshot and the zero-copy panel pool** (`49dee66`, their XNU patch `0039-zizhan-swap-fence-snapshot`,
+  `drivers/PongAdreno/ZizhanZcFence.h`, `PongAdrenoScanout.cpp zcFlip`, `drivers/PongPower/ZizhanPanelPool.h`): the
+  flip waited on a "latest submitted" fence that moved with the next frame (up to 42 ms); now the fence taken at the
+  swap. The 128 MiB panel pool holds 1 copy buffer and 6 zero-copy slots (`pong_dpu_bufs=1`). open_zoom 53.2 ->
+  58.6-59.8 fps. **Ours:** the DPU zero-copy is what our display helper's CPU copy is (`runtime/display`
+  `Snapshot::update`, 5.5-6.8 ms a frame; docs/gpu.md 2.5 item 2). Not read yet: which fence our guest display waits on
+  before its flush (`OneiOSDisplay.cpp`). **A caution:** zizhan rejected `pong_zc_async=1` (the swap answered before
+  the latch): it took vsync pacing from backboardd, frames over 25 ms 7% -> 31%. Our `display-post=apart` is the same
+  shape: compare the `frame:` line's interval p95 against `display-post=serial` in the first boot.
+- **768 MiB BO pool** (`e1bb22d`, `PongAdrenoCp.cpp`): BO allocation in a full pool took 40-77 ms inside open and close
+  animations; 1024 MiB removed every fallback. **Ours:** blobs over guest pages, Turnip's cache and metal2vulkan's
+  pools; we have no figure for blob creation time during an app open.
+- **WebKit's GPU process 256 MiB window** (`a3e672b`): a correctness fix (Safari's texture refusals); ours is drm2kgsl
+  0004. **`636bf6f`** reads boot-args once per process (`__sysctl` was SpringBoard's largest main-thread call at app
+  open).
+- **120 Hz panel:** zizhan switched the panel's DSI timing for real (60.5 -> 120.2 Hz). Their next step, and one for
+  us: lock CA's vsync tick to the panel's real TE (our guest tick is a free timer; the helper's `setFrameRate` is a vote).
+
+Ranked for us: (1) the display-link rate filter for UIKit's in-process animations (low cost, behind a switch); (2)
+ASTC on (medium, behind a loader switch, needs screenshots); (3) the guest's vsync locked to the helper's present
+times over `display.sock` (medium); (4) no CPU copy in the display path (high); (5) a lasting blob/BO creation time in
+`gpu: 10 s host`. Not read: hoshikv/UniXNU-peridot, slayedkaito/xnu-kernel-peridot-amiaxf, ios-garnet dev,
+UniXNU-sheng and UniXNU-uke (patch lists against userland/metal/patches and rt/patches), iOSPlus10 origin/main, hakios
+`7caa457`, the tracker's `/api/devices/<slug>/gpu`. The clones were in this session's scratchpad (temporary).
+
+### CPU and heat (research helper, stopped early: no lead repo read)
+
+- **That log ran none of main's CPU fixes.** Kernel.kc `e79886d9` is older than 0098, 0100 and 0101, and the runtime's
+  switches line (21) has no `timer-coalesce`.
+- Clocks follow load; no clamp holds them up: WALT's tunables (lines 85-88) hispeed_load 90, boost 0, and every policy
+  is 85-95% busy. The vCPUs do idle (lines 809-816: 60-74% idle early); under load 0% idle and 28-44% "waited for a
+  host CPU" (1855-1862, 2311-2318, 4277-4284). The thermal state "heavy" at SoC 96.5 C (1401, 1435); iOS "trapping"
+  by the case at 46.2 C (3580); our CPU step acts only at a 50 C case, so it never ran.
+- Who burns it: the posters (new pids every 7-22 s, 38-206% each, 3123-4616), osanalyticshelper 31-85% (0098's
+  target; over its 15 MB limit at 3554, 4179), four ReportCrashService after two `brk #1` traps (1742, 2842),
+  cameracaptured and the Camera app left open (143-158% and 89-132%, 3843-4104), backboardd 85-139% animating,
+  kernel_task 50-112%; VM_pageout_scan 14.7-18.1 s per 30 s (2877, 3087, 3347). KGSL imported_mem 2.88 GB (3077);
+  jetsam 29 kills by the end, 27 idle-exit (4714).
+- Rates: xnuhost task traps 51,404-89,505/s (1409, 1841, 3029), `task_unmap 11647376 queued` (3029); pmap unmaps
+  11.1-12.4 M against 0.84-0.97 M maps per 30 s, 11.86 M of them from 42,548 shared-region flushes (about 280 tasks
+  each, 3084: 0101's target); madvise 59,688 calls at 174 us mean (10.4 s per 30 s), backboardd 13,532 at 244 us
+  (3085, 3096); `made runnable -> IPI sent` 33 ms mean (3092); 128,266 sched_setaffinity per 30 s, 41,146 across E
+  and P (3031).
+- The posters' killer is not in that log (no trap of theirs, no jetsam kill before the loop). The one clue:
+  `oneios-gpu-text: MercuryPosterExt[408] no-device device: OutOfMemory(Device)` (3027), at the loop's start. 0100's
+  `oneios-kill` will name it.
+- Leads: Axiang-dev/UniXNU-caihong is archived and stops at the shared cache (no user space); the tracker's houji is
+  Kizashi3/UniXNU-houji and its sheng 111027866/UniXNU-sheng; no port on the tracker claims a thermal fix that carries
+  over. They run XNU natively or in a VM, where a reference clear is a cheap access-flag fault and an IPI a microsecond,
+  so their pmap and scheduler settings do not map one to one (unverified).
+- Ranked fixes: (0) boot main first; (1) a modified-bit clear write-protects the host page instead of unmapping it
+  (docs/gpu.md 2.5 item 4(b), a new host op such as a protect order, kernel patch under XNU_HOSTED; switch idea
+  `oneios-refmod-protect`; proof: madvise's mean down from 174 us, backboardd's own unmaps falling); (2) a
+  reference-only clear of a shared-region page keeps the host mapping (switch idea `oneios-ref-keep=nested`; proof:
+  VM_pageout_scan under 1 s per 30 s); (3) the posters' loop at its cause once `oneios-kill` names it (if it is
+  OutOfMemory(Device), the GPU memory above); (4) fewer cross-cluster moves at a release (`task.rs`, a guess); (5) the
+  thermal step from "heavy" by the SoC (the owner's call: the all-cores rule).
+
+### The next step
+
+Boot the integration build (main) on the S24 with `phone pull-log`, then in this order: the memory pressure (the GPU
+blobs and metal2vulkan's block room: it feeds the pageout, the unmap storm and probably the posters'
+OutOfMemory(Device)), the display-link rate filter and ASTC for the frame rate, and the camera's first stop in its
+lines (compile budget, the output names of 24A446).
