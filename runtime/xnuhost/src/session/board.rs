@@ -543,6 +543,11 @@ impl Session {
                             // render server composites on it; without it, CPU composition as before.
                             let addon = addon_read.as_ref().and_then(|a| a.as_deref());
                             match gpu3d_amdgpu::gl_in_addon(addon, build.as_deref()) {
+                                // a kernel that does not read the switch (an A56 kernel before 5966e71ce2aa) would
+                                // name no GL driver for SpringBoard, whose CoreImage then needs the fixup: no GL
+                                Ok(_) if !gpu3d_amdgpu::kernel_knows_gl(&image) => logi!(
+                                    "gpu: OpenGL ES: the kernel does not read oneios-gpu-amd-gl (an A56 kernel before 5966e71ce2aa): Metal alone, CPU composition, the CoreImage fixup kept"
+                                ),
                                 Ok(gl) if add_boot_arg(&mut config.boot_args, "oneios-gpu-amd-gl=1").is_ok() => {
                                     gl_bundle = true;
                                     logi!(

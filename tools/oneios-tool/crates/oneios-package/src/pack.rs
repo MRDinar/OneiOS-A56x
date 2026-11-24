@@ -227,6 +227,13 @@ pub const METAL_BUNDLE: &str = "lib/guest/NativeAdrenoMetal.bundle";
 pub const METAL_RECORD: &str = "lib/guest/NativeAdrenoMetal.build.json";
 pub const CAMERA_DIR: &str = "lib/guest/camera";
 const CAMERA_PLUGIN: &str = "H9ISP.mediacapture";
+/// The Galaxy A56's GPU plug-ins for iOS 16.5 (docs/a56-gpu.md 6): the Metal plug-in and its OpenGL ES, each with its
+/// build record (`oneios-tool ios bundle-record`), runtime.json "metal_a56". The phone builds the image's
+/// kernel.kc.gpuaddon of them (Update the kernel, Make iOS image: oneios-imagebuild a56gpu).
+pub const A56_METAL_BUNDLE: &str = "lib/guest/OneiOSRadeonMetal.bundle";
+pub const A56_METAL_RECORD: &str = "lib/guest/OneiOSRadeonMetal.build.json";
+pub const A56_GL_BUNDLE: &str = "lib/guest/OneiOSRadeonGL.bundle";
+pub const A56_GL_RECORD: &str = "lib/guest/OneiOSRadeonGL.build.json";
 
 /// The build record of the bundle that holds `relative` (`lib/guest/NAME.bundle/FILE` -> `lib/guest/NAME.build.json`,
 /// `userland/metal/build.sh`'s), and FILE; None outside a bundle.
@@ -301,7 +308,7 @@ fn own_guest_code(stage: &Path, relative: &str) -> Result<oneios_tweaks::macho::
 /// runtime.json's "metal" and "camera": the guest plug-ins the package carries for the phone's image build (None
 /// without them). The Metal bundle is taken whole or not at all: its executable, its `oneios-target` and the build
 /// record beside it, which names the same `<device> <build>`.
-fn guest_entries(stage: &Path, guest: &[(String, oneios_tweaks::macho::Slice)]) -> Result<(Value, Value)> {
+fn guest_entries(stage: &Path, guest: &[(String, oneios_tweaks::macho::Slice)]) -> Result<(Value, Value, Value)> {
     let mut metal = Value::Null;
     if stage.join(METAL_BUNDLE).exists() {
         let target_path = stage.join(METAL_BUNDLE).join("oneios-target");
@@ -334,7 +341,59 @@ fn guest_entries(stage: &Path, guest: &[(String, oneios_tweaks::macho::Slice)]) 
         entry.set("cdhash", slice.cdhash.as_str());
         camera = entry;
     }
-    Ok((metal, camera))
+    let metal_a56 = a56_entry(stage, guest)?;
+    Ok((metal, camera, metal_a56))
+}
+
+/// runtime.json's "metal_a56" (null without the bundles): the A56's Metal plug-in whole (OneiOSRadeonMetal,
+/// oneios-target, its record naming the same target), its OpenGL ES bundle the same way when it is there, and the
+/// CDHashes of every Mach-O of both (sorted): what the image's owner-trust.json gets with the addon.
+fn a56_entry(stage: &Path, guest: &[(String, oneios_tweaks::macho::Slice)]) -> Result<Value> {
+    if !stage.join(A56_METAL_BUNDLE).exists() {
+        if stage.join(A56_GL_BUNDLE).exists() {
+            return refused(format!("{A56_GL_BUNDLE}: the A56's OpenGL ES without its Metal plug-in ({A56_METAL_BUNDLE})"));
+        }
+        return Ok(Value::Null);
+    }
+    let one = |bundle: &str, record_path: &str, executable: &str| -> Result<(String, Value)> {
+        let target_path = stage.join(bundle).join("oneios-target");
+        if !stage.join(bundle).join(executable).is_file() || !target_path.is_file() {
+            return refused(format!("{bundle}: not a whole bundle ({executable} and oneios-target)"));
+        }
+        let target = io(std::fs::read_to_string(&target_path), &target_path)?.trim().to_string();
+        let record = load_record(stage, record_path, bundle)?;
+        if record.get("target").and_then(Value::as_str) != Some(target.as_str()) {
+            return refused(format!(
+                "{bundle}: oneios-target says {}, its record {record_path} {}",
+                repr_str(&target),
+                record.get("target").map_or("None".to_string(), repr_value)
+            ));
+        }
+        let mut entry = Value::dict();
+        entry.set("bundle", bundle);
+        entry.set("record", record_path);
+        Ok((target, entry))
+    };
+    let (target, metal) = one(A56_METAL_BUNDLE, A56_METAL_RECORD, "OneiOSRadeonMetal")?;
+    let gl = if stage.join(A56_GL_BUNDLE).exists() {
+        let (gl_target, gl) = one(A56_GL_BUNDLE, A56_GL_RECORD, "OneiOSRadeonGL")?;
+        if gl_target != target {
+            return refused(format!("{A56_GL_BUNDLE}: for {}, the Metal plug-in for {}", repr_str(&gl_target), repr_str(&target)));
+        }
+        gl
+    } else {
+        Value::Null
+    };
+    let (m, g) = (format!("{A56_METAL_BUNDLE}/"), format!("{A56_GL_BUNDLE}/"));
+    let mut cdhashes: Vec<String> =
+        guest.iter().filter(|(r, _)| r.starts_with(&m) || r.starts_with(&g)).map(|(_, s)| s.cdhash.clone()).collect();
+    cdhashes.sort();
+    let mut entry = Value::dict();
+    entry.set("target", target);
+    entry.set("metal", metal);
+    entry.set("gl", gl);
+    entry.set("cdhashes", cdhashes);
+    Ok(entry)
 }
 
 /// `fnmatch.fnmatch(name, pattern)` for a pattern whose only wildcard is `*`.
@@ -365,6 +424,8 @@ struct Checked {
     kernel: Option<Value>,
     metal: Value,
     camera: Value,
+    /// runtime.json "metal_a56" (the Galaxy A56's GPU plug-ins; null without them)
+    metal_a56: Value,
 }
 
 fn checked(stage: &Path) -> Result<Checked> {
@@ -395,13 +456,13 @@ fn checked(stage: &Path) -> Result<Checked> {
             return refused(format!("{relative}: the name matches {pattern} (Apple firmware)"));
         }
     }
-    let (metal, camera) = guest_entries(stage, &guest)?;
-    Ok(Checked { kernel, metal, camera })
+    let (metal, camera, metal_a56) = guest_entries(stage, &guest)?;
+    Ok(Checked { kernel, metal, camera, metal_a56 })
 }
 
 /// STAGE/runtime.json: every file with its size, SHA-256 and mode (which is set to 0755 or 0644 on the way).
 pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork: &str, placeholder: &str) -> Result<()> {
-    let Checked { kernel, metal, camera } = checked(stage)?;
+    let Checked { kernel, metal, camera, metal_a56 } = checked(stage)?;
     let mut entries = Value::list();
     let mut has_xnuhost = false;
     for relative in files_of(stage)?.into_iter().filter(|r| r != MANIFEST) {
@@ -438,6 +499,7 @@ pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork
     document.set("kernel", kernel.map(|record| kernel_entry(&record)));
     document.set("metal", metal);
     document.set("camera", camera);
+    document.set("metal_a56", metal_a56);
     document.set("files", entries);
     let path = stage.join(MANIFEST);
     io(std::fs::write(&path, json::dumps(&document, Some(2), false) + "\n"), &path)?;

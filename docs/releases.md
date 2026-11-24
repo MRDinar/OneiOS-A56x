@@ -38,6 +38,7 @@ window) around a ustar archive of regular files, `runtime.json` first, no top fo
 | `scripts/*` | `runtime/scripts/*`, when there are any |
 | `kernel/xnu.macho`, `kernel/xnu.macho.build.json` | the XNU that `kernel/` builds from Apple's open source, and its build record. Only when a kernel was built |
 | `lib/guest/NativeAdrenoMetal.bundle/*`, `lib/guest/NativeAdrenoMetal.build.json`, `lib/guest/camera/H9ISP.mediacapture`, `lib/guest/NOTICE` | the guest's own iOS plug-ins (since 2026-11-24, when `runtime/package.sh` is given `METAL_DIR` and `CAMERA_DIR`; `scripts/release/release.sh` builds them from HEAD): the Metal plug-in as `userland/metal/build.sh` leaves it, with its build record (target, CDHashes, the sources' pins), and the capture plug-in. Our builds from source, linked against stubs of the SDK, signed ad hoc; no Apple code (the check below). The phone's Make iOS image seeds them into the image it makes when the bundle's `oneios-target` is that image's ([image-format.md](image-format.md), "The Metal plug-in of an image made on the phone"). `lib/guest/NOTICE`: the licences of the sources (metal2vulkan GPL-2.0-or-later or LGPL-3.0-or-later, Mesa MIT and the rest of its LICENSING.md, NativeMetal, NativeAdreno, AdrenoPM4 MIT, Droid-VM-UniXNU, NativeMobileDisplay BSD-2-Clause-Patent; their texts from `external/`) and where their source is (URL and commit). About 36 MB unpacked |
+| `lib/guest/OneiOSRadeonMetal.bundle/*`, `lib/guest/OneiOSRadeonGL.bundle/*` and their `.build.json` | the Galaxy A56's GPU plug-ins for iOS 16.5 (since 2026-11-25, when `runtime/package.sh` is given `METAL_AMD_DIR`, step 3c; `scripts/release/release.sh` builds them from HEAD, or `--metal-amd-dir DIR`, or leaves them out with `--no-metal-amd`): the Metal layer of Jesvi-iOS on Mesa radeonsi and the OpenGL ES layer (iOSPlus10's NegroniGL), each with its build record (`oneios-tool ios bundle-record`: target `iPhone10,3 20F66`, the CDHash of each Mach-O, the sources' pins). Beside the Adreno plug-in, never instead of it; checked by the same rule (our own ad hoc signed iOS code only, each file the CDHash its record lists). `lib/guest/NOTICE` adds Mesa's, Jesvi-iOS's (MIT), iOSPlus10's NegroniGL (MIT) and libdrm 2.4.133's (MIT) notices and sources. On the phone, Update the kernel (and Make iOS image) puts them into an iOS 16.5 set as `kernel.kc.gpuaddon` with their CDHashes in its `owner-trust.json` ([a56-gpu.md](a56-gpu.md) 6). About 37 MB unpacked |
 | `NOTICE`, `LICENSE` | licences; with a kernel, the APSL notice (`kernel/NOTICE.kernel`) |
 
 ## What is never in a release
@@ -142,7 +143,10 @@ package was built from; `dirty` when `runtime/` or `kernel/` had uncommitted cha
 raises it when the session ABI or the package layout changes), `placeholder` (true while `bin/xnuhost` is the
 placeholder), `kernel` (null without one), `metal` (`{"bundle": "lib/guest/NativeAdrenoMetal.bundle", "record":
 "lib/guest/NativeAdrenoMetal.build.json", "target": "iPhone18,2 24A446", "cdhashes": [...]}`, null without one) and `camera`
-(`{"path": "lib/guest/camera", "cdhash": "..."}`, null without one): what the phone's `serve make-image` takes. `files` lists every file except `runtime.json`.
+(`{"path": "lib/guest/camera", "cdhash": "..."}`, null without one): what the phone's `serve make-image` takes; and `metal_a56`
+(since 2026-11-25: `{"target": "iPhone10,3 20F66", "metal": {"bundle": "lib/guest/OneiOSRadeonMetal.bundle", "record": ...},
+"gl": {"bundle": "lib/guest/OneiOSRadeonGL.bundle", "record": ...}, "cdhashes": [...]}`, null without them): the Galaxy A56's
+GPU plug-ins, of which the phone makes an iOS 16.5 image's `kernel.kc.gpuaddon` ([a56-gpu.md](a56-gpu.md) 6). `files` lists every file except `runtime.json`.
 
 ## Versions
 
@@ -593,6 +597,14 @@ Options:
   iOS cross toolchain and the guest's stubs ([building.md](building.md) section 9: `scripts/setup/ios-toolchain.sh`
   says "ok"); on the build laptop it took 7 minutes on 2026-11-24 with `out/metal` from an earlier build. A runtime
   that CI builds (`release.yml`) has no `METAL_DIR`, so no Metal plug-in: publish runtimes from the build machine.
+- The Galaxy A56's GPU plug-ins (since 2026-11-25; [a56-gpu.md](a56-gpu.md) 6) go beside the Adreno one: built from HEAD
+  in the runtime lane (`userland/metal-amd/build.sh all` and `air/build.sh plugin` with `METAL_AMD_OUT=OUT/guest-a56`: Mesa
+  radeonsi, the Metal and the OpenGL ES layers; about 10 minutes and 1.5 GB the first time; it needs `out/ios16-tbd`,
+  `external/mesa-droidvm` and `external/Jesvi-iOS`), or `--metal-amd-dir DIR` packs ones built before (userland/metal-amd's
+  output folder, `out/metal-amd`: `OneiOSRadeonMetal.bundle`, `gl/OneiOSRadeonGL.bundle`, `libdrm-2.4.133/`), or
+  `--no-metal-amd` leaves them out (an A56 then stays on 2D). The lane checks `runtime.json`'s `metal_a56` and the notes
+  name its target and CDHashes. Not run as a whole release yet: the package with them is tested by
+  `runtime/package/test.sh` (part 6, made-up signed Mach-Os), and `--metal-amd-dir out/metal-amd` is the tested path.
 
 The script refuses:
 - uncommitted changes to tracked files, in OneiOS or in `app/`;
