@@ -465,6 +465,7 @@ impl Session {
         // gpuaddon carries the A56's Metal plug-in and the renderer's self-test passes (gpu3d_amdgpu::choose,
         // docs/a56-gpu.md 2); then the guest is told with oneios-gpu-amd=1 (K5).
         let mut gpu = None;
+        let mut gl_bundle = false; // the gpuaddon carries OneiOSRadeonGL and the amdgpu renderer was picked
         if pool_bytes != 0 {
             // The GPU's level and priorities (gpu3d_kgsl, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
             std::env::set_var("ONEIOS_GPU_LEVEL", config.gpu_level.as_str());
@@ -537,6 +538,28 @@ impl Session {
                                     "the command line's oneios-gpu-amd= is kept"
                                 }
                             );
+                            // OpenGL ES for CoreAnimation (docs/a56-gpu.md 4a): when the same gpuaddon carries the
+                            // A56's GL bundle, the kernel names it for every process (oneios-gpu-amd-gl=1) and the
+                            // render server composites on it; without it, CPU composition as before.
+                            let addon = addon_read.as_ref().and_then(|a| a.as_deref());
+                            match gpu3d_amdgpu::gl_in_addon(addon, build.as_deref()) {
+                                Ok(gl) if add_boot_arg(&mut config.boot_args, "oneios-gpu-amd-gl=1").is_ok() => {
+                                    gl_bundle = true;
+                                    logi!(
+                                        "gpu: OpenGL ES: the gpuaddon's {} ({}, {} files); {}",
+                                        gpu3d_amdgpu::GL_PLUGIN,
+                                        gl.target,
+                                        gl.files,
+                                        if config::amd_gl_on(&config.boot_args) {
+                                            "oneios-gpu-amd-gl=1: CoreAnimation composites on it"
+                                        } else {
+                                            "the command line's oneios-gpu-amd-gl= is kept: no GL, CPU composition"
+                                        }
+                                    )
+                                }
+                                Ok(_) => logi!("gpu: OpenGL ES: no room in the boot arguments for oneios-gpu-amd-gl=1"),
+                                Err(why) => logi!("gpu: OpenGL ES: {}: Metal alone, CPU composition", why),
+                            }
                             gpu = Some(g);
                         }
                     }
@@ -649,8 +672,18 @@ impl Session {
                 &mut config.text_fixups,
             );
         }
-        // iOS 16.5: CoreImage's OpenGL ES fallback answers no context (no GL driver here; docs/gpu.md).
-        if config.ios16_fixup {
+        // iOS 16.5: CoreImage's OpenGL ES fallback answers no context (no GL driver here; docs/gpu.md). Not with the
+        // A56's OpenGL ES (its bundle in this boot's gpuaddon and oneios-gpu-amd-gl=1 in the guest's boot arguments,
+        // docs/a56-gpu.md 4a): the bundle answers CoreImage's EAGLContext (on radeonsi, or on softpipe without it), and
+        // CoreImage draws instead of a blank.
+        if config.ios16_fixup && config::ios16_gl_driver(gl_bundle, &config.boot_args) {
+            if build == Some("20F66") {
+                logi!(
+                    "ios16: CoreImage's GL fallback fixup left out: oneios-gpu-amd-gl=1, {} answers its EAGLContext",
+                    gpu3d_amdgpu::GL_PLUGIN
+                );
+            }
+        } else if config.ios16_fixup {
             let added = config::ios16_fixups(build, &mut config.text_fixups);
             if added != 0 {
                 logi!(

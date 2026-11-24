@@ -2103,6 +2103,21 @@ pub fn scale_fixups(build: Option<&str>, scale: u32, list: &mut TextFixups) {
     }
 }
 
+/// Whether the guest's boot arguments give the Galaxy A56's processes OpenGL ES: oneios-gpu-amd-gl=1, the first
+/// oneios-gpu-amd-gl= word, as the kernel's PE_parse_boot_argn reads it (docs/a56-gpu.md 4a: the accelerator then names
+/// OneiOSRadeonGL as IOGLESBundleName for every process).
+pub fn amd_gl_on(boot_args: &str) -> bool {
+    boot_args.split(' ').find(|w| w.starts_with("oneios-gpu-amd-gl=")) == Some("oneios-gpu-amd-gl=1")
+}
+
+/// Whether this boot has the A56's OpenGL ES driver, so that CoreImage's GL fallback needs no fixup (ios16_fixups):
+/// xnuhost found OneiOSRadeonGL.bundle in the gpuaddon of the amdgpu renderer it picked (`bundle`) and the guest's
+/// boot arguments turn it on. A hand-written oneios-gpu-amd-gl=1 without the bundle keeps the fixup: the kernel would
+/// name a bundle that is not there, CoreImage would get no EAGLContext and die as before.
+pub fn ios16_gl_driver(bundle: bool, boot_args: &str) -> bool {
+    bundle && amd_gl_on(boot_args)
+}
+
 /// The text fixups an iOS 16.5 (20F66) userland needs (docs/gpu.md, "iOS 16.5 without a Metal device"). Read in
 /// 20F66's dyld_shared_cache_arm64 (out/ios16-cache, `oneios-tool sym find` / `sym callers`): CoreImage's
 /// -[CIContext initWithOptions:] makes a Metal context when MTLCreateSystemDefaultDevice has a device, and else falls

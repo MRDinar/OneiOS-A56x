@@ -1686,3 +1686,18 @@ fn ios16_fixups_only_for_20f66_once_and_switchable() {
     assert_eq!(IOS16_PRODUCT_ID.len(), 20);
     assert!(xnuloader::machine::serial_number_property(IOS16_SERIAL).is_some());
 }
+
+#[test]
+fn ios16_coreimage_fixup_is_left_out_only_with_the_a56_gl_driver() {
+    // the A56's OpenGL ES (docs/a56-gpu.md 4a): the first oneios-gpu-amd-gl= word decides, as PE_parse_boot_argn reads it
+    assert!(amd_gl_on("oneios-gpu-amd=1 oneios-gpu-amd-gl=1"));
+    assert!(!amd_gl_on("oneios-gpu-amd=1"));
+    assert!(!amd_gl_on("oneios-gpu-amd-gl=0 oneios-gpu-amd-gl=1")); // the conf's =0 kept, xnuhost's =1 not added
+    assert!(amd_gl_on("oneios-gpu-amd-gl=1 oneios-gpu-amd-gl=0"));
+    assert!(!amd_gl_on("oneios-gpu-amd-gl=10") && !amd_gl_on("xoneios-gpu-amd-gl=1") && !amd_gl_on(""));
+    // the fixup goes only when xnuhost found the bundle in this boot's gpuaddon AND the guest is told so
+    assert!(ios16_gl_driver(true, "a oneios-gpu-amd=1 oneios-gpu-amd-gl=1"));
+    assert!(!ios16_gl_driver(false, "oneios-gpu-amd-gl=1")); // a hand-written =1 without the bundle
+    assert!(!ios16_gl_driver(true, "oneios-gpu-amd-gl=0")); // the bundle there, turned off in the conf
+    assert!(!ios16_gl_driver(true, ""));
+}

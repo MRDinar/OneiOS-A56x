@@ -102,7 +102,13 @@ pub enum Command {
         target: String,
     },
     /// userland/metal/build.sh's `addon`: the bundle as the kernel.kc.gpuaddon sidecar (NGPUADD2)
-    Gpuaddon { bundle: PathBuf, output: PathBuf },
+    Gpuaddon {
+        bundle: PathBuf,
+        output: PathBuf,
+        /// the Galaxy A56's OpenGL ES, OneiOSRadeonGL.bundle (userland/metal-amd/gl), beside the Metal plug-in
+        #[arg(long)]
+        gl: Option<PathBuf>,
+    },
     /// The boot addon (the kernel.kc.gpuaddon sidecar, NGPUADD2) with the Metal plug-in (addons/, hosted 0031), the
     /// capture plug-in (camera/, hosted 0090) or both, and OUTPUT.cdhashes (its Mach-O files' CDHashes, for the
     /// image's owner-trust.json; `phone addon OUTPUT` stages both)
@@ -114,6 +120,9 @@ pub enum Command {
         /// userland/camera/build.sh's output folder (or its H9ISP.mediacapture)
         #[arg(long)]
         camera: Option<PathBuf>,
+        /// the Galaxy A56's OpenGL ES, OneiOSRadeonGL.bundle (userland/metal-amd/gl), beside the Metal plug-in
+        #[arg(long)]
+        gl: Option<PathBuf>,
     },
 }
 
@@ -152,8 +161,10 @@ fn run(command: Command) -> anyhow::Result<i32> {
         Command::TbdDiff { a, b, a_listed, show } => diff::run(&a, &b, a_listed, show),
         Command::MetalStageEdit { root, hooks, jobs, knows, rt } => metal::stage_edit(&root, &hooks, &jobs, knows == "1", rt).map(|()| 0),
         Command::MetalRecord { root, bundle, record, hooks, target } => metal::record(&root, &bundle, &record, &hooks, &target).map(|()| 0),
-        Command::Gpuaddon { bundle, output } => metal::gpuaddon(&bundle, &output).map(|()| 0),
-        Command::Addon { output, metal, camera } => metal::addon(&output, metal.as_deref(), camera.as_deref()).map(|()| 0),
+        Command::Gpuaddon { bundle, output, gl } => metal::gpuaddon(&bundle, &output, gl.as_deref()).map(|()| 0),
+        Command::Addon { output, metal, camera, gl } => {
+            metal::addon(&output, metal.as_deref(), camera.as_deref(), gl.as_deref()).map(|()| 0)
+        }
     }
 }
 

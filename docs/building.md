@@ -324,7 +324,7 @@ checks still run there.
 | `lint` | `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | `boot` | only with `QEMU=1` (skipped by default since 2026-11-24: the phone is the test, CLAUDE.md): `runtime/xnuhost/check-arm64.sh smoke check` (when the NDK is there): the vCPU machinery alone, then the static Android xnuhost booting the Rust test kernel three times, under qemu-aarch64 on an x86_64 PC, as it is on an arm64 host |
 | `port` | `sh scripts/port/test-verify-host.sh` (the read-only phone preflight against stand-in phones) |
-| `metal-amd` | only with `METAL_AMD=1`, on Linux (a Mesa build of several minutes): `userland/metal-amd/host-test.sh`, the A56's guest Mesa (section 9, "The A56's guest Mesa"). It is not a `tests/host.sh`, so CI does not run it |
+| `metal-amd` | only with `METAL_AMD=1`, on Linux (a Mesa build of several minutes): `userland/metal-amd/host-test.sh`, the A56's guest Mesa (section 9, "The A56's guest Mesa"); then `metal-amd-air` (`userland/metal-amd/air/host-test.sh`) and `metal-amd-gl` (`userland/metal-amd/gl/host-test.sh`, the A56's OpenGL ES: section 9). It is not a `tests/host.sh`, so CI does not run it |
 | `links` | `runtime/package/elf-check-test.sh`, the link rule and the check of the next section (needs the NDK) |
 | `package` | `runtime/package/test.sh` (needs the NDK) |
 
@@ -1272,7 +1272,9 @@ IOS_TARGET=arm64-apple-ios16.5` (the script's defaults) and `-D_DARWIN_C_SOURCE`
 `-Dgallium-drivers=radeonsi -Damdgpu-virtio=true -Dllvm=disabled -Damd-use-llvm=false -Doneios-radeonsi-screen=true
 -Doneios-libdrm-dir=...`, every GL, EGL, GBM and Vulkan part off. Both binaries are signed by `oneios-tool ios sign`
 and checked by `oneios-tool ios macho-check --arch arm64 --tbd out/ios16-tbd` (arm64: the default `--arch arm64e` is
-iOS 27's). After `mesa`, `userland/metal-amd/air/build.sh MESA_SOURCE BUILD_DIR` runs when it exists. Needs: the
+iOS 27's). After `mesa`, `userland/metal-amd/air/build.sh MESA_SOURCE BUILD_DIR` runs when it exists, then
+`userland/metal-amd/gl/build.sh MESA_SOURCE BUILD_DIR` (the A56's OpenGL ES: GLES and softpipe turned on in BUILD_DIR, the
+bundle in `/gl`; "The Galaxy A56's OpenGL ES" below). Needs: the
 toolchain of this section, meson, ninja, bison, flex, `llvm-ar`, python3 with mako and PyYAML (Mesa's build). Disk:
 about 0.7 GB for the iOS build, 1 GB more for the host test (`out/metal-amd/host`). `METAL_AMD_OUT=DIR` puts all of it
 elsewhere.
@@ -1314,6 +1316,43 @@ none. Built on the build laptop on 2026-11-24 (iPhoneOS 26.5 SDK headers, the 20
 no GPU: its device open says so (a56-gpu.md section 4). Built from `out/metal-amd/build-ios` (2026-11-24):
 `libOneiOSRadeonAir.dylib` 16,912,464 bytes with radeonsi, both Mach-Os PASS (175 and 206 imports bound), the
 gpuaddon 5 files, 3,844,888 bytes. No image places it yet, and nothing of it has run in iOS.
+
+### The Galaxy A56's OpenGL ES (iOS 16.5, `userland/metal-amd/gl`)
+
+NegroniGL (iOSPlus10) ported: Mesa's GLES over the A56's radeonsi as the GL plug-in iOS's OpenGLES loads, so that
+backboardd's CoreAnimation composites on the GPU ([a56-gpu.md](a56-gpu.md) section 4a). On the build laptop, each step
+in tmux:
+
+```sh
+sh userland/metal-amd/gl/host-test.sh         # Mesa cecc0e9 + gl/patches/mesa/5101, GLES, softpipe, in out/metal-amd-gl/host-build
+                                              # (4 minutes the first time, 700 MB); the checks with IOSurfaces in place,
+                                              # then copied (ONEIOS_GL_SURFACE=copy), then the no-screen gate
+userland/metal-amd/gl/build.sh mesa-ios       # the same Mesa for arm64-apple-ios16.5 (out/ios16-tbd), softpipe only
+userland/metal-amd/gl/build.sh plugin [MESA_BUILD]   # the bundle from MESA_BUILD (default: mesa-ios's)
+# -> out/metal-amd-gl/OneiOSRadeonGL.bundle (Info.plist, OneiOSRadeonGL, oneios-target "iPhone10,3 20F66"),
+#    out/metal-amd-gl/oneios-gl-probe, OneiOSRadeonGL.check.txt (ios macho-check --arch arm64 against out/ios16-tbd)
+# The A56's bundle with radeonsi: the guest Mesa build runs this hook after the Metal layer's (userland/metal-amd/build.sh
+# mesa); it copies gl/ to MESA_SRC/src/gallium/targets/oneios-gl, applies 5101, turns on -Dgles2=enabled and
+# -Dgallium-drivers=radeonsi,softpipe in MESA_BUILD, builds, and makes the bundle in $METAL_AMD_OUT/gl:
+userland/metal-amd/gl/build.sh MESA_SRC MESA_BUILD
+# then the Metal plug-in's step puts both bundles in one gpuaddon (OneiOSRadeonMetal.gpuaddon):
+userland/metal-amd/build.sh mesa && userland/metal-amd/air/build.sh plugin out/metal-amd/build-ios
+```
+
+- `METAL_AMD=1 runtime/host-tests.sh` runs `gl/host-test.sh` as the suite's `metal-amd-gl` part.
+- `METAL_AMD_GL_OUT=DIR` puts the GL folder elsewhere (default `out/metal-amd-gl`; the guest hook uses
+  `$METAL_AMD_OUT/gl`).
+- `IOS_TBD` and `IOS_LD` default to the main checkout's when the work tree has none.
+- The generators are POSIX sh and awk (`gen-gli.sh`, `plugin/gen-gld.sh`); Mesa's own meson build still runs Mesa's
+  Python.
+
+Built on the build laptop on 2026-11-25 (iPhoneOS 26.5 SDK headers, the 20F66 stubs):
+- the softpipe-only bundle: 14,093,408 bytes;
+- the radeonsi one, from a scratch `METAL_AMD_OUT` with the guest Mesa stage's patches: 20,197,168 bytes;
+- both MH_BUNDLE arm64 minos 16.5 with 151 exports, `macho-check` PASS (220 and 265 imports bound);
+- `oneios-gl-probe` PASS;
+- the gpuaddon with both bundles: 8 files, 8,819,328 bytes.
+Nothing of it has run in iOS.
 
 ## 10. Rust tools (`oneios-tool`)
 
@@ -1364,7 +1403,8 @@ original, the image tool, `scripts/ios/` and the scripts' inline `python3`). The
 | `kernel/prelink/build.sh` | none: Rust only since 2026-11-12 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool prelink` runs all twelve steps; the Python steps were deleted after every step's output was compared byte for byte, and `tests/prelink/compare-golden.sh` checks the chain against a recorded run (the released kernel, since 2026-11-22; the matcher signature is over the Rust matcher and the fixtures, no Python file is read). 14 s instead of two minutes |
 | `runtime/package.sh` (and CI) | none: Rust only since 2026-11-13 (`ONEIOS_TOOL=PATH` for another binary) | `oneios-tool package check\|manifest\|archive`: the Apple-file check, `runtime.json`, the archive without GNU tar; since 2026-11-24 the check takes our ad hoc signed iOS plug-ins under `lib/guest/` (a bundle's files with its record's CDHashes) and `runtime.json` names them (`metal`, `camera`; `debug fixture guest-*` makes the tests' signed Mach-Os); `runtime/package/pack.py` was deleted after 91 frozen cases and the 19 package tests gave the same |
 | `kernel/tests/host.sh`, `drivers/tests/host.sh`, by hand | none | `oneios-tool kernel series-check`, `kernel hosted-series` and `kernel hosted-archives` on copies of the committed `board.toml` and hosted defconfig, `kernel drivers --check`, `kernel hosted-fixup`, `kernel kdk-headers`, `kernel iig-fix`, `prelink classes\|stubs-check\|unmapped\|port-fixture\|lead-between\|lead-imports`: the scripts of those names were deleted on 2026-11-13 (README, the group 2 section); since 2026-11-23 `kernel/tests/host.sh` also refuses a hosted patch that reads recount's current-thread time with interrupts on, or strips a typed function pointer with `ptrauth_strip` (shell and awk; the two 0095 panics, kernel/patches/oneios-hosted/README.md) |
-| `userland/metal-amd/air/build.sh plugin` (the Galaxy A56's Metal plug-in, section 9) | none | `oneios-tool ios sign`, `ios macho-check --arch arm64 --tbd out/ios16-tbd`, `ios gpuaddon`: since 2026-11-24 a bundle folder named `OneiOSRadeonMetal.bundle` keeps its name in the sidecar (`addons/OneiOSRadeonMetal.bundle/...`, `addons/OneiOSRadeonMetal.publish`); every other folder is `NativeAdrenoMetal` as before |
+| `userland/metal-amd/air/build.sh plugin` (the Galaxy A56's Metal plug-in, section 9) | none | `oneios-tool ios sign`, `ios macho-check --arch arm64 --tbd out/ios16-tbd`, `ios gpuaddon`: since 2026-11-24 a bundle folder named `OneiOSRadeonMetal.bundle` keeps its name in the sidecar (`addons/OneiOSRadeonMetal.bundle/...`, `addons/OneiOSRadeonMetal.publish`); every other folder is `NativeAdrenoMetal` as before; since 2026-11-25 `--gl OneiOSRadeonGL.bundle` adds the A56's OpenGL ES beside it (`addons/OneiOSRadeonGL.bundle/...`, no marker) when `out/metal-amd/gl` has it |
+| `userland/metal-amd/gl/build.sh plugin` (the Galaxy A56's OpenGL ES, section 9) | none | `oneios-tool ios sign`, `ios macho-check --arch arm64 --tbd out/ios16-tbd` |
 
 `oneios-tool image seed-pack` writes `data.seed`'s members in parallel, each at its own offset (the same bytes as
 `imagetool.py`'s; the SHA-256 is the one the trust list pins). `ONEIOS_IMAGE_TIMING=1` prints each phase's time;

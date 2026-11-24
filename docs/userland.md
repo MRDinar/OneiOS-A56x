@@ -486,6 +486,50 @@ A56 bundle in its lines (`oneios-gpu-addon: .../OneiOSRadeonMetal.bundle/Info.pl
 `OneiOSRadeon*` files, the clients file named after the published plug-in; a56-gpu.md section 5). `oneios-tool ios gpuaddon` already keeps its name
 (`addons/OneiOSRadeonMetal.bundle/...`, `addons/OneiOSRadeonMetal.publish`).
 
+### 7.4 The Galaxy A56's OpenGL ES (`userland/metal-amd/gl`, iOS 16.5)
+
+`OneiOSRadeonGL.bundle` is NegroniGL of the owner's iOSPlus10 (MIT; `userland/metal-amd/gl/NOTICE` lists every file
+taken and changed), ported to 20F66 and to the A56. It is Mesa's GLES frontend over the A56's radeonsi (the same K3
+screen as the Metal layer, compiled in), built by the guest Mesa stage's hook `userland/metal-amd/gl/build.sh`
+([building.md](building.md) section 9). Its purpose: backboardd's CoreAnimation composites on the GPU through its
+OpenGL ES renderer ([a56-gpu.md](a56-gpu.md) section 4a).
+
+The bundle holds:
+- `Info.plist` (`CFBundleExecutable` OneiOSRadeonGL, `com.oneios.radeongl`, MinimumOSVersion 16.5);
+- `OneiOSRadeonGL`, an MH_BUNDLE, arm64, iOS 16.5. It exports libGFXShared's 129 GLD names, the 18 GLI names
+  OpenGLES's `eagl_init` binds, `gliTerminateLibrary` and `oneios_gl_probe`;
+- `oneios-target` (`iPhone10,3 20F66`).
+
+How iOS finds it:
+1. libGFXShared reads the accelerator's `IOGLESBundleName` (`OneiOSRadeonGL` with the kernel's `oneios-gpu-amd-gl=1`,
+   which xnuhost adds when the gpuaddon carries the bundle).
+2. It loads `/System/Library/Extensions/OneiOSRadeonGL.bundle/OneiOSRadeonGL` (hosted 0031's union of the gpuaddon's
+   `addons/`).
+3. The bundle points OpenGLES's GLI table at itself (20F66's addresses, checked before they are written).
+4. Every EAGLContext of that process is then Mesa's.
+
+Which processes get it (the bundle's gate, once per process):
+- every process, unless `OneiOSRadeonGL.clients` beside the bundle (`*`, `NAME`, `-NAME`) says otherwise, or
+  `OneiOSRadeonGL.bundle/off` exists (every process closed);
+- the screen is radeonsi. Where radeonsi does not open, softpipe (the CPU) stands in for every process but backboardd
+  (CoreImage needs a context, [gpu.md](gpu.md) 5.2), and backboardd keeps CoreAnimation's CPU renderer;
+- `oneios-gl-softpipe=1` in the boot arguments gives backboardd softpipe too (a test of the EAGL road), and `=0` gives
+  no process softpipe;
+- backboardd runs a preflight (a triangle and an IOSurface drawn and read back) before it is handed a context.
+A closed gate gives the process nil EAGLContexts, as before the bundle.
+
+Its log:
+- os_log subsystem `com.oneios.radeongl` (`oneios-tool phone pull-log`), records `SEV CAT message`;
+- in `xnuhost.log`, `oneios-gpu-text: PROCESS[PID] RG ...` rows (hosted 0039) for its errors and the first lines of the
+  gate, the screen, the contexts, the drawables and the first frame;
+- the rate once at the 600th frame, then every 3600th (`GLI 600 frames, N a second since the first; copies: ...`).
+
+The lasting tool `oneios-gl-probe` (built beside the bundle, `$METAL_AMD_OUT/gl/oneios-gl-probe`) loads the bundle in a
+shell and prints one PASS/FAIL line: the screen, a triangle, an IOSurface round trip.
+
+**Placed by** `oneios-tool ios gpuaddon OneiOSRadeonMetal.bundle OUT --gl OneiOSRadeonGL.bundle` (and
+`userland/metal-amd/air/build.sh addon` when the GL bundle is built). The image itself is not changed.
+
 ## 8. What launchd, backboardd and SpringBoard need
 
 | Stage | Needs | Who |
