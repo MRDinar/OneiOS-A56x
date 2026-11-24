@@ -8,7 +8,8 @@
 // engine period or a refused selector looks like from inside the guest), and while the speaker plays one line of its
 // engine's timing (`speaker engine: ...`: how late it took its periods, how far ahead the HAL wrote: iOS's I/O buffer
 // and safety offset as used), and one line of the engines' late periods by device and size (`late periods: ...`,
-// fix-audio-late). oneios-audio-report=0 leaves it out.
+// fix-audio-late), and after iOS changed the volume where it settled (`speaker volume N of 128 (-X.Y dB applied ...)`,
+// fix-audio-curve). oneios-audio-report=0 leaves it out.
 //
 // oneios-audio-selftest=SECONDS (1..10): 3 s after the start, a 1 kHz sine at -30 dBFS (quiet at any media volume)
 // straight into the transport, before iOS's audio server runs: the guest kernel -> virtio-snd -> oneios-audio ->
@@ -44,6 +45,24 @@ extern volatile uint32_t oneios_audio_rt_set, oneios_audio_rt_refused;
 extern volatile uint64_t oneios_speaker_late_1ms, oneios_speaker_late_5ms, oneios_speaker_late_20ms, oneios_speaker_short,
     oneios_actuator_late;
 
+// The speaker's volume as iOS last set it and the curve's applied dB (DroidVMAudio.cpp as staged, fix-audio-curve).
+extern volatile uint32_t oneios_speaker_volume, oneios_speaker_gain, oneios_speaker_volume_sets, oneios_speaker_db10;
+extern uint32_t oneios_audio_curve;
+
+// fix-audio-curve: when iOS changed the volume since the last report, where it settled (the change lines of
+// DroidVMAudio.cpp stop after the 16th, and a slider's drag is many changes): the step, the dB applied, the curve.
+static void oneios_audio_volume_report(void) {
+    static uint32_t sets;
+    const uint32_t n = oneios_speaker_volume_sets;
+    if (n == sets) return;
+    const uint32_t db10 = oneios_speaker_db10;
+    const uint32_t v = oneios_speaker_volume;
+    printf("ONEIOS AUDIO: speaker volume %u of 128 (%s%s%u.%u dB applied, gain %u of 65536) after %u changes (%u since the last "
+           "report); curve %s\n", v, v ? "" : "silent, ", db10 ? "-" : "", db10 / 10, db10 % 10, oneios_speaker_gain, n, n - sets,
+           oneios_audio_curve ? "sheng -36 dB squared (oneios-audio-curve=1)" : "linear -64 dB (oneios-audio-curve=0)");
+    sets = n;
+}
+
 // Since the last report, the speaker's engine: how late it took its periods, and how far ahead of each the HAL had
 // written (its write end: iOS's I/O buffer and the safety offset as used, so the guest's part of the latency from
 // iOS's mix); a lead within a period of the ring's end is "tight" (the ring too small for the I/O buffer iOS took).
@@ -72,6 +91,7 @@ static void oneios_audio_report(void *arg, wait_result_t result) {
     for (;;) {
         IOSleep(30000);
         oneios_audio_speaker_report();
+        oneios_audio_volume_report();
         const uint64_t moved = droidvm_audio_periods + droidvm_audio_selectors + droidvm_snd_errors;
         if (moved == last && droidvm_audio_clients == last_clients) continue;
         last = moved;

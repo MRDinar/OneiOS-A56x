@@ -2936,6 +2936,48 @@ in iOS's log no `Volume Mode is HardwareOnly but physical device does not suppor
 curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
 up to the phone's full loudness. Back in One UI: the media volume as it was.
 
+### The volume curve: UniXNU-sheng's -36 dB squared (fix-audio-curve, 2026-11-25; built, not booted)
+
+**The fault (owner):** sound is quiet with iOS's volume at a normal level. **The cause [F our logs,
+`out/session-logs/2026-11-24-mac-gpumem/live.log`]:** the host plays at full scale (`oneios-audio: host volume: ...
+set to the maximum for the session`) and the guest attenuates by what iOS sets on the control above: `speaker volume 70
+of 128 (-29.0 dB, gain 2325 of 65536)`, `79 of 128 (-24.5 dB)`, `100 of 128 (-14.0 dB)`. iOS spreads its volume evenly
+over the control's steps: from 79 each volume-up press moved 7-8 steps (79, 86, 94, 101, 108, 115, 128: 3.5-4 dB a
+press), and audiomxd says `Reconfiguring volume curve with dB range {min, max} and transfer function 0`. So with a
+linear -64..0 dB range half of iOS's volume is about -32 dB.
+
+**The fix [F UniXNU-sheng c8f92b2 `hal/ShengAudioPlugIn.c` 204-210, iPadOS 27.0.1 24A446, BSD-2-Clause-Patent]:** sheng's
+audio plug-in had the same quietness on the same build ("a linear -40 dB range still -26 dB (quiet); now it is -16
+dB") and maps the volume s (0..1) to -36 x (1 - s)^2 dB. Here, with `oneios-audio-curve=1` (the default; the staged
+`DroidVMAudio.cpp`, `tools/oneios-tool/crates/oneios-kernel/src/staged/audio.rs` block "fix-audio-curve"):
+
+- the control keeps its 128 even steps (iOS's volume s is step / 128, as the phone showed) and reports -36..0 dB
+  (`start db value` -36, 128 steps of 0.28125 dB: the curve's ends);
+- the speaker engine applies the curve to the step: the gain of step v is 10^(-36 x (1 - v/128)^2 / 20) (a Q16 table,
+  step 0 silent). Step 43 (a third) is -15.9 dB, 64 (half) -9.0 dB, 70 -7.4 dB, 100 -1.7 dB; before, -42.5, -32.0,
+  -29.0 and -14.0 dB.
+- `oneios-audio-curve=0`: -64..0 dB in 0.5 dB steps, applied as reported (before 2026-11-25).
+
+Why not a range map of several ranges shaped like the curve (the plan's first idea): the HAL's scalar and audiomxd's
+curve are fractions of the dB range [I from the IOAudio2 range-map form and audiomxd's "dB range ... transfer function"
+line; not read in 24A446's CoreAudio], so a multi-range map would only move each step's dB, and iOS would still ask for
+an even spread in dB. The reported dB of a step (what an app reading the control's dB sees: linear over -36..0) is not
+the applied one in between the ends; nothing in iOS's speaker route reads it back [I].
+
+**The lasting lines:** each change (the first 16, then every 64th) `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain
+N of 65536), change N: iOS's volume, applied here (the host plays at full scale; curve sheng: -36 dB x (1 - v/128)^2,
+oneios-audio-curve=1)`, the dB now in tenths; and in `OneiOSAudio.c`'s 30 s report, when the volume changed since the
+last report, where it settled: `ONEIOS AUDIO: speaker volume N of 128 (-X.Y dB applied, gain N of 65536) after N changes
+(N since the last report); curve sheng -36 dB squared (oneios-audio-curve=1)` (a slider's drag is many changes, past
+the 16 change lines).
+
+**Tested:** `cargo test -p oneios-kernel` (`staged::audio::tests::the_volume_curve_is_shengs` recomputes both tables of
+the staged source from the formula; the edit list on the synthetic source against `golden/synthetic/audio.out`), the
+kernel built with it (docs/switches.md "Tests"). **Not booted.** The phone check: the change line at a third of iOS's
+volume about `-16.x dB` and at half about `-9.0 dB`; iOS's log (`ioslog --proc audiomxd`) `Reconfiguring volume curve
+with dB range {-36, 0}`; by ear the middle of the slider clearly louder than before and the bottom steps still quiet;
+`oneios-audio-curve=0` gives the old `-29.0 dB` at step 70 again.
+
 ### Late periods: the engines realtime in the guest, their wait without timer slop (fix-audio-late, 2026-11-24; built and prelinked, not booted)
 
 The fault: iOS's audio late. The phone, 2026-11-24 01:17-01:25 (kernel `e79886d9` = main,

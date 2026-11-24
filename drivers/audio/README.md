@@ -57,3 +57,12 @@ Actuator) a time-constraint thread of the guest's scheduler at its start (period
 AUDIO: late periods: speaker N over 1 ms, N over 5 ms, N over 20 ms of N, N written by the HAL only in part; Actuator
 N over 5 ms; engine threads realtime N, refused N (oneios-audio-rt=1)`. No host thread is realtime. Cause, figures
 and the phone lines to look for: `docs/hardware.md` section 6, "Late periods".
+
+Since 2026-11-25 (fix-audio-curve) the speaker's volume follows UniXNU-sheng's curve (c8f92b2 `hal/ShengAudioPlugIn.c`,
+BSD-2-Clause-Patent; block "fix-audio-curve"): boot-arg `oneios-audio-curve`, default 1. The control keeps its 128
+even steps (iOS spreads its volume evenly over them) and reports -36..0 dB; the engine applies -36 x (1 - step/128)^2
+dB to the step (a third of iOS's volume about -16 dB, half -9 dB, step 0 silent) instead of the linear -64..0 dB (half
+-32 dB: the quietness of 2026-11-24). `oneios-audio-curve=0` is the linear curve of before. The change line names the
+curve and gives the dB in tenths, and `OneiOSAudio.c`'s report says where the volume settled after a change: `ONEIOS
+AUDIO: speaker volume N of 128 (-X.Y dB applied, gain N of 65536) after N changes (N since the last report); curve
+...`. `docs/hardware.md` section 6, "The volume curve".

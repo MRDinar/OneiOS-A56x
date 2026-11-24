@@ -1,4 +1,7 @@
 // From build-oneios-audio.py (stage_audio), written out by a helper of the port and kept by hand since.
+// Credits: the block "fix-audio-curve" takes the speaker's volume curve (-36 x (1 - s)^2 dB, `kMinDb`, `toDb`) from
+// UniXNU/UniXNU-sheng c8f92b2 `hal/ShengAudioPlugIn.c` (BSD-2-Clause-Patent, iPadOS 27.0.1 24A446), into the staged
+// DroidVMAudio.cpp (UniXNU-droidvm's, BSD-2-Clause-Patent). CREDITS.md, docs/references.md.
 /// DroidVMAudio.cpp's lines that change.
 pub const AUDIO: &[(&str, &str)] = &[
     ("extern kmod_info_t g_kernel_kmod_info;\n",
@@ -389,4 +392,112 @@ pub const AUDIO: &[(&str, &str)] = &[
      concat!("    if (oneios_speaker_ring > RingFrames) oneios_speaker_ring = RingFrames;\n",
              "    // OneiOS (fix-audio-late): oneios-audio-rt=0: the engines at kernel priority, their wait clock_delay_until's.\n",
              "    PE_parse_boot_argn(\"oneios-audio-rt\", &oneios_audio_rt, sizeof(oneios_audio_rt));\n")),
+    // fix-audio-curve (2026-11-25): the speaker's volume curve. The phone (2026-11-24, out/session-logs/2026-11-24-mac-gpumem):
+    // `speaker volume 70 of 128 (-29.0 dB ...)`, 79 (-24.5 dB), 100 (-14.0 dB), and each volume key press 7-8 steps
+    // (3.5-4 dB) from 79 to 128: iOS (audiomxd: `Reconfiguring volume curve with dB range {min, max} and transfer
+    // function 0`) spreads its volume evenly over the control's steps, so over -64..0 dB, linear, half its slider is
+    // about -30 dB: quiet with the host at full scale. UniXNU-sheng (c8f92b2, hal/ShengAudioPlugIn.c `kMinDb`, `toDb`,
+    // BSD-2-Clause-Patent; iPadOS 27.0.1 24A446, the same quietness) maps the volume s (0..1) to -36 x (1 - s)^2 dB: a
+    // third of full volume -16 dB, half -9 dB. A range map of several ranges cannot give that curve here: the HAL's
+    // scalar and audiomxd's curve are fractions of the dB range, so a step's dB would only move, not the volume's.
+    // So oneios-audio-curve=1 (the default) keeps the steps even (the volume s is step / 128, as the phone showed),
+    // reports the range as -36..0 dB (128 steps of 0.28125 dB: the curve's ends) and applies sheng's curve to the
+    // step: the gain of step v is 10^(-36 x (1 - v/128)^2 / 20) (step 0 silent). oneios-audio-curve=0: -64..0 dB in
+    // 0.5 dB steps, applied as reported (before). The step's applied dB goes to the log line of each change and, as it
+    // stands, to OneiOSAudio.c's report (`speaker volume: ...`).
+    ("    65536,\n};\nOSArray *oneiosControls(bool volume) {\n",
+     concat!("    65536,\n};\n",
+             "// OneiOS (fix-audio-curve): oneios-audio-curve=1 (default): the step's gain on UniXNU-sheng's curve (c8f92b2,\n",
+             "// hal/ShengAudioPlugIn.c, BSD-2-Clause-Patent), -36 x (1 - step / 128)^2 dB, step 0 silent; 0: the table above.\n",
+             "// (oneios_audio_curve and oneios_speaker_db10 are defined with the ring, extern \"C\": OneiOSAudio.c reads them.)\n",
+             "const uint32_t oneios_volume_gain_sheng[OneiosVolumeSteps + 1] = {   // Q16: 65536 x 10^(-36 (1 - step/128)^2 / 20)\n",
+             "    0, 1108, 1181, 1259, 1340, 1427, 1518, 1614, 1716, 1823, 1935, 2054, 2179, 2310, 2447, 2592,\n",
+             "    2744, 2903, 3070, 3245, 3428, 3620, 3820, 4029, 4248, 4477, 4715, 4963, 5222, 5492, 5772, 6064,\n",
+             "    6368, 6683, 7010, 7350, 7702, 8067, 8445, 8836, 9241, 9659, 10091, 10537, 10997, 11472, 11961, 12464,\n",
+             "    12982, 13515, 14063, 14625, 15202, 15794, 16401, 17022, 17658, 18309, 18974, 19653, 20346, 21052, 21773, 22506,\n",
+             "    23253, 24012, 24784, 25567, 26362, 27167, 27983, 28809, 29645, 30489, 31341, 32201, 33068, 33941, 34819, 35702,\n",
+             "    36589, 37479, 38372, 39265, 40159, 41053, 41945, 42835, 43722, 44604, 45482, 46353, 47217, 48073, 48919, 49755,\n",
+             "    50580, 51393, 52192, 52977, 53746, 54499, 55235, 55952, 56650, 57327, 57984, 58618, 59229, 59816, 60379, 60916,\n",
+             "    61426, 61910, 62366, 62793, 63192, 63560, 63899, 64207, 64484, 64729, 64942, 65123, 65271, 65387, 65470, 65519,\n",
+             "    65536,\n",
+             "};\n",
+             "const uint16_t oneios_volume_db10_sheng[OneiosVolumeSteps + 1] = {   // tenths of a dB below 0: 360 (1 - step/128)^2\n",
+             "    360, 354, 349, 343, 338, 332, 327, 322, 316, 311, 306, 301, 296, 291, 286, 281,\n",
+             "    276, 271, 266, 261, 256, 252, 247, 242, 238, 233, 229, 224, 220, 215, 211, 207,\n",
+             "    203, 198, 194, 190, 186, 182, 178, 174, 170, 166, 163, 159, 155, 151, 148, 144,\n",
+             "    141, 137, 134, 130, 127, 124, 120, 117, 114, 111, 108, 105, 102, 99, 96, 93,\n",
+             "    90, 87, 84, 82, 79, 76, 74, 71, 69, 66, 64, 62, 59, 57, 55, 53,\n",
+             "    51, 49, 46, 44, 43, 41, 39, 37, 35, 33, 32, 30, 28, 27, 25, 24,\n",
+             "    23, 21, 20, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6,\n",
+             "    6, 5, 4, 4, 3, 3, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0,\n",
+             "    0,\n",
+             "};\n",
+             "uint32_t oneiosGain(uint32_t v) { return oneios_audio_curve ? oneios_volume_gain_sheng[v] : oneios_volume_gain[v]; }\n",
+             "uint32_t oneiosDb10(uint32_t v) { return oneios_audio_curve ? oneios_volume_db10_sheng[v] : (OneiosVolumeSteps - v) * 5; }\n",
+             "OSArray *oneiosControls(bool volume) {\n")),
+    (concat!("        setNumber(range, \"start db value\", uint64_t(int64_t(-64) * (int64_t(1) << 32)), 64);\n",
+             "        setNumber(range, \"integer steps\", OneiosVolumeSteps);\n",
+             "        setNumber(range, \"db per step\", uint64_t(1) << 31, 64);   // 0.5 dB\n"),
+     concat!("        // OneiOS (fix-audio-curve): -36..0 dB in 0.28125 dB steps (the curve's ends), or -64..0 in 0.5 dB steps.\n",
+             "        setNumber(range, \"start db value\", uint64_t(int64_t(oneios_audio_curve ? -36 : -64) * (int64_t(1) << 32)), 64);\n",
+             "        setNumber(range, \"integer steps\", OneiosVolumeSteps);\n",
+             "        setNumber(range, \"db per step\", oneios_audio_curve ? uint64_t(0x48000000) : uint64_t(1) << 31, 64);\n")),
+    ("    oneios_speaker_gain = oneios_volume_gain[v];\n",
+     concat!("    oneios_speaker_gain = oneiosGain(v);   // OneiOS (fix-audio-curve): the curve's gain and dB\n",
+             "    oneios_speaker_db10 = oneiosDb10(v);\n")),
+    (concat!("        const uint32_t down = OneiosVolumeSteps - v;   // half dB below 0 dB\n",
+             "        if (n <= 16 || n % 64 == 0)\n",
+             "            IOLog(\"DroidVMAudio: speaker volume %u of %u (%s%u.%u dB, gain %u of 65536), change %u: iOS's volume, applied here \"\n",
+             "                  \"(the host plays at full scale)\\n\", v, (unsigned)OneiosVolumeSteps, v == 0 ? \"silent, -\" : down ? \"-\" : \"\",\n",
+             "                  down / 2, down % 2 * 5, oneios_speaker_gain, n);\n"),
+     concat!("        const uint32_t down = oneios_speaker_db10;   // OneiOS (fix-audio-curve): tenths of a dB below 0 dB\n",
+             "        if (n <= 16 || n % 64 == 0)\n",
+             "            IOLog(\"DroidVMAudio: speaker volume %u of %u (%s%u.%u dB, gain %u of 65536), change %u: iOS's volume, applied here \"\n",
+             "                  \"(the host plays at full scale; curve %s)\\n\", v, (unsigned)OneiosVolumeSteps, v == 0 ? \"silent, -\" : down ? \"-\" : \"\",\n",
+             "                  down / 10, down % 10, oneios_speaker_gain, n,\n",
+             "                  oneios_audio_curve ? \"sheng: -36 dB x (1 - v/128)^2, oneios-audio-curve=1\" : \"linear -64..0 dB, oneios-audio-curve=0\");\n")),
+    ("    PE_parse_boot_argn(\"oneios-audio-rt\", &oneios_audio_rt, sizeof(oneios_audio_rt));\n",
+     concat!("    PE_parse_boot_argn(\"oneios-audio-rt\", &oneios_audio_rt, sizeof(oneios_audio_rt));\n",
+             "    // OneiOS (fix-audio-curve): oneios-audio-curve=0: the volume linear over -64..0 dB, as before 2026-11-25.\n",
+             "    PE_parse_boot_argn(\"oneios-audio-curve\", &oneios_audio_curve, sizeof(oneios_audio_curve));\n",
+             "    if (oneios_audio_curve > 1) oneios_audio_curve = 1;\n")),
+    ("uint32_t oneios_speaker_ring = 1920;\n",
+     concat!("uint32_t oneios_speaker_ring = 1920;\n",
+             "// OneiOS (fix-audio-curve): oneios-audio-curve (1: UniXNU-sheng's curve, 0: linear -64 dB) and the applied dB of\n",
+             "// the step iOS set, in tenths below 0 dB (OneiOSAudio.c's report reads both).\n",
+             "uint32_t oneios_audio_curve = 1;\n",
+             "volatile uint32_t oneios_speaker_db10;\n")),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::AUDIO;
+
+    /// The numbers of one of the staged tables (`name` up to its closing brace).
+    fn table(name: &str) -> Vec<u32> {
+        let text: String = AUDIO.iter().map(|(_, r)| *r).collect();
+        let start = text.find(name).unwrap_or_else(|| panic!("{name}"));
+        let body = &text[start..];
+        let body = &body[body.find("= {").unwrap() + 3..body.find("};").unwrap()];
+        body.lines().map(|l| l.split("//").next().unwrap()).flat_map(|l| l.split(','))
+            .filter_map(|n| n.trim().parse().ok()).collect()
+    }
+
+    /// fix-audio-curve: the staged tables are UniXNU-sheng's curve, -36 x (1 - v/128)^2 dB, step 0 silent.
+    #[test]
+    fn the_volume_curve_is_shengs() {
+        let gain = table("oneios_volume_gain_sheng[");
+        let db10 = table("oneios_volume_db10_sheng[");
+        assert_eq!((gain.len(), db10.len()), (129, 129));
+        for v in 0..=128u32 {
+            let db = -36.0 * (1.0 - f64::from(v) / 128.0).powi(2);
+            let want = if v == 0 { 0 } else { (65536.0 * 10f64.powf(db / 20.0)).round() as u32 };
+            assert_eq!(gain[v as usize], want, "gain of step {v}");
+            assert_eq!(db10[v as usize], (-db * 10.0).round() as u32, "dB of step {v}");
+        }
+        // A third of full volume about -16 dB (sheng's comment), half -9 dB; the old curve's half was -32 dB.
+        assert_eq!((db10[43], db10[64], db10[128]), (159, 90, 0));
+        let old = table("oneios_volume_gain[");
+        assert_eq!((old.len(), old[70], old[128]), (129, 2325, 65536));
+    }
+}

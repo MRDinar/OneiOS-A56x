@@ -106,6 +106,7 @@ The A56 port's design and what each stage takes: [a56-gpu.md](a56-gpu.md) sectio
 | --- | --- | --- | --- |
 | `package/DroidVMAudio.cpp`: two `IOAudio2Device`s with UIDs "Speaker" and "Mic", which VirtualAudio turns into routable ports; `DroidVMVirtioSnd.c`: the virtio-snd transport (48 kHz S16, 240-frame periods) | `UniXNU-droidvm`, built by `ipados27/scripts/build-droidvm-devices.py` | BSD-2-Clause-Patent | **Direct**; the host side is new: a virtio-snd device in xnuhost over AAudio (crosvm's is `devices/src/virtio/snd/`; its AAudio helper is in the DroidVM app, GPL-3.0, not pinned here) |
 | Why UID "Codec" is the wrong target, DSP chain notes | `droidvm-meta-repo/todo/audio-media.md`, `macOS-DroidVM/docs/k27-audio.md` | | Reference |
+| The speaker's volume curve, -36 x (1 - s)^2 dB (`kMinDb`, `toDb`): a third of full volume about -16 dB instead of -42.5 dB on our linear -64..0 dB range (half: -9 instead of -32 dB) | [UniXNU/UniXNU-sheng](https://github.com/UniXNU/UniXNU-sheng) c8f92b2 `hal/ShengAudioPlugIn.c` 204-210 (iPadOS 27.0.1 24A446) | BSD-2-Clause-Patent | **Taken** (2026-11-25, fix/audio-volume-rt): the staged `DroidVMAudio.cpp`'s gain per step (`staged/audio.rs` block "fix-audio-curve", `oneios-audio-curve`), docs/hardware.md 6 "The volume curve"; CREDITS.md |
 
 ### Network
 
@@ -162,7 +163,8 @@ Rank is usefulness for the S24 Ultra under xnuhost. "State" is the repo's own cl
 
 The per-area plan for sensors, auto-brightness, camera, audio and Bluetooth taken from these and from UniXNU-sheng
 (`hal/ShengAudioPlugIn.c`'s volume curve, iPadOS 27.0.1) and UniXNU-droidvm (its motion HID classes) is
-[ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) (2026-11-25, research only: nothing ported then).
+[ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) (2026-11-25, research only: nothing ported then; the volume curve was taken
+the same day on fix/audio-volume-rt, section 2 "Audio" above).
 
 ### The ios-sweet fork network
 

@@ -673,6 +673,14 @@ line `ONEIOS AUDIO: late periods: ...` counts the speaker's late periods by size
 part, the Actuator's, and the realtime policy's result. Built: `xnu.macho` `6d40f8e0`, `kernel.kc` `853068df`
 (`HOSTED_OUT=audiolate`, audit 0 failures, stubs 666 good); not booted. `docs/hardware.md` section 6, "Late periods".
 
+Since 2026-11-25 (fix-audio-curve) the speaker's volume control reports -36..0 dB over its 128 steps and the engine
+applies UniXNU-sheng's curve (c8f92b2 `hal/ShengAudioPlugIn.c`, BSD-2-Clause-Patent), -36 x (1 - step/128)^2 dB, to the
+step iOS sets (a third of iOS's volume about -16 dB, half -9 dB), behind the boot-arg `oneios-audio-curve` (default 1;
+0: linear over -64..0 dB, as before, where half of iOS's volume was about -32 dB and the phone of 2026-11-24 played at
+`-29.0 dB` at step 70). `OneiOSAudio.c`'s report has a `speaker volume N of 128 (-X.Y dB applied ...)` line after a
+change. Built with `HOSTED_OUT=audiovol` (docs/switches.md "Tests"); not booted. `docs/hardware.md` section 6, "The
+volume curve".
+
 ### The Actuator device (media, 2026-11-12)
 
 The archive also stages a third IOAudio2Device into `DroidVMAudio.cpp`: UID `Actuator` (VirtualAudio's

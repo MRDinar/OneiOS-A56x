@@ -22,7 +22,9 @@
 //! of it; the speaker hands each period on as it starts), oneios-audio-report=0,
 //! oneios-audio-selftest=SECONDS (a quiet 1 kHz tone from the kernel, OneiOSAudio.c), oneios-actuator=0 (no Actuator
 //! device), oneios-actuator-channels=1|2 (default 1), oneios-audio-rt=0 (the engines at kernel priority, their wait
-//! clock_delay_until's, as before 2026-11-24; default 1: time-constraint threads of the guest, no timer slop).
+//! clock_delay_until's, as before 2026-11-24; default 1: time-constraint threads of the guest, no timer slop),
+//! oneios-audio-curve=0 (the speaker's volume linear over -64..0 dB, as before 2026-11-25; default 1: UniXNU-sheng's
+//! curve, -36 x (1 - step/128)^2 dB, staged/audio.rs "fix-audio-curve").
 //!
 //! The Speaker's volume (2026-11-22): a hardware volume control in its "controls" (VirtualAudio's speaker route is
 //! HardwareOnly), set by the HAL's SetControlValue, applied to each period before the transport (staged/audio.rs,

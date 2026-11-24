@@ -3150,6 +3150,12 @@ stale (`stage_tool` in `kernel/lib/stage.sh`; `ONEIOS_TOOL=PATH` for another bin
 re-recorded (its log paths are the main checkout's through the worktree's `out` link, and its net line counts 7 slots
 of IO80211Interface against the golden's 6: not this change).
 
+On 2026-11-25 (fix/audio-volume-rt) the edit list gained the block "fix-audio-curve" (UniXNU-sheng's volume curve behind
+`oneios-audio-curve`, `docs/hardware.md` section 6, "The volume curve"): its anchors are text of the earlier blocks, so
+`synthetic/audio.in` is unchanged and `audio.out` has the result; `staged::audio::tests::the_volume_curve_is_shengs`
+recomputes the two staged tables from the formula. `staged.sha256` has the staged `DroidVMAudio.cpp` of
+`HOSTED_OUT=audiovol` (only that line re-recorded).
+
 Shared: `gen.rs` (where a generator runs, Python's file and process calls as the scripts used them, the steps every
 script repeated), `drivers_build.rs` (`drivers/build.py`: `record`, `command`, and since 2026-11-13 the whole script), `macho_object.rs` (a compiled
 object's symbols and the signed entries of a vtable), `staged/` (the edit lists of the staged sources).
