@@ -2340,6 +2340,8 @@ impl Config {
             ("oneios-nested-exact", arg("oneios-nested-exact", "1"), "1"),
             ("oneios-upgrade-flush", arg("oneios-upgrade-flush", "0"), "0"),
             ("oneios-fill-fast-fault", arg("oneios-fill-fast-fault", "1"), "1"),
+            ("oneios-audio-rt", arg("oneios-audio-rt", "1"), "1"),
+            ("oneios-audio-curve", arg("oneios-audio-curve", "1"), "1"),
             ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
             ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
             // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.

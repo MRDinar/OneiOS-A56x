@@ -2483,13 +2483,16 @@ they are the hosted build's audio archive, `oneios-tool kernel gen audio`
 the transport unchanged (`-DDROIDVM_DEVICE_DYNAMIC=1`), `DroidVMAudio.cpp` staged with boot arguments, and
 `OneiOSAudio.c` (the start line and a report every 30 s while the counters move). Kernel log lines:
 `ONEIOS AUDIO: on|off: virtio-snd ... IOAudio2 devices: ...`, `DroidVMAudio: published Speaker=1 Mic=1 ...`,
-`ONEIOS AUDIO: speaker running|idle, ... engine N periods, N late, ...; virtio-snd N tx periods, N dropped ...`.
+`ONEIOS AUDIO: speaker running|idle, ... engine N periods, N late, ...; virtio-snd N tx periods, N dropped ...`
+(the speaker's and the mic's periods, and those of them taken over a period late; until 2026-11-24 `late` also
+counted the Actuator's), and `ONEIOS AUDIO: late periods: ...` ("Late periods" below).
 Boot arguments: `droidvm-snd=0`, `droidvm-audio=0`, `oneios-audio-out-uid=`, `oneios-audio-in-uid=` (default
 Speaker, Mic; `none`: no microphone), `oneios-audio-latency=FRAMES` (the speaker's "output latency", so iOS keeps
 video in step: since 2026-11-15 xnuhost passes the helper's measured latency, its probe before the boot; without it
 the default 720 = 15 ms, the MMAP path's prediction; 6480 = 135 ms before), `oneios-audio-ring=FRAMES` (the
 speaker's ring, default 1920: iOS's I/O buffer is at most 0.375 of it, "Latency end to end" below),
-`oneios-audio-report=0`, `oneios-audio-selftest=SECONDS`
+`oneios-audio-rt=0` (the engines at kernel priority and their wait `clock_delay_until`'s, as before 2026-11-24;
+default 1: "Late periods" below), `oneios-audio-report=0`, `oneios-audio-selftest=SECONDS`
 (1..10: 3 s after the start a 1 kHz sine at -30 dBFS straight into the transport, before iOS's audio server: the
 guest kernel to the speaker without iOS; UniXNU-droidvm's `droidvm-snd-selftest` is a full-scale sawtooth, never with
 a speaker).
@@ -2932,6 +2935,120 @@ back to index N`; `DroidVMAudio: speaker volume N of 128 (...)` at iOS's start a
 in iOS's log no `Volume Mode is HardwareOnly but physical device does not support HW volume`, `Reconfiguring volume
 curve with dB range {-64, 0}`; on the screen the volume HUD moving with the keys; by ear the level following them,
 up to the phone's full loudness. Back in One UI: the media volume as it was.
+
+### The volume curve: UniXNU-sheng's -36 dB squared (fix-audio-curve, 2026-11-25; built, not booted)
+
+**The fault (owner):** sound is quiet with iOS's volume at a normal level. **The cause [F our logs,
+`out/session-logs/2026-11-24-mac-gpumem/live.log`]:** the host plays at full scale (`oneios-audio: host volume: ...
+set to the maximum for the session`) and the guest attenuates by what iOS sets on the control above: `speaker volume 70
+of 128 (-29.0 dB, gain 2325 of 65536)`, `79 of 128 (-24.5 dB)`, `100 of 128 (-14.0 dB)`. iOS spreads its volume evenly
+over the control's steps: from 79 each volume-up press moved 7-8 steps (79, 86, 94, 101, 108, 115, 128: 3.5-4 dB a
+press), and audiomxd says `Reconfiguring volume curve with dB range {min, max} and transfer function 0`. So with a
+linear -64..0 dB range half of iOS's volume is about -32 dB.
+
+**The fix [F UniXNU-sheng c8f92b2 `hal/ShengAudioPlugIn.c` 204-210, iPadOS 27.0.1 24A446, BSD-2-Clause-Patent]:** sheng's
+audio plug-in had the same quietness on the same build ("a linear -40 dB range still -26 dB (quiet); now it is -16
+dB") and maps the volume s (0..1) to -36 x (1 - s)^2 dB. Here, with `oneios-audio-curve=1` (the default; the staged
+`DroidVMAudio.cpp`, `tools/oneios-tool/crates/oneios-kernel/src/staged/audio.rs` block "fix-audio-curve"):
+
+- the control keeps its 128 even steps (iOS's volume s is step / 128, as the phone showed) and reports -36..0 dB
+  (`start db value` -36, 128 steps of 0.28125 dB: the curve's ends);
+- the speaker engine applies the curve to the step: the gain of step v is 10^(-36 x (1 - v/128)^2 / 20) (a Q16 table,
+  step 0 silent). Step 43 (a third) is -15.9 dB, 64 (half) -9.0 dB, 70 -7.4 dB, 100 -1.7 dB; before, -42.5, -32.0,
+  -29.0 and -14.0 dB.
+- `oneios-audio-curve=0`: -64..0 dB in 0.5 dB steps, applied as reported (before 2026-11-25).
+
+Why not a range map of several ranges shaped like the curve (the plan's first idea): the HAL's scalar and audiomxd's
+curve are fractions of the dB range [I from the IOAudio2 range-map form and audiomxd's "dB range ... transfer function"
+line; not read in 24A446's CoreAudio], so a multi-range map would only move each step's dB, and iOS would still ask for
+an even spread in dB. The reported dB of a step (what an app reading the control's dB sees: linear over -36..0) is not
+the applied one in between the ends; nothing in iOS's speaker route reads it back [I].
+
+**The lasting lines:** each change (the first 16, then every 64th) `DroidVMAudio: speaker volume N of 128 (-X.Y dB, gain
+N of 65536), change N: iOS's volume, applied here (the host plays at full scale; curve sheng: -36 dB x (1 - v/128)^2,
+oneios-audio-curve=1)`, the dB now in tenths; and in `OneiOSAudio.c`'s 30 s report, when the volume changed since the
+last report, where it settled: `ONEIOS AUDIO: speaker volume N of 128 (-X.Y dB applied, gain N of 65536) after N changes
+(N since the last report); curve sheng -36 dB squared (oneios-audio-curve=1)` (a slider's drag is many changes, past
+the 16 change lines).
+
+**Tested:** `cargo test -p oneios-kernel` (`staged::audio::tests::the_volume_curve_is_shengs` recomputes both tables of
+the staged source from the formula; the edit list on the synthetic source against `golden/synthetic/audio.out`), the
+kernel built with it, `runtime/host-tests.sh` (no qemu part) passes (docs/switches.md "Tests": the hashes, the hand-off
+`out/handoff/audiovol-1c3e86a/`). **Not booted.** The phone check: the change line at a third of iOS's
+volume about `-16.x dB` and at half about `-9.0 dB`; iOS's log (`ioslog --proc audiomxd`) `Reconfiguring volume curve
+with dB range {-36, 0}`; by ear the middle of the slider clearly louder than before and the bottom steps still quiet;
+`oneios-audio-curve=0` gives the old `-29.0 dB` at step 70 again.
+
+### Late periods: the engines realtime in the guest, their wait without timer slop (fix-audio-late, 2026-11-24; built and prelinked, not booted)
+
+The fault: iOS's audio late. The phone, 2026-11-24 01:17-01:25 (kernel `e79886d9` = main,
+`out/session-logs/2026-11-24-mac-gpumem/live.log`):
+
+- the guest: `engine 1474 periods, 123 late`, later `5092 periods, 271 late`, with `virtio-snd ... 0 dropped`;
+  `speaker engine: 723 periods, taken late by 1488 us on average (max 55188)`, `751 periods, ... 1364 us ... (max
+  28879)`, `3618 periods, ... 1622 us ... (max 98149); the HAL wrote 216..5680 frames ahead ..., 412 periods tight`;
+- the host helper: 1 then 5 underruns, its target up to 40 ms and never down again (it comes down only when the worst
+  guest period of 20 s was 3 ms inside the lower target), `latency about 40-60 ms; end-to-end 36-49 ms (max 113-141;
+  the guest's period late by 0.7-2.3 ms ...; iOS is told 12 ms)`;
+- 0051's `kernel_task` line in the windows of the worst lateness: `VM_pageout_scan 14706665` us of CPU in 30 s,
+  before it `VM_compressor 3746618`, `VM_compressor 3527132`, `VM_pageout_scan 2081473`, `thread call high #1 815855`;
+  `oneios-cpu: ... (all 800%)`: every vCPU busy; xnuhost's `perf: cpuN ... waited for a host CPU 22-31%`.
+
+What the code shows (the cause):
+
+1. **`late` was not the speaker's.** `droidvm_audio_late` counted every engine's period taken over a period (5 ms)
+   late, the Actuator's too, while `droidvm_audio_periods` counts the speaker's and the mic's only: `engine 0
+   periods, 77 late` at 01:19 were all the Actuator's (1559 periods then), and between 01:21 and 01:23, with the
+   speaker stopped, `late` rose 74 on 3310 Actuator periods (2.2 %). So the 8 % was a mix; the speaker's own share was
+   not printed.
+2. **The engine waited behind the kernel's busy threads.** An engine is a kernel thread (`kernel_thread_start`:
+   BASEPRI_KERNEL, 81, fixed). The VM's pageout and compressor threads run at BASEPRI_VM (91), the high thread calls
+   and `daemon.deferred-dealloc` above that; on a guest at 800 % with `VM_pageout_scan` at half a vCPU the engine's
+   period waited for them (up to 98 ms). [I] Kernel threads also prefer the boot cluster (the Edge clutch's default
+   preferred pset, `sched_clutch.c`, with no CLPC to move it): cpu0's E cluster, whose two vCPUs sit on the host's
+   busiest cores (`cpu0`/`cpu1` waited 30-31 % for a host CPU, the P vCPUs 22-26 %); which vCPU ran the engine is not
+   logged.
+3. **Its wait had timer slop.** `clock_delay_until` waits with `TIMEOUT_URGENCY_SYS_NORMAL`; XNU gives a thread at 80
+   or above the kernel tier's slop (`timer_call_slop`, `arm_timer.c`: an eighth of the wait, at most 1 ms, up to
+   twice that with the user idle level). The engine waits about 5 ms a period: 0.6-1.2 ms late by design, about the
+   measured 1.4-1.6 ms average.
+
+The fix (staged `DroidVMAudio.cpp`, `tools/oneios-tool/crates/oneios-kernel/src/staged/audio.rs`, block
+"fix-audio-late"; boot-arg `oneios-audio-rt`, default 1, `docs/switches.md`):
+
+- each engine thread (speaker, mic, Actuator) asks at its start `THREAD_TIME_CONSTRAINT_POLICY`: period and
+  constraint one period (5 ms), computation 2.5 ms (XNU raises a computation under half the constraint to that). It
+  then runs before every non-realtime thread of the guest, its preemption IPIs are immediate, and the realtime spill
+  rules (0089) apply. The guest's scheduler only: no host thread is realtime (xnuhost's vCPUs stay SCHED_OTHER; the
+  way back's rule holds). XNU's failsafe demotes a realtime thread that runs 1 s without blocking; an engine blocks
+  every period;
+- its wait is `assert_wait_deadline_with_leeway(..., TIMEOUT_URGENCY_SYS_CRITICAL, deadline, 0)`: no slop;
+- `oneios-audio-rt=0`: kernel priority and `clock_delay_until`, exactly as before.
+
+Not done, on purpose: no host thread realtime or at a negative nice (docs/booter.md 2.9); no uclamp for a vCPU that
+runs the engine (the engine's work is a copy and a virtio kick, about 0.1 ms; uclamp sets the core's clock, not the
+wait for it; a vCPU is pinned to its core). The host's wait for a core (`waited for a host CPU`) is the vCPUs' and is
+not changed here.
+
+The lasting lines (logging, no switch):
+
+- `DroidVMAudio: Speaker engine: realtime in the guest (period 5 ms, computation 2.5 ms, constraint 5 ms), its wait
+  without timer slop (oneios-audio-rt=1)` once per device at its first start (or `thread_policy_set refused the time
+  constraint (0x..): kernel priority, ...` at every refusal);
+- the counter line's `late` is the speaker's and the mic's (their `periods`); the Actuator's apart;
+- `ONEIOS AUDIO: late periods: speaker N over 1 ms, N over 5 ms, N over 20 ms of N, N written by the HAL only in
+  part; Actuator N over 5 ms; engine threads realtime N, refused N (oneios-audio-rt=1)` with the counter line, since
+  boot. "Written by the HAL only in part": the HAL's write end was inside the period when the engine took it (iOS's
+  I/O thread late, not the engine: then its rest plays as silence). A phone boot with the fix should show the
+  speaker's `over 5 ms` near 0, the `speaker engine:` line's average under 0.5 ms and its max far under 28 ms, the
+  helper's target back at 10 ms and its `latency about` near 15 ms; if `written by the HAL only in part` grows, the
+  HAL's own thread is late and the speaker's safety offset (240 frames) is the next thing to size.
+
+Tested: the archive built against `HOSTED_OUT=wired`'s tree with the change (`oneios-tool kernel gen audio`,
+`ONEIOS_AUDIO_OUT` elsewhere: no warning; `thread_policy_set`, `assert_wait_deadline_with_leeway`, `thread_block`
+undefined in `DroidVMAudio.late.o`, as the kernel defines them); `cargo test -p oneios-kernel` (the synthetic
+source has the three new anchors; the staged source's hash in `golden/staged.sha256`). Then the kernel: built on the laptop with the whole series (`HOSTED_OUT=audiolate ONEIOS_CRYPTO=original`, 686 s, 182 patches, releasable): `xnu.macho` `6d40f8e0`; prelinked to `out/kernel/24A446-audiolate/kernel.kc` `853068df` (`.hashes` `fa7166ba`), audit 0 failures, stubs-check 666 good 0 bad; `kernel/tests/host.sh` 10 of 10.
+`runtime/host-tests.sh` (2026-11-24, after the rebase on 904809b): workspace, lint, lint-android, port, links and package pass, boot skipped. Not booted (no qemu boot, owner's rule of 2026-11-24; not on the phone yet).
 
 ### No audio at all in v0.1.16: VirtualAudio never started (fix-audio-camera-model, 2026-11-23; built, not on the phone)
 
