@@ -895,7 +895,10 @@ The safe refusals:
 - The Metal plug-in (section 4) gives backboardd no device unless `oneios-radeon-backboardd=1` is in the boot
   arguments (a test boot only); `OneiOSRadeonMetal.clients` beside the bundle names the processes that get one;
   `oneios-metal-profile=N` changes the feature profile (default 1). A process without a device keeps today's road.
-- OpenGL ES (section 4a): xnuhost adds `oneios-gpu-amd-gl=1` when the gpuaddon carries `OneiOSRadeonGL.bundle`;
+- OpenGL ES (section 4a): xnuhost adds `oneios-gpu-amd-gl=1` when the gpuaddon carries `OneiOSRadeonGL.bundle` **and the
+  kernel reads that switch** (its kernel.kc names `oneios-gpu-amd-gl`: the A56 kernel `5966e71ce2aa` on; an older one, as
+  the pinned `181d8bf2d60a`, gives `gpu: OpenGL ES: the kernel does not read oneios-gpu-amd-gl ...: Metal alone, CPU
+  composition, the CoreImage fixup kept`, since on it SpringBoard would find no GL driver with the fixup left out);
   `boot-args=... oneios-gpu-amd-gl=0` in `xnuhost.conf` keeps the GL bundle unnamed (CPU composition, and the CoreImage
   fixup of docs/gpu.md 5.2 back). In iOS, `OneiOSRadeonGL.bundle/off` closes the gate in every process,
   `OneiOSRadeonGL.clients` names the processes, and `oneios-gl-softpipe=0|1` sets where softpipe stands in.

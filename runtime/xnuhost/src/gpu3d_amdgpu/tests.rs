@@ -1234,3 +1234,15 @@ fn the_gl_bundle_is_found_in_the_gpuaddon_beside_the_metal_plugin() {
         "the OneiOSRadeonGL plug-in is for \"iPhone10,3 20F66\", the image set is build 24A446"
     );
 }
+
+/// The A56's OpenGL ES is offered only to a kernel that reads oneios-gpu-amd-gl (5966e71ce2aa on): on the pinned
+/// 181d8bf2d60a SpringBoard would find no GL driver with the CoreImage fixup left out.
+#[test]
+fn opengl_es_needs_a_kernel_that_reads_its_switch() {
+    let mut kc = vec![0u8; 4096];
+    kc.extend_from_slice(b"oneios-gpu-amd\0oneios-gpu-amd-cpu\0");
+    assert!(!kernel_knows_gl(&kc), "181d8bf2d60a's strings: no oneios-gpu-amd-gl");
+    kc.extend_from_slice(b"oneios-gpu-amd-gl\0");
+    assert!(kernel_knows_gl(&kc));
+    assert!(!kernel_knows_gl(b"oneios-gpu-amd-g"));
+}
