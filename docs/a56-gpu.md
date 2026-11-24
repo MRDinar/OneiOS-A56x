@@ -594,7 +594,7 @@ In `kern_descrip.c`, 0031's dyld lines also name `OneiOSRadeon*` files.
   `kernel.kc` `f090804d...`: audit 0 failures. The same on `release-kernel-a56` (branch `a56gpu/release-kernel-a56`):
   `...-f8def7dad866`, prelink audit 0 failures, never uploaded: superseded by the release kernel
   `xnu-12377.121.6-ios-27.0.1-24A446-181d8bf2d60a` (`release-kernel-a56` 0888d97: 0108 and 0109 on 16bd44f9d737's
-  branch; pinned in `kernel/release-kernel.txt`, docs/releases.md), the one A56 kernel with this stage in it 0108 also applies on `release-kernel-a56`'s series
+  branch; pinned in `kernel/release-kernel.txt`, docs/releases.md), the one A56 kernel with this stage in it. 0108 also applies on `release-kernel-a56`'s series
   (to 0092 and 0102-0107: `git apply` of all 183 patches in order on a scratch tree).
 - **Not done:** any boot. There is no A56 here and no qemu boot (qemu has no 3D: none of these lines would show).
   The plug-in, Mesa and the host renderer are the other stages.
