@@ -404,7 +404,26 @@ gives CoreBrightness's `-[BrightnessSystemInternal initBLControl:]` mode 1 (BLCo
 before that thread instantiates BrightnessSystem; a session without the plug-in keeps VMBLControl. `oneios-bl-mode=0`
 in the kernel's boot arguments turns it off. Why and what to look for: `drivers/brightness/README.md`.
 
-### 7.2 The Galaxy A56's Metal plug-in (`userland/metal-amd`, iOS 16.5)
+### 7.2 The Galaxy A56's guest Mesa (`userland/metal-amd`, iOS 16.5)
+
+For the A56 only (20F66, arm64; nothing of it is in an S24 Ultra or iOS 27 image). `userland/metal-amd/build.sh`
+builds Mesa's radeonsi (ACO, no LLVM) over the amdgpu virtio native context and a Darwin vdrm backend that speaks to
+the guest kernel's accelerator user client (open type 0x4149, `DroidVMVirtgpuABI.h`), into `out/metal-amd/ios`:
+
+- `liboneios_radeonsi.dylib`: exports `oneios_radeonsi_screen_create(why, why_size)` alone (the radeonsi
+  `pipe_screen`, K3 of [a56-gpu.md](a56-gpu.md)); install name `@loader_path/`, so it travels inside the A56's Metal
+  plug-in (`OneiOSRadeonMetal.bundle`, section 4 of a56-gpu.md), which links it.
+- `oneios-amdgpu-probe`: a lasting command-line tool for a root shell on the A56: the device, the capset's GPU facts,
+  a guest BO, a GFX NOP IB and its fence, one `PASS`/`FAIL` line each; `--screen` adds the radeonsi screen and a
+  clear read back.
+
+Both are arm64, minos 16.5, signed by `oneios-tool ios sign`, checked against the 20F66 stubs. Every process that
+opens the GPU logs `vdrm-darwin: connected: ...` to iOS's unified log, and every screen `oneios-radeonsi: screen
+"..."`. **Not placed in any image yet and not run in iOS**: the image hook does not know them; the Metal stage places
+the dylib with its bundle. Where they come from, what is stubbed and the host tests: [a56-gpu.md](a56-gpu.md)
+section 3; the build: [building.md](building.md) section 9, "The A56's guest Mesa".
+
+### 7.3 The Galaxy A56's Metal plug-in (`userland/metal-amd`, iOS 16.5)
 
 `OneiOSRadeonMetal.bundle`: Jesvi-iOS a13e406's Metal device and AIR Metal layer (MIT; `userland/metal-amd/NOTICE`
 lists every file taken and changed) for the A56's 20F66 image, built by `userland/metal-amd/air/build.sh plugin`
@@ -428,9 +447,9 @@ start and the first two pipelines a kernel text row in `xnuhost.log`: `oneios-gp
 0039's rows; the accelerator's class must start with `AGX` for the kernel to log them).
 
 **Not placed yet.** The image hook (`oneios-tool image tweaks`) places `NativeAdrenoMetal.bundle` for the S24 Ultra
-image; no tool places this bundle in the 20F66 image, and the kernel's addon mount (hosted 0031) looks for
-`NativeAdrenoMetal.bundle/Info.plist` and the iPhone18,2's sealed `AGXMetalG18P.bundle`: the kernel stage decides how
-the A56's bundle is mounted (a56-gpu.md section 5). `oneios-tool ios gpuaddon` already keeps its name
+image; no tool places this bundle in the 20F66 image, and the kernel mounts the addon as for the Adreno bundle (hosted 0031), and since hosted 0108 names the
+A56 bundle in its lines (`oneios-gpu-addon: .../OneiOSRadeonMetal.bundle/Info.plist ...: visible`, the dyld lines of
+`OneiOSRadeon*` files, the clients file named after the published plug-in; a56-gpu.md section 5). `oneios-tool ios gpuaddon` already keeps its name
 (`addons/OneiOSRadeonMetal.bundle/...`, `addons/OneiOSRadeonMetal.publish`).
 
 ## 8. What launchd, backboardd and SpringBoard need
