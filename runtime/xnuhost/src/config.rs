@@ -229,7 +229,7 @@ named!(
     Pen { Off = "off", Auto = "auto" }
 );
 named!(
-    /// sensors=: off (the default until a phone session proves it) | auto: the phone's sensor hub (SSC) over QRTR when
+    /// sensors=: off (no socket opened, as before) | auto (the default since 2026-11-25): the phone's sensor hub (SSC) over QRTR when
     /// its service 400 answers (runtime/bridges/sensors): the accelerometer, gyroscope and magnetometer as the guest's
     /// motion device /arm-io/input-N with oneios-motion=7 (15 with a magnetometer), the front light sensor for the
     /// brightness bridge with oneios-als-spu=1; else the old path (no motion device, the rear light sensor) | ssc: the same,
@@ -942,7 +942,7 @@ impl Config {
             pen: Pen::Off,
             pen_rotate: PenRotate::Auto,
             pen_mirror: false,
-            sensors: Sensors::Off,
+            sensors: Sensors::Auto, // on by default since 2026-11-25 (the owner: every new fix on); off: no socket opened
             sensors_hz: 50,
             sensors_light: None,
             encoder: Encoder::Off,
@@ -1354,7 +1354,7 @@ impl Config {
         take!(self, image, "pen", pen);
         take!(self, image, "pen-rotate", pen_rotate);
         take!(self, image, "pen-mirror", pen_mirror);
-        // sensors=, sensors-hz=, sensors-light= of the image set: how a phone session turns the sensor hub on.
+        // sensors=, sensors-hz=, sensors-light= of the image set: how a phone session turns the sensor hub off (sensors=off) or to ssc.
         take!(self, image, "sensors", sensors);
         take!(self, image, "sensors-hz", sensors_hz);
         take!(self, image, "sensors-light", sensors_light);
@@ -2389,7 +2389,7 @@ impl Config {
             ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
             ("astc", on(self.astc).to_string(), "1"),
             // sensors-als (2026-11-25): the sensor hub, and the guest switches xnuhost adds when it gives the guest its parts
-            ("sensors", self.sensors.as_str().to_string(), "off"),
+            ("sensors", self.sensors.as_str().to_string(), "auto"),
             ("sensors-hz", self.sensors_hz.to_string(), "50"),
             ("sensors-light", self.sensors_light.map_or("auto".to_string(), |n| n.to_string()), "auto"),
             ("oneios-motion", arg("oneios-motion", "0"), "0"),
@@ -2404,6 +2404,8 @@ impl Config {
             ("oneios-fill-fast-fault", arg("oneios-fill-fast-fault", "1"), "1"),
             ("oneios-audio-rt", arg("oneios-audio-rt", "1"), "1"),
             ("oneios-audio-curve", arg("oneios-audio-curve", "1"), "1"),
+            // fix/codec-irq: the video codec's transport on the media device's SPI (the codec archive's edit 7); 0 polls.
+            ("oneios-codec-irq", arg("oneios-codec-irq", "1"), "1"),
             ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
             ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
             // fix/s24-fps-heat-camera: the Metal add-on's room kept ahead (KeepRoom.inc), UIKit's animation links
@@ -2416,8 +2418,9 @@ impl Config {
             ("oneios-compile-s", arg("oneios-compile-s", "120"), "120"),
             ("oneios-snapshot-astc", arg("oneios-snapshot-astc", "0"), "0"),
             ("oneios-camera-notify", arg("oneios-camera-notify", "1"), "1"),
-            // main 166a22c: the Adreno shader fixes 0101 and 0102 (ShaderFix.inc, 90110-shader-fix-switch.patch), off by default.
-            ("oneios-m2v-shader-fix", arg("oneios-m2v-shader-fix", "0"), "0"),
+            // main 166a22c: the Adreno shader fixes 0101 and 0102 (ShaderFix.inc, 90110-shader-fix-switch.patch), on by default
+            // since 2026-11-25 (the owner: every new fix on); oneios-m2v-shader-fix=0 turns them off.
+            ("oneios-m2v-shader-fix", arg("oneios-m2v-shader-fix", "1"), "1"),
             // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
             ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
             ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),

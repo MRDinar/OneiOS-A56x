@@ -86,7 +86,7 @@ display. Until that is seen in a session: the userland should set
 `BKEnableALS` false in `com.apple.backboardd` (as the Mi A3's `root-brightness.py`), so backboardd does not
 wait for a sensor; auto-brightness is then off and the slider sets the level.
 
-### The SPU light sensor (sensors-als, 2026-11-25; `oneios-als-spu=1`, off by default; not booted)
+### The SPU light sensor (sensors-als, 2026-11-25; `oneios-als-spu=1`, added by xnuhost with `sensors=auto`, its default; not booted)
 
 The shape the working ports give CoreBrightness (ios-redfin 23019ab4 `xnu/patches/0971`, `1298`; Jesvi-iOS a13e406
 `userland/src/inject_sensors.c`; both MIT): the Apple vendor pair `{0xff00, 4}` of an iPhone's sensor processor,

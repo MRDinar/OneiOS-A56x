@@ -117,9 +117,9 @@ fn settings_and_sizes() {
             && c.set("clusters", "EEPPPPPPP").is_err()
             && c.set("clusters", "EX").is_err()
     );
-    // sensors=: off by default; auto, ssc; the rate 5..200; the light by index 0..7 or auto
+    // sensors=: auto by default (2026-11-25); off, ssc; the rate 5..200; the light by index 0..7 or auto
     let mut s = Config::new();
-    assert!(s.sensors == Sensors::Off && s.sensors_hz == 50 && s.sensors_light.is_none());
+    assert!(s.sensors == Sensors::Auto && s.sensors_hz == 50 && s.sensors_light.is_none());
     assert!(s.set("sensors", "auto").is_ok() && s.sensors == Sensors::Auto && s.set("sensors", "hal").is_err());
     assert!(s.set("sensors", "ssc").is_ok() && s.sensors == Sensors::Ssc);
     assert!(s.set("sensors-hz", "100").is_ok() && s.sensors_hz == 100 && s.set("sensors-hz", "4").is_err());
@@ -1601,9 +1601,9 @@ fn the_switches() {
     }
     c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 \
                    oneios-disable-allowed=0 oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 \
-                   oneios-audio-rt=0 oneios-audio-curve=0 oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-keep-room=0 \
-                   oneios-dl-full=0 sheng-vsync-min=24 oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 \
-                   oneios-m2v-shader-fix=1 oneios-dont-care=0 oneios-queue-priority=0"
+                   oneios-audio-rt=0 oneios-audio-curve=0 oneios-codec-irq=0 oneios-idle-spares=0 oneios-bo-cache-idle=0 \
+                   oneios-keep-room=0 oneios-dl-full=0 sheng-vsync-min=24 oneios-compile-s=0 oneios-snapshot-astc=1 \
+                   oneios-camera-notify=0 oneios-m2v-shader-fix=0 oneios-dont-care=0 oneios-queue-priority=0"
         .into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
@@ -1615,8 +1615,8 @@ fn the_switches() {
         line.contains(
             " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0 \
              oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 oneios-audio-rt=0 oneios-audio-curve=0 \
-             oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-keep-room=0 oneios-dl-full=0 sheng-vsync-min=24 \
-             oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-m2v-shader-fix=1 oneios-dont-care=0 \
+             oneios-codec-irq=0 oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-keep-room=0 oneios-dl-full=0 sheng-vsync-min=24 \
+             oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-m2v-shader-fix=0 oneios-dont-care=0 \
              oneios-queue-priority=0 (docs/switches.md)"
         ),
         "{line}"
@@ -1627,7 +1627,7 @@ fn the_switches() {
              wifi-buffers wifi-joined-scan encoder-10bit encoder-warmup display-post display-present decoder decoder-codecs astc \
              oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut oneios-pressure-big oneios-disable-allowed \
              oneios-nested-exact oneios-upgrade-flush oneios-fill-fast-fault oneios-audio-rt oneios-audio-curve \
-             oneios-idle-spares oneios-bo-cache-idle oneios-keep-room oneios-dl-full sheng-vsync-min oneios-compile-s \
+             oneios-codec-irq oneios-idle-spares oneios-bo-cache-idle oneios-keep-room oneios-dl-full sheng-vsync-min oneios-compile-s \
              oneios-snapshot-astc oneios-camera-notify oneios-m2v-shader-fix oneios-dont-care oneios-queue-priority"
         ),
         "{line}"
@@ -1635,13 +1635,15 @@ fn the_switches() {
     // sensors-als (2026-11-25): the hub's switches after decoder-codecs, the guest's two before oneios-wifi-rssi
     let mut s = Config::default();
     assert!(s.switches_line().contains(
-        " decoder-codecs=h264,hevc,vp9,av1 astc=1 sensors=off sensors-hz=50 sensors-light=auto oneios-motion=0 oneios-als-spu=0 oneios-wifi-rssi=1 "
+        " decoder-codecs=h264,hevc,vp9,av1 astc=1 sensors=auto sensors-hz=50 sensors-light=auto oneios-motion=0 oneios-als-spu=0 oneios-wifi-rssi=1 "
     ));
-    assert!(s.set("sensors", "auto").is_ok() && s.set("sensors-light", "1").is_ok());
+    assert!(s.set("sensors", "ssc").is_ok() && s.set("sensors-light", "1").is_ok());
     s.boot_args = "oneios-motion=15 oneios-als-spu=1".into();
     let line = s.switches_line();
-    assert!(line.contains(" sensors=auto sensors-hz=50 sensors-light=1 oneios-motion=15 oneios-als-spu=1 "), "{line}");
+    assert!(line.contains(" sensors=ssc sensors-hz=50 sensors-light=1 oneios-motion=15 oneios-als-spu=1 "), "{line}");
     assert!(line.ends_with("not at the default: sensors sensors-light oneios-motion oneios-als-spu"), "{line}");
+    // sensors=off, the way to turn the hub off (no socket opened), is not the default
+    assert!(s.set("sensors", "off").is_ok() && s.switches_line().contains(" sensors=off sensors-hz=50 "));
     // takeover-ram (2026-11-23): the takeover's memory steps and option C, in the line after stop-loop and ram-fit-terms.
     let mut m = Config::default();
     assert!(m.switches_line().contains(

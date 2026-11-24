@@ -93,13 +93,13 @@ stage() {
   # This project's extra metal2vulkan patches (userland/metal/patches/metal2vulkan: the Adreno-generic shader
   # translation fixes of hakios-arm64e-dada, rebased on the pin): copied as 9xxx. The base's build-adreno-metal-bridge.py
   # applies a fixed list of names, not *.patch: since 2026-11-25 `ios metal-stage-edit` appends 90101, 90102 and
-  # 90110 (the switch: both fixes off without the boot argument oneios-m2v-shader-fix=1, which ShaderFix.inc below turns
-  # into METAL2VULKAN_SHADER_FIX=1; docs/switches.md). 90103 stays in no list (it does not apply on the bridge's stack).
+  # 90110 (the switch: both fixes on unless the boot argument oneios-m2v-shader-fix=0; ShaderFix.inc below sets
+  # METAL2VULKAN_SHADER_FIX=1 otherwise; docs/switches.md). 90103 stays in no list (it does not apply on the bridge's stack).
   # `.github/workflows/gpu-patch-check.yml` checks that they apply to the pin.
   if ls "$HERE"/patches/metal2vulkan/*.patch >/dev/null 2>&1; then
     mkdir -p "$R/patches/metal2vulkan"
     for p in "$HERE"/patches/metal2vulkan/*.patch; do cp "$p" "$R/patches/metal2vulkan/9$(basename "$p")"; done
-    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx: 90101, 90102, 90110 in the bridge's list, behind oneios-m2v-shader-fix=1; 90103 in none)"
+    say "copied $(ls "$HERE"/patches/metal2vulkan/*.patch | wc -l) metal2vulkan patches of OneiOS (9xxx: 90101, 90102, 90110 in the bridge's list, on unless oneios-m2v-shader-fix=0; 90103 in none)"
   fi
   # Lasting debug tooling, off by default (each patch only logs when its environment variable is set:
   # ONEIOS_VK_INIT, ONEIOS_SURFACE_TRACE): the trace patches staged beside the base's own, applied by the
@@ -202,10 +202,10 @@ stage() {
   # (oneios-gpu-text: ... CP pools/command buffers cut ... idle ... tuc ...); metal-stage-edit added its calls.
   cat "$HERE/CommandPoolRow.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
   say "staged NativeAdrenoMetalPlugin.mm: userland/metal/CommandPoolRow.inc appended (the command pool row)"
-  # userland/metal/ShaderFix.inc (owner: gpu): the boot argument oneios-m2v-shader-fix=1 sets METAL2VULKAN_SHADER_FIX=1,
-  # the switch of the shader fixes 0101 and 0102 (90110-shader-fix-switch.patch); nothing without it.
+  # userland/metal/ShaderFix.inc (owner: gpu): sets METAL2VULKAN_SHADER_FIX=1, the switch of the shader fixes 0101 and
+  # 0102 (90110-shader-fix-switch.patch), unless the boot argument oneios-m2v-shader-fix=0 (on by default since 2026-11-25).
   cat "$HERE/ShaderFix.inc" >> "$R/drivers/AdrenoMetal/NativeAdrenoMetalPlugin.mm"
-  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/ShaderFix.inc appended (METAL2VULKAN_SHADER_FIX=1 with oneios-m2v-shader-fix=1)"
+  say "staged NativeAdrenoMetalPlugin.mm: userland/metal/ShaderFix.inc appended (METAL2VULKAN_SHADER_FIX=1 unless oneios-m2v-shader-fix=0)"
   # userland/metal/rt/RtSwitches.inc (METAL_RUNTIME=rt): the boot words oneios-dont-care=0 and oneios-queue-priority=0
   # turn rt patches 0005 and 0006 off (docs/switches.md).
   if [ "$RUNTIME" = rt ]; then

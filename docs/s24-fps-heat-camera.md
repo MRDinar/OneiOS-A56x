@@ -110,7 +110,7 @@ oneios-tool phone addon $H/addon/default.gpuaddon --cdhashes $H/addon/default.gp
 oneios-tool phone switch --version-code N                # then: phone log --save, phone pull-log DIR
 ```
 
-`overlay/userland/xnuhost.conf`: nothing to add for the defaults (every fix is on, `oneios-m2v-shader-fix` off). The
+`overlay/userland/xnuhost.conf`: nothing to add for the defaults (every fix is on; since the merge into main 2026-11-25 `oneios-m2v-shader-fix` too). The
 first boot runs them all with `display-post=apart` and `display-present=ahb`; a second boot with
 `display-present=window` is the display helper's comparison (its share of a core, copy time, frames per 10 s), a third
 with `display-post=serial` the frame-pacing one. The first boot after this add-on recompiles every Turnip driver
@@ -120,7 +120,7 @@ them all): `astc=0` (and then `oneios-snapshot-astc` does nothing), `display-pre
 only the words wanted. The Turnip split and the reflection fix have no switch (a hang and a crash fix).
 
 The lines that prove each fix are in the table above; the first ones to look for: `versions: ... 8ded46c ...`,
-`switches: ... ; all at their defaults` (41 words, with `display-present=ahb` and `oneios-m2v-shader-fix=0`), `gpu:
+`switches: ... ; all at their defaults` (41 words on the branch, with `display-present=ahb` and `oneios-m2v-shader-fix=0`; on main since the merge `oneios-m2v-shader-fix=1`, with the audio, codec and sensors words too), `gpu:
 astc=1: ...`, the kernel's `oneios-display: refresh range 60..120 Hz`, the helper's `oneios-display:
 display-present=ahb: 3 write-only buffers (...) on a child surface of the layer`, and in `phone pull-log`'s iOS log
 `OneiOS display links: hooked (made M fps 1 range 1)` and `OneiOS snapshots: JPEG or PNG, not ATX (hooked)`. Not

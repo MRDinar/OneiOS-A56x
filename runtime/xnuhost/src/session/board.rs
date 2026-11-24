@@ -461,8 +461,8 @@ impl Session {
         } else if script_pen {
             logi!("pen: pen=off: the input script's pen lines are left out");
         }
-        // The motion sensors and the front light sensor (sensors=auto|ssc; off by default until a phone session proves
-        // it): the phone's sensor hub (SSC) over QRTR, no Android framework (onebridges::sensors). The hub is asked here,
+        // The motion sensors and the front light sensor (sensors=auto|ssc; auto by default since 2026-11-25, sensors=off turns it
+        // off): the phone's sensor hub (SSC) over QRTR, no Android framework (onebridges::sensors). The hub is asked here,
         // before the devices are counted: its accelerometer decides the guest's motion device (/arm-io/input-N, after
         // the touch screen and the pen) and its light sensor the guest's SPU light sensor (oneios-als-spu=1). The
         // streams start with the bridges; auto with no hub (no QRTR, no service 400, no answer) is the old path.

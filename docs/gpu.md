@@ -1578,12 +1578,13 @@ conf keeps it too. Test: `ios16_coreimage_fixup_is_left_out_only_with_the_a56_gl
 `build.sh turnip` removes `build/mesa-tu-ios27` when the inputs of its cross file changed (the SDK, the compilers,
 the base script), since an existing directory only gets `meson configure`. The `9xxx` copies of
 `patches/metal2vulkan`: since 2026-11-25 90101, 90102 and the switch 90110 are in the bridge's list (`ios
-metal-stage-edit`), **off by default** behind the boot argument `oneios-m2v-shader-fix=1` (docs/switches.md, the
-plug-in's `ShaderFix.inc` sets `METAL2VULKAN_SHADER_FIX=1`); 90103 is in none (it does not apply on the bridge's
+metal-stage-edit`), **on by default since the merge into main (2026-11-25)**, `oneios-m2v-shader-fix=0` turns them off (docs/switches.md, the
+plug-in's `ShaderFix.inc` sets `METAL2VULKAN_SHADER_FIX=1` unless it says 0); 90103 is in none (it does not apply on the bridge's
 stack). With the switch, a run-time-indexed constant table past 4 KiB is read from the constant blob (an Adreno backs a
 thread's private copy per fiber) and constant GEP and cast pointers into that blob are lowered; the device profile's
 fingerprint takes the switch, so the shader cache never serves a translation of the other setting. Ported from
-orumanayurpanjayat-ux/OneiOS `d157b43`, which applied both in every build; not booted with the switch on.
+orumanayurpanjayat-ux/OneiOS `d157b43`, which applied both in every build; not booted with the switch on (the first boot
+with it on translates each shader again: the profile's fingerprint changed).
 
 **metal2vulkan's upstream (2026-11-23, fix/m2v-update): the pin stays 624bab3.** Upstream `development` at
 `6462199fa` (2026-11-23) is 9,217 commits newer. It is a new runtime: `metal2vulkan-rt`, written from 2026-11-17

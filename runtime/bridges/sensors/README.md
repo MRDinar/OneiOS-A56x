@@ -6,7 +6,8 @@ sensor (`als_rear`, STK6D2x, evdev) gives 0 lux on the S24 (`docs/TODO.md`). Thi
 no Android framework (system_server is gone in a session): Linux's own QRTR sockets (`AF_QIPCRTR`), QMI service 400
 (the SNS client service), protobuf messages. The iOS side: `kernel/patches/oneios-hosted/hid` (the motion devices,
 `oneios-motion=`) and `drivers/brightness` (the SPU light sensor, `oneios-als-spu=1`). The switches: `sensors=`,
-`sensors-hz=`, `sensors-light=` (`docs/switches.md`, `docs/booter.md` "Sensors").
+`sensors-hz=`, `sensors-light=` (`docs/switches.md`, `docs/booter.md` "Sensors"); `sensors=auto` is the default since the
+merge into main (2026-11-25, the owner: every new fix on), `sensors=off` opens no socket (as before).
 
 **Not run on the phone.** Host tests pass (below); built on the build laptop; not booted. The first command on the
 phone is `oneios-tool phone qrtr` (below): it says whether this route is open on One UI at all.

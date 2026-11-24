@@ -1949,7 +1949,7 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
   the side button. Host tests: `src/pen/tests.rs` (`test_pen` of `tests/test_xnuhost.c` in the C).
 - **Sensors** (`src/motion.rs`, `runtime/bridges/sensors`, fix/sensors-als 2026-11-25; `docs/hardware.md` 7i). Settings:
-  **`sensors=off`** (the default until a phone session proves it), `auto` or `ssc`; `sensors-hz=5..200` (50: the
+  `off` (no socket opened, as before), **`sensors=auto`** (the default since 2026-11-25, the owner: every new fix on; with no hub it is the old path) or `ssc`; `sensors-hz=5..200` (50: the
   accelerometer's and gyroscope's rate; the magnetometer's at most 25); `sensors-light=auto|0..7` (which of the hub's
   light sensors). From the command line, else the image set's `xnuhost.conf` (`overlay/userland/xnuhost.conf` on the
   phone). With the bridges on and sensors not off, after the pen and before the GPU, the board opens the phone's sensor

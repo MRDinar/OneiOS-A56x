@@ -33,7 +33,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.rs`, `audio/aaudio_helper.rs` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (`H9ISPCaptureDeviceCreate`) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; in iOS (2026-11-22) the plug-in makes its device, CMCapture made no source (no `/product unique-model`: fixed with the camera nodes, not run yet, section 7); one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
-| Motion sensors and the front light (2026-11-25; off by default: xnuhost `sensors=auto`) | the HID archive: UniXNU-droidvm's `AppleSPUHIDDevice`s (accelerometer, gyroscope, orientation) and a compass (`oneios-motion=MASK`); the light sensor as an iPhone's SPU ALS (`oneios-als-spu=1`) | `runtime/bridges/sensors`: the sensor hub (SSC) over QRTR (QMI 400, ported from ios-redfin), xnuhost's motion device `/arm-io/input-N`; `sensorctl`, `oneios-tool phone qrtr` | host-tested and built; not booted; whether One UI lets a root process reach the hub is unknown until `phone qrtr` runs (section 7i) |
+| Motion sensors and the front light (2026-11-25; on by default since the merge into main: xnuhost `sensors=auto`, `sensors=off` turns it off) | the HID archive: UniXNU-droidvm's `AppleSPUHIDDevice`s (accelerometer, gyroscope, orientation) and a compass (`oneios-motion=MASK`); the light sensor as an iPhone's SPU ALS (`oneios-als-spu=1`) | `runtime/bridges/sensors`: the sensor hub (SSC) over QRTR (QMI 400, ported from ios-redfin), xnuhost's motion device `/arm-io/input-N`; `sensorctl`, `oneios-tool phone qrtr` | host-tested and built; not booted; whether One UI lets a root process reach the hub is unknown until `phone qrtr` runs (section 7i) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
 | Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
@@ -3457,7 +3457,7 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
   (`stk_sec_report`). `/sys/class/sensors/als_rear/` has `als_ir`, `als_clear`, `als_uv`, `als_raw_data`. No lux in
   this mode; the scale to lux is not calibrated [U].
 - The front light sensor is on the sensor hub (SSC): read over QRTR by `runtime/bridges/sensors` with `sensors=auto|ssc`
-  (section 7i; off by default, not booted); the brightness bridge then takes its readings instead of `als_rear`'s.
+  (section 7i; on by default since 2026-11-25 with `sensors=auto`, not booted); the brightness bridge then takes its readings instead of `als_rear`'s.
 
 ### iOS side (`drivers/brightness`, port of iOSPlus10 `2201-laurel-backlight-panel-power.patch` and `9005-laurel-backlight-calibration.patch`)
 
@@ -3514,7 +3514,7 @@ Details and the phone test: `runtime/bridges/brightness/README.md`, `drivers/bri
 - Light: `OB_BRIGHT_ALS` readings are kept in the kernel. The way to CoreBrightness is a HID device for the
   original `AppleUSBALSService` (AppleHIDALSService is in the collection): `OneiOSALSDevice.cpp`, built into the
   hosted kernel's HID archive against the collection's `IOHIDDevice` layout (section 7b) and started after the
-  touch screen and the buttons. With `oneios-als-spu=1` (2026-11-25, off by default) it is an iPhone's SPU light
+  touch screen and the buttons. With `oneios-als-spu=1` (2026-11-25; the kernel's default 0, xnuhost adds 1 when the light comes from the hub, which `sensors=auto` makes the default) it is an iPhone's SPU light
   sensor instead, for CoreBrightness itself (section 7i).
 
 ### The bridge (`runtime/bridges/brightness`)
@@ -4509,7 +4509,7 @@ panel, 1..2300 of 12750 detected, 1..12750 with `none` or the S24's properties, 
 `phone status`'s host line for each phone). 2026-11-23, on the build laptop: every S24 Ultra model number above (SM-S928B, U, U1, W, N, 0; the W with its US vendor model and bootloader) in `test_hw_backend.c` (the C, on main), `host.rs`, `test-verify-host.sh` and `run.sh`; the same day in the Rust (`cargo test -p onebridges host_device`, `test_hw_backend.rs`): those models, the stock SM-S928W, and the S26 Ultra by its codename `m3q` and by its platform `canoe` alone; `cpu::test_cpu::cpu` has the S26 Ultra's SM8850 topology (the C's `test_bridges.c` `test_cpu`). **Not run on a phone**: the first phone start shows the line above; on the
 S24 Ultra it must say `galaxy-s24-ultra ... defaults: none (today's)`.
 
-## 7i. Sensors: motion and the front light, from the sensor hub (fix/sensors-als, 2026-11-25; off by default; not booted)
+## 7i. Sensors: motion and the front light, from the sensor hub (fix/sensors-als, 2026-11-25; on by default since the merge into main, `sensors=off` turns it off; not booted)
 
 Details: `runtime/bridges/sensors/README.md` (the host, the route, the HAL fallback), `kernel/patches/oneios-hosted/hid/README.md`
 ("Motion sensors", "The SPU light sensor"), `drivers/brightness/README.md` (the light sensor). The research behind it:
@@ -4525,7 +4525,7 @@ Details: `runtime/bridges/sensors/README.md` (the host, the route, the HAL fallb
   allows most things [I]), and the S24's data type names and light sensors. **`oneios-tool phone qrtr --sensors`** answers
   all of it, read only (`tools/oneios-tool/README.md`).
 
-### The host (`runtime/bridges/sensors`, xnuhost `motion.rs`; `sensors=auto|ssc`, default off)
+### The host (`runtime/bridges/sensors`, xnuhost `motion.rs`; `sensors=auto|ssc`, default auto since 2026-11-25)
 
 - A SEE client ported from ios-redfin (MIT) on Linux's own QRTR: the hub's service 400 found at xnuhost's boot, each
   sensor's SUID and attributes; the light used is the first whose name does not say "rear" (`sensors-light=N` picks one).

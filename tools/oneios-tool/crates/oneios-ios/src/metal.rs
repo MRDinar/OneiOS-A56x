@@ -109,7 +109,7 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
             (
                 "\n\ndef git_tree(*steps):",
                 "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90110-shader-fix-switch.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-compile-deadline.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch); the Adreno shader fixes 0101 and 0102 behind their switch, off without oneios-m2v-shader-fix=1 (90110-shader-fix-switch.patch); the compile deadline per process (m2v-compile-deadline.patch)",
+                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch); the Adreno shader fixes 0101 and 0102 behind their switch, on unless oneios-m2v-shader-fix=0 (90110-shader-fix-switch.patch); the compile deadline per process (m2v-compile-deadline.patch)",
             ),
         ],
     )?;

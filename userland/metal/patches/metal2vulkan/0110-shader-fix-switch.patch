@@ -1,7 +1,7 @@
-OneiOS (port/oruma-2026-11-24, 2026-11-25): the switch of the Adreno shader fixes 0101 and 0102, default off.
+OneiOS (port/oruma-2026-11-24, 2026-11-25): the switch of the Adreno shader fixes 0101 and 0102 (on by default since 2026-11-25).
 
-METAL2VULKAN_SHADER_FIX=1 (read once per process, env_vars::shader_fix; the Metal plug-in sets it from the boot
-argument oneios-m2v-shader-fix=1, userland/metal/ShaderFix.inc) turns on 0101's rule (a run-time-indexed constant
+METAL2VULKAN_SHADER_FIX=1 (read once per process, env_vars::shader_fix; the Metal plug-in sets it unless the boot
+argument oneios-m2v-shader-fix=0, userland/metal/ShaderFix.inc) turns on 0101's rule (a run-time-indexed constant
 table past 4 KiB read from the constant blob) and 0102's cast and GEP arms of blob_const_offset. Off, both are the
 pin's code paths: the same translations, and the device profile's fingerprint is the pin's, so the shader cache's
 entries stay valid. On, the fingerprint takes the switch, so translations made with and without it never meet in
@@ -61,8 +61,8 @@ index e3adf03..82f8937 100644
 +
 +/// OneiOS: whether the Adreno shader fixes of patches 0101 and 0102 translate (`REGISTRY`):
 +/// `METAL2VULKAN_SHADER_FIX` is `1`. Read once per process, so every translation and the device
-+/// profile's fingerprint (`device::profile`) agree; the Metal plug-in sets it from the boot
-+/// argument `oneios-m2v-shader-fix=1` before its first device (userland/metal/ShaderFix.inc).
++/// profile's fingerprint (`device::profile`) agree; the Metal plug-in clears it with the boot
++/// argument `oneios-m2v-shader-fix=0` before its first device, else sets it (userland/metal/ShaderFix.inc).
 +/// Off, the library compiles what the pin compiles, and the fingerprint is the pin's.
 +pub fn shader_fix() -> bool {
 +    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

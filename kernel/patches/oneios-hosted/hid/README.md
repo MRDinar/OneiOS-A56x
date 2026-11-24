@@ -285,7 +285,7 @@ it. "HID events queued" is the count each such user client keeps of the events A
 "event driver" lines (`AppleUserHIDEventService`, then `IOHIDEventDriver` 120 s later) the reports are accepted
 and go nowhere, and `contacts begun` stays 0.
 
-## Motion sensors (sensors-als, 2026-11-25; off by default; not booted)
+## Motion sensors (sensors-als, 2026-11-25; the kernel's default 0, xnuhost adds oneios-motion with sensors=auto, its default; not booted)
 
 The accelerometer, gyroscope, device orientation and compass as an iPhone's sensor processor publishes them, from the
 S24 Ultra's sensor hub (xnuhost `sensors=`, `runtime/bridges/sensors`). After UniXNU-droidvm f9121cd, which proved the
@@ -329,7 +329,7 @@ class did not register (N): the device orientation is left out`. In iOS's log (`
 Not known until a phone boot [U]: everything above runs on the phone for the first time; the iPhone's locationd may want
 more of the SPU than the iPad's did; the compass's units are redfin's (microtesla), not checked on 24A446.
 
-## The SPU light sensor (sensors-als, 2026-11-25; oneios-als-spu=1, off by default; not booted)
+## The SPU light sensor (sensors-als, 2026-11-25; oneios-als-spu=1, added by xnuhost with sensors=auto, its default; not booted)
 
 On the phone the HID Sensor page light sensor (`drivers/brightness`) was refused by `AppleUSBALSService` and no lux reached
 CoreBrightness. With **`oneios-als-spu=1`** (xnuhost adds it when the light comes from the sensor hub) the device is an
