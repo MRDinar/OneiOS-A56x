@@ -1,0 +1,74 @@
+OneiOS's Metal plug-in for the Galaxy A56 (OneiOSRadeonMetal.bundle) and its AIR Metal layer
+================================================================================================
+
+The files under userland/metal-amd/air/ and userland/metal-amd/plugin/ were taken from
+jesvi-eulah/Jesvi-iOS at commit a13e406 ("Recover S20 fast charging after a temporary fallback"),
+the iOS 16.5 port to the Galaxy S20 (Exynos 990, Mali-G77) built on HakiOS. They are under the MIT
+licence of that repository (its LICENSE: "Everything else that is ours ... is licensed under the
+MIT License below"; only its xnu/ is APSL-2.0, and nothing of xnu/ is taken). Its notice:
+
+MIT License
+
+Copyright (c) 2025-2026 the HakiOS authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Taken (copied as they are at a13e406 in the first commit that adds them; each file keeps its own
+notice, the files without one are covered by the notice above):
+
+  Jesvi-iOS path                       here
+  tools/mesa/air/air2nir.c             air/air2nir.c
+  tools/mesa/air/air_bitcode.c, .h     air/air_bitcode.c, .h
+  tools/mesa/air/air_intrinsics.c      air/air_intrinsics.c
+  tools/mesa/air/air_layout.c          air/air_layout.c
+  tools/mesa/air/air_metal.c, .h       air/air_metal.c, .h
+  tools/mesa/air/air_metallib.c        air/air_metallib.c
+  tools/mesa/air/air_metal_test.c      air/air_metal_test.c
+  tools/mesa/air/air_module.c, .h      air/air_module.c, .h
+  tools/mesa/air/air_print.c           air/air_print.c
+  tools/mesa/air/air_private.h         air/air_private.h
+  tools/mesa/air/air_to_nir.c          air/air_to_nir.c
+  tools/mesa/air/meson.build           air/meson.build
+  tools/mesa/air/nir_air.h             air/nir_air.h
+  tools/air/argbuf_set.ll              air/tests/argbuf_set.ll       (hand-written LLVM IR, no Apple bytes)
+  tools/air/argbuf_direct.ll           air/tests/argbuf_direct.ll    (hand-written)
+  tools/air/fragpos.ll                 air/tests/fragpos.ll          (hand-written)
+  tools/air/phiconst.ll                air/tests/phiconst.ll         (hand-written)
+  userland/src/redwoodmetal.m          plugin/redwoodmetal.m
+  userland/src/redwooddrawable.m       plugin/redwooddrawable.m
+  userland/src/redwood_drawable.h      plugin/redwood_drawable.h
+  userland/src/metal_argument_indices.h plugin/metal_argument_indices.h
+  userland/src/m2m.h                   plugin/m2m.h
+  userland/src/metal_plugin.plist      plugin/metal_plugin.plist
+  userland/src/metal_dev.m             plugin/metal_dev.m      (Jesvi's probe of the Metal object graph; kept as reference, not built)
+  userland/src/metal_caps.m            plugin/metal_caps.m     (Jesvi's capability probe; kept as reference, not built)
+  userland/src/metal_props.c           plugin/metal_props.c    (Jesvi's discovery-property switch; kept as reference, not built)
+
+Not taken: tools/mesa/air/air_run.c (a test harness that draws on the Adreno), every .py tool,
+prebuilt/ (binaries), the Panfrost, freedreno and ir3 patches (another GPU), tools/mesa/redwood-drm
+(Jesvi's libdrm stand-in: on the A56 Mesa reaches the GPU through its Darwin vdrm), xnu/, and no
+Apple metallib, shared-cache extract or capture.
+
+What was changed, and why, is listed in "Changes" below (and in git history: the first commit is
+the verbatim copy).
+
+Changes
+-------
+
+(none yet: the verbatim copy)
