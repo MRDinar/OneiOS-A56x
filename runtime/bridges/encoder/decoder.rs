@@ -870,9 +870,8 @@ mod tests {
             c.release_output(index);
             c.run();
         }
-        let want: Vec<(i64, u32)> = (0..frames as i64)
-            .map(|p| (p, if p == frames as i64 - 1 { DEC_FLAG_END_OF_STREAM } else { 0 }))
-            .collect();
+        let want: Vec<(i64, u32)> =
+            (0..frames as i64).map(|p| (p, if p == frames as i64 - 1 { DEC_FLAG_END_OF_STREAM } else { 0 })).collect();
         assert_eq!(seen, want);
         assert!(c.waiting.is_empty());
         // with nothing held, the end comes out after the waiting pictures, without a buffer
