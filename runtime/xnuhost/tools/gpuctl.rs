@@ -927,6 +927,35 @@ fn amdgpu(args: &[String]) -> i32 {
     }
 }
 
+/// `gpuctl addon FILE [BUILD]`: whether a gpuaddon (the kernel's `kernel.kc.gpuaddon`, or `oneios-tool ios gpuaddon`'s
+/// output) carries the Galaxy A56's Metal plug-in as xnuhost's GPU choice reads it (gpu3d_amdgpu::plugin_in_addon), and
+/// for which image build; with BUILD (e.g. 20F66) its oneios-target must name it. Reads the file only; the exit status.
+fn addon(args: &[String]) -> i32 {
+    use xnuhost::gpu3d_amdgpu as amd;
+    let Some(path) = args.first() else {
+        eprintln!("usage: gpuctl addon FILE [BUILD]");
+        return 2;
+    };
+    let blob = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("FAILED at: {path}: {e}");
+            return 1;
+        }
+    };
+    match amd::plugin_in_addon(Some(&blob), args.get(1).map(String::as_str)) {
+        Ok(p) => {
+            println!("{path}: the {} plug-in, {} files, oneios-target \"{}\"", amd::PLUGIN, p.files, p.target);
+            println!("ok");
+            0
+        }
+        Err(why) => {
+            println!("FAILED at: {path}: {why}");
+            1
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut what = args.get(1).map_or("all", String::as_str);
@@ -938,9 +967,12 @@ fn main() {
     if what == "amdgpu" {
         std::process::exit(amdgpu(&args[2..]));
     }
+    if what == "addon" {
+        std::process::exit(addon(&args[2..]));
+    }
     let all = what == "all";
     if !all && !["nodes", "routes", "probe", "submit", "large"].contains(&what) {
-        eprintln!("usage: gpuctl [nodes|routes|probe|submit|large] [-v]\n       gpuctl amdgpu [NODE] [-v]");
+        eprintln!("usage: gpuctl [nodes|routes|probe|submit|large] [-v]\n       gpuctl amdgpu [NODE] [-v]\n       gpuctl addon FILE [BUILD]");
         std::process::exit(2);
     }
     if all || what == "nodes" {

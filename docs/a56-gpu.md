@@ -60,7 +60,7 @@ the same `Gpu3d` trait as drm2kgsl (`src/gpu3d.rs`), on `/dev/dri/renderD128`.
 | `src/gpu3d_amdgpu/addon.rs` | Whether the kernel's gpuaddon sidecar (NGPUADD2) carries `addons/OneiOSRadeonMetal.bundle/OneiOSRadeonMetal` and its `oneios-target`, and which build that names (read with `xh_core::inflate`, a zlib decoder added for it) |
 | `src/gpu3d_amdgpu/selftest.rs` | The self-test (below), and the guest-side encoder of Mesa's requests the tests reuse |
 | `src/gpu3d_amdgpu/tests.rs`, `tests/standin.rs` | 21 host tests on a stand-in amdgpu behind the renderer's `Dev` table (below) |
-| `tools/gpuctl.rs` | `gpuctl amdgpu [NODE] [-v]`: the self-test alone on the phone |
+| `tools/gpuctl.rs` | `gpuctl amdgpu [NODE] [-v]`: the self-test alone on the phone; `gpuctl addon FILE [BUILD]`: the plug-in check of a gpuaddon |
 
 **Sources, and where this follows upstream.** Written from virglrenderer's `src/drm/amdgpu/amdgpu_renderer.c`
 (`external/virglrenderer` 7e17c8e has upstream's file; the A56 fork's `runtime/xnuhost/amdgpu/src/amdgpu_renderer.c`
@@ -186,6 +186,12 @@ self-test, instead: `gpu: 2D only: the gpuaddon has no OneiOSRadeonMetal plug-in
 has no gpuaddon sidecar, so no ...`, `the OneiOSRadeonMetal plug-in is for "...", the image set is build ...`, `the
 amdgpu self-test failed (gpu: self-test: FAIL at STEP: WHY)`). Errors are `gpu: amdgpu: ...` lines (the first 64,
 then every 1000th). By hand: `adb shell su -c '/data/local/tmp/gpuctl amdgpu'` (last line `ok` or `FAILED at: ...`).
+`gpuctl addon FILE [BUILD]` reads a gpuaddon (the staged `kernel.kc.gpuaddon`, or `out/metal-amd/OneiOSRadeonMetal.gpuaddon`)
+the way the choice does (`plugin_in_addon`): `FILE: the OneiOSRadeonMetal plug-in, N files, oneios-target "iPhone10,3
+20F66"` and `ok`, or `FAILED at: FILE: WHY` with the choice's own reason. On the build laptop (2026-11-24) the integrated
+addon gives `4 files, oneios-target "iPhone10,3 20F66"` and `ok`; with BUILD `24A446` it is refused (`is for "iPhone10,3
+20F66", the image set is build 24A446`), and the S24 Ultra's `NativeAdrenoMetal.gpuaddon` with `the gpuaddon has no
+OneiOSRadeonMetal plug-in`.
 
 **What the other stages must match:** the kernel stage publishes the A56 accelerator only with `oneios-gpu-amd=1`
 (K5) and passes the DROIDVM_VIRTGPU_CREATE_BLOB size unchanged (the host refuses a size other than GEM_NEW's); the
