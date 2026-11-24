@@ -70,7 +70,29 @@ compare the `frame:` line's interval p95 against `display-post=serial` in the fi
 
 ### What the Mac stages (not booted)
 
-The hand-off folder (built from the commit after this text) is written into this section by the next commit.
+Everything is in `out/handoff/s24fps-e84a46e/` on the build laptop (README.txt, SHA256SUMS; 231 MB): copy the folder
+to the Mac. The integration build (`out/handoff/integration2-d3b802f`) boots first; this one after it.
+
+```sh
+H=out/handoff/s24fps-e84a46e
+oneios-tool phone sums                                   # note the phone's kernel.kc sha256 (to stage it back)
+oneios-tool phone stage runtime-asis $H/runtime           # runtime 0.1.27-dev, commit e84a46e, xnuhost 18c44ac6
+mkdir -p stage && cp $H/image/kernel.kc $H/image/kernel.kc.hashes stage/
+oneios-tool phone manifest stage --stage                 # kernel.kc a821fd1e (.hashes 196e4c94), xnu.macho 8971ecc9
+oneios-tool phone addon $H/addon/default.gpuaddon --cdhashes $H/addon/default.gpuaddon.cdhashes
+oneios-tool phone switch --version-code N                # then: phone log --save, phone pull-log DIR
+```
+
+`overlay/userland/xnuhost.conf`: nothing to add for the defaults (every fix is on). The first boot runs them all
+and `display-post=apart`; a second boot with `display-post=serial` is the frame-pacing comparison. To pin a fault,
+one switch off (`$H/xnuhost.conf.switches` lists them all): `astc=0` (and then `oneios-snapshot-astc` does nothing),
+or one line `boot-args-add=oneios-dl-full=0 sheng-vsync-min=24 oneios-keep-room=0 oneios-compile-s=0
+oneios-camera-notify=0` with only the words wanted.
+
+The lines that prove each fix are in the table above; the first ones to look for: `versions: ... e84a46e ...`,
+`switches: ... ; all at their defaults` (39 words), `gpu: astc=1: ...`, the kernel's `oneios-display: refresh range
+60..120 Hz`, and in `phone pull-log`'s iOS log `OneiOS display links: hooked (made M fps 1 range 1)` and `OneiOS
+snapshots: JPEG or PNG, not ATX (hooked)`. Not booted.
 
 ### What is left
 
