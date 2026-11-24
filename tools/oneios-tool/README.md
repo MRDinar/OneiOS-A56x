@@ -700,6 +700,8 @@ oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            
 oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
 oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list, turnip-idle-bo-cache.patch in the Mesa list, the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
+oneios-tool ios bundle-record ROOT BUNDLE RECORD TARGET [NAME[=COMMIT]...]   # package.sh 3c: an A56 bundle's build record (CDHashes, pins)
+oneios-tool image a56-gpu-place --stage STAGE --out DIR   # the app at Update the kernel: an iOS 16.5 set's kernel.kc.gpuaddon, owner-trust.json, manifest.json
 oneios-tool ios gpuaddon BUNDLE OUTPUT [--gl GLBUNDLE]   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2); addons/NativeAdrenoMetal.bundle, or addons/OneiOSRadeonMetal.bundle for a folder of that name (the A56, userland/metal-amd); --gl: the A56's OneiOSRadeonGL.bundle beside it (userland/metal-amd/gl)
 oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR] [--gl GLBUNDLE]   # the boot addon with the Metal and/or the capture plug-in (and the A56's OpenGL ES), and OUTPUT.cdhashes (hosted 0090)
 ```

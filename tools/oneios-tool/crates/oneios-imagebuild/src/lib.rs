@@ -28,6 +28,7 @@
 //! set's files and the lists' new lines. The fetched members in INDIR stay for the next run (they are the
 //! resumable part). Nothing here starts a program.
 
+pub mod a56gpu;
 mod cmd;
 pub mod data;
 
@@ -175,6 +176,9 @@ pub struct Tweak {
     pub args: Vec<String>,
     pub runtime_metal: Option<String>,
     pub runtime_camera: Option<String>,
+    /// The staged runtime's folder when its runtime.json names the Galaxy A56's GPU plug-ins ("metal_a56"; the phone's
+    /// `serve make-image` sets it): an iOS 16.5 set they are for gets them as its kernel.kc.gpuaddon (a56gpu.rs)
+    pub runtime_a56: Option<String>,
 }
 
 impl Tweak {
@@ -851,6 +855,22 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     }
     let said = image_cmd(&margs)?.trim_end().to_string();
     println!("{said}");
+    // The Galaxy A56's GPU plug-ins of the staged runtime (a56gpu.rs): an iOS 16.5 set they are for gets its
+    // kernel.kc.gpuaddon of them and their CDHashes in owner-trust.json (and that entry of manifest.json), before the
+    // verify reads the manifest; the sidecar is not in the manifest, so it is added to the lists below by name.
+    let mut a56_addon: Option<String> = None;
+    if let Some(runtime) = &args.tweak.runtime_a56 {
+        let plugins = a56gpu::runtime_plugins(Path::new(runtime)).map_err(failed)?;
+        match a56gpu::for_set(&set, plugins.as_ref()).map_err(failed)? {
+            Ok(placed) => {
+                a56gpu::write(&placed, &set, false).map_err(failed)?;
+                println!("{}", a56gpu::counts_line(&placed));
+                println!("{}", a56gpu::placed_line(&placed));
+                a56_addon = Some(oneios_image::sha256_of(&format!("{set_s}/{}", a56gpu::ADDON)).map_err(image)?);
+            }
+            Err(why) => println!("@@A56GPU none: {why}"),
+        }
+    }
     between()?;
     let total: u64 = set_files(&set)?.iter().map(|(_, m)| m.len()).sum();
     job::begin("verify", "bytes", total);
@@ -874,6 +894,9 @@ pub fn build(args: &Args, space: Space) -> R<Built> {
     }
     let manifest_sha256 = oneios_image::sha256_of(&format!("{set_s}/manifest.json")).map_err(image)?;
     sums.push(("manifest.json".into(), manifest_sha256.clone()));
+    if let Some(sha) = a56_addon {
+        sums.push((a56gpu::ADDON.into(), sha));
+    }
     sums.sort();
     let on_disk = set_files(&set)?;
     if on_disk.len() != sums.len() {
