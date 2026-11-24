@@ -47,6 +47,10 @@ Helpers started 2026-11-25 (T3 delegate tasks, each on its own branch; they repo
 - userland: worktree `/home/akshay/Documents/GitHub/OneiOS-wt/ios272-user`, branch `ios272/userland`: per-build
   userland tables (`scale_fixups`, the Metal plug-in's staged edits, the camera plug-in, both targets in the
   package, make-image's target pick), from 24B156's SystemOS image.
+  **Stopped at the hand-off**: its uncommitted edits are saved as `430ebe3` on `ios272/userland` (pushed; not
+  reviewed, not tested): `userland/metal/hooks/iPhone18,2-24B156.json`, scale fixups, the package for several
+  plug-in targets, `oneios-sym` disassembly (`dis.rs`), tweaks. It was next making `Tweak::for_image` pick among
+  the runtime's plug-in targets. Run its host tests before using any of it.
 
 The contract both were given: `runtime.json` keeps `"kernel"` (24A446) and adds `"kernels"`, an array of kernel
 objects with `"build"` (24B156's at `kernel/24B156/xnu.macho`, profile `ios-27.2.1-24B156`); the app's
