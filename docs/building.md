@@ -1004,6 +1004,7 @@ $T app build             # cd app-android && ./gradlew test assembleFullDebug (-
 $T app install           # adb install -r of that APK; refuses another signing certificate (never uninstall: that wipes the app's data)
 $T app install --release 0.4.86      # the CI prerelease oneios-0.4.86 instead, through gh
 $T app stage-scripts     # the fork's oneios_switch.sh, oneios_return.sh, oneios_root.sh into the stage, sha256 before and after
+$T app kb 24B156         # iOS 27.2.1's pairing files into the fork's assets/kb-24B156/ from this checkout (--check: compare only)
 ```
 
 The checkout is the first of: `--oneos DIR`; `ONEOS_DIR`; the current folder when it is a checkout; `app/` of the

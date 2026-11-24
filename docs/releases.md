@@ -348,6 +348,9 @@ tools up to v0.1.13 was over). A runtime's `bin/oneios-tool` reads format 2 when
 (OneiOS main at or after `de6b429`; v0.1.13 and older have no `kb` and refuse a `match/`
 without `fileset_match.py`). So an APK of format 2 goes with a runtime release after v0.1.13: with an older staged
 runtime, Update the kernel stops with "get the latest OneiOS runtime" and Make iOS image stages the newest one.
+Since 2026-11-25 the fork's pairing folders are written by `oneios-tool app kb BUILD` from this checkout's records
+(`assets/kb/` for 24A446, `assets/kb-24B156/` for iOS 27.2.1); `app kb BUILD --check` before a release says whether the
+fork's copy is the records' (tools/oneios-tool/README.md, "app").
 
 Make iOS image and the packed profiles (issue 75, 2026-11-23): a runtime packs every file of `profiles/` in
 `lib/profiles/` (v0.1.13 ... v0.1.15: four, v0.1.16: five, two of them host records). The app's `make-image` up to fork

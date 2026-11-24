@@ -2842,6 +2842,7 @@ oneios-tool app install [APK]            # adb install -r of the build output (o
 oneios-tool app install --release 0.4.86 [--repo akshaynexus/OneOS] [--dir out/app]   # the CI prerelease oneios-<version>, through gh
 oneios-tool app stage-scripts            # the fork's oneios_switch.sh, oneios_return.sh and oneios_root.sh into the stage
 oneios-tool app dir                      # the checkout's path alone (for scripts; the suites' fork_dir)
+oneios-tool app kb 24B156 [--check] [--repo .]   # one build's pairing files (assets/kb/ for 24A446, assets/kb-24B156/) from this checkout's records
 ```
 
 - **The checkout** (the fork becomes the submodule `app/` of OneiOS, 2026-11-15; in a checkout from before it
@@ -2894,6 +2895,13 @@ oneios-tool app dir                      # the checkout's path alone (for script
   the tool never uninstalls (that wipes the app's data). `--release VERSION` downloads
   `OneOS-oneios-VERSION-debug.apk` and its `.sha256` from the prerelease `oneios-VERSION` with
   `gh release download` (`GH` names the program) and checks the one against the other first.
+- `kb BUILD` (2026-11-25, ios272) writes one iOS build's pairing files into the fork (`assets/kb/` for 24A446,
+  `assets/kb-<BUILD>/` for another: 24B156) from this checkout: the OS profile `ios-*-BUILD/profile.toml`,
+  `reviewed-BUILD-v54.json`, the lead's and user's reviewed files, `pairs-BUILD.json`, `stubs-BUILD.json`,
+  XnuPrelink's `fixtures/fileset-*-symbols.json` (`match/fixtures/`, the folder kernel/prelink/build.sh takes) and
+  `kb.json` (format 2: the build, the device, the profile's kernelcache SHA-256, each file's). `--check` writes nothing
+  and fails on a file that differs or one that is not a pairing file. On the fork's `assets/kb/` of `38dc4f1`:
+  `app kb 24A446 --check` says "none changed" (the folder was copied by hand until then). Unit tests: `kb::tests`.
 - `stage-scripts` is for sessions started without the app (`docs/newtodo.md` step 4): each of the three files is
   pushed, copied to `NAME.part` in the stage as root (`root:root`, mode 0700) and moved into place, so what was
   there is replaced and never written through; the SHA-256 of each staged file is printed before and after and

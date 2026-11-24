@@ -10,6 +10,7 @@ pub mod app;
 pub mod cpu;
 pub mod cycle;
 pub mod host;
+pub mod kb;
 pub mod local;
 pub mod log;
 pub mod phone;
@@ -446,6 +447,18 @@ pub enum AppCommand {
     StageScripts,
     /// The checkout's path alone, as every app command and the cycle find it (for scripts)
     Dir,
+    /// One iOS build's pairing files (assets/kb/ for 24A446, assets/kb-BUILD/ for another) made from this checkout's
+    /// records; --check compares only (exit 1 when they differ)
+    Kb {
+        /// The Apple build (24A446, 24B156)
+        build: String,
+        /// Compare, write nothing
+        #[arg(long)]
+        check: bool,
+        /// This OneiOS checkout (default: the current folder)
+        #[arg(long, default_value = ".")]
+        repo: String,
+    },
 }
 
 /// Run a parsed `app` command; the exit status.
@@ -463,6 +476,7 @@ pub fn app_main(cli: AppCli) -> i32 {
         }
         AppCommand::StageScripts => fork().and_then(|f| app::stage_scripts(&f, serial)),
         AppCommand::Dir => fork().map(|f| println!("{}", f.dir.display())),
+        AppCommand::Kb { build, check, repo } => fork().and_then(|f| kb::run(std::path::Path::new(&repo), &f.dir, &build, check)),
     };
     match result {
         Ok(()) => 0,
