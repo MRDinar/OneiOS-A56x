@@ -326,6 +326,20 @@ impl Session {
         gic::map();
         uart::init(xm::BOARD_UART);
         self.image_set_open(config)?;
+        // iOS 16.5 (20F66, the Galaxy A56's userland): the kernel's 16.5 switches the image set's xnuhost.conf may not
+        // name yet (kernel 0103-0105, config::IOS16_BOOT_ARGS), so an image made before them needs no remake.
+        if self.image_set.as_ref().is_some_and(|s| s.build == "20F66") {
+            match config::ios16_boot_args(&mut config.boot_args, config::BOOT_ARGS_SIZE) {
+                Ok(added) if added.is_empty() => {
+                    logi!("ios16: image set 20F66: the boot arguments name every iOS 16.5 switch already")
+                }
+                Ok(added) => logi!("ios16: image set 20F66: added to the boot arguments: {}", added),
+                Err(_) => {
+                    loge!("ios16: image set 20F66: no room in the boot arguments for the iOS 16.5 switches");
+                    return Err(BootFailed);
+                }
+            }
+        }
         // A writable disk's flush on a thread of its own when the guest's driver takes it (virtio_blk.rs).
         logi!(
             "disk: a flush of a writable disk runs {} (blk-late-flush={})",

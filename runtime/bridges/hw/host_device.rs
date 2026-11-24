@@ -75,7 +75,8 @@ const NONE: &[&str] = &[];
 // ---- the table ------------------------------------------------------------------------------------------------------
 // The one place that says what differs per host phone. Rules (docs/hardware.md, "The host device"):
 //   - an entry holds only settings that already exist as options: an xnuhost setting that the config merges as a device
-//     default (gpu, panel-fallback, hw-backend*), or an environment variable a bridge reads;
+//     default (gpu, panel-fallback, hz, width/height/scale (one frame), return-graceful-ms, hw-backend*), or an
+//     environment variable a bridge reads;
 //   - the home device (the S24 Ultra) has none: its behaviour is today's, byte for byte;
 //   - takeover: true allows session-mode=takeover there (the opt-in Android takeover, docs/booter.md 2.9d): only on a
 //     phone where that mode ran (the S26 Ultra, YMGPwcca's experiment) or that is the owner's (the S24 Ultra);
@@ -171,7 +172,13 @@ static TABLE: [HostDevice; 5] = [
     // ro.soc.model); platform s5e8855 [I]. gpu=2d [F]: no KGSL (Xclipse 540 on amdgpu, /dev/dri/renderD128) and xnuhost's
     // 3D half is drm2kgsl only, so gpu=auto would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the
     // fork's A56 session passes --gpu 2d. panel-fallback=1080x2340@120 [F] (the fork's docs/a56-guide.md), as for the
-    // S25. Touch, haptics, battery and thermal node names on the A56 are [U]: samsung stays.
+    // S25. Touch, battery and thermal node names on the A56 are [U]: samsung stays.
+    // 2026-11-24 (port/a56-full, the fork Musicalista/OneiOS-A56 to c83b9ca): the guest frame 720x1560 @2x at 60 Hz [F]
+    // (c83b9ca, e8747cc: the same 360x780 points as 1080x2340 @3x, 2.25x fewer pixels for its CPU compositor; the display
+    // helper scales it to the panel); return-graceful-ms=4000 [F] (e8747cc: kernel 0106 sends logd SIGTERM in that window,
+    // so iOS's log reaches the Data store); haptics on the AIDL vibrator HAL [I] (the A56 has no FF_PERIODIC/FF_SINE
+    // evdev device: "haptics: off: no force-feedback device ..." in issue 73's log; the fork found none either), back to
+    // the evdev search if the HAL is not registered (hw-backend-fallback=1: haptics is the row's only treble bridge).
     HostDevice {
         name: "galaxy-a56",
         label: "Galaxy A56 (SM-A566, Exynos 1580)",
@@ -179,7 +186,17 @@ static TABLE: [HostDevice; 5] = [
         devices: &["a56x"],
         socs: &["s5e8855"],
         platforms: &["s5e8855"],
-        config: &["gpu=2d", "panel-fallback=1080x2340@120"],
+        config: &[
+            "gpu=2d",
+            "panel-fallback=1080x2340@120",
+            "width=720",
+            "height=1560",
+            "scale=2",
+            "hz=60",
+            "return-graceful-ms=4000",
+            "hw-backend-haptics=treble",
+            "hw-backend-fallback=1",
+        ],
         env: NONE,
         takeover: false,
     },

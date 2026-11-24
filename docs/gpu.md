@@ -543,7 +543,8 @@ pages without one (the PC). What the 3D path still needs from the display is lis
 
 **Options.** `--gpu auto` (default: 3D when `/dev/kgsl-3d0`, `/dev/udmabuf` and `/dev/dma_heap/system` open and
 KGSL takes the probe), `--gpu 3d` (or do not start), `--gpu 2d`. The reason for 2D is in the log (`gpu: 2D only: ...`).
-The default is the host phone's when its table entry has one (`docs/hardware.md` 7h: the Galaxy A56, which has no KGSL,
+The default is the host phone's when its table entry has one (`docs/hardware.md` 7h: the Galaxy A56, which has no KGSL and no
+Xclipse 3D path here (`docs/a56.md`, "The Xclipse host half": the other fork's AMDGPU renderer left iOS's UI black),
 is `2d`); the command line and the image set's `gpu=` win over it.
 drm2kgsl's own switches are environment variables it reads (`DRM2KGSL_PRIORITIES`, `CROSVM_DRM2KGSL_DIAG=1`).
 

@@ -1406,6 +1406,9 @@ impl Config {
         if self.hz == 0 {
             self.hz = image.hz;
         }
+        if self.hz == 0 {
+            self.hz = device.hz; // the host phone's rate (the galaxy-a56 row: 60, the fork's CPU-composited A56)
+        }
         // panel-fallback: the command line's, else the image set's, else the host phone's
         self.panel_fallback = self.panel_fallback.or(image.panel_fallback).or(device.panel_fallback);
         take!(self, image, "display-direct", display_direct);
@@ -1415,6 +1418,24 @@ impl Config {
             return Err(ConfigError::new("display-format=rgba16f needs --display shm"));
         }
         take!(self, image, "scale", scale);
+        // The host phone's guest frame (width, height and its UI scale, taken as one): only where neither the command line
+        // nor the image set gives a width or a height. Its scale then wins over the image set's, which is the scale of the
+        // panel-sized frame roottweak made the image for, but not over the command line's. The galaxy-a56 row: 720x1560 @2x,
+        // the fork's A56 frame since 2026-11-22 (Musicalista/OneiOS-A56 c83b9ca: the same 360x780 points as 1080x2340 @3x,
+        // 2.25x fewer pixels for the CPU compositor; the display helper scales it to the panel).
+        // return-graceful-ms: the command line's, else the image set's (finish_ram), else the host phone's (galaxy-a56: 4000,
+        // in which kernel 0106 sends logd SIGTERM so iOS's log reaches the Data store).
+        if !self.given("return-graceful-ms") && !image.given("return-graceful-ms") && device.given("return-graceful-ms")
+        {
+            self.return_graceful_ms = device.return_graceful_ms;
+        }
+        if self.width == 0 && self.height == 0 && device.width != 0 && device.height != 0 {
+            self.width = device.width;
+            self.height = device.height;
+            if device.given("scale") && !self.given("scale") {
+                self.scale = device.scale;
+            }
+        }
         take!(self, image, "scale-fixup", scale_fixup);
         if self.text_fixups.is_empty() {
             self.text_fixups = image.text_fixups.clone();
@@ -1765,6 +1786,16 @@ impl Config {
         match key {
             "gpu" => self.given("gpu") || image.given("gpu"),
             "panel-fallback" => self.panel_fallback.is_some() || image.panel_fallback.is_some(),
+            "hz" => self.hz != 0 || image.hz != 0,
+            // the frame is taken as one (width, height, scale): not where a width or a height is given above
+            "width" | "height" | "scale" => {
+                self.width != 0
+                    || self.height != 0
+                    || image.width != 0
+                    || image.height != 0
+                    || (key == "scale" && self.given("scale"))
+            }
+            "return-graceful-ms" => self.given(key) || image.given(key),
             _ => {
                 let mut one = HwSettings::default();
                 if one.setting(key, value).is_err() {
@@ -1819,7 +1850,8 @@ sched_preemption_disable_debug_mode=0 wdt=-1 native-source-storage=1 vgpu-3d=1 d
 
 /// The keys a host table entry may give as device defaults.
 fn device_key(key: &str) -> bool {
-    key == "gpu" || key == "panel-fallback" || key.starts_with("hw-backend")
+    matches!(key, "gpu" | "panel-fallback" | "hz" | "width" | "height" | "scale" | "return-graceful-ms")
+        || key.starts_with("hw-backend")
 }
 
 /// `<dir>/<name>` when it is a regular file.
@@ -1865,6 +1897,35 @@ fn native_impacts_boot_arg(args: &mut String, size: usize) -> Result<(), NoRoom>
         return Ok(());
     }
     append_arg(args, size, "oneios_native_impacts=1")
+}
+
+/// The boot arguments an iOS 16.5 (20F66) userland needs on the 24A446 kernel collection beyond the image set's own
+/// (roottweak's 20F66 xnuhost.conf), from the Galaxy A56 fork's switch (Musicalista/OneiOS-A56 e8747cc, c83b9ca;
+/// docs/a56.md). xnuhost adds them for an image set of build 20F66 only, so the user updates the runtime and the
+/// kernel and keeps the image: oneios-hid16=1 (kernel 0103: touch events in 16.5's layout), oneios-grant=configd's
+/// IONetworkStack entitlement (0104: en0 is named, Wi-Fi comes up), oneios-ls-keep=3 (0105: LaunchServices' database
+/// kept), oneios-disable-jobs (0053: 0053's three defaults and the fork's eight idle jobs; 250 bytes, the kernel's list
+/// holds 255).
+pub const IOS16_BOOT_ARGS: &str = "oneios-hid16=1 \
+oneios-grant=configd:com.apple.networking.ionetworkstack.user-client oneios-ls-keep=3 \
+oneios-disable-jobs=com.apple.accessibility.axassetsd,com.apple.aonsensed,com.apple.prngseedd,com.apple.suggestd,\
+com.apple.spotlightknowledged,com.apple.corespotlightservice,com.apple.siriknowledged,com.apple.tipsd,com.apple.gamed,\
+com.apple.followupd,com.apple.tailspind";
+
+/// The words of [`IOS16_BOOT_ARGS`] that `args` does not name already, added (the command line's and the image set's
+/// win); the names of those added, space-separated (empty: all were named). Err when they do not fit `size` bytes.
+pub fn ios16_boot_args(args: &mut String, size: usize) -> Result<String, NoRoom> {
+    let mut next = args.clone();
+    let mut added = Vec::new();
+    for w in words(IOS16_BOOT_ARGS) {
+        let name = w.split('=').next().unwrap_or(w);
+        if !boot_arg_named(&next, name) {
+            append_arg(&mut next, size, w)?;
+            added.push(name);
+        }
+    }
+    *args = next;
+    Ok(added.join(" "))
 }
 
 /// Whether `args` has a boot argument named `name`: a word equal to it, or one that starts with it and then '='.

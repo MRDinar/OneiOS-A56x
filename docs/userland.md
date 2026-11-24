@@ -59,7 +59,10 @@ run instead of being written over. A root that is not iOS 27.0.1 is refused (`--
 (20F66), the Galaxy A56's userland (docs/a56.md, 2026-11-23): its tweaks apply with a line that says so, and its
 `xnuhost.conf` carries the 16.5 boot arguments (the 16.5 shims, `oneios-gpu-metal=0`, and since 2026-11-23
 `oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService`, kernel 0073), the keybagd fixup (only for 20F66's own
-`keybagd`, by its SHA-256) and the QuartzCore vsync fixup. On the 20F66 root of 2026-11-23 the report says 6 launchd jobs
+`keybagd`, by its SHA-256) and the QuartzCore vsync fixup. Since 2026-11-24 its boot arguments also carry hosted 0103-0105's switches
+(`oneios-hid16=1`, configd's `oneios-grant`, `oneios-ls-keep=3`) and `oneios-disable-jobs` with the other A56 fork's idle
+jobs (suggestd, spotlightknowledged, corespotlightservice, siriknowledged, tipsd, gamed, followupd, tailspind) beside
+0053's three; xnuhost adds the same words to an older 20F66 image ([booter.md](booter.md), "iOS 16.5's kernel switches"). On the 20F66 root of 2026-11-23 the report says 6 launchd jobs
 disabled (most of the policy's labels are not in 16.5) and no jetsam properties for V54 (the root has D22's).
 
 ## 2. Layouts

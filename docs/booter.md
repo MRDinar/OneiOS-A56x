@@ -209,7 +209,10 @@ The way back never depends on the guest acting: the deadline is ours and the for
 everything; a guest with no shutdown helper (or any image before this) simply reaches the deadline and is killed.
 Log: `return: graceful shutdown asked; iOS has up to N ms`, then `return: iOS shut down in N ms` or
 `return: graceful shutdown timed out after N ms; stopping`. State machine: `runtime/xnuhost/src/ret.rs`
-(unit-tested). **The guest half is the Mac's to build:** a guest helper that `oneios_power_request()` reaches which
+(unit-tested). Since 2026-11-24 (hosted 0106, from the other A56 fork) the kernel's `oneios_power_request()` sends logd
+`SIGTERM` (line `oneios-power: return asked: SIGTERM to logd (N process(es))`), so iOS's unified log reaches the Data
+store before the kill; iOS does not halt, so the wait runs to its deadline. Only the galaxy-a56 host row turns the
+window on (`return-graceful-ms=4000`, [hardware.md](hardware.md) 7h); the S24 Ultra's default stays 0. **The rest of the guest half is the Mac's to build:** a guest helper that `oneios_power_request()` reaches which
 runs iOS's clean power-off (a halt, so xnuhost exits and the return completes, not a reboot). The host half above
 works and is tested without it; the end-to-end (iOS saving its overlay) is not yet verified. The kernel's own
 shutdown path does nothing to the host: a guest halt or PSCI SYSTEM_OFF/RESET only sets `xh_stop` (no `reboot(2)`,
@@ -285,6 +288,13 @@ A port of DarwinBoot with no firmware under it (C until 2026-11-23, now the crat
   `RAMDisk1` mirrors `RAMDisk` (same address and size) only when the tree names it: iOS 16 userlands look for the
   ramdisk under that name too (port-a56, docs/a56.md). xnuhost names it exactly when the image set's build is
   20F66; a 27 kernel's tree is byte-identical to before.
+- iOS 16.5's kernel switches (2026-11-24, docs/a56.md "The second port"): for an image set of build 20F66, xnuhost
+  adds to the guest's boot arguments each word of `IOS16_BOOT_ARGS` (`runtime/xnuhost/src/config.rs`) they do not
+  name already: `oneios-hid16=1` (hosted 0103, touch), `oneios-grant=configd:com.apple.networking.ionetworkstack.user-client`
+  (0104, Wi-Fi's en0), `oneios-ls-keep=3` (0105) and `oneios-disable-jobs=...` (0053: its three defaults and eight idle
+  jobs of the other A56 fork). An image made before them needs no remake (roottweak writes the same words for a new
+  one; a test keeps the two lists equal). One line: `ios16: image set 20F66: added to the boot arguments: oneios-hid16
+  oneios-grant oneios-ls-keep oneios-disable-jobs` (or `... name every iOS 16.5 switch already`). Any other build: nothing.
 
 The difference from a firmware loader is one parameter: `virt_base`. DarwinBoot passes the kernel's link
 base and the kernel maps itself there. xnuhost passes the address where the window **already is**, a

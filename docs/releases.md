@@ -449,6 +449,24 @@ release `kernel-xnu-...-7d540ae9e518`. Its prelink (`out/kernel/24A446-release-a
 `f5ddb36983d81c60...`): audit 2711 paired, 93 on the stub, 0 failures. **Not booted** on any phone before the release
 (the owner's 2026-11-24 rule: no qemu boot; the A56 user's boot is the test).
 
+The kernel pinned after v0.1.23 (2026-11-24, `port/a56-full`; for the next release; v0.1.23 has v0.1.22's kernel): built on the build laptop in the
+`release-kernel-a56` worktree and branch (`82fa3b0`: v0.1.22's kernel, 096f1e76's series to 0092 with main's 0004 and
+0012, plus the new hosted 0102-0107), `HOSTED_OUT=release-a56c ONEIOS_CRYPTO=original kernel/build-hosted.sh`, uploaded
+from there with `kernel/publish.sh --hosted release-a56c --upload`: `xnu-12377.121.6-ios-27.0.1-24A446-16bd44f9d737`,
+`xnu.macho` 24,675,504 bytes, SHA-256 `03a777fd9767e2c3bc89d1d84f6987c238b6fa265c5f956c346e4c25863cf5a7`, 183 patches,
+`"releasable": true`. Archive 6,449,789 bytes, SHA-256
+`6c198b67494ee366290bb126184a1c7d04b406d55784349ae58c05fd08736ba7` (downloaded again from the release and checked),
+release `kernel-xnu-...-16bd44f9d737`. What it adds: the other Galaxy A56 fork's iOS 16.5 kernel fixes (touch 0103,
+configd's IONetworkStack entitlement 0104, LaunchServices' keep 0105, logd's flush at a graceful return 0106, the
+queue-head dump 0102) and 0107, iOS 27's port policy left off for an iOS 16 userland (the EXC_GUARD kills of
+SpringBoard and the daemons in the A56 logs of 2026-11-24 20:05 and 20:31; [a56.md](a56.md) "The second port"). Each
+is off for iOS 27: 0103-0105 act on boot arguments xnuhost adds only for a 20F66 image set, 0107 on 0068's
+`oneios-legacy-registered-ports=1`, which only a 20F66 image passes, 0106 only on a graceful return (the galaxy-a56
+row), so the S24 Ultra runs v0.1.22's kernel code. Main's 0093-0101 are still left out. Its prelink
+(`out/kernel/24A446-release-a56c/kernel.kc`, SHA-256 `cb7d7e30287f3be5...`): audit 2711 paired, 93 on the stub, 0
+failures. `kernel/tests/host.sh` 12 of 12 (with 0103's conversion test). **Not booted** on any phone. (A first build
+without 0107, `...-8b2943c5003a`, was uploaded an hour before and deleted when 0107 came; nothing had pinned it.)
+
 ## Released
 
 | Tag | Date | Commit | What |

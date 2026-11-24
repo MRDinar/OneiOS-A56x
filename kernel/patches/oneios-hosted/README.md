@@ -2321,3 +2321,86 @@ part 1 is measured there. Part 1's memory is the cost to watch: 25 MiB of bitmap
 times a few, not times 250; `pmap: ... unmaps` near the maps; `0101: ... fast fills` near the old `to vm_fault` count
 and `to vm_fault (us)` a fraction of 45-49 s; `refmod` the largest cause left; `nested exact=1: B KiB` against the
 wired count.
+
+## 0102-0106: the other Galaxy A56 fork's iOS 16.5 fixes (port/a56-full, 2026-11-24)
+
+Taken from Musicalista/OneiOS-A56 (branch `main` to `c83b9ca`, its last push of 2026-11-22; OneiOS issue 73,
+[docs/a56.md](../../../docs/a56.md) "The second port"), renumbered to the next free numbers (fork → here: 0078 → 0102,
+0079 → 0103, 0080 → 0104, its change of 0043 → 0105, 0076 → 0106). None of them does anything for iOS 27: 0103-0105
+act only on boot arguments that xnuhost adds for an image set of build 20F66 (`IOS16_BOOT_ARGS`,
+`runtime/xnuhost/src/config.rs`), 0102 only on one nobody passes, 0106 only when xnuhost asks for a graceful return
+(`return-graceful-ms` > 0: the galaxy-a56 host row only). Built into the release kernel
+`xnu-12377.121.6-ios-27.0.1-24A446-16bd44f9d737` (branch `release-kernel-a56`: v0.1.22's series plus these five and 0107) and
+prelinked with the audit's 0 failures; `git apply` on main's patched tree (to 0101) too. **Not booted** (no A56 here,
+no qemu boot); the fork's own phone results are quoted below.
+
+- **0102** `oneios-dq-head=N` (iokit/Kernel/IODataQueue.cpp, `sendDataAvailableNotification`): the first N entries at a
+  data queue's head (0x20..0x800 bytes, 0x200 shown), in hex, one line per 32 bytes: `oneios-dq-head: I size 0xS @0xO:
+  ...`. IOHIDFamily's event queues to backboardd write their entries without `IOSharedDataQueue::enqueue`; the
+  notification goes out when a write made the queue non-empty, so its head is that write. A lasting tool, off without
+  the argument. The fork's 0074 and 0075 (an `enqueue` dump that saw nothing of the HID queues, and notification
+  counters) are not taken: 0102 is the one that found the cause.
+- **0103** `oneios-hid16=1` (the same file): the A56's touch. iOS 27's IOHIDFamily writes a digitizer event as 0xa0
+  bytes (x/y/z as doubles at 16/24/32, six words at 40..64, three doubles at 64..88, the orientation type at 88, six
+  doubles at 96..144, three words at 144..156) and puts a 28-byte header before every child event; 20F66's IOKit
+  (`IOHIDEventCreateWithBytes`, `IOHIDEventGetFloatValueWithOptions`, read by the fork in its shared cache) reads a
+  0x68-byte event (x/y/z as IOFixed at 16/20/24, the words at 28..52, three floats at 52..64, the orientation type at
+  64, six floats at 68..92, three words at 92..104) back to back after one header. So backboardd counted every touch
+  and found no finger. At each "data available" notification the queue's unread elements made only of iOS 27
+  digitizer events are rewritten in place (header kept, IOFixed and floats from the doubles' bits without floating
+  point, the rest of the entry zeroed); a rewritten element no longer matches, so a second pass leaves it alone. An
+  element written while the queue was not empty is rewritten at the next notification if still unread (else read
+  unconverted: the fork's limit, kept). Lines: `oneios-hid16: digitizer events rewritten for iOS 16.5 (first: N
+  events)`, then `oneios-hid16: N touch elements rewritten for iOS 16.5` every 1000. The fork's A56 (2026-11-21,
+  kernel.kc `e831dec7`): touch works, 371 frames in the test session against about 10. `kernel/tests/host.sh` builds
+  the patch's own conversion and runs it on an element made like the fork's dumped entry (`tests/test_hid16.c`: x
+  0.50002 → 32769, y 0.43588 → 28565, finger, identity 2, mask 0x804, radius 5.0; a second pass, another event type,
+  another sender, the edges).
+- **0104** `oneios-grant=PROC:ENTITLEMENT[,...]` (iokit/Kernel/IOUserClient.cpp, `copyClientEntitlement`): when AMFI
+  has no value for the entitlement and the process name (as `proc_name` gives it) and the entitlement match a listed
+  pair, the answer is `kOSBooleanTrue`. 20F66's configd (InterfaceNamer) lacks
+  `com.apple.networking.ionetworkstack.user-client`, which iOS 27's `IONetworkStackUserClient::initWithTask` wants, so
+  the open failed (`0xe00002c2`), en0 was never named and wifid found no Wi-Fi interface ("Device manager not
+  present"). Line once per pair: `oneios-grant: configd[N] given com.apple.networking.ionetworkstack.user-client`. The
+  fork's A56 (kernel.kc `00d8b9cc`): the grant line, `ONEIOS WIFI: first naming (en0 attached ...) by configd`, en0 up
+  and wifid's Apple80211 requests; no scan or join seen there.
+- **0105** `oneios-ls-keep=3` (bsd/kern/kern_exec.c, 0043's code): 0043's test (`=2`, the default) with the
+  /Applications bundles that have no `Info.plist` of their own left out. 20F66 has `DisplayCal.app`, a macOS bundle
+  (`Contents/Info.plist`) that lsd never registers; counted, no database ever named every app, so every boot dropped
+  it and SpringBoard's main thread waited about 66 s for lsd after the first frame (the fork's A56). The fork ran with
+  `oneios-ls-keep=1` (keep every one); 3 keeps the drop of a database saved before the registration ended.
+- **0106** (bsd/kern/kern_sig.c): `oneios_power_request()` over the bridge's weak default
+  (`drivers/bridge/OneiOSBridge.c`): a thread call that sends every `logd` `SIGTERM` (what launchd sends it at a
+  power-off), so its buffers reach the Data store before xnuhost's kill; launchd starts a new logd. Not a power-off:
+  iOS keeps running to xnuhost's deadline. Line: `oneios-power: return asked: SIGTERM to logd (N process(es))`. The
+  fork: iOS's log on the Data store held only the first ~40 s of each boot before it. A later clean power-off replaces
+  this definition.
+
+The fork's 0077 (`oneios-log-debug`, Debug logging profiles written before launchd) is not taken: a debugging aid of
+its touch hunt, which 0102-0103 closed. Its series ends at 0080; every other patch of it is in this series (docs/a56.md).
+
+## 0107-ios16-port-policy.patch (a56-full, 2026-11-24)
+
+- **The fault** (OneiOS issue 73, the A56 user's logs of 2026-11-24 20:05 and 20:31: runtime 0.1.22/0.1.23, kernel
+  `7d540ae9e518`, our 20F66 image): iOS 16.5 reached the lock screen, then SpringBoard died again and again (46 times
+  in the second boot, which then hung at the Apple logo), and so did assistantd, coreduetd, contactsd, searchd,
+  IMDPersistenceAgent and maild: `ERROR: [NAME:PID] EXC_GUARD AST: type=0x1 flavor=F ...`, then `FATAL exception:
+  type=0xc reason=0x17`, then `[NAME: killed] exiting with signal 9`, and "Too many corpses being created" for the
+  widgets after them. Not jetsam: "kills since boot 0", 2.3 GiB available. Two flavors only, in both boots (20 + 5
+  of 0x42, 4 + 22 of 0x6):
+  - `flavor=0x42 target=0x4010 code=0x2000004200004010`: kGUARD_EXC_INVALID_MPO_ENTITLEMENT. 0x4010 is
+    `MPO_WEAK_REPLY_PORT` (0x4000, iOS 16's `MPO_PROVISIONAL_REPLY_PORT`) | `MPO_INSERT_SEND_RIGHT`: iOS 16's
+    libraries construct provisional reply ports, and iOS 27's `mach_port_construct` wants an entitlement for that
+    (osfmk/ipc/mach_port.c's entitlement step, `IPC_SEC_POLICY_DISALLOW_CONSTRUCT_WEAK_REPLY_PORT_WITHOUT_ENTITLEMENT`,
+    enforced on iOS by `ipc_sec_policy_should_apply_weak_reply_port`, ipc_policy.c);
+  - `flavor=0x6 target=0x1 subcode=0x22` (searchd): kGUARD_EXC_EXCEPTION_BEHAVIOR_ENFORCE, osfmk/kern/ipc_tt.c's
+    `set_exception_behavior_violation`, by the tunable `thid_should_crash` (default true).
+- **The fix**: with `oneios-ios16-port-policy=1` the weak reply port policy's callback says "not applied" (the
+  construct goes on, as on iOS 16's own kernel) and `set_exception_behavior_violation` ignores the violation (as with
+  `thid_should_crash=0`, for every task). Its default is the value of `oneios-legacy-registered-ports` (hosted 0068),
+  which every 20F66 image's boot arguments carry (roottweak, 2026-11-21), so the A56 user only updates the kernel;
+  iOS 27 has neither, and both policies stay as they are there. One line at boot, beside 0068's:
+  `oneios-ios16-port-policy: on: weak reply port construct and exception behaviour not enforced (iOS 16 userland)`.
+- **The proof on the A56**: that line; no `EXC_GUARD AST` with flavor 0x42 or 0x6 and no `FATAL exception: type=0xc
+  reason=0x17` for SpringBoard and the daemons above; SpringBoard stays up past the lock screen. Built into the
+  release kernel (docs/releases.md); not booted (no A56 here).
