@@ -539,6 +539,23 @@ ONEIOS_CRYPTO=original HOSTED_OUT=ios272 kernel/build-hosted.sh` on main's serie
 back; GitHub's digest agrees). An earlier pack of the same folder had `28a57a37…`: packing again stamps new file times in the
 archive; its three files (`xnu.macho` `3439037c…`, the record, `series.txt`) are byte for byte the same. **Not booted.**
 
+The **release kernels of main `0f4ad03`** (2026-11-25; **uploaded and pinned** from the build laptop; both lines of
+`kernel/release-kernel.txt` replaced): main with fix/audio-volume-rt (`oneios-audio-rt`, `oneios-audio-curve`),
+fix/codec-irq (`oneios-codec-irq`, edit 7 of the codec archive), fix/s24-fps-heat-camera (`sheng-vsync-min=60`) and
+fix/sensors-als (the HID archive's SPU motion devices and light sensor) merged on the owner's word **without a phone boot
+and with the merged tree's tests skipped**. `HOSTED_OUT=rel24a ONEIOS_CRYPTO=original kernel/build-hosted.sh` (314 s, 193
+patches, releasable): `xnu-12377.121.6-ios-27.0.1-24A446-ec527eee8e69`, `xnu.macho` `f7ed2b9a…`, collection `4944456b…`
+(`kernel/prelink/build.sh`: 2711 paired, 93 on the stub, 0 failures); `HOSTED_OUT=rel272 ONEIOS_OS_PROFILE=ios-27.2.1-24B156`:
+`xnu-12377.121.6-ios-27.2.1-24B156-1ff040fc5c9b`, `xnu.macho` `e5129d1e…`, collection `4ef7fbd5…` (2710 paired, 0 failures).
+`kernel/publish.sh --hosted rel24a --upload` and `--hosted rel272 --upload`:
+[`kernel-…-24A446-ec527eee8e69`](https://github.com/akshaynexus/OneiOS/releases/tag/kernel-xnu-12377.121.6-ios-27.0.1-24A446-ec527eee8e69)
+SHA-256 `16979b9e53977782e54d8e7f5ccb205492750f040e65d469a9655abff6611967` and
+[`kernel-…-24B156-1ff040fc5c9b`](https://github.com/akshaynexus/OneiOS/releases/tag/kernel-xnu-12377.121.6-ios-27.2.1-24B156-1ff040fc5c9b)
+SHA-256 `96d7b2e6ad2f263d31ac39efead6700501623c8428e28b892cf966efa36278cb` (both downloaded back: the SHA-256, GitHub's
+digest and `xnu.macho` agree). The app's pairing files match these records (`oneios-tool app kb 24A446 --check`, `24B156
+--check`: none changed). On the way: the toolchain layout's links now name `out/toolchain`'s real path (`598f7ce`) and
+`kernel/prelink/build.sh` removes a stale `aligned-reference.json` before its weak list (`2b715ce`). **Not booted.**
+
 ## Released
 
 | Tag | Date | Commit | What |
