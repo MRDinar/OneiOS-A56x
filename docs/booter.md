@@ -1802,7 +1802,7 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   | `/product artwork-scale-factor` | the artwork scale (the identity tree's 3 is replaced) |
   | `/chosen/xnuhost display-width`, `display-height`, `display-scale`, `display-hz` | the mode as xnuhost has it, for the hosted kernel |
   | boot arguments `offline-legacy-unit-scale=N`, `sheng-vsync=HZ` | the display driver: its scale policy; the vsync tick and the refresh properties. Added unless the command line has them |
-  | `/chosen text-fixups` | for 3 only, and only for build 24A446: two fixups of QuartzCore's `-[CADisplayMode preferredScale]`, which answers 2 on its own (`kernel/patches/oneios-hosted/display/README.md` "Scale"). `--set scale-fixup=0` leaves them out; `--text-fixup FILE,OFFSET,ORIGINAL,REPLACEMENT` (repeatable) adds others |
+  | `/chosen text-fixups` | for 3 only, and only for builds 24A446 and 24B156 (`config::SCALE_FIXUPS_3X`, the same function at each build's offset): two fixups of QuartzCore's `-[CADisplayMode preferredScale]`, which answers 2 on its own (`kernel/patches/oneios-hosted/display/README.md` "Scale"). `--set scale-fixup=0` leaves them out; `--text-fixup FILE,OFFSET,ORIGINAL,REPLACEMENT` (repeatable) adds others |
 
   `/product artwork-device-subtype` stays the identity's (2868). The Data seed's `identity.expect` holds the
   scale the image was built with; a `--set scale=` that differs from the image's makes `oneios-mg` report it.

@@ -33,6 +33,10 @@
 //! between are the same in FROM and TO (a vtable's symbol, 16 zero bytes before the slots its constructor stores);
 //! such a record is marked for review.
 //!
+//! A data address still not carried that points to its own name (a pointer at +0..+24 to a C string of 4 to 128
+//! printable bytes: a `vnodeop_desc`'s `vdesc_name`) goes to the one TO address whose pointer of the same kind at the
+//! same offset points to the same string (none or several: not carried); marked for review.
+//!
 //! `--fields KEY` (with a record that has `"family_text": [low, high]`, the display record): every integer of the
 //! record's object KEY is a struct field offset. Each FROM instruction of the paired functions in [low, high) that
 //! reaches one of them (LDR/STR, LDUR/STUR, LDP/STP or ADD immediate off a register other than SP) votes for the
@@ -394,7 +398,25 @@ impl<'a> Porter<'a> {
                 (None, None) => self.from.image.read(a + w, 8).is_some() && self.from.image.read(a + w, 8) == self.to.image.read(b + w, 8),
                 _ => false,
             });
-            return same.then(|| Carried { to: b, sure: false, how: format!("data, {d} bytes before the pair {} -> {}, the words between the same", hex(a + d), hex(q)) });
+            if same {
+                return Some(Carried { to: b, sure: false, how: format!("data, {d} bytes before the pair {} -> {}, the words between the same", hex(a + d), hex(q)) });
+            }
+            break; // the nearest pair only
+        }
+        self.named_by_content(a)
+    }
+
+    /// named: a data object that points to its own name (a `vnodeop_desc`'s `vdesc_name` at +8, "vnop_searchfs"): the
+    /// one TO address whose pointer at the same offset, of the same kind, points to the same C string. How the
+    /// 24A446 reviewers named these objects by hand (reviewed-24A446-v54.json `_vnop_searchfs_desc`); marked for review.
+    fn named_by_content(&self, a: u64) -> Option<Carried> {
+        for w in (0..32u64).step_by(8) {
+            let Some(fix) = self.from.fixups.get(&(a + w)) else { continue };
+            let Some(name) = cstr(&self.from.image, fix.target) else { continue };
+            let mut found = self.to.fixups.iter().filter(|(_, y)| y.meta() == fix.meta() && cstr(&self.to.image, y.target) == Some(name)).map(|(&site, _)| site);
+            let (Some(site), None) = (found.next(), found.next()) else { return None };
+            let b = site.checked_sub(w)?;
+            return Some(Carried { to: b, sure: false, how: format!("data, named by its content: the one pointer to \"{}\" at +{w}", String::from_utf8_lossy(name)) });
         }
         None
     }
@@ -852,4 +874,12 @@ pub fn run(args: Args) -> Result<()> {
         bail!("port: {left_total} record(s) left out (--strict)");
     }
     Ok(())
+}
+
+/// The C string at `va` (4 to 128 printable bytes, then a NUL), without the NUL; None for anything else.
+fn cstr<'a>(image: &Image<'a>, va: u64) -> Option<&'a [u8]> {
+    let bytes = [129u64, 64, 32, 16, 8].iter().find_map(|&n| image.read(va, n))?;
+    let end = bytes.iter().position(|&b| b == 0)?;
+    let name = &bytes[..end];
+    (name.len() >= 4 && name.iter().all(|b| b.is_ascii_graphic() || *b == b' ')).then_some(name)
 }

@@ -3,6 +3,11 @@
  "kernelcache_sha256": "f6f31ac427bed2cdcf1353a6d84e3c2897354a86b2cc708f0e330a99be9a5939",
  "functions": [
   {
+   "original": "0xfffffe000b328984",
+   "native": "__ZN12IODMACommand8DispatchE5IORPC",
+   "why": "ios272 2026-11-25: 24A446's known-good pair (0xfffffe000b2d2628, \"both\"), which prelink port did not carry; 24B156's own matcher pairs this import of AppleIISController, AppleOnboardSerial, IOAVFamily and IOUSBDeviceFamily to the same name (the audit of collection 27e24d90: new pair, not in the list)"
+  },
+  {
    "original": "0xfffffe000b43d140",
    "native": "__ZN14IOPMrootDomain9isLPWModeEv",
    "why": "prelink 2026-11-12, from the stub list: the one name between IOPMrootDomain::claimSystemWakeEvent and IORegistryEntry::getRegistryRoot (IOAccessoryManager, 13 calls); the same test as ours: the root domain's state at +0x60, +0x160 == 3 or +0xa0 == 3 (Apple adds a byte flag at +860 first)"
@@ -12726,6 +12731,16 @@
  ],
  "data": [
   {
+   "original": "0xfffffe0007ed7e58",
+   "native": "__ZN25IOInterruptDispatchSource9metaClassE",
+   "why": "ios272 2026-11-25: 24A446's known-good pair (0xfffffe0007ec7d80, \"both\"), which prelink port did not carry; 24B156's own matcher pairs this import of IOSkywalkFamily to the same name (the audit of collection 27e24d90)"
+  },
+  {
+   "original": "0xfffffe000b778b20",
+   "native": "_vnop_default_desc",
+   "why": "ios272 2026-11-25: 24A446's known-good pair (0xfffffe000b720b10, \"both\"), which prelink port did not carry; 24B156's own matcher pairs this import of apfs, lifs and tmpfs to the same name (the audit of collection 27e24d90)"
+  },
+  {
    "original": "0xfffffe0007044824",
    "native": "_version",
    "why": "both"
@@ -13186,10 +13201,22 @@
    "why": "both"
   },
   {
+   "original": "0xfffffe000b770900",
+   "native": "_vnop_searchfs_desc",
+   "why": "both",
+   "port": "review: 0xfffffe000b718900 -> 0xfffffe000b770900: data, named by its content: the one pointer to \"vnop_searchfs\" at +8"
+  },
+  {
    "original": "0xfffffe000b770bc8",
    "native": "_iftovt_tab",
    "why": "mac: matcher reference-data; unpaired in the Linux collection",
    "port": "review: 0xfffffe000b718bc8 -> 0xfffffe000b770bc8: data, 64 bytes before the pair 0xfffffe000b718c08 -> 0xfffffe000b770c08, the words between the same"
+  },
+  {
+   "original": "0xfffffe000b770c30",
+   "native": "_vnop_compound_open_desc",
+   "why": "both",
+   "port": "review: 0xfffffe000b718c30 -> 0xfffffe000b770c30: data, named by its content: the one pointer to \"vnop_compound_open\" at +8"
   },
   {
    "original": "0xfffffe000b770c70",
@@ -13205,6 +13232,18 @@
    "original": "0xfffffe000b770cf0",
    "native": "_vnop_compound_remove_desc",
    "why": "both"
+  },
+  {
+   "original": "0xfffffe000b770d30",
+   "native": "_vnop_renamex_desc",
+   "why": "both",
+   "port": "review: 0xfffffe000b718d30 -> 0xfffffe000b770d30: data, named by its content: the one pointer to \"vnop_renamex\" at +8"
+  },
+  {
+   "original": "0xfffffe000b770d70",
+   "native": "_vnop_compound_rename_desc",
+   "why": "both",
+   "port": "review: 0xfffffe000b718d70 -> 0xfffffe000b770d70: data, named by its content: the one pointer to \"vnop_compound_rename\" at +8"
   },
   {
    "original": "0xfffffe000b770db0",
@@ -13245,6 +13284,12 @@
    "original": "0xfffffe000b770f70",
    "native": "_vnop_removexattr_desc",
    "why": "both"
+  },
+  {
+   "original": "0xfffffe000b770fb0",
+   "native": "_vnop_verify_desc",
+   "why": "both",
+   "port": "review: 0xfffffe000b718fb0 -> 0xfffffe000b770fb0: data, named by its content: the one pointer to \"vnop_verify\" at +8"
   },
   {
    "original": "0xfffffe000b7710b0",
@@ -13933,8 +13978,8 @@
  "ported": {
   "from_kernelcache_sha256": "349c4692a6a85df0d396681f28d2d48dc04b95c6d60df0f94d84501e3d0c57e3",
   "by": "oneios-tool prelink port (kernel/prelink/README.md, \"Another build\")",
-  "kept": 2703,
-  "left_out": 9,
-  "review": 274
+  "kept": 2708,
+  "left_out": 4,
+  "review": 279
  }
 }

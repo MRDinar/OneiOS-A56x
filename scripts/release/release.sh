@@ -1,15 +1,17 @@
 #!/bin/bash
 # Build, check and publish a OneiOS release from this machine, without waiting for GitHub Actions: the runtime
 # package, the phone's oneios-tool and the OneOS APK, the same files and checks as .github/workflows/release.yml.
-#   scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests] [--metal-dir DIR | --no-metal]
+#   scripts/release/release.sh VERSION [--build-only] [--runtime-only | --apk-only] [--skip-tests] [--metal-dir DIR [--metal-more-dir DIR]... | --no-metal]
 #   scripts/bg.sh release scripts/release/release.sh 0.1.14     (it takes 10-20 minutes: run it in tmux)
 # VERSION is N.N.N or N.N.N-suffix; the release is the tag vVERSION, made at HEAD (which must be on origin/main).
 # Three lanes run at the same time, each with its log in out/release-local/VERSION/logs/:
 #   runtime  the Metal plug-in and the capture plug-in built from HEAD (userland/metal/build.sh with METAL_OUT
 #            OUT/guest, its work in out/metal, about 7 minutes after the first; userland/camera/build.sh OUT/guest/camera),
-#            then runtime/package.sh VERSION with them as lib/guest/ (METAL_DIR, CAMERA_DIR, REQUIRE_METAL=1) and the
-#            kernel pinned in kernel/release-kernel.txt (downloaded and checked as
-#            CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, the Metal
+#            and again for each other iOS build of METAL_TARGETS (iPhone18,2 24B156: OUT/guest-24B156, the same capture
+#            plug-in), then runtime/package.sh VERSION with them as lib/guest/ and lib/guest/<build>/ (METAL_DIR,
+#            CAMERA_DIR, REQUIRE_METAL=1, METAL_MORE_DIRS) and the kernels pinned in kernel/release-kernel.txt (one line
+#            each, the first the default; each after it another build's, kernel/<build>/: KERNEL_MORE_DIRS; downloaded and
+#            checked as CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, the Metal
 #            bundle in runtime.json, and .github/scripts/check-phone-tool.sh;
 #   apk      app/ as it is checked out (its commit must be on the fork's origin/oneios): the guest app, then
 #            ./gradlew test assembleFullDebug signed with secrets/oneios-debug.keystore, .github/scripts/check-apk.sh,
@@ -21,7 +23,8 @@
 # --build-only builds and checks, and publishes nothing. --runtime-only and --apk-only are CI's "runtime only" and
 # "apk only" (an APK-only release is not marked latest). --skip-tests leaves out the tests lane.
 # --metal-dir DIR takes a Metal plug-in built before (userland/metal/build.sh's output folder, with camera/ holding
-# H9ISP.mediacapture when the capture plug-in goes too) instead of building one; --no-metal makes a runtime without
+# H9ISP.mediacapture when the capture plug-in goes too) instead of building one; --metal-more-dir DIR (with
+# --metal-dir, repeatable) adds another iOS build's (ONEIOS_METAL_TARGET="iPhone18,2 24B156" userland/metal/build.sh); --no-metal makes a runtime without
 # them (the phone's Make iOS image then composites on the CPU; the notes say so). The Metal build needs the iOS cross
 # toolchain and the guest's stubs (scripts/setup/ios-toolchain.sh says "ok"; docs/building.md section 9).
 # The debug key: secrets/oneios-debug.keystore (git-ignored; store and key password "android", alias
@@ -38,12 +41,17 @@ FORK_REPO=akshaynexus/OneOS
 KEYSTORE=$ROOT/secrets/oneios-debug.keystore
 die() { echo "release: $*" >&2; exit 1; }
 
-VERSION= PUBLISH=1 RUNTIME=1 APK=1 TESTS=1 METAL=build METAL_FROM=
+VERSION= PUBLISH=1 RUNTIME=1 APK=1 TESTS=1 METAL=build METAL_FROM= METAL_MORE_FROM=
+# The iOS builds the Metal plug-in is built for: the default first (lib/guest/), then each other (lib/guest/<build>/;
+# userland/metal/hooks/<device>-<build>.json).
+METAL_TARGETS=("iPhone18,2 24A446" "iPhone18,2 24B156")
 want_dir=0
 for a in "$@"; do
   if [ "$want_dir" = 1 ]; then METAL=dir METAL_FROM=$a want_dir=0; continue; fi
+  if [ "$want_dir" = 2 ]; then METAL_MORE_FROM="$METAL_MORE_FROM $a" want_dir=0; continue; fi
   case $a in
   --metal-dir) want_dir=1 ;;
+  --metal-more-dir) want_dir=2 ;;
   --no-metal) METAL=none ;;
   --build-only) PUBLISH=0 ;;
   --runtime-only) APK=0 ;;
@@ -53,7 +61,15 @@ for a in "$@"; do
   *) [ -z "$VERSION" ] || die "one VERSION only"; VERSION=${a#v} ;;
   esac
 done
-[ "$want_dir" = 0 ] || die "--metal-dir needs a folder"
+[ "$want_dir" = 0 ] || die "--metal-dir and --metal-more-dir need a folder"
+[ -z "$METAL_MORE_FROM" ] || [ "$METAL" = dir ] || die "--metal-more-dir goes with --metal-dir"
+more=""
+for a in $METAL_MORE_FROM; do
+  a=$(cd "$a" 2>/dev/null && pwd) || die "--metal-more-dir: no such folder"
+  [ -f "$a/NativeAdrenoMetal.bundle/oneios-target" ] || die "--metal-more-dir $a holds no NativeAdrenoMetal.bundle with its oneios-target"
+  more="$more $a"
+done
+METAL_MORE_FROM=$more
 if [ "$METAL" = dir ]; then
   METAL_FROM=$(cd "$METAL_FROM" 2>/dev/null && pwd) || die "--metal-dir: no such folder"
   [ -f "$METAL_FROM/NativeAdrenoMetal.bundle/NativeAdrenoMetal" ] || die "--metal-dir $METAL_FROM holds no NativeAdrenoMetal.bundle"
@@ -116,36 +132,51 @@ echo "release: $TAG at $SHA${FORK_COMMIT:+, app/ $FORK_COMMIT}; logs in $LOGS"
 lane_runtime() {
   local k=$ROOT/out/release-local/kernel
   KERNEL_DIR=$OUT/no-kernel
+  # kernel/release-kernel.txt: one "TAG SHA256" line per kernel; the first is the default (24A446's, kernel/), each
+  # line after it another iOS build's (iOS 27.2.1's 24B156: kernel/24B156/, runtime/package.sh KERNEL_MORE_DIRS)
+  local more_kernels=""
   if [ -s kernel/release-kernel.txt ]; then
-    local ktag ksha f
-    read -r ktag ksha < kernel/release-kernel.txt
-    f=$(ls "$k/dl/$ktag"/xnu-*.tar.zst 2>/dev/null | head -n 1 || true)
-    if [ -z "$f" ] || [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$ksha" ]; then
-      rm -rf "$k/dl/$ktag"; mkdir -p "$k/dl/$ktag"
-      gh release download "$ktag" --repo "$REPO" --pattern 'xnu-*.tar.zst' --dir "$k/dl/$ktag"
-      f=$(ls "$k/dl/$ktag"/xnu-*.tar.zst)
-    fi
-    echo "$ksha  $f" | sha256sum -c -
-    KERNEL_DIR=$OUT/kernel; mkdir -p "$KERNEL_DIR"
-    zstd -dc "$f" | tar -x -C "$KERNEL_DIR"
+    local ktag ksha f n=0 dir
+    while read -r ktag ksha; do
+      [ -n "$ktag" ] || continue
+      f=$(ls "$k/dl/$ktag"/xnu-*.tar.zst 2>/dev/null | head -n 1 || true)
+      if [ -z "$f" ] || [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$ksha" ]; then
+        rm -rf "$k/dl/$ktag"; mkdir -p "$k/dl/$ktag"
+        gh release download "$ktag" --repo "$REPO" --pattern 'xnu-*.tar.zst' --dir "$k/dl/$ktag"
+        f=$(ls "$k/dl/$ktag"/xnu-*.tar.zst)
+      fi
+      echo "$ksha  $f" | sha256sum -c -
+      if [ "$n" = 0 ]; then dir=$OUT/kernel; KERNEL_DIR=$dir; else dir=$OUT/kernel-$n; more_kernels="$more_kernels $dir"; fi
+      mkdir -p "$dir"; zstd -dc "$f" | tar -x -C "$dir"
+      n=$((n + 1))
+    done < kernel/release-kernel.txt
   else
     echo "no kernel pinned in kernel/release-kernel.txt: runtime only"
   fi
   test -f external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c \
     || { echo "no external/virglrenderer with drm2kgsl (scripts/setup/get-references.sh virglrenderer)"; return 1; }
   # The guest's plug-ins as lib/guest/ (the phone's Make iOS image seeds them): built from HEAD, or --metal-dir's.
-  local guest=() g=$OUT/guest
+  # Every target of METAL_TARGETS after the first (the default, iPhone18,2 24A446) is another iOS build's plug-in,
+  # lib/guest/<build>/ (runtime/package.sh METAL_MORE_DIRS), with the same capture plug-in (it has no build's addresses).
+  local guest=() g=$OUT/guest more_metal="" target t
   case $METAL in
     build)
       METAL_OUT=$g userland/metal/build.sh
       userland/camera/build.sh "$g/camera"
+      for target in "${METAL_TARGETS[@]:1}"; do
+        t=$g-${target#* }
+        ONEIOS_METAL_TARGET=$target METAL_OUT=$t userland/metal/build.sh
+        rm -rf "$t/camera"; cp -R "$g/camera" "$t/camera"
+        more_metal="$more_metal $t"
+      done
       guest=(METAL_DIR="$g" CAMERA_DIR="$g/camera" REQUIRE_METAL=1) ;;
     dir)
       guest=(METAL_DIR="$METAL_FROM" REQUIRE_METAL=1)
-      [ ! -f "$METAL_FROM/camera/H9ISP.mediacapture" ] || guest+=(CAMERA_DIR="$METAL_FROM/camera") ;;
+      [ ! -f "$METAL_FROM/camera/H9ISP.mediacapture" ] || guest+=(CAMERA_DIR="$METAL_FROM/camera")
+      more_metal=${METAL_MORE_FROM:-} ;;
     none) echo "--no-metal: no Metal plug-in in this runtime" ;;
   esac
-  env ${guest[@]+"${guest[@]}"} OUT_DIR="$OUT/files" KERNEL_DIR="$KERNEL_DIR" runtime/package.sh "$VERSION"
+  env ${guest[@]+"${guest[@]}"} METAL_MORE_DIRS="$more_metal" KERNEL_MORE_DIRS="$more_kernels" OUT_DIR="$OUT/files" KERNEL_DIR="$KERNEL_DIR" runtime/package.sh "$VERSION"
   local a=$OUT/files/oneios-runtime-$VERSION-arm64.tar.zst d=$OUT/runtime-unpacked b
   rm -rf "$d"; mkdir -p "$d"; zstd -dc "$a" | tar -x -C "$d"
   for b in bin/xnuhost bin/gpuctl; do
@@ -153,7 +184,7 @@ lane_runtime() {
   done
   runtime/package/elf-check.sh "$d"
   zstd -dc "$a" | tar -t > "$OUT/members.txt"
-  if grep -Ev '^(runtime\.json|NOTICE|LICENSE|(bin|lib|scripts)/[^/].*|kernel/xnu\.macho(\.build\.json)?)$' "$OUT/members.txt"; then
+  if grep -Ev '^(runtime\.json|NOTICE|LICENSE|(bin|lib|scripts)/[^/].*|kernel/([0-9A-Z]+/)?xnu\.macho(\.build\.json)?)$' "$OUT/members.txt"; then
     echo "the package has members outside the runtime's folders (above)"; return 1
   fi
   [ "$(head -n 1 "$OUT/members.txt")" = runtime.json ] || { echo "runtime.json is not the first member"; return 1; }

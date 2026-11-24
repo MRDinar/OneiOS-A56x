@@ -148,6 +148,22 @@ zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
 [ "$("${J[@]}" get "$T/m.json" kernel.build_id)/$("${J[@]}" get "$T/m.json" kernel.path)" = test-1/kernel/xnu.macho ] || fail "kernel not in the manifest"
 zstd -dc "$P" | tar -xO NOTICE | grep -q 'Apple Public Source License' || fail "no APSL notice"
 ok "own kernel accepted, APSL notice present"
+# 4b. Another iOS build's kernel (KERNEL_MORE_DIRS): kernel/<build>/, both in runtime.json "kernels", "kernel" the default's
+rm -rf "$T/extra" "$OUT_DIR" "$T/k2"; mkdir -p "$T/k2" "$T/extra/kernel"
+macho kernel/xnu.macho 2; record kernel/xnu.macho profile='"ios-27.2.1-24B156"' build_id='"test-2"' releasable=true
+mv "$T/extra/kernel/xnu.macho" "$T/extra/kernel/xnu.macho.build.json" "$T/k2/"
+"${J[@]}" set "$T/k/xnu.macho.build.json" profile '"ios-27.0.1-24A446"'
+KERNEL_DIR=$T/k KERNEL_MORE_DIRS=$T/k2 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package with two kernels"; }
+zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
+[ "$("${J[@]}" get "$T/m.json" kernel.path)|$("${J[@]}" len "$T/m.json" kernels)|$("${J[@]}" get "$T/m.json" kernels.0.build)|$("${J[@]}" get "$T/m.json" kernels.1.build)|$("${J[@]}" get "$T/m.json" kernels.1.path)|$("${J[@]}" get "$T/m.json" kernels.1.build_id)" = \
+  "kernel/xnu.macho|2|24A446|24B156|kernel/24B156/xnu.macho|test-2" ] || { cat "$T/m.json"; fail "runtime.json's kernels"; }
+grep -q '^package: kernel for 24B156 test-2 (kernel/24B156/)$' "$T/log" || { cat "$T/log"; fail "no line for the second kernel"; }
+rc=0; KERNEL_MORE_DIRS=$T/k2 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'KERNEL_MORE_DIRS without a default kernel' "$T/log" || { cat "$T/log"; fail "KERNEL_MORE_DIRS alone: exit $rc"; }
+"${J[@]}" set "$T/k2/xnu.macho.build.json" releasable false
+rc=0; KERNEL_DIR=$T/k KERNEL_MORE_DIRS=$T/k2 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'is not releasable' "$T/log" || { cat "$T/log"; fail "a second kernel not releasable: exit $rc"; }
+ok "two kernels: kernel/24B156/ beside kernel/, runtime.json \"kernels\" lists both; refused alone or not releasable"
 
 # 5. The guest's plug-ins (METAL_DIR, CAMERA_DIR: lib/guest/): made-up signed Mach-Os (`debug fixture`), taken and named
 # in runtime.json; Apple's code or an executable there refused. lib/guest/NOTICE takes the licence texts from

@@ -6498,6 +6498,12 @@
    "evidence": "A vtable whose slot 7 (getMetaClass) is the three-instruction function that returns the metaclass the matcher pairs by name: slot 7 (getMetaClass) returns __ZN8IOMapper10gMetaClassE. 1 kext(s) name it for their subclasses."
   },
   {
+   "original": "0xfffffe000b770900",
+   "native_symbol": "_vnop_searchfs_desc",
+   "evidence": "vdesc_name \"vnop_searchfs\": the object is named by its own content. 1 kext(s) name it; unpaired it kept its collection address inside another object of this kernel (APFS reads the vnode operation descriptors when it registers its file system).",
+   "port": "review: 0xfffffe000b718900 -> 0xfffffe000b770900: data, named by its content: the one pointer to \"vnop_searchfs\" at +8"
+  },
+  {
    "original": "0xfffffe000b7711b0",
    "native_symbol": "_vnop_access_desc",
    "evidence": "vdesc_name \"vnop_access\": the object is named by its own content. 1 kext(s) name it; unpaired it kept its collection address inside another object of this kernel (APFS reads the vnode operation descriptors when it registers its file system)."
@@ -6550,8 +6556,8 @@
  "ported": {
   "from_kernelcache_sha256": "349c4692a6a85df0d396681f28d2d48dc04b95c6d60df0f94d84501e3d0c57e3",
   "by": "oneios-tool prelink port (kernel/prelink/README.md, \"Another build\")",
-  "kept": 650,
-  "left_out": 2,
-  "review": 53
+  "kept": 651,
+  "left_out": 1,
+  "review": 54
  }
 }

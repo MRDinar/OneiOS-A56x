@@ -1245,6 +1245,8 @@ rustup toolchain install 1.98.0 && rustup +1.98.0 component add rust-src
 # macOS: brew install ninja glslang shaderc spirv-tools bison llvm; uv pip install --python "$(command -v python3)" meson mako pyyaml
 scripts/bg.sh metal userland/metal/build.sh
 # -> out/userland/NativeAdrenoMetal.bundle, NativeAdrenoMetal.build.json, NativeAdrenoMetal.check.txt, NativeAdrenoMetal.gpuaddon
+# iOS 27.2.1 (24B156; userland/metal/hooks/iPhone18,2-24B156.json): the same into out/userland-24B156 (METAL_OUT for another)
+scripts/bg.sh metal272 env ONEIOS_METAL_TARGET="iPhone18,2 24B156" userland/metal/build.sh
 # The bridge on metal2vulkan-rt instead (userland/metal/rt/README.md), in out/metal-rt and out/userland-rt:
 rustup toolchain install nightly-2026-11-03 && rustup component add rust-src --toolchain nightly-2026-11-03
 scripts/bg.sh metal-rt env METAL_RUNTIME=rt userland/metal/build.sh    # bg.sh passes no METAL_RUNTIME of its own
@@ -1495,6 +1497,8 @@ boot's `oneios-srprot: ... vm_protect A-B` lines (A less the unslid start of the
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym --slide 0x2db08000 0x1c261c58c     # SpringBoard's lr: CI::GLContext::init + 0xcc
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym find EAGLContext:                 # the images that send ...EAGLContext: selectors
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym callers 0x194c99a00               # the branches to that stub (unslid)
+ONEIOS_DSC_DIR=out/ios272-cache oneios-tool sym dis 0x18434cff4 0x60          # 24B156's framebuffer_pixel_format, with the addresses it reads
+ONEIOS_DSC_DIR=out/ios272-cache oneios-tool sym find --no-index _ca_debug_options   # a data symbol (the index keeps code only)
 ```
 
 A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in

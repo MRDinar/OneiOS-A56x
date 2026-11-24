@@ -311,6 +311,12 @@ make-image`) sends no `metal_plugin` or `camera_plugin`. The runtime package car
 gives none and the bundle's `oneios-target` is the image's `<device> <build>` (`Tweak::for_image` in
 `crates/oneios-imagebuild`). The hook then seeds them as a PC build does: the bundle in
 `/private/var/oneios/addons/Extensions`, the capture plug-in in `/private/var/oneios/addons/MediaCapture`, their
+A runtime with another iOS build's plug-ins (`lib/guest/<build>/`, runtime.json `metals` and `cameras`, 2026-11-25:
+iOS 27.2.1's 24B156) offers them all: `make-image` takes the one whose `oneios-target` is the image's, the default's
+first, with the capture plug-in of that target. With no `xnu` or `kb` in the request it also takes the kernel of the
+image's build (`runtime.json` `kernels`, by the profile's `[os] build`) and `<stage>/kb-<build>/`; a build with no
+`kernels` entry (24A446, the A56's 20F66) gets `kernel` and `kb/` as before.
+
 CDHashes in `overlay/userland/owner-trust.json`. The build says where its plug-in came from in one line, `Metal
 plug-in: ...`, and in its `ok` event's `metal` field:
 

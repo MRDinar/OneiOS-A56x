@@ -11,7 +11,8 @@
 #   lib/                 what a helper loads that is not a program: oneios-display.dex (runtime/display, the
 #                          SurfaceControl layer that bin/oneios-display runs with app_process)
 #   scripts/               runtime/scripts/* (session helpers), when there are any
-#   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record
+#   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record; another
+#                          iOS build's in kernel/<build>/ (KERNEL_MORE_DIRS, step 3a: iOS 27.2.1's 24B156)
 #   lib/guest/             the iOS plug-ins, when METAL_DIR (and CAMERA_DIR) are given: NativeAdrenoMetal.bundle with its
 #                          build record, camera/H9ISP.mediacapture, and NOTICE (their sources' licences and pins); the
 #                          phone's Make iOS image seeds them into the image (step 3b); another iOS build's in
@@ -31,7 +32,7 @@
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release; a relative one is taken from the current folder), SOURCE_DATE_EPOCH (default: the commit time),
-#      METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/), METAL_MORE_DIRS (step 3c),
+#      KERNEL_MORE_DIRS (step 3a), METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/), METAL_MORE_DIRS (step 3c),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -168,6 +169,23 @@ elif [ -f "$KERNEL_DIR/xnu.macho" ]; then
 else
   echo "package: no kernel at $KERNEL_DIR (runtime only)"
 fi
+# 3a. Other iOS builds' kernels (KERNEL_MORE_DIRS: folders, space-separated, each kernel/build-hosted.sh's output for
+# another OS profile, ONEIOS_OS_PROFILE=ios-27.2.1-24B156): each as kernel/<build>/, the build its record's profile
+# names, beside the default's (KERNEL_DIR). runtime.json lists every kernel in "kernels"; "kernel" stays the default's.
+# Each must be releasable (a release never drops one without saying so).
+for d in ${KERNEL_MORE_DIRS:-}; do
+  [ "$HAVE_KERNEL" = 1 ] || { echo "package: KERNEL_MORE_DIRS without a default kernel: runtime.json \"kernel\" names kernel/xnu.macho" >&2; exit 1; }
+  [ -f "$d/xnu.macho" ] && [ -f "$d/xnu.macho.build.json" ] || { echo "package: KERNEL_MORE_DIRS: $d holds no xnu.macho with its build record" >&2; exit 1; }
+  grep -q '"releasable": true' "$d/xnu.macho.build.json" || { echo "package: KERNEL_MORE_DIRS: the kernel at $d is not releasable (see its build record)" >&2; exit 1; }
+  profile=$("$ONEIOS_TOOL" json get "$d/xnu.macho.build.json" profile)
+  build=${profile##*-}
+  case "$build" in ''|*[!A-Za-z0-9]*) echo "package: KERNEL_MORE_DIRS: $d's record names profile '$profile'" >&2; exit 1 ;; esac
+  [ ! -e "$STAGE/kernel/$build" ] || { echo "package: KERNEL_MORE_DIRS: a second kernel for build $build ($d)" >&2; exit 1; }
+  mkdir -p "$STAGE/kernel/$build"
+  cp "$d/xnu.macho" "$d/xnu.macho.build.json" "$STAGE/kernel/$build/"
+  chmod 0644 "$STAGE/kernel/$build"/*
+  echo "package: kernel for $build $(sed -n 's/.*"build_id": *"\([^"]*\)".*/\1/p' "$STAGE/kernel/$build/xnu.macho.build.json") (kernel/$build/)"
+done
 
 # 3b. The guest's own plug-ins, when given: METAL_DIR (userland/metal/build.sh's output folder: NativeAdrenoMetal.bundle
 # and NativeAdrenoMetal.build.json) and CAMERA_DIR (userland/camera/build.sh's: H9ISP.mediacapture), as lib/guest/.

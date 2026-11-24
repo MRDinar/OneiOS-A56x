@@ -1076,7 +1076,10 @@ fn display_mode() {
     let f = c.text_fixups.entries();
     assert_eq!(
         f[1..],
-        ["dyld_shared_cache_arm64e.01,3f9d744,49008052,69008052", "dyld_shared_cache_arm64e.01,3f9d758,280080520895889a,680080521f2003d5"]
+        [
+            "dyld_shared_cache_arm64e.01,3f9d744,49008052,69008052",
+            "dyld_shared_cache_arm64e.01,3f9d758,280080520895889a,680080521f2003d5"
+        ]
     );
     one(&mut c.text_fixups);
     scale_fixups(Some("24B156"), 2, &mut c.text_fixups);
@@ -1086,7 +1089,13 @@ fn display_mode() {
         assert_eq!(fixups.len(), 2, "{build}");
         for f in fixups.iter() {
             let p: Vec<&str> = f.split(',').collect();
-            assert!(p.len() == 4 && p[0] == "dyld_shared_cache_arm64e.01" && p[2].len() == p[3].len() && p[2].len() % 8 == 0, "{build}: {f}");
+            assert!(
+                p.len() == 4
+                    && p[0] == "dyld_shared_cache_arm64e.01"
+                    && p[2].len() == p[3].len()
+                    && p[2].len() % 8 == 0,
+                "{build}: {f}"
+            );
         }
     }
     let _ = fs::remove_dir_all(&dir);

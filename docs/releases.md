@@ -144,6 +144,14 @@ placeholder), `kernel` (null without one), `metal` (`{"bundle": "lib/guest/Nativ
 "lib/guest/NativeAdrenoMetal.build.json", "target": "iPhone18,2 24A446", "cdhashes": [...]}`, null without one) and `camera`
 (`{"path": "lib/guest/camera", "cdhash": "..."}`, null without one): what the phone's `serve make-image` takes. `files` lists every file except `runtime.json`.
 
+Two iOS builds in one package (2026-11-25, iOS 27.2.1 beside 27.0.1): `kernels` lists every kernel, the default's
+first, each the `kernel` object plus `build` (`[{"path": "kernel/xnu.macho", ..., "build": "24A446"}, {"path":
+"kernel/24B156/xnu.macho", ..., "record": "kernel/24B156/xnu.macho.build.json", "build": "24B156"}]`; `[]` without a
+kernel); `metals` and `cameras` list every plug-in target, the default's first (`lib/guest/24B156/NativeAdrenoMetal.bundle`,
+`lib/guest/24B156/camera`; each `cameras` entry with the `target` of its bundle). `kernel`, `metal` and `camera` stay the
+default's (24A446), so an app or tool before them reads the package as before. `runtime/package.sh` takes the others
+from `KERNEL_MORE_DIRS` and `METAL_MORE_DIRS` (its header); `scripts/release/release.sh` passes them (below).
+
 ## Versions
 
 - `N.N.N` (semantic versioning) for releases, `N.N.N-suffix` for pre-releases (`0.1.0-rc1`); the tag is `v` + version.
@@ -374,7 +382,11 @@ The kernel is not built in CI. A build machine builds it (`kernel/README.md`), a
    HOSTED_OUT=NAME`; `--hosted lead` is `out/kernel/current-hosted`); `KERNEL_DIR=DIR` any folder; neither:
    `out/kernel/current` (the VM kernel of `kernel/build-linux.sh`, which xnuhost does not run). Before 2026-11-21
    the script still called the deleted `runtime/package/pack.py`, so it could not pack anything.
-2. `kernel/release-kernel.txt` gets one line, `kernel-<build id> <sha256 of the archive>`, in a commit.
+2. `kernel/release-kernel.txt` gets one line, `kernel-<build id> <sha256 of the archive>`, in a commit. Since 2026-11-25
+   each line after the first is another iOS build's kernel (iOS 27.2.1: `kernel-xnu-12377.121.6-ios-27.2.1-24B156-...`):
+   `scripts/release/release.sh` downloads and checks each and packs it as `kernel/<build>/` (`KERNEL_MORE_DIRS`), and
+   builds the Metal plug-in for every target of its `METAL_TARGETS` (`lib/guest/<build>/`). The CI workflow still takes
+   the first line only.
 3. The runtime job (of every build, not only a release) downloads that archive, checks the SHA-256, and `runtime/package.sh` checks the build record
    again before the kernel goes into the package as `kernel/xnu.macho` and `kernel/xnu.macho.build.json`;
    `runtime.json`'s `"kernel"` is then `{"path": "kernel/xnu.macho", "build_id", "sha256", "xnu", "profile",
@@ -591,7 +603,9 @@ Options:
   latest.
 - `--skip-tests` leaves out the tests lane.
 - `--metal-dir DIR` packs a Metal plug-in built before (`userland/metal/build.sh`'s output folder; `DIR/camera/` with
-  `H9ISP.mediacapture` packs the capture plug-in too) instead of building one; `--no-metal` makes a runtime without
+  `H9ISP.mediacapture` packs the capture plug-in too) instead of building one; `--metal-more-dir DIR` (with `--metal-dir`,
+  repeatable) adds another iOS build's (`lib/guest/<build>/`); without `--metal-dir` the runtime lane builds every target
+  of `METAL_TARGETS` (iPhone18,2 24A446, then 24B156) itself; `--no-metal` makes a runtime without
   them, and the notes say that an image made on the phone with it composites on the CPU. The Metal build needs the
   iOS cross toolchain and the guest's stubs ([building.md](building.md) section 9: `scripts/setup/ios-toolchain.sh`
   says "ok"); on the build laptop it took 7 minutes on 2026-11-24 with `out/metal` from an earlier build. A runtime

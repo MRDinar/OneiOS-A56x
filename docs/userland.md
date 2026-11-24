@@ -55,7 +55,11 @@ Output in `OUT` (the hook puts it in the image set's `overlay/userland/`):
 
 The build is not root, so owners are recorded, not set; the hook writes them to `$ONEIOS_OWNERS`.
 A second run over the same trees changes nothing. A preference file that is not a property list stops the
-run instead of being written over. A root that is not iOS 27.0.1 is refused (`--any-version`), except iOS 16.5
+run instead of being written over. A root of a build the device profile lists in `[builds]` (`userland/config/device-iphone18,2.toml`:
+`"24A446" = "27.0.1"`, `"24B156" = "27.2.1"`, 2026-11-25) with that ProductVersion is taken as the profile's ("kept",
+a line that says which); [device] version stays the first one's. Its IPSW device tree for v54ap differs from 24A446's
+in four values none of which this profile states [F: `xnuloader-inspect adt` of both]; no 24B156 root has been read
+here (its OS volume was not fetched) [U]. Any other root that is not iOS 27.0.1 is refused (`--any-version`), except iOS 16.5
 (20F66), the Galaxy A56's userland (docs/a56.md, 2026-11-23): its tweaks apply with a line that says so, and its
 `xnuhost.conf` carries the 16.5 boot arguments (the 16.5 shims, `oneios-gpu-metal=0`, and since 2026-11-23
 `oneios-mac-exec-skip=mediaserverd,TVRemoteConnectionService`, kernel 0073), the keybagd fixup (only for 20F66's own
@@ -199,7 +203,7 @@ xnuhost ... --set scale=2                              # one run, over the image
 | `identity.expect` on the Data seed: `main-screen-scale`, `main-screen-width`, `main-screen-height` | roottweak | `oneios-mg` in the guest |
 | `overlay/userland/xnuhost.conf` `scale=N` | roottweak | xnuhost |
 | `/chosen display-scale`, `/product artwork-scale-factor`, `/chosen/xnuhost display-*`, boot argument `offline-legacy-unit-scale=N` | xnuhost (`docs/booter.md` 2.8) | MobileGestalt, the framebuffer driver |
-| `/chosen text-fixups` (scale 3, build 24A446) | xnuhost | the kernel, for QuartzCore |
+| `/chosen text-fixups` (scale 3, build 24A446 or 24B156) | xnuhost | the kernel, for QuartzCore |
 
 Width and height are not a setting: xnuhost takes them from the panel, and the profile's `[display]` (1440x3120,
 120 Hz) is what it finds on this phone. An image built before this change has `main-screen-width=1320` in its
@@ -219,7 +223,7 @@ not been rebuilt.
   mode's native-scale field when that is more; else 2 for a mode taller than 1080 pixels and 1 otherwise.
   `display-scale` is not read. This framebuffer's modes carry no preferred scale, so **the unchanged answer is
   2**. For 3, xnuhost adds two fixups (`mov w9, #2` -> `#3` at 0x40b17a8; `mov w8, #1; cinc` -> `mov w8, #3;
-  nop` at 0x40b17bc). Which of the two paths this guest takes ([U]: the byte tested is a global set once, taken
+  nop` at 0x40b17bc). iOS 27.2.1 (24B156) has the same function, the same 32 instructions, at 0x3f9d6f4 (found by its bytes, one match in .01, and checked by its selector, entry 11 of the same method list): its two fixups are at 0x3f9d744 and 0x3f9d758 with the same bytes (`runtime/xnuhost/src/config.rs` `SCALE_FIXUPS_3X`, per build; a build not there gets none). Which of the two paths this guest takes ([U]: the byte tested is a global set once, taken
   to be "virtual device") does not matter, both are changed.
 - The refresh rate: the framebuffer's refresh attributes and `IOMFBDisplayRefresh` (minimum interval 1/120 s,
   maximum 1/24 s), as a ProMotion panel reports them (`kernel/patches/oneios-hosted/display/README.md`). No
@@ -328,7 +332,7 @@ Both scales:
 
 Only at 3:
 
-- It depends on the two text fixups, which exist for build 24A446 only and have not been seen applied. Without
+- It depends on the two text fixups, which exist for builds 24A446 and 24B156 only and have not been seen applied. Without
   them QuartzCore runs the display at 2.
 - The least risk to layouts: iPhone assets, fonts and metrics are all made for 3; only the point size is new.
 

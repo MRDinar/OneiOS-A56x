@@ -1672,6 +1672,28 @@ and refuses to go on if the arm64e code holds an address the file does not name.
 | `CADeviceIsVirtualized::once` | `0x1e7020780` | `0x1e7024780` |
 | the constant CFString of that query (a diagnostic note) | `0x1e9021680` | `0x1e9025680` |
 
+**iOS 27.2.1 (24B156)** has its own hooks file, `userland/metal/hooks/iPhone18,2-24B156.json` (cache UUID
+`78B55CFF-20F4-3A39-81AF-B6530B7E9789`, read 2026-11-25 from 24B156's SystemOS cryptex with `image apfs-copy`, then
+`oneios-tool sym find`, `sym find --no-index` for the data symbols and `sym dis` of the three functions; no `ipsw`).
+Everything moved, and two of QuartzCore's bool debug options got other numbers (300 options, 24A446 has 293), so the
+hooks file also has `"options"`: `oneios-tool ios metal-stage-edit` rewrites every `_ca_debug_options + N` of the
+plug-in with the build's N and puts the build's constants at the top of the staged plug-in as `#define`s
+(`ONEIOS_CA_RENDER_SERVER_START`, `ONEIOS_CA_DEBUG_OPTIONS`, `ONEIOS_CA_OPTION_<NAME>`) for the OneiOS files appended
+to it (`DisplayWide.inc` uses them; it has no address of its own any more). Built with
+`ONEIOS_METAL_TARGET="iPhone18,2 24B156" userland/metal/build.sh` (output `out/userland-24B156`, or `METAL_OUT`).
+Built and checked on the build laptop 2026-11-25 (the Turnip and plug-in checks PASS); **not run in a guest**.
+
+| What | 24A446 (iPhone18,2) | 24B156 (iPhone18,2) |
+|---|---|---|
+| `_CARenderServerStart` (the anchor) | `0x1846dce88` | `0x1845ce544` |
+| `framebuffer_pixel_format`; its `tbnz w8, #0` (word `0x37000608`) | `0x184461838`; `0x184461928` | `0x18434cff4`; `0x18434d0e4` |
+| `debug_values[21]` (`CA_DISPLAY_EDR_HEADROOM`) | `0x1e7025014` | `0x1edf3e474` |
+| `debug_values[81]` (`CA_FP16_MIN_HEADROOM`) | `0x1e7025104` | `0x1edf3e564` |
+| `_ca_debug_options` (force FP16, EDR mirroring) | `0x1e702516c` (+128, +156) | `0x1edf3e5cc` (+129, +159) |
+| `CADeviceIsVirtualized::is_virtualized` | `0x1e701fdd9` | `0x1edf390c1` |
+| `CADeviceIsVirtualized::once` | `0x1e7024780` | `0x1edf3a908` |
+| the constant CFString of that query | `0x1e9025680` | `0x1e2280290` |
+
 QuartzCore's code is at the same addresses in both caches; its `__DATA_DIRTY` and the CFString are 0x4000 higher in
 the iPhone's. Placed as upstream builds it, the plug-in would have written the headroom, the threshold, the option
 byte and the once token 16 KiB below their places in backboardd. How they were found (with blacktop's `ipsw`

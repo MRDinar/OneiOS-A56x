@@ -10,7 +10,8 @@
 //!
 //! The manifest is the one oneos/interface.md section 1 defines (format 1), with these keys added:
 //! git, min_oneos_fork, placeholder, kernel, metal, camera (the default target's guest plug-ins of lib/guest/, below; null
-//! without them), metals, cameras (every target's: the default's, then each lib/guest/<build>/; empty lists without them).
+//! without them), metals, cameras (every target's: the default's, then each lib/guest/<build>/; empty lists without them),
+//! kernels (every kernel, the default's then each kernel/<build>/xnu.macho, as "kernel" plus its "build"; empty without).
 //!
 //! Apple rule (README "Rules"): a release carries nothing of Apple's. Refused by name: kernelcaches, cryptexes,
 //! .ipsw, .dmg, .aea, .img and the other firmware names of .gitignore. Refused by content: IMG4/IM4P containers,
@@ -435,6 +436,8 @@ pub fn check(stage: &Path) -> Result<Option<Value>> {
 /// and "camera" (lib/guest/; null without them).
 struct Checked {
     kernel: Option<Value>,
+    /// Another iOS build's kernels (kernel/<build>/xnu.macho: iOS 27.2.1's 24B156 beside 24A446's), their records.
+    kernels: Vec<Value>,
     metal: Value,
     camera: Value,
     metals: Value,
@@ -443,6 +446,7 @@ struct Checked {
 
 fn checked(stage: &Path) -> Result<Checked> {
     let mut kernel: Option<Value> = None;
+    let mut kernels: Vec<Value> = Vec::new();
     let mut guest = Vec::new();
     for relative in files_of(stage)? {
         let path = stage.join(&relative);
@@ -455,10 +459,22 @@ fn checked(stage: &Path) -> Result<Checked> {
             }
             Some("Mach-O") => {
                 let mut record = own_kernel(&path, &relative)?;
+                record.set("path", relative.as_str());
+                // kernel/<build>/xnu.macho: another iOS build's kernel, the build its record's profile names
+                if let Some(build) = relative.strip_prefix("kernel/").and_then(|r| r.strip_suffix("/xnu.macho")).filter(|b| !b.contains('/')) {
+                    let profile = record.get("profile").and_then(Value::as_str).unwrap_or_default().to_string();
+                    if profile.rsplit('-').next() != Some(build) {
+                        return refused(format!("{relative}: its record's profile is {}, its folder names build {build}", repr_str(&profile)));
+                    }
+                    if kernels.iter().any(|k: &Value| k.get("profile").and_then(Value::as_str) == Some(profile.as_str())) {
+                        return refused(format!("{relative}: a second kernel for {profile}"));
+                    }
+                    kernels.push(record);
+                    continue;
+                }
                 if kernel.is_some() {
                     return refused(format!("{relative}: a second kernel in one package"));
                 }
-                record.set("path", relative.as_str());
                 kernel = Some(record);
                 continue;
             }
@@ -470,12 +486,20 @@ fn checked(stage: &Path) -> Result<Checked> {
         }
     }
     let (metal, camera, metals, cameras) = guest_entries(stage, &guest)?;
-    Ok(Checked { kernel, metal, camera, metals, cameras })
+    if let Some(other) = kernels.first() {
+        let Some(default) = &kernel else {
+            return refused(format!("{}: another build's kernel without the default one (kernel/xnu.macho), which runtime.json \"kernel\" names", other.get("path").and_then(Value::as_str).unwrap_or_default()));
+        };
+        if kernels.iter().any(|k| k.get("profile") == default.get("profile")) {
+            return refused(format!("kernel/: two kernels for {}", default.get("profile").and_then(Value::as_str).unwrap_or_default()));
+        }
+    }
+    Ok(Checked { kernel, kernels, metal, camera, metals, cameras })
 }
 
 /// STAGE/runtime.json: every file with its size, SHA-256 and mode (which is set to 0755 or 0644 on the way).
 pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork: &str, placeholder: &str) -> Result<()> {
-    let Checked { kernel, metal, camera, metals, cameras } = checked(stage)?;
+    let Checked { kernel, kernels, metal, camera, metals, cameras } = checked(stage)?;
     let mut entries = Value::list();
     let mut has_xnuhost = false;
     for relative in files_of(stage)?.into_iter().filter(|r| r != MANIFEST) {
@@ -509,7 +533,15 @@ pub fn manifest(stage: &Path, version: &str, commit: &str, dirty: &str, min_fork
     document.set("git", git);
     document.set("min_oneos_fork", min_fork);
     document.set("placeholder", placeholder == "1");
+    // "kernels": every kernel with its build, the default's first (none: an empty list); "kernel" stays the default's
+    let mut all = Value::list();
+    for record in kernel.iter().chain(kernels.iter()) {
+        let mut entry = kernel_entry(record);
+        entry.set("build", record.get("profile").and_then(Value::as_str).and_then(|p| p.rsplit('-').next()).unwrap_or_default());
+        all.push(entry);
+    }
     document.set("kernel", kernel.map(|record| kernel_entry(&record)));
+    document.set("kernels", all);
     document.set("metal", metal);
     document.set("camera", camera);
     document.set("metals", metals);

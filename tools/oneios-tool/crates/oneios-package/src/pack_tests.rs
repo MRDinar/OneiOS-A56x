@@ -4,9 +4,12 @@
 use super::*;
 use std::path::PathBuf;
 
-/// A stage with these files, in a scratch folder of its own.
+/// A stage with these files, in a scratch folder of its own (numbered: two tests that both name theirs "fileset" ran
+/// at once in one folder, and one saw the other's files, 2026-11-25).
 fn stage(name: &str, files: &[(&str, &[u8])]) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("oneios-package-test.{}.{name}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("oneios-package-test.{}.{n}.{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     for (path, bytes) in files {
         let path = root.join(path);
@@ -339,4 +342,33 @@ fn one_target_lists_itself() {
     assert_eq!(document.get("metals").and_then(Value::as_list).unwrap()[0], *document.get("metal").unwrap());
     assert_eq!(document.get("cameras").and_then(Value::as_list).map(|l| l.len()), Some(1));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// iOS 27.2.1's kernel beside 27.0.1's (kernel/24B156/xnu.macho): "kernels" lists both with their builds, "kernel"
+/// stays the default's; a kernel in a folder of another build than its record's, a second one of one build, or one
+/// without the default kernel is refused.
+#[test]
+fn another_builds_kernel_is_listed_in_kernels() {
+    let kernel = macho(LE64, 0x0100_000c, 2);
+    let with = |profile: &str| record(&kernel, |t| t.replace("\"xnu\": \"xnu-0\"", &format!("\"xnu\": \"xnu-0\", \"profile\": \"{profile}\"")));
+    let (a, b) = (with("ios-27.0.1-24A446"), with("ios-27.2.1-24B156"));
+    let files: Vec<(&str, &[u8])> = vec![("bin/xnuhost", b"#!/bin/sh\n"), ("kernel/xnu.macho", &kernel), ("kernel/xnu.macho.build.json", &a),
+                                         ("kernel/24B156/xnu.macho", &kernel), ("kernel/24B156/xnu.macho.build.json", &b)];
+    let root = stage("kernels", &files);
+    std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    manifest(&root, "0.1.0", "00", "0", "0.4.80", "0").unwrap();
+    let document = json::load(root.join(MANIFEST)).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let at = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    assert_eq!(at(document.get("kernel").unwrap(), "path"), "kernel/xnu.macho");
+    let kernels = document.get("kernels").and_then(Value::as_list).unwrap();
+    let listed: Vec<(String, String, String)> = kernels.iter().map(|k| (at(k, "build"), at(k, "path"), at(k, "record"))).collect();
+    assert_eq!(listed, [("24A446".into(), "kernel/xnu.macho".into(), "kernel/xnu.macho.build.json".into()),
+                        ("24B156".into(), "kernel/24B156/xnu.macho".into(), "kernel/24B156/xnu.macho.build.json".into())]);
+    assert_eq!(refusal("kernels-folder", &[("kernel/xnu.macho", &kernel), ("kernel/xnu.macho.build.json", &a), ("kernel/24B157/xnu.macho", &kernel), ("kernel/24B157/xnu.macho.build.json", &b)]),
+               "kernel/24B157/xnu.macho: its record's profile is 'ios-27.2.1-24B156', its folder names build 24B157");
+    assert_eq!(refusal("kernels-alone", &[("kernel/24B156/xnu.macho", &kernel), ("kernel/24B156/xnu.macho.build.json", &b)]),
+               "kernel/24B156/xnu.macho: another build's kernel without the default one (kernel/xnu.macho), which runtime.json \"kernel\" names");
+    assert_eq!(refusal("kernels-same", &[("kernel/xnu.macho", &kernel), ("kernel/xnu.macho.build.json", &b), ("kernel/24B156/xnu.macho", &kernel), ("kernel/24B156/xnu.macho.build.json", &b)]),
+               "kernel/: two kernels for ios-27.2.1-24B156");
 }

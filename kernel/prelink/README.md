@@ -547,6 +547,25 @@ How the 24B156 files were made, and how to make them for a next build:
   six `vnop_*_desc` objects and `gIOKitDebugKey`; the stub of IOSerialFamily's data import `0xfffffe000b727e14`;
   reviewed `csproc_get_platform_path` and `vnop_searchfs_desc`. The audit of the 24B156 collection says which of them
   a kext of 24B156 still imports.
+- **The audit of the first 24B156 collection** (`BUILD=24B156 KERNEL=out/kernel/current-hosted-ios272/xnu.macho
+  kernel/prelink/build.sh`, collection `27e24d90`) had 10 failures, exactly the 10 records the port had left out, at
+  their 24B156 addresses. Settled (2026-11-25):
+  - the five `vnop_*_desc` objects (`searchfs`, `compound_open`, `renamex`, `compound_rename`, `verify`): `prelink
+    port`'s new rule "named by its content" (a data object whose pointer at +0..+24 points to a C string, carried to
+    the one TO object pointing to the same string at the same offset: the `vdesc_name` at +8) puts them at
+    `0xfffffe000b770900`, `...c30`, `...d30`, `...d70`, `...fb0`: the addresses the audit named. The port now leaves
+    out 4 pairs, 1 stub and 1 reviewed record (`csproc_get_platform_path`, which no collection of either build binds);
+  - `IODMACommand::Dispatch` (`0xfffffe000b328984`), `IOInterruptDispatchSource::metaClass` (`0xfffffe0007ed7e58`)
+    and `vnop_default_desc` (`0xfffffe000b778b20`): 24B156's own matcher pairs each to the name 24A446's known-good list
+    has; added to `pairs-24B156.json` with that in their `why`;
+  - IOSerialFamily's two data imports (`0xfffffe000b77fe14`, 24A446's stub `0xfffffe000b727e14`; and
+    `0xfffffe000b809168`, in 24A446 paired with `gIOKitDebugKey` by import order alone): on the stub, with 24A446's
+    reason (IOSerialFamily's personalities are dropped, it never starts).
+- **The collection** (`09df28336b6f8342`, 96,698,368 bytes): audit **0 failures** (2,710 paired, 93 functions on
+  the stub, 10 data unpaired), `prelink stubs-check` **666 good, 0 bad**. The class layouts read again with this
+  collection's own prelink report are the same bytes (the slide 0x1f000000000 holds). The phone's way, `oneios-tool
+  prelink build` from the fork's `assets/kb-24B156/` alone (`oneios-tool app kb 24B156`), gives the same `kernel.kc`
+  byte for byte. Not booted.
 
 ## What is not done
 

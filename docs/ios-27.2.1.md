@@ -100,3 +100,25 @@ Left 1 and 2 done, on `ios272/base` (kernel/prelink/README.md "Another build" ha
 - The kernel build picks the build: `ONEIOS_OS_PROFILE=ios-27.2.1-24B156 kernel/build-hosted.sh` (written into the
   device copy's `board.toml`; the generators read `<Class>-<build>-v54.json` from it); `BUILD=24B156
   kernel/prelink/build.sh`.
+
+Left 3 and 4 done (2026-11-25, on `ios272/userland`, which has `ios272/base` merged and is the branch to merge):
+- **The 24B156 kernel**: `HOSTED_OUT=ios272 ONEIOS_OS_PROFILE=ios-27.2.1-24B156 ONEIOS_CRYPTO=original
+  kernel/build-hosted.sh` (457 s): `xnu-12377.121.6-ios-27.2.1-24B156-23df94f24c01`, 24,718,272 bytes, SHA-256
+  `3439037c...a9f0`, releasable; every board archive says "bound at its 24B156 iPhone18,2 addresses", the display's
+  parent size 0x1de0. The same kernel series as main's pinned 24A446 kernel `5966e71ce2aa`.
+- **Its collection**: `BUILD=24B156 kernel/prelink/build.sh` -> `09df2833...` (96,698,368 bytes): audit 0 failures,
+  `stubs-check` 666 good, 0 bad, after the 10 left-outs were settled (kernel/prelink/README.md "Another build").
+- **The app's pairing files**: `oneios-tool app kb 24B156` wrote the fork's `assets/kb-24B156/`; `prelink build`
+  from them alone gives the same `09df2833` (the phone's Update the kernel and Make iOS image path).
+- **The runtime carries both**: `runtime/package.sh` `KERNEL_MORE_DIRS` (`kernel/24B156/`, runtime.json
+  `"kernels"`) and `METAL_MORE_DIRS` (`lib/guest/24B156/`, `"metals"`, `"cameras"`); `scripts/release/release.sh`
+  takes each extra line of `kernel/release-kernel.txt` and builds the Metal plug-in for both targets. `serve
+  make-image` picks the plug-in, the kernel and `kb-<build>/` of the image's build; the app names them too.
+- **The Metal plug-in for 24B156**: `userland/metal/hooks/iPhone18,2-24B156.json` (the userland helper's, reviewed);
+  built (`out/userland-u272/24B156`, the checks PASS); the capture plug-in has no per-build address and is shared.
+- **The app** (fork `ios272/app`, merged with `oneios` `99a7b0e`): Make iOS image offers "iOS 27.0.1 (24A446),
+  tested" first and "iOS 27.2.1 (24B156), new: not booted yet" second; `./gradlew test` passes.
+
+Not done: no phone boot (the phone is not on this laptop); the 24B156 kernel is not uploaded (the coordinator's
+call: `kernel/publish.sh --hosted ios272 --upload`, then its line as the second line of `kernel/release-kernel.txt`);
+no release.

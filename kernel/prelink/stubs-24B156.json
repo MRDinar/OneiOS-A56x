@@ -1016,6 +1016,26 @@
  ],
  "data": [
   {
+   "original": "0xfffffe000b77fe14",
+   "why": "every importer is code-only (its personalities are dropped, so it never starts): iokit.IOSerialFamily",
+   "between": "",
+   "callers": 1,
+   "kexts": [
+    "iokit.IOSerialFamily"
+   ],
+   "evidence": "ios272 2026-11-25: 24A446's stub 0xfffffe000b727e14 (the same reason), which prelink port did not carry; the 24B156 audit names this one IOSerialFamily data import, unpaired, 1 call site"
+  },
+  {
+   "original": "0xfffffe000b809168",
+   "why": "every importer is code-only (its personalities are dropped, so it never starts): iokit.IOSerialFamily",
+   "between": "",
+   "callers": 1,
+   "kexts": [
+    "iokit.IOSerialFamily"
+   ],
+   "evidence": "ios272 2026-11-25: in 24A446 IOSerialFamily's data import 0xfffffe000b7b1028 was paired with gIOKitDebugKey by its import order (pairs-24A446.json); 24B156's matcher pairs nothing here and prelink port did not carry it. Its only importer never starts, so it goes on the stub rather than a name chosen by order alone"
+  },
+  {
    "original": "0xfffffe0007044788",
    "why": "no counterpart chosen: the candidates between its neighbours are not told apart by the code yet",
    "between": "",
