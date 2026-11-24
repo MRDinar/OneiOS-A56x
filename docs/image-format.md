@@ -129,6 +129,22 @@ iOS 27.0.1 (24A446), iPhone18,2: 13 of the IPSW's 165 members, 10.59 GiB of 11.8
 | devicetree | `Firmware/all_flash/DeviceTree.v54ap.im4p` | 68 480 |
 | buildmanifest, restore | `BuildManifest.plist`, `Restore.plist` | 816 945, 1 093 |
 
+iOS 27.2.1 (24B156), iPhone18,2 (`profiles/ios-27.2.1-iPhone18,2.toml`, beside 24A446's, 2026-11-25; the only build
+Apple signs since 2026-11-09, per api.ipsw.me): 13 of the IPSW's 165 members, 10.91 GiB of 12.25 GiB, the same roles.
+Pins read on 2026-11-20 from the ZIP directory and BuildManifest (`image check-ipsw`: "ok ... matches", again on
+2026-11-25); the SystemOS image's `sha256` and `plain_sha256` from a fetch and `aea-decrypt` on the build laptop
+(2026-11-25, 3 min); the OS image's are not pinned yet (not fetched: it needs about 20 GiB of room at once, the
+encrypted file beside the plain image). The decoded kernelcache is 78,512,128 bytes, SHA-256 `f6f31ac4...e9a5939`,
+`xnu-13432.42.3~28` (24A446's is `xnu-13432.2.10~2`: the same XNU branch). 24A446 stays the default profile until a
+phone boot of 24B156 passes.
+
+| Role | Member | Bytes |
+| --- | --- | --- |
+| os | `141-10103-223.dmg.aea` | 9 261 023 232 |
+| systemos | `141-10617-235.dmg.aea` | 2 415 919 104 |
+| app | `141-08824-252.dmg` | 16 777 216 |
+| kernelcache | `kernelcache.release.v54` | 23 545 189 |
+
 ## 3. `manifest.json`
 
 ```json
