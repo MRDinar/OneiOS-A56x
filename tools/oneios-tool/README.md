@@ -700,7 +700,7 @@ oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            
 oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
 oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list, turnip-idle-bo-cache.patch in the Mesa list, the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
-oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2)
+oneios-tool ios gpuaddon BUNDLE OUTPUT                   # build.sh addon: the kernel.kc.gpuaddon sidecar (NGPUADD2); addons/NativeAdrenoMetal.bundle, or addons/OneiOSRadeonMetal.bundle for a folder of that name (the A56, userland/metal-amd)
 oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon with the Metal and/or the capture plug-in, and OUTPUT.cdhashes (hosted 0090)
 ```
 
@@ -712,7 +712,7 @@ oneios-tool ios addon OUTPUT [--metal BUNDLE] [--camera DIR]   # the boot addon 
 | `codesign` | `userland/metal/shim/codesign` (Python) | `sign` | the four forms the base's scripts use; `--display` reads what `image tweaks cdhash` reads (the shim read it with roottweak's `macho.py`) |
 | `metal-stage-edit` | build.sh `stage`'s inline Python | nothing | on copies of the pinned Droid-VM-UniXNU and NativeMetal trees, with and without the clang-23 warning: the same staged tree (`diff -r`) and the same lines; a hooks file of another revision is refused with the same message |
 | `metal-record` | build.sh `finish`'s inline Python | scripts/ios/env.sh's variables | the same record and lines on the bundle in `out/userland`, but for its `check` text (`ios macho-check`) |
-| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream) |
+| `gpuaddon` | build.sh `addon`'s inline Python | nothing | the same sidecar byte for byte (12,286,344 bytes, 5 files: flate2's zlib-rs writes zlib's level 9 stream). Since 2026-11-24 a bundle folder named `OneiOSRadeonMetal.bundle` (the Galaxy A56's plug-in, `userland/metal-amd`) keeps its name: `addons/OneiOSRadeonMetal.bundle/...` and `addons/OneiOSRadeonMetal.publish`; any other folder is `NativeAdrenoMetal` as before (unit test `the_a56_bundle_keeps_its_name_in_the_sidecar`) |
 | `addon` | nothing (new, 2026-11-23) | `image tweaks cdhash`'s Mach-O reader (oneios-tweaks) | new: its Metal part is `gpuaddon`'s byte for byte (unit test); the capture plug-in goes to `camera/MediaCapture/H9ISP.mediacapture`, which hosted 0090 mounts; `OUTPUT.cdhashes` has one `CDHASH NAME` line for each Mach-O file in it, for `phone addon`. `userland/camera/build.sh` makes `H9ISP.gpuaddon` with it |
 
 `tbds` writes TBD v4 as the 24A446 stubs were laid out (one item per line); weak definitions and thread-local
