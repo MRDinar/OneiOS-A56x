@@ -55,6 +55,9 @@ on the panic stub). In order, with the console in xnuhost's log:
 3. The Data volume's first start (0004): `/sbin/newfs_apfs` runs as pid 2. It is the first user process of the boot,
    so its dyld registers the signature of every shared cache file and `cs_native4k_prepare` reads and hashes all of
    them (5.8 GiB; 0014 does it on 8 threads: about 3 minutes here). The cache maps and slides (0013: 8 GiB region).
+   (Since 2026-11-24 it runs as `newfs_apfs -e -x -v Data`, and again without `-x` when it exits 64, usage: iOS 16.5's
+   `newfs_apfs` (20F66, the Galaxy A56, issue 73) has no `-x`, and the first A56 boot of our image panicked with
+   `newfs_apfs failed: wait status 0x4000`, then `offline scratch Data mount failed: 5`.)
    Then `OneiOS Data: /dev/disk8s3 on /dev/disk4 (new)`, the mount, `seed verified: 6024 files (1216961847 bytes),
    14813 folders` (61 s). On a second start of the same store the volume is mounted as it is and launchd is the
    process that pays for the hashing.
