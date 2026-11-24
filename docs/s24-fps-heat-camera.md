@@ -5,9 +5,88 @@ The owner's goal of 2026-11-25: on the Galaxy S24 Ultra (iOS 27.0.1 24A446) rais
 animations); bring the CPU down from every cluster at its top clock and a 92-95 C SoC; and get a camera preview that is
 not black. Use what other ports on the iOSOnAnd tracker already solved.
 
+## The fixes on this branch (2026-11-25; built and host-tested on the build laptop, not booted)
+
+Each is one switch in docs/switches.md, at its new behaviour by default (that file's rule); none has run on a phone.
+"Before" is the switch's other value.
+
+| Fix | Where | Switch (default; before) | Proof lines on the phone |
+|---|---|---|---|
+| **GPU memory: the pools' room.** metal2vulkan kept a 32 MiB free range in each pool and made a 64 MiB block whenever no block had it in one piece (backboardd: 440 MiB pooled, 264 MiB placed). Now 8 MiB | `userland/metal/KeepRoom.inc` (sets `METAL2VULKAN_KEEP_ROOM_MIB`, Droid-VM patch 0027) | `oneios-keep-room=8`; `0` | the `GM p A/BM u CM` rows: B nearer C; `oneios-mem: free` above the 1-36 MiB of the gpumem log; `oneios-perf: kernel_task` `VM_pageout_scan` and `VM_compressor` us per 30 s down; `oneios-wired` GPU blobs lower |
+| **Animation rate: UIKit's links.** The in-process animation manager (AnimationKit's in 24A446) asked 20..120, 30 preferred; its links now run at the display's rate. Ported from UniXNU-zizhan 42629e5 | `userland/metal/DisplayLinks.inc` | `oneios-dl-full=1`; `0` | iOS's log: `OneiOS display links: hooked (made M fps 1 range 1)` in SpringBoard, then `... SpringBoard in-process animation link at the panel's rate (asked 20..120, 30)` (or the `kept: CLASS asks ...` lines naming the class to match if not); xnuhost's `frame: 10 s` and `display: 10 s` frame counts during swipes |
+| **Animation rate: the panel's range.** The guest's display offered 24..120 Hz; now 60..120 | `staged/display.rs` LEGACY (NativeLegacyDisplay.cpp `getRefreshAttributes`), default in `OneiOSDisplay.cpp`; kernel | `sheng-vsync-min=60`; `24` | the kernel's `oneios-display: refresh range 60..120 Hz` (once) |
+| **ASTC on.** `/product graphics-featureset-fallbacks` keeps APPLE2 and MTL2,2 (DeviceSupportsASTC): ASTC images go to the GPU, not ImageIO on the CPU (zizhan 46.9 -> 88.6 moving fps) | xnuhost `astc` -> `Machine::astc` (`runtime/loader/src/machine.rs`); the A56's table entry `astc=0` | `astc=1`; `0` | xnuhost: `gpu: astc=1: /product graphics-featureset-fallbacks keeps APPLE2 and MTL2,2 (DeviceSupportsASTC)`; icons, wallpapers and app-switcher cards drawn (a screenshot); where CoreUI lays ASTC data out through Metal, iOS's log has `native-metal: texture layouts are DroidVM's linear ones (block-compressed formats; format N first)` once a process |
+| **App snapshots not ATX.** With ASTC on, SplashBoard would compress each snapshot to ASTC on the CPU (blank switcher cards, the 10 s scene watchdog). JPEG or PNG instead, from ios-garnet | `userland/metal/SnapshotFormat.inc` (SpringBoard) | `oneios-snapshot-astc=0`; `1` | iOS's log: `OneiOS snapshots: JPEG or PNG, not ATX (hooked)`; no app killed by the scene-update watchdog when it leaves the screen |
+| **Camera: the compile deadline.** cameracaptured's compute pipelines failed `Compile(Budget(Time))` at 20 s; every client but backboardd now has 120 s | `userland/metal/m2v-compile-deadline.patch` (`Budget::standard`), `CompileDeadline.inc` | `oneios-compile-s=120`; `0` (20 s) | no `oneios-gpu-text: cameracaptured[N] problem compute pipeline ...: Compile(Budget(Time))` |
+| **Camera: the stream's notifications.** StreamStarting/Started around a Start, StreamStopping/Stopped around a Stop, as H10ISP's; from Jesvi-iOS | `userland/camera/OneiOSCaptureDevice.c` `post()` | `oneios-camera-notify=1`; `0` | `ONEIOS CAMERA: ios: cameracaptured[N]: stream: posted StreamStarting`, `... the graph starts the stream (format N)`, `posted StreamStarted`, `... the first frame`, `PrimaryScaler: the first picture given`; xnuhost `virtio: 60 s` with `camera#0 q0 +N` while the app is open |
+
+The two Metal switches `oneios-keep-room` and `oneios-compile-s` act in the default (624bab3) add-on only; the rt
+runtime has neither (userland/metal/rt/README.md). Every switch is in xnuhost's `switches:` line.
+
+**A lasting tool:** `oneios-tool sym cstr`, `sym ptrs`, `sym refs`, `sym dis` (tools/oneios-tool/README.md "sym"):
+strings, pointers (both pointer forms; iOS 27's are offsets from the cache's base), adrp pairs and code of the dyld
+shared cache, named.
+
+**Read and closed (no change):**
+- The camera's names. `VideoOutputConfigurations`, `VideoOutputsEnabled`, `VideoOutputHandlers`, `PixelBufferHandler`,
+  `BufferPool` and the outputs `PrimaryScaler`, `SecondaryScaler`, `StillImage` are in 24A446's CMCaptureCore
+  (`oneios-tool sym cstr`, `out/ios27-cache`): the plug-in's names are iOS 27's. iOS 27 adds outputs (`IntermediateTap`,
+  `FrontEndPyramidScale0/1`, `StillImageRaw`, `PointCloud`, ...), said once by name as `stream: an output not here:`.
+- The swap fence. Our guest display takes the render server's work number at the swap (`DroidVMVirtioGpuDisplay.cpp`,
+  the offer reads `droidvm_virtgpu_submitted()`), the fence zizhan's 49dee66 moved to; nothing to port.
+- `+[XBApplicationSnapshotManifestImpl _outputFormatForSnapshot:]` is a class method in 24A446 (its block's symbol),
+  so the ios-garnet hook applies.
+
+**Tests (build laptop):** `runtime/host-tests.sh` without QEMU (no qemu part): lint, lint-android, port, links and package pass; the workspace (`cargo test --workspace --no-fail-fast`) 397 of 398, the one failure `audio::test_audio_helper::audio_helper` (1 underrun: a test that needs the host to run its threads on time; it failed under a load average of 21 from other agents' builds, passed in this branch's first run, and this branch changes no audio code); `kernel/tests/host.sh` 13 of 13;
+`cargo test -p oneios-sym` 9 (the new `strings_pointers_and_page_pairs`) and `-p oneios-kernel` (the golden test
+stages LEGACY into the pinned NativeLegacyDisplay.cpp); `userland/camera/tests/host.sh` (reader 26, formats 101 checks);
+`runtime/loader/tests/loader.rs` `machine_identity_tree` (both feature-set lists), `config::tests::host_device` (the
+A56's `astc=0`, a command line's `astc=1` wins) and `config::tests::the_switches` (the line with the seven new words).
+
+### The zero-copy panel pool (plan, not code)
+
+Today the display helper copies each changed frame from guest pages into the layer's buffer on the CPU (up to 18 MB,
+5.5-6.8 ms a frame; docs/gpu.md 2.5 item 2). zizhan's panel pool (128 MiB: 1 copy buffer and 6 zero-copy slots) is
+the DPU scanning out the render server's own surfaces. Ours, in three steps, each behind `display-zero-copy=0|1`:
+
+1. **The helper's buffers to xnuhost.** The helper allocates a pool of AHardwareBuffers (RGBA8, the frame's size, 3
+   to 6; `AHardwareBuffer_allocate` with `GPU_FRAMEBUFFER | COMPOSER_OVERLAY`) and sends their dma-buf fds over
+   `display.sock` (SCM_RIGHTS, a new `XHDB` message after the hello; `runtime/display/src/xhd`). It posts a buffer with
+   `ASurfaceTransaction_setBuffer` and an acquire fence instead of `ANativeWindow_lock`/`unlockAndPost`.
+2. **A GPU copy instead of the CPU's.** xnuhost imports each fd into KGSL (`IOCTL_KGSL_GPUOBJ_IMPORT`, dma-buf type)
+   beside the guest surface's blob (already a KGSL object, drm2kgsl's), and at each flush submits a 2D blit from the
+   surface to the next free pool buffer on drm2kgsl's own context; the helper gets the buffer's index and a sync-file
+   fence (`KGSL_TIMESTAMP_EVENT_FENCE`) to post with. Removes the 5.5-6.8 ms read and the snapshot's tile hashing; a
+   guess: the blit is well under 1 ms at the GPU's bandwidth. Cost: one GPU job a frame on a GPU the render server is
+   using.
+3. **No copy.** The render server's surfaces themselves as the pool: SET_SCANOUT_BLOB of a pool buffer exported to the
+   guest as a blob, so backboardd renders into what the panel shows (zizhan's zero-copy slots). Needs the guest to
+   allocate its framebuffer surfaces from that pool (IOSurface backing in the virtio GPU path) and the helper to hold a
+   buffer until the guest's next swap retires it. Larger; only after 2 is measured.
+
+Watch zizhan's warning: answering the swap before the latch (their `pong_zc_async=1`) took vsync pacing away from
+backboardd (frames over 25 ms 7% -> 31%). Step 2 answers when the blit is queued, as `display-post=apart` does now;
+compare the `frame:` line's interval p95 against `display-post=serial` in the first boot.
+
+### What the Mac stages (not booted)
+
+The hand-off folder (built from the commit after this text) is written into this section by the next commit.
+
+### What is left
+
+- A phone boot of this build (the integration build first: `out/handoff/integration2-d3b802f`, docs/switches.md, then
+  this one), reading the proof lines above, `display-post=apart` against `serial`.
+- After the boot: if `OneiOS display links: ... kept: CLASS` names the animation's target, match it; if free memory is
+  still near 0, the next memory step (the render server's screen-sized dedicated targets, then the guest's RAM size in
+  takeover); the camera's next stop in its lines.
+- The zero-copy panel pool (above): not started.
+- Not read: hoshikv/UniXNU-peridot, slayedkaito/xnu-kernel-peridot-amiaxf, UniXNU-sheng and UniXNU-uke patch lists,
+  iOSPlus10 origin/main; Jesvi-iOS, darwin-lisa, ios-redfin and hakios-metal for the camera beyond `post()`.
+
 ## State at the hand-off of 2026-11-25
 
-No code changed yet on this branch: this file holds the findings so far. Nothing built, nothing booted.
+No code had changed on this branch at the hand-off (the fixes are above): this section holds the findings that led to
+them. Nothing built, nothing booted then.
 
 ### Our own log: why the CPU is hot (read, `out/session-logs/2026-11-24-mac-gpumem/live.log`)
 
