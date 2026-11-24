@@ -46,6 +46,18 @@ stages LEGACY into the pinned NativeLegacyDisplay.cpp); `userland/camera/tests/h
 `runtime/loader/tests/loader.rs` `machine_identity_tree` (both feature-set lists), `config::tests::host_device` (the
 A56's `astc=0`, a command line's `astc=1` wins) and `config::tests::the_switches` (the line with the seven new words).
 
+**Round 2 (2026-11-25, after the merge of main a1200e5; build laptop):** `runtime/host-tests.sh` without QEMU:
+workspace 404 passed, 0 failed (`audio_helper` passed in it, and again run alone: `cargo test -p onebridges
+audio_helper`, 2 passed, load 4.6 at its start; its one failure of round 1 was the host's load, as said), lint,
+lint-android, port, links (the display library with its AHardwareBuffer and ASurfaceTransaction imports links with `-z
+defs`), package pass; the display helper's six `test_present_*` and xnuhost's `the_serial_post_option` and
+`the_switches` among them (docs/switches.md "Tests"); `cargo test -p oneios-ios` 22 (the camera edits with 3c46b5e's);
+`userland/camera/tests/host.sh` (reader 26, formats 101 checks; the camera code did not change). No kernel file changed
+since e84a46e (the merge brought only `kernel/release-kernel.txt`, the A56 release pin), so no kernel build and no
+`kernel/tests/host.sh`. Built: the Metal add-on in the worktree's `out/metal` (`userland/metal/build.sh`, its stage
+reset the staged translator once for the new patch order: docs/switches.md "Found while building the Metal
+plug-in"); the runtime package 0.1.28-dev at 8ded46c (`runtime/package.sh` with the s24fps kernel, the plug-ins).
+
 ### The zero-copy panel pool (step 1 in code since round 2; steps 2 and 3 a plan)
 
 Today the display helper copies each changed frame from guest pages into the layer's buffer on the CPU (up to 18 MB,
@@ -82,38 +94,49 @@ compare the `frame:` line's interval p95 against `display-post=serial` in the fi
 
 ### What the Mac stages (not booted)
 
-Everything is in `out/handoff/s24fps-e84a46e/` on the build laptop (README.txt, SHA256SUMS; 231 MB): copy the folder
-to the Mac. The integration build (`out/handoff/integration2-d3b802f`) boots first; this one after it.
+Everything is in `out/handoff/s24fps-8ded46c/` on the build laptop (README.txt, SHA256SUMS of its 48 other files; 231 MB):
+copy the folder to the Mac. It replaces `s24fps-e84a46e` (removed): the same kernel, a new runtime and add-on. The
+integration build (`out/handoff/integration2-d3b802f`) boots first; this one after it.
 
 ```sh
-H=out/handoff/s24fps-e84a46e
+H=out/handoff/s24fps-8ded46c
 oneios-tool phone sums                                   # note the phone's kernel.kc sha256 (to stage it back)
-oneios-tool phone stage runtime-asis $H/runtime           # runtime 0.1.27-dev, commit e84a46e, xnuhost 18c44ac6
+oneios-tool phone stage runtime-asis $H/runtime           # runtime 0.1.28-dev, commit 8ded46c, xnuhost 44bbc51c
 mkdir -p stage && cp $H/image/kernel.kc $H/image/kernel.kc.hashes stage/
-oneios-tool phone manifest stage --stage                 # kernel.kc a821fd1e (.hashes 196e4c94), xnu.macho 8971ecc9
+oneios-tool phone manifest stage --stage                 # kernel.kc a821fd1e (.hashes 196e4c94), xnu.macho 8971ecc9;
+                                                         # unchanged since e84a46e: not needed where phone sums shows it
 oneios-tool phone addon $H/addon/default.gpuaddon --cdhashes $H/addon/default.gpuaddon.cdhashes
+                                                         # NativeAdrenoMetal 4054ab4c, Turnip 90adff87, H9ISP 59c042c5
 oneios-tool phone switch --version-code N                # then: phone log --save, phone pull-log DIR
 ```
 
-`overlay/userland/xnuhost.conf`: nothing to add for the defaults (every fix is on). The first boot runs them all
-and `display-post=apart`; a second boot with `display-post=serial` is the frame-pacing comparison. To pin a fault,
-one switch off (`$H/xnuhost.conf.switches` lists them all): `astc=0` (and then `oneios-snapshot-astc` does nothing),
-or one line `boot-args-add=oneios-dl-full=0 sheng-vsync-min=24 oneios-keep-room=0 oneios-compile-s=0
-oneios-camera-notify=0` with only the words wanted.
+`overlay/userland/xnuhost.conf`: nothing to add for the defaults (every fix is on, `oneios-m2v-shader-fix` off). The
+first boot runs them all with `display-post=apart` and `display-present=ahb`; a second boot with
+`display-present=window` is the display helper's comparison (its share of a core, copy time, frames per 10 s), a third
+with `display-post=serial` the frame-pacing one. The first boot after this add-on recompiles every Turnip driver
+pipeline once (the patch changes Turnip's build id). To pin a fault, one switch off (`$H/xnuhost.conf.switches` lists
+them all): `astc=0` (and then `oneios-snapshot-astc` does nothing), `display-present=window`, or one line
+`boot-args-add=oneios-dl-full=0 sheng-vsync-min=24 oneios-keep-room=0 oneios-compile-s=0 oneios-camera-notify=0` with
+only the words wanted. The Turnip split and the reflection fix have no switch (a hang and a crash fix).
 
-The lines that prove each fix are in the table above; the first ones to look for: `versions: ... e84a46e ...`,
-`switches: ... ; all at their defaults` (39 words), `gpu: astc=1: ...`, the kernel's `oneios-display: refresh range
-60..120 Hz`, and in `phone pull-log`'s iOS log `OneiOS display links: hooked (made M fps 1 range 1)` and `OneiOS
-snapshots: JPEG or PNG, not ATX (hooked)`. Not booted.
+The lines that prove each fix are in the table above; the first ones to look for: `versions: ... 8ded46c ...`,
+`switches: ... ; all at their defaults` (41 words, with `display-present=ahb` and `oneios-m2v-shader-fix=0`), `gpu:
+astc=1: ...`, the kernel's `oneios-display: refresh range 60..120 Hz`, the helper's `oneios-display:
+display-present=ahb: 3 write-only buffers (...) on a child surface of the layer`, and in `phone pull-log`'s iOS log
+`OneiOS display links: hooked (made M fps 1 range 1)` and `OneiOS snapshots: JPEG or PNG, not ATX (hooked)`. Not
+booted.
 
 ### What is left
 
 - A phone boot of this build (the integration build first: `out/handoff/integration2-d3b802f`, docs/switches.md, then
-  this one), reading the proof lines above, `display-post=apart` against `serial`.
+  this one), reading the proof lines above, `display-present=ahb` against `window`, `display-post=apart` against
+  `serial`. Then the merge into main (CLAUDE.md: a phone boot first).
 - After the boot: if `OneiOS display links: ... kept: CLASS` names the animation's target, match it; if free memory is
   still near 0, the next memory step (the render server's screen-sized dedicated targets, then the guest's RAM size in
   takeover); the camera's next stop in its lines.
-- The zero-copy panel pool (above): not started.
+- The zero-copy panel pool (above): step 1 in code (round 2, not booted); steps 2 and 3 not started.
+- From `docs/ports-2026-11-25-gpu.md`, not on this branch: T2 (virtio-media interrupts), M1 (the plug-in on
+  Droid-VM's 11-16 stack), G3 (the priming list), T4, G5, T5 (that file's section 8).
 - Not read: hoshikv/UniXNU-peridot, slayedkaito/xnu-kernel-peridot-amiaxf, UniXNU-sheng and UniXNU-uke patch lists,
   iOSPlus10 origin/main; Jesvi-iOS, darwin-lisa, ios-redfin and hakios-metal for the camera beyond `post()`.
 

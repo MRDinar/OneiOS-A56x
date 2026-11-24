@@ -186,7 +186,11 @@ astc=1
   alone at the defaults, both bits with `serial`, no message with `window`), the helper's `test_present_choice`,
   `test_present_fallbacks`, `test_present_ring`, `test_present_in_flight_and_release`, `test_present_gives_up`,
   `test_present_run`. The Metal ports: `cargo test -p oneios-ios` (`the_camera_edits_apply_once_each` with the 3c46b5e
-  edit), `git apply --check` of `turnip-submit-split.patch` on the staged Mesa. Not booted.
+  edit), `git apply --check` of `turnip-submit-split.patch` on the staged Mesa; `userland/camera/tests/host.sh` (26 and
+  101 checks); `audio_helper` again alone: passed. Built: the add-on (NativeAdrenoMetal `4054ab4c`, Turnip `90adff87`,
+  H9ISP `59c042c5`; 12,334,688 bytes; its strings have the Turnip warning, `METAL2VULKAN_COMPILE_DEADLINE_S` and the
+  shader fix's line), runtime 0.1.28-dev at 8ded46c (xnuhost `44bbc51c`, liboneios-display.so `4994ef8d`), the kernel of
+  e84a46e unchanged; handed to the Mac as `out/handoff/s24fps-8ded46c/`. Not booted.
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").
 
 ## Found while building the Metal plug-in (2026-11-23)
