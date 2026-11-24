@@ -195,6 +195,15 @@ scripts/bg.sh prelink-release env KERNEL=out/kernel/current-hosted-release/xnu.m
 kernel/publish.sh --hosted release      # the archive for a release and its line for kernel/release-kernel.txt
 ```
 
+iOS 27.2.1 (24B156) has its own kernel (the board archives bind each build's original classes: kernel/prelink/README.md
+"Another build"). `ONEIOS_OS_PROFILE` picks the OS profile (default `ios-27.0.1-24A446`), `BUILD` the prelink's
+kernelcache and records:
+
+```sh
+scripts/bg.sh k272 env HOSTED_OUT=ios272 ONEIOS_OS_PROFILE=ios-27.2.1-24B156 ONEIOS_CRYPTO=original kernel/build-hosted.sh
+scripts/bg.sh p272 env BUILD=24B156 KERNEL=out/kernel/current-hosted-ios272/xnu.macho OUT=out/kernel/24B156-ios272 kernel/prelink/build.sh
+```
+
 The kernel then uses the kernel collection's own `com.apple.kec.corecrypto` (which the source-mode bootstrap already
 starts early) and has no source fallback (`kernel/patches/oneios-hosted/optional/original-corecrypto-only.patch`,
 added to this build's series only). Nothing is sealed (`kernel/patches/unixnu/0003-skip-source-seal.patch`), and the
@@ -995,6 +1004,7 @@ $T app build             # cd app-android && ./gradlew test assembleFullDebug (-
 $T app install           # adb install -r of that APK; refuses another signing certificate (never uninstall: that wipes the app's data)
 $T app install --release 0.4.86      # the CI prerelease oneios-0.4.86 instead, through gh
 $T app stage-scripts     # the fork's oneios_switch.sh, oneios_return.sh, oneios_root.sh into the stage, sha256 before and after
+$T app kb 24B156         # iOS 27.2.1's pairing files into the fork's assets/kb-24B156/ from this checkout (--check: compare only)
 ```
 
 The checkout is the first of: `--oneos DIR`; `ONEOS_DIR`; the current folder when it is a checkout; `app/` of the

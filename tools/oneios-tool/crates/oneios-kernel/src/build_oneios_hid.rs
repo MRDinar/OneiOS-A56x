@@ -287,7 +287,7 @@ pub fn main() -> Result<()> {
     let hid_source = ctx.repo.join("external/NativeHidInput/NativeHidInput.cpp");
     let transport_source = ctx.repo.join("external/UniXNU-droidvm/package/DroidVMVirtioInput.c");
     let als_source = ctx.repo.join("drivers/brightness/OneiOSALSDevice.cpp");
-    let (layout_path, header_path) = (here.join("IOHIDDevice-24A446-v54.json"), here.join("OriginalHidDeviceABI.h"));
+    let (layout_path, header_path) = (ctx.layout(&here, "IOHIDDevice")?, here.join("OriginalHidDeviceABI.h"));
     gen::need_files(&[ctx.repo.join("drivers/sources.txt"), hid_source.clone(), transport_source.clone(), als_source.clone(), layout_path.clone(),
                       header_path.clone(), here.join("OneiOSHidInput.cpp"), here.join("OneiOSSideKeys.inc"), here.join("OneiOSTouchTime.inc"),
                       ctx.records.join("iokit/DEVELOPMENT/IOPlatformExpert.cpo.json")],
@@ -366,8 +366,8 @@ pub fn main() -> Result<()> {
                                            header_path, layout_path])?;
     write_report(&out, &layout, &functions, &owned)?;
     let owns: Vec<String> = owned.iter().map(|(name, slots)| format!("{} owns {} slots", &name[5..], slots.len())).collect();
-    println!("build-oneios-hid: {} ({} objects, {} original IOHIDDevice functions bound at their 24A446 iPhone18,2 addresses; {})",
-             archive.display(), objects.len(), functions.len(), owns.join(", "));
+    println!("build-oneios-hid: {} ({} objects, {} original IOHIDDevice functions bound at their {} iPhone18,2 addresses; {})",
+             archive.display(), objects.len(), functions.len(), ctx.build, owns.join(", "));
     Ok(())
 }
 

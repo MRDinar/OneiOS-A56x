@@ -508,6 +508,46 @@ oneios-tool prelink build --kernel out/kernel/current-hosted-release/xnu.macho \
 - Not proven: the prelink's time and memory on the phone (the phone runs the same code on its own kernelcache:
   expect seconds, not minutes, and under 1 GB, as here, but not measured), and any boot of this kernel on the phone.
 
+## Another build: iOS 27.2.1 (24B156), 2026-11-25 (ios272)
+
+24B156's kernelcache (`out/kernel-inputs/24B156/kernelcache.macho`, SHA-256 `f6f31ac4...e9a5939`,
+xnu-13432.42.3) has the same 301 fileset entries as 24A446's, at other addresses. Every record of this folder and of
+the board archives that names an original address is per build (`*-24A446*`, `*-24B156*`); `build.sh` takes
+`BUILD=24B156` (its kernelcache, profile `ios-27.2.1-24B156`, pairs, stubs and reviewed files) and `KERNEL=` a hosted
+kernel built with `ONEIOS_OS_PROFILE=ios-27.2.1-24B156` (docs/building.md 2). One `xnu.macho` cannot serve both: the
+board archives compile the original classes' addresses into it.
+
+How the 24B156 files were made, and how to make them for a next build:
+
+- **The class records, read again from the new kernelcache** (the same commands that wrote 24A446's, which reproduce
+  the committed 24A446 files byte for byte): `oneios-tool prelink classes --xnuprelink external/Droid-VM-UniXNU/kits/XnuPrelink
+  --kernelcache out/kernel-inputs/24B156/kernelcache.macho --prelink-report out/kernel/24A446/kernel.kc.prelink.json
+  --out kernel/prelink/classes-24B156-v54.json` with the eleven classes, each its own argument; the same with
+  `IOAESAccelerator` and `IOAcceleratorES` alone for `aes/IOAESAccelerator-24B156-v54.json` and
+  `gpu/IOAcceleratorES-24B156-v54.json`; `oneios-tool kernel layout hid|net --kernelcache ... --out
+  kernel/patches/oneios-hosted/{hid/IOHIDDevice,net/IONetworking}-24B156-v54.json`. (The prelink report only gives
+  the collection slide, 0x1f000000000, for the `linked` addresses; check it again in 24B156's own report.) The
+  records differ from 24A446's in addresses only (sizes, slot counts, every slot's diversity the same), but for
+  IOMobileFramebufferLegacy 0x1dd8 -> 0x1de0 bytes, IOGPU 0x2e8/216 slots -> 0x2f0/217 and AGXAccelerator
+  0xcdf8/474 -> 0xce00/475 (nothing of ours subclasses those two).
+- **The address-keyed records, carried over** by `oneios-tool prelink port` (`oneios-prelink/src/port.rs`; the rules
+  in its header): `--from` 24A446's kernelcache, `--to` 24B156's, `--record IN=OUT` for `pairs`, `stubs`,
+  `reviewed`, `lead/reviewed-lead`, `user/reviewed-user` and the display record, with `--fields display --fields
+  request` for the display record's field offsets. It pairs 211,361 of 219,799 functions (196,667 of the same
+  shape) and 183,615 data addresses in 4 s; every check (address, size, SHA-256) is read again from 24B156's bytes.
+  `early_security_init` lands on `0xfffffe000927b430`, the wrapper derived by hand on 2026-11-20.
+  Its two methods agree: the port of the four class records above gives the same addresses as reading them again
+  (only the family ranges' end bounds differ by a few bytes, which bind nothing).
+- **The display record** (`display/legacy-display-24B156-v54.json`): ported; the 379 vtable slots read again from
+  both vtables (all where the map put them), the 17 field offsets voted from 24B156's code (all the same; `options`
+  has no instruction in the family and is kept), the 10 checks the same bytes. `instance_size` set to 0x1de0 from
+  the class record: `oneios-tool kernel gen display` now refuses a record whose kernelcache, size, vtable or slot
+  count differs from `classes-<build>-v54.json`'s (a unit test holds both builds' committed records to that).
+- **Left out by the port, to review against the audit**: pairs `IODMACommand::Dispatch`, `IOInterruptDispatchSource::metaClass`,
+  six `vnop_*_desc` objects and `gIOKitDebugKey`; the stub of IOSerialFamily's data import `0xfffffe000b727e14`;
+  reviewed `csproc_get_platform_path` and `vnop_searchfs_desc`. The audit of the 24B156 collection says which of them
+  a kext of 24B156 still imports.
+
 ## What is not done
 
 - **The pairing is incomplete.** A kext call to an original kernel function with no pair goes to

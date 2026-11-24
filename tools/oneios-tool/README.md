@@ -2842,6 +2842,7 @@ oneios-tool app install [APK]            # adb install -r of the build output (o
 oneios-tool app install --release 0.4.86 [--repo akshaynexus/OneOS] [--dir out/app]   # the CI prerelease oneios-<version>, through gh
 oneios-tool app stage-scripts            # the fork's oneios_switch.sh, oneios_return.sh and oneios_root.sh into the stage
 oneios-tool app dir                      # the checkout's path alone (for scripts; the suites' fork_dir)
+oneios-tool app kb 24B156 [--check] [--repo .]   # one build's pairing files (assets/kb/ for 24A446, assets/kb-24B156/) from this checkout's records
 ```
 
 - **The checkout** (the fork becomes the submodule `app/` of OneiOS, 2026-11-15; in a checkout from before it
@@ -2894,6 +2895,13 @@ oneios-tool app dir                      # the checkout's path alone (for script
   the tool never uninstalls (that wipes the app's data). `--release VERSION` downloads
   `OneOS-oneios-VERSION-debug.apk` and its `.sha256` from the prerelease `oneios-VERSION` with
   `gh release download` (`GH` names the program) and checks the one against the other first.
+- `kb BUILD` (2026-11-25, ios272) writes one iOS build's pairing files into the fork (`assets/kb/` for 24A446,
+  `assets/kb-<BUILD>/` for another: 24B156) from this checkout: the OS profile `ios-*-BUILD/profile.toml`,
+  `reviewed-BUILD-v54.json`, the lead's and user's reviewed files, `pairs-BUILD.json`, `stubs-BUILD.json`,
+  XnuPrelink's `fixtures/fileset-*-symbols.json` (`match/fixtures/`, the folder kernel/prelink/build.sh takes) and
+  `kb.json` (format 2: the build, the device, the profile's kernelcache SHA-256, each file's). `--check` writes nothing
+  and fails on a file that differs or one that is not a pairing file. On the fork's `assets/kb/` of `38dc4f1`:
+  `app kb 24A446 --check` says "none changed" (the folder was copied by hand until then). Unit tests: `kb::tests`.
 - `stage-scripts` is for sessions started without the app (`docs/newtodo.md` step 4): each of the three files is
   pushed, copied to `NAME.part` in the stage as root (`root:root`, mode 0700) and moved into place, so what was
   there is replaced and never written through; the SHA-256 of each staged file is printed before and after and
@@ -2955,7 +2963,11 @@ builds the binary when it is missing or stale (`scripts/lib/oneios-tool.sh`).
 | `audit` (audit.py's options, `--against` and `--draft` too; exit 1 on a failure) | `audit.py` | `audit.rs` |
 | `record --work DIR ... [--repo CHECKOUT] [--no-git] [--oneios-commit C] [--xnuprelink-commit C]` | `record.py` | `record.rs` (the three last options, 2026-11-15: the record's two commits given, or null, without starting `git`: the phone has none) |
 | `pin PROFILE` | the `tomllib` one-liner of `build.sh` | prints `[kernel.prelink] kernelcache_sha256` |
+| `port --from KC --to KC [--map OUT] [--report OUT] [--record IN=OUT]... [--fields KEY]... [--fields-loose] [--strict]` | new (2026-11-25, ios272) | `port.rs`: carries the address-keyed records (pairs, stubs, the reviewed files, the class layouts, the display record) from one kernelcache build to another (24A446 to 24B156), every check read again from TO's bytes; header of the file and kernel/prelink/README.md "Another build". Not a step of `build.sh`: run by hand once per new build |
 | `build --kernel K --kernelcache C --profile P --reviewed F [--more-reviewed F]... --pairs F --stubs F --xnuprelink DIR [--reference K] --out DIR [--repo DIR] [--no-git] [--remove-work]` | the whole of `kernel/prelink/build.sh` (new, 2026-11-15) | `build.rs`: every step in this process, for the phone and `serve` ("prelink build", below) |
+
+`prelink classes` refuses a class argument with a space in it (2026-11-25): a list passed as one word (zsh does not
+split an unquoted `$LIST`) was looked up as one name and recorded as "no static initializer" under the first class.
 
 What the Rust steps still read from the matcher folder (`--xnuprelink`: `external/XnuPrelink`, or the OneOS app's
 `kb/match`): its reviewed fixtures (`fixtures/fileset-*-symbols.json`), nothing else; a folder without one is refused
