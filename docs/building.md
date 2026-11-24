@@ -1436,6 +1436,17 @@ oneios-tool log perf xnuhost.log                    # the perf tables; host vCPU
 oneios-tool log cpu xnuhost.log                     # iOS's CPU by process, the host's vCPUs by QoS and each policy's clocks
 ```
 
+A user crash's neighbourhood in the dyld shared cache (`sym find` from the index, `sym callers` reading the cache;
+tools/oneios-tool/README.md "sym"): which image defines a name or sends a selector, and which branches reach an
+address. For iOS 16.5 the cache is `out/ios16-cache` (20F66's SystemOS cryptex, `image apfs-copy`); its slide is in the
+boot's `oneios-srprot: ... vm_protect A-B` lines (A less the unslid start of the mapping of size B-A):
+
+```sh
+ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym --slide 0x2db08000 0x1c261c58c     # SpringBoard's lr: CI::GLContext::init + 0xcc
+ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym find EAGLContext:                 # the images that send ...EAGLContext: selectors
+ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym callers 0x194c99a00               # the branches to that stub (unslid)
+```
+
 A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in
 the `kernel.kc` that ran and the `xnu.macho` it was prelinked from: member and segment, function + offset,
 file:line and inlined frames. The first call for a pair of files builds an index under `out/ksym-index/` (2 to 9 s);

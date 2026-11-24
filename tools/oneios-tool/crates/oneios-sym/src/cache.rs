@@ -307,3 +307,52 @@ impl Cache {
         Ok(out)
     }
 }
+
+/// The target of a `b` or `bl` at `va`: (target, true for bl), None for any other instruction.
+pub fn branch_target(word: u32, va: u64) -> Option<(u64, bool)> {
+    let link = match word & 0xfc00_0000 {
+        0x9400_0000 => true,
+        0x1400_0000 => false,
+        _ => return None,
+    };
+    let imm = ((word & 0x03ff_ffff) << 6) as i32 >> 6; // sign-extended imm26
+    Some((va.wrapping_add_signed(i64::from(imm) * 4), link))
+}
+
+impl Cache {
+    /// Every `b` and `bl` in an image's `__TEXT` whose target is one of `targets` (unslid): (site, target, bl?),
+    /// sorted by site. `sym callers`.
+    pub fn callers(&self, targets: &[u64]) -> Result<Vec<(u64, u64, bool)>> {
+        use rayon::prelude::*;
+        let want: std::collections::HashSet<u64> = targets.iter().copied().collect();
+        let ranges = self.text_ranges()?;
+        let mut out: Vec<(u64, u64, bool)> = ranges
+            .par_iter()
+            .flat_map_iter(|r| {
+                let mut found = Vec::new();
+                let mut va = r.start & !3;
+                while va < r.end {
+                    // Read the range one mapping piece at a time (a range never needs more than its file holds).
+                    let Some(bytes) = self.read(va, (r.end - va).min(1 << 20) as usize) else { break };
+                    if bytes.len() < 4 {
+                        break;
+                    }
+                    for (k, w) in bytes.chunks_exact(4).enumerate() {
+                        let site = va + 4 * k as u64;
+                        let word = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        if let Some((t, link)) = branch_target(word, site) {
+                            if want.contains(&t) {
+                                found.push((site, t, link));
+                            }
+                        }
+                    }
+                    va += (bytes.len() & !3) as u64;
+                }
+                found
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+}

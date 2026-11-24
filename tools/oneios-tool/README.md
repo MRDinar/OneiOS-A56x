@@ -1663,6 +1663,23 @@ that copy (18.6 s) is byte for byte the index built through an apfs-fuse mount (
 `out/dsc/root/System/Library/Caches/com.apple.dyld`), but there every open of `.symbols` decompresses it again
 (2.5 s for its first 16 bytes), which is why `dsc.py` is so slow through it.
 
+**`sym find` and `sym callers` (2026-11-24, fix/a56-ios16-faults):** the other way round, for reading a crash's
+neighbourhood without IDA.
+
+```sh
+oneios-tool sym find [--slide HEX] NAME...       # every kept symbol whose name holds NAME: address, image, name
+oneios-tool sym callers [--slide HEX] ADDR...    # every b and bl of the cache's images that reaches ADDR, named
+```
+
+`find` answers from the index (the names `sym` would give: one per address of an image's `__TEXT`, local symbols
+included); an `_objc_msgSend$SELECTOR` stub names an image that sends SELECTOR, which is how a selector's callers are
+found (then `callers` of the stub). A NAME nothing holds is said, status 1. `callers` reads the cache itself (it needs
+`ONEIOS_DSC_DIR`): each image's `__TEXT` is scanned for `b`/`bl` whose target is ADDR (parallel; 0.5 s over 20F66's
+3.3 GB cache); a target nothing reaches is said too (an Objective-C method is reached through `objc_msgSend`, not by
+a branch). With `--slide` the addresses are given and printed slid. Used on 20F66 (`ONEIOS_DSC_DIR=out/ios16-cache`,
+the shared region's slide 0x2db08000) to follow SpringBoard's pc-0 crash from `CI::GLContext::init` back to
+`+[CIContext internalGLContextWithOptions:]` (docs/gpu.md 5.2). Tests: `tests/synthetic.rs` `find_names_and_callers`.
+
 ```sh
 ONEIOS_DSC_DIR=<cache folder> tools/oneios-tool/tests/sym/compare-golden.sh
 ```
