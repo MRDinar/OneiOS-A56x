@@ -52,6 +52,7 @@ enum {
    MODULE_CODE_VSTOFFSET = 13,
    MODULE_CODE_SOURCE_FILENAME = 16,
    MODULE_CODE_HASH = 17,
+   MODULE_CODE_GUIDLIST = 20,   /* OneiOS: LLVM 22 and later write it (the host test assembles with LLVM 23) */
 };
 
 /* type records */
@@ -1773,6 +1774,9 @@ read_module_block(struct reader *r)
       case MODULE_CODE_VSTOFFSET:
       case MODULE_CODE_HASH:
       case MODULE_CODE_GCNAME:
+      /* OneiOS: the function GUIDs a newer llvm-as writes for ThinLTO (the host test's modules);
+       * nothing a shader needs, and Apple's metallibs of iOS 16.5 have none */
+      case MODULE_CODE_GUIDLIST:
          break;
       default:
          return fail(r, "unsupported module record %u", e.id);

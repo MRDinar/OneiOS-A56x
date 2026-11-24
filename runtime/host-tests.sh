@@ -22,6 +22,8 @@
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
 #             Ultra, S25, S26 Ultra, A56, and refusals)
+#   metal-amd only with METAL_AMD=1: userland/metal-amd/air/host-test.sh, the Galaxy A56 Metal layer (Jesvi-iOS's AIR
+#             frontend and air_metal on Mesa cecc0e9, driven through air_metal.h on softpipe; docs/a56-gpu.md section 4)
 #   links     runtime/package/elf-check-test.sh, when the NDK is there (on a Mac: on the Mac, after the container): the
 #             link rule of Android shared objects (-z defs) and runtime/package/elf-check.sh, on a library linked without
 #             it (must fail) and on a stage of runtime/build.sh
@@ -98,6 +100,10 @@ suite() {
     part boot runtime/xnuhost/check-arm64.sh smoke check
   else results+=("boot: skipped (no NDK here: the static xnuhost and the test kernel need it)"); fi
   part port sh scripts/port/test-verify-host.sh
+  # METAL_AMD=1: the A56 Metal layer's test (userland/metal-amd/air/host-test.sh: Mesa cecc0e9 with the AIR patches on
+  # softpipe, about 4 minutes and 700 MB the first time, in out/metal-amd). Off by default: it needs external/mesa-droidvm.
+  if [ "${METAL_AMD:-0}" = 1 ]; then part metal-amd sh userland/metal-amd/air/host-test.sh
+  else results+=("metal-amd: skipped (the A56 Metal layer's Mesa test runs with METAL_AMD=1)"); fi
   if ndk_ok; then
     part links runtime/package/elf-check-test.sh
     part package runtime/package/test.sh

@@ -1,5 +1,15 @@
 #include "metal_argument_indices.h"
 /*
+ * OneiOS: the Galaxy A56's Metal plug-in, OneiOSRadeonMetal.bundle (docs/a56-gpu.md section 4). This is Jesvi-iOS
+ * a13e406's userland/src/redwoodmetal.m (MIT, userland/metal-amd/NOTICE), changed only where it spoke to Jesvi's
+ * kernel or GPU: the device class is OneiOSRadeonMetalDevice (K3); no RedwoodGPU/RedwoodMali client (every buffer is
+ * Mesa's); the compiler library is libOneiOSRadeonAir.dylib beside the executable, whose screen is the A56's radeonsi
+ * (air/air_metal.c); -name is Mesa's; the alignments are RDNA3's; IOSurfaces are served as copies (no in-place
+ * import here); the device is declined in backboardd and Jesvi's metaloff processes (rm_offered); the log is m2m.h's
+ * OneiOS channel (os_log and the kernel's oneios-gpu-text rows). Each change is marked "OneiOS" where it is. Jesvi's
+ * text below speaks of its phones (the Adreno 7c+ redwood, the S20's Mali-G77) and its docs/metal.md, kept as written.
+ */
+/*
  * The device object of a Metal driver for this port, as a real library.
  *
  * What Metal demands of a plugin's device class was measured rather than guessed
@@ -563,16 +573,15 @@ mesa_available(void)
 		return mesa.handle != NULL;
 	}
 	tried = true;
-	/* A copy of the library beside this driver's own executable wins: that is how a newer
-	 * driver is tried in one process from a writable place (libredwood-metalon) while
-	 * /redwood and /System stay as they are. The system bundle has no such copy. */
+	/* OneiOS: the library is in this bundle, beside its executable (OneiOSRadeonMetal.bundle/libOneiOSRadeonAir.dylib,
+	 * userland/metal-amd/air/build.sh plugin), wherever the bundle is: /System/Library/Extensions through the kernel's
+	 * addon union (hosted 0031) or a copy elsewhere. Jesvi's /redwood/lib/libredwoodair.dylib is not on this system. */
 	Dl_info self;
-	if (dladdr((const void *)mesa_available, &self) != 0 && self.dli_fname != NULL &&
-	    strncmp(self.dli_fname, "/System/", 8) != 0) {
+	if (dladdr((const void *)mesa_available, &self) != 0 && self.dli_fname != NULL) {
 		char beside[1024];
 		const char *slash = strrchr(self.dli_fname, '/');
-		if (slash != NULL && (size_t)(slash - self.dli_fname) + 24 < sizeof(beside)) {
-			snprintf(beside, sizeof(beside), "%.*s/libredwoodair.dylib",
+		if (slash != NULL && (size_t)(slash - self.dli_fname) + 32 < sizeof(beside)) {
+			snprintf(beside, sizeof(beside), "%.*s/libOneiOSRadeonAir.dylib",
 				 (int)(slash - self.dli_fname), self.dli_fname);
 			mesa.handle = dlopen(beside, RTLD_NOW);
 			if (mesa.handle != NULL) {
@@ -580,8 +589,6 @@ mesa_available(void)
 			}
 		}
 	}
-	if (mesa.handle == NULL)
-		mesa.handle = dlopen("/redwood/lib/libredwoodair.dylib", RTLD_NOW);
 	if (mesa.handle == NULL) {
 		m2m_log('E', "DEV", "no compiler library: %s\n", dlerror());
 		return false;
@@ -756,9 +763,9 @@ static struct {
 	unsigned lines;
 } rw_stats;
 static unsigned rw_mixed_passes, rw_passes;   /* (rw_pass_shape) */
-static volatile int rw_snap_wanted;            /* (com.redwood.metal.snap) */
+static volatile int rw_snap_wanted;            /* (com.oneios.radeonmetal.snap) */
 static unsigned rw_snap_number;
-/* (com.redwood.metal.trace) the next N command buffers traced draw by draw, whatever they do */
+/* (com.oneios.radeonmetal.trace) the next N command buffers traced draw by draw, whatever they do */
 static volatile int rw_trace_force;
 
 /*
@@ -938,7 +945,7 @@ rw_now_ns(void)
 }
 
 static void rw_perf_tick(void);
-/* (com.redwood.metal.dump) how many fill and image draws are still to be written out */
+/* (com.oneios.radeonmetal.dump) how many fill and image draws are still to be written out */
 static volatile int rw_dump_fills, rw_dump_images, rw_dump_shapes;
 
 /* what -runDraw needs of a pipeline's vertex descriptor to read a draw's positions back */
@@ -1390,7 +1397,7 @@ rw_prof_toggle(void)
 			rw_prof_on = 0;
 			return;
 		}
-		m2m_log('I', "PERF", "prof: sampling every thread every 2 ms until the next com.redwood.metal.prof\n");
+		m2m_log('I', "PERF", "prof: sampling every thread every 2 ms until the next com.oneios.radeonmetal.prof\n");
 	} else {
 		rw_prof_on = 0;
 		pthread_join(thread, NULL);
@@ -1455,7 +1462,7 @@ rw_stats_install(void)
 	static int token, snap_token, dump_token, trace_token, prof_token;
 	static dispatch_source_t perf_timer;
 
-	notify_register_dispatch("com.redwood.metal.summary", &token,
+	notify_register_dispatch("com.oneios.radeonmetal.summary", &token,
 	    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
 		(void)t;
 		rw_stats_print();
@@ -1477,7 +1484,7 @@ rw_stats_install(void)
 		char name[96];
 		static int own_prof_token;
 
-		snprintf(name, sizeof(name), "com.redwood.metal.prof.%s", getprogname());
+		snprintf(name, sizeof(name), "com.oneios.radeonmetal.prof.%s", getprogname());
 		notify_register_dispatch(name, &own_prof_token, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
 			(void)t;
 			rw_prof_toggle();
@@ -1485,12 +1492,12 @@ rw_stats_install(void)
 	}
 	/* only the window server's frames are the screen */
 	if (strcmp(getprogname(), "backboardd") == 0) {
-		notify_register_dispatch("com.redwood.metal.snap", &snap_token,
+		notify_register_dispatch("com.oneios.radeonmetal.snap", &snap_token,
 		    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
 			(void)t;
 			__sync_fetch_and_add(&rw_snap_wanted, 1);
 		});
-		notify_register_dispatch("com.redwood.metal.dump", &dump_token,
+		notify_register_dispatch("com.oneios.radeonmetal.dump", &dump_token,
 		    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
 			(void)t;
 			rw_dump_fills = 30;
@@ -1498,12 +1505,12 @@ rw_stats_install(void)
 			rw_dump_shapes = 16;
 			m2m_log('I', "TRACE", "dump: the next 30 colour fills, 6 image draws and 16 shapes are written out\n");
 		});
-		notify_register_dispatch("com.redwood.metal.prof", &prof_token,
+		notify_register_dispatch("com.oneios.radeonmetal.prof", &prof_token,
 		    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
 			(void)t;
 			rw_prof_toggle();
 		});
-		notify_register_dispatch("com.redwood.metal.trace", &trace_token,
+		notify_register_dispatch("com.oneios.radeonmetal.trace", &trace_token,
 		    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
 			(void)t;
 			rw_trace_force = 3;
@@ -1878,7 +1885,10 @@ _Static_assert(sizeof(struct MTLTargetDeviceArch) == 24 &&
 	       __builtin_offsetof(struct MTLTargetDeviceArch, name) == 0x10,
 	       "Metal reads the name at +0x10 (0x181a3ca3c) and the version at +0x8");
 
-@interface RedwoodMetalDevice : _MTLDevice {
+/* OneiOS: Jesvi's RedwoodMetalDevice, named as contract K3 says (MetalPluginClassName and the plist's
+ * NSPrincipalClass: OneiOSRadeonMetalDevice). The driver's other classes keep Jesvi's RedwoodMetal* names: nothing
+ * outside this bundle names them. */
+@interface OneiOSRadeonMetalDevice : _MTLDevice {
 	io_service_t _acceleratorService;   /* the IOAcceleratorES service Metal handed us */
 	io_connect_t _gpu;                  /* this port's own gpu client, or IO_OBJECT_NULL */
 	struct rwa_device *_mesa;           /* Mesa's screen and context, or NULL */
@@ -1988,75 +1998,8 @@ rw_declare_protocols(void)
 	    "not in this process:%s", na ? added : " none", nl ? lacking : " none", nb ? absent : " none");
 }
 
-/* One request of this port's own gpu client, shaped like the msm ioctl it stands for
- * (iokit/Kernel/RedwoodGPU.cpp: kMsmGetParam = 0x40, struct msm_param). The parameters
- * worth asking for are 0x03 CHIP_ID (with the speed bin in the high half), 0x02 GMEM_SIZE
- * and 0x04 MAX_FREQ. Mesa reaches the same client the same way. */
-/*
- * Which kernel interface the gpu client speaks: RedwoodGPU is Linux's msm (the Adreno), RedwoodMali
- * is Linux's panfrost (the Exynos 990 phone's Mali-G77, iokit/Kernel/RedwoodMali.cpp). The request
- * numbers overlap and mean different things -- msm's GET_PARAM (0x40) is panfrost's SUBMIT -- so
- * nothing msm-shaped may ever be sent to a panfrost client. One process has one gpu client.
- */
-static bool gpu_is_mali;
-
-/* panfrost's GET_PARAM (0x44): the parameter numbers are panfrost's own */
-static bool
-mali_param(io_connect_t gpu, uint32_t which, uint64_t *value)
-{
-	struct {
-		uint32_t param, pad;
-		uint64_t value;
-	} request = { .param = which };
-	size_t size = sizeof(request);
-
-	if (IOConnectCallStructMethod(gpu, 0x44, &request, sizeof(request), &request, &size) != KERN_SUCCESS) {
-		return false;
-	}
-	*value = request.value;
-	return true;
-}
-
-static bool
-gpu_param(io_connect_t gpu, uint32_t which, uint64_t *value)
-{
-	if (gpu != IO_OBJECT_NULL && gpu_is_mali) {
-		/* the msm parameters asked for here, answered from panfrost's: CHIP_ID (0x03) is the
-		 * product id; the others (GMEM_SIZE, MAX_FREQ) have no panfrost counterpart */
-		return which == 0x03 && mali_param(gpu, 0 /* GPU_PROD_ID */, value);
-	}
-
-	struct {
-		uint32_t pipe, param;
-		uint64_t value;
-		uint32_t len, pad;
-	} request = { .pipe = 0, .param = which, .value = 0, .len = 0, .pad = 0 };
-	size_t size = sizeof(request);
-
-	if (gpu == IO_OBJECT_NULL) {
-		return false;
-	}
-	if (IOConnectCallStructMethod(gpu, 0x40, &request, sizeof(request), &request,
-				      &size) != KERN_SUCCESS) {
-		return false;
-	}
-	*value = request.value;
-	return true;
-}
-
-/* The kernel's gpu interface, by the numbers its own header gives
- * (iokit/Kernel/RedwoodGPU.cpp). */
-enum {
-	kDrmGemClose  = 0x09,
-	kMsmGetParam  = 0x40,
-	kMsmGemNew    = 0x42,
-	kMsmGemInfo   = 0x43,
-};
-#define MSM_INFO_GET_IOVA  1
-
-struct gem_new   { uint64_t size; uint32_t flags, handle; };
-struct gem_info  { uint32_t handle, info; uint64_t value; uint32_t len, pad; };
-struct gem_close { uint32_t handle, pad; };
+/* (OneiOS: Jesvi's msm and panfrost requests to its kernel's gpu client -- GET_PARAM, GEM_NEW, GEM_INFO,
+ * GEM_CLOSE -- are gone with that client: every buffer is Mesa's, see -initWithAcceleratorPort:.) */
 
 #define RW_MAX_BUFFERS 32
 
@@ -2064,7 +2007,7 @@ struct gem_close { uint32_t handle, pad; };
 @class RedwoodMetalWork;
 
 @interface RedwoodMetalComputePipeline : _MTLComputePipelineState {
-	RedwoodMetalDevice *_owner;
+	OneiOSRadeonMetalDevice *_owner;
 	struct rwa_compute *_compute;
 	struct rwa_compute_info _info;
 }
@@ -2074,7 +2017,7 @@ struct gem_close { uint32_t handle, pad; };
  * committed, so an encoder records and the command buffer runs; dispatching at encode time
  * would be less code and would quietly reorder work. */
 @interface RedwoodMetalComputePipeline (RedwoodMetalInternal)
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			     compute:(struct rwa_compute *)compute
 				info:(const struct rwa_compute_info *)info
 			  descriptor:(id)descriptor;
@@ -2082,7 +2025,7 @@ struct gem_close { uint32_t handle, pad; };
 @end
 
 @interface RedwoodMetalCommandQueue : _MTLCommandQueue
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device descriptor:(id)descriptor;
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device descriptor:(id)descriptor;
 @end
 
 @interface RedwoodMetalCommandBuffer : _MTLCommandBuffer
@@ -2117,7 +2060,7 @@ struct gem_close { uint32_t handle, pad; };
 @end
 
 @interface RedwoodMetalRenderPipeline : _MTLRenderPipelineState {
-	RedwoodMetalDevice *_owner;
+	OneiOSRadeonMetalDevice *_owner;
 	struct rwa_render *_render;
 	struct rwa_render_info _info;
 @public
@@ -2852,7 +2795,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 }
 
 @interface RedwoodMetalTexture : _MTLResource {
-	RedwoodMetalDevice *_owner;
+	OneiOSRadeonMetalDevice *_owner;
 	struct rwa_texture *_texture;
 	struct rwa_texture_shape _shape;
 	int _responsibleProcess;   /* as on the buffer: accounting, not behaviour */
@@ -2912,7 +2855,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 }
 @property (readonly) struct rwa_depth_stencil *mesaDepthStencil;
 - (const char *)redwoodSummary;
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 				state:(struct rwa_depth_stencil *)state
 			   descriptor:(MTLDepthStencilDescriptor *)descriptor;
 @end
@@ -2924,7 +2867,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  * The implementation below carries the whole of why.
  */
 @interface RedwoodMetalArgumentEncoder : NSObject
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			       layout:(const struct rwa_argbuf_layout *)layout
 			   fromModule:(BOOL)fromModule;
 /* Not part of MTLArgumentEncoder: the mapping between Metal's [[id(n)]] and the index the
@@ -2936,7 +2879,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 @end
 
 @interface RedwoodMetalBuffer : _MTLResource {
-	RedwoodMetalDevice *_owner;
+	OneiOSRadeonMetalDevice *_owner;
 	io_connect_t _gpu;        /* not owned: the device holds it */
 	uint32_t _handle;         /* set on the kernel path only */
 	uint64_t _iova;
@@ -2953,12 +2896,95 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  * command uses it and back after a kernel ran (the kernel cannot map a process's pages yet) */
 - (void)redwoodMirrorUserBytes:(void *)bytes deallocator:(void (^)(void *, NSUInteger))deallocator;
 - (void)redwoodCopyBackToUser;
-- (instancetype)initWithDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithDevice:(OneiOSRadeonMetalDevice *)device
 			   gpu:(io_connect_t)gpu
 			length:(NSUInteger)length;
 @end
 
-@implementation RedwoodMetalDevice
+/*
+ * OneiOS, the A56: which processes this plug-in gives a device to (docs/a56-gpu.md section 4).
+ *
+ * A process that gets no device gets nil from -initWithAcceleratorPort:, which Metal's discovery takes as "no
+ * device" -- the road NativeAdrenoMetal takes in every process it does not serve (its file's head: "returns nil. No
+ * device is registered, so the original software rendering keeps running unchanged"). It is the A56's road of today
+ * (gpu=2d): backboardd composites on the CPU and a Metal client finds no device.
+ *
+ *   OneiOSRadeonMetal.clients beside the bundle (one process name a line; "*" is every process): when it is there, it
+ *       alone decides, as NativeAdrenoMetal.clients does for the Adreno plug-in (the kernel or the image writes it).
+ *   without it: every process but these, which Jesvi-iOS kept off its Metal on the same iOS 16.5:
+ *       backboardd      its CoreAnimation render server on this layer crashed at start (Jesvi's
+ *                       docs/devices/x1slte/display.md: "stack overflow, pc 0x205aa4a8c": reverted); Jesvi's UI is drawn
+ *                       by CoreAnimation's OpenGL ES renderer on Mesa, never by this Metal
+ *       mediaserverd, PosterBoard, AegirPoster, WeatherPoster   Jesvi's metaloff list (a stack overflow in mediaserverd,
+ *                       posters that reject this device's layers)
+ *   oneios-radeon-backboardd=1 in the kernel's boot arguments: backboardd gets the device all the same (a test boot of
+ *       the render server on this layer; nothing here has shown that it works).
+ */
+static BOOL
+rm_boot_arg(const char *word)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *at;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0) {
+		return NO;
+	}
+	at = strstr(args, word);
+	return at != NULL && (at == args || at[-1] == ' ') && (at[strlen(word)] == ' ' || at[strlen(word)] == '\0');
+}
+
+static BOOL
+rm_offered(const char *process, char *why, size_t why_size)
+{
+	static const char *const declined[] = { "backboardd", "mediaserverd", "PosterBoard", "AegirPoster", "WeatherPoster" };
+	Dl_info self;
+	char path[1024];
+	FILE *list = NULL;
+
+	/* the list beside the bundle: .../Extensions/OneiOSRadeonMetal.bundle/OneiOSRadeonMetal -> .../Extensions/ */
+	if (dladdr((const void *)rm_offered, &self) != 0 && self.dli_fname != NULL) {
+		const char *bundle = strrchr(self.dli_fname, '/');
+		const char *up = NULL;
+
+		for (const char *c = self.dli_fname; bundle != NULL && c < bundle; c++) {
+			if (*c == '/') {
+				up = c;
+			}
+		}
+		if (up != NULL && snprintf(path, sizeof(path), "%.*s/OneiOSRadeonMetal.clients", (int)(up - self.dli_fname),
+		    self.dli_fname) < (int)sizeof(path)) {
+			list = fopen(path, "r");
+		}
+	}
+	if (list != NULL) {
+		char line[128];
+		BOOL named = NO;
+
+		while (!named && fgets(line, sizeof(line), list) != NULL) {
+			line[strcspn(line, "\r\n")] = '\0';
+			named = !strcmp(line, "*") || !strcmp(line, process);
+		}
+		fclose(list);
+		snprintf(why, why_size, "%s %s in %s", process, named ? "is" : "is not", path);
+		return named;
+	}
+	for (unsigned i = 0; i < sizeof(declined) / sizeof(declined[0]); i++) {
+		if (!strcmp(process, declined[i])) {
+			if (!strcmp(process, "backboardd") && rm_boot_arg("oneios-radeon-backboardd=1")) {
+				snprintf(why, why_size, "backboardd, with oneios-radeon-backboardd=1");
+				return YES;
+			}
+			snprintf(why, why_size, "%s is one of the processes kept off this Metal (no %s.clients list)", process,
+			    "OneiOSRadeonMetal");
+			return NO;
+		}
+	}
+	snprintf(why, why_size, "every process but backboardd and Jesvi's metaloff list (no OneiOSRadeonMetal.clients)");
+	return YES;
+}
+
+@implementation OneiOSRadeonMetalDevice
 
 + (void)load
 {
@@ -2974,37 +3000,34 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	if (self == nil) {
 		return nil;
 	}
+
+	/* OneiOS: this process may not be one this plug-in serves (rm_offered, above): then no device, and the
+	 * process keeps the road it has without one. Said once, in the log and as a kernel text row. */
+	{
+		char why[192];
+
+		m2m_set_service(port);
+		if (!rm_offered(getprogname(), why, sizeof(why))) {
+			m2m_log('I', "DEV", "declined: %s\n", why);
+			[self release];
+			return nil;
+		}
+		m2m_log('I', "DEV", "offered: %s\n", why);
+	}
 	_acceleratorService = port;
 	if (port != IO_OBJECT_NULL) {
 		IOObjectRetain(port);
 	}
 
-	/* The gpu this driver would actually drive. Not fatal if it is absent: the port
-	 * starts the Adreno only with the boot argument gpu=1, and a device object that
-	 * cannot allocate is still the thing under test until the resource layer exists. */
-	io_service_t gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodGPU"));
-	const char *service = "RedwoodGPU";
-
-	if (gpu == IO_OBJECT_NULL) {
-		/* the Exynos 990 phone's Mali-G77 (boot-arg mali=1) */
-		gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodMali"));
-		service = "RedwoodMali";
-		gpu_is_mali = gpu != IO_OBJECT_NULL;
-	}
+	/* OneiOS (the Galaxy A56): no GPU service of this driver's own. Jesvi-iOS opened its kernel's
+	 * RedwoodGPU (msm) or RedwoodMali (panfrost) user client here and made buffers through it;
+	 * on the A56 every GPU object is Mesa's (radeonsi over the virtio amdgpu context, whose Darwin
+	 * vdrm opens the accelerator itself with type 0x4149), so the device keeps only the port Metal
+	 * handed it: for -registryID and for the log rows of m2m.h (the kernel's oneios-gpu-text lines). */
 	_gpu = IO_OBJECT_NULL;
-	if (gpu == IO_OBJECT_NULL) {
-		m2m_log('E', "DEV", "no RedwoodGPU or RedwoodMali service (the gpu was not started)\n");
-	} else {
-		kern_return_t kr = IOServiceOpen(gpu, mach_task_self(), 0, &_gpu);
-
-		/* a Metal client from here: the kernel reports how this process ends (F CRASH), and the
-		 * crash recorder says where, unless the process handles those signals itself (m2m.h) */
-		m2m_client("metal");
-		m2m_watch_crashes();
-		m2m_log(kr == KERN_SUCCESS ? 'I' : 'E', "DEV", "%s client %s (%#x)\n", service,
-		         kr == KERN_SUCCESS ? "opened" : "refused", kr);
-		IOObjectRelease(gpu);
-	}
+	m2m_client("metal");
+	m2m_watch_crashes();
+	m2m_log('I', "DEV", "OneiOSRadeonMetal in %s[%d], accelerator %#x\n", getprogname(), getpid(), port);
 
 	/* And the compiler, if it is there. Its absence is not fatal: the device still has to
 	 * exist and answer, it just cannot make a pipeline (and says so when asked). */
@@ -3012,7 +3035,8 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		char why[256] = { 0 };
 
 		_mesa = mesa.device_open(why, sizeof(why));
-		m2m_log('I', "DEV", "the compiler library %s\n",
+		/* the screen open's result, the one line that says whether this process has the GPU */
+		m2m_log(_mesa != NULL ? 'I' : 'E', "DEV", "screen %s\n",
 		         _mesa != NULL ? mesa.device_name(_mesa) : why);
 	}
 
@@ -3093,18 +3117,19 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		size_t size = sizeof(args) - 1;
 		const char *at;
 
-		/* 1 unless metal_profile= says otherwise: 0 claims Apple1 alone, and MPS -- which Apple's
+		/* 1 unless oneios-metal-profile= says otherwise (OneiOS: Jesvi's metal_profile=, renamed into the
+		 * oneios- names of the boot line): 0 claims Apple1 alone, and MPS -- which Apple's
 		 * own OpenGL ES (AppleMetalGLRenderer) and games reach -- then aborts the process with
 		 * "Failed to get MPSDevice" (12 November: Leo's Fortune and Angry Birds Space, under 1 s).
 		 * The phone's boot line is at its 550-character limit, which is how metal_profile=1 fell
 		 * off it; the default does not depend on the line. */
 		profile = 1;
 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
-		    (at = strstr(args, "metal_profile=")) != NULL && (at == args || at[-1] == ' ')) {
-			profile = (NSUInteger)strtoul(at + strlen("metal_profile="), NULL, 10);
+		    (at = strstr(args, "oneios-metal-profile=")) != NULL && (at == args || at[-1] == ' ')) {
+			profile = (NSUInteger)strtoul(at + strlen("oneios-metal-profile="), NULL, 10);
 		}
 		m2m_log('I', "DEV", "feature profile %lu, which is what Metal reads this device's "
-		         "whole capability surface out of (metal_profile= to change it; 0 claims Apple1 "
+		         "whole capability surface out of (oneios-metal-profile= to change it; 0 claims Apple1 "
 		         "alone, 1 adds Apple2, which is the lowest rung MPS asks about)\n",
 		         (unsigned long)profile);
 	}
@@ -3140,9 +3165,9 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		return [self fail:error with:@"no render pipeline descriptor"];
 	}
 	if (_mesa == NULL) {
-		return [self fail:error with:@"there is no GPU compiler here: either the Adreno "
-					     @"was not started (gpu=1) or libredwoodair.dylib is "
-					     @"missing or older than this driver"];
+		return [self fail:error with:@"there is no GPU here: the radeonsi screen did not open (its "
+					     @"reason is the device's 'screen' log line) or libOneiOSRadeonAir.dylib "
+					     @"is missing or older than this driver"];
 	}
 	if (mesa.render_create == NULL) {
 		/* The order of these two matters: the first version asked about render_create
@@ -3436,7 +3461,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 						    w ? "fragment" : "vertex"];
 
 						if (![a writeToFile:path atomically:NO]) {
-							path = [NSString stringWithFormat:@"/var/tmp/redwood-glir-%d-%s.bin", getpid(), w ? "fragment" : "vertex"];
+							path = [NSString stringWithFormat:@"/var/tmp/oneios-radeonmetal-glir-%d-%s.bin", getpid(), w ? "fragment" : "vertex"];
 							[a writeToFile:path atomically:NO];
 						}
 						m2m_log('I', "PSO", "refused %s AIR written to %s\n", w ? "fragment" : "vertex", [path UTF8String]);
@@ -3727,7 +3752,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	 */
 	if (state.min_filter == RW_FILTER_CUBIC || state.mag_filter == RW_FILTER_CUBIC) {
 		RW_AGAIN('W', "RES", "a sampler asks for bicubic filtering (MTLSamplerMinMagFilterCubic, min %u mag %u), "
-			 "which the Mali does not have: served as linear\n", state.min_filter, state.mag_filter);
+			 "which Gallium has no filter for: served as linear\n", state.min_filter, state.mag_filter);
 		state.min_filter = state.min_filter == RW_FILTER_CUBIC ? MTLSamplerMinMagFilterLinear : state.min_filter;
 		state.mag_filter = state.mag_filter == RW_FILTER_CUBIC ? MTLSamplerMinMagFilterLinear : state.mag_filter;
 	}
@@ -4089,8 +4114,8 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		return [self fail:error with:@"the descriptor has no compute function"];
 	}
 	if (_mesa == NULL) {
-		return [self fail:error with:@"there is no GPU compiler here: either the Adreno "
-					     @"was not started (gpu=1) or libredwoodair.dylib "
+		return [self fail:error with:@"there is no GPU here: the radeonsi screen did not open (its "
+					     @"reason is the device's 'screen' log line) or libOneiOSRadeonAir.dylib "
 					     @"is missing"];
 	}
 	if (![function respondsToSelector:bitcode]) {
@@ -4138,7 +4163,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 - (id)fail:(NSError **)error with:(NSString *)reason
 {
 	if (error != NULL) {
-		*error = [NSError errorWithDomain:@"RedwoodMetal" code:1
+		*error = [NSError errorWithDomain:@"OneiOSRadeonMetal" code:1
 					 userInfo:@{ NSLocalizedDescriptionKey: reason }];
 	}
 	return nil;
@@ -4176,10 +4201,14 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  * compiler library has compiled reports back (10.15). The per-dimension limits are Metal's
  * usual shape for that; the authority should become the library itself once the contract has
  * a call for it. */
+/* OneiOS, the A56: radeonsi answers the same 1024 (max_threads_per_block, and 1024 for each of
+ * max_block_size; si_init_compute_caps), so the shape stays. */
 - (MTLSize)maxThreadsPerThreadgroup { return MTLSizeMake(1024, 1024, 64); }
 
 /* The number _MTLDevice's own limits table was filled with for this feature profile. Also a
  * placeholder in the same sense: the hardware's figure belongs to Mesa, not here. */
+/* OneiOS, the A56: RDNA3 has 64 KiB of LDS a workgroup (radeonsi max_local_size); 16 KiB stays because it is
+ * what the feature profile's own limits table (above) says, and the two must agree. */
 - (NSUInteger)maxThreadgroupMemoryLength { return 16384; }
 
 - (BOOL)hasUnifiedMemory { return YES; }   /* one memory on this SoC, shared with the CPU */
@@ -4260,12 +4289,15 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 - (NSUInteger)minimumTextureBufferAlignmentForPixelFormat:(NSUInteger)format
 {
 	(void)format;
-	return 64;   /* Panfrost: a linear image's rows and offset at 64 bytes on v7+ (pan_layout.c) */
+	/* OneiOS, the A56 (RDNA3 = gfx11): a linear image's rows at 256 bytes (Mesa's ac_surface.c,
+	 * ac_surface_get_pitch_align: 256 / bpe elements on gfx9 to gfx11, what an import is checked
+	 * against). Jesvi-iOS answered Panfrost's 64 (pan_layout.c). */
+	return 256;
 }
 - (NSUInteger)minimumLinearTextureAlignmentForPixelFormat:(NSUInteger)format
 {
 	(void)format;
-	return 64;
+	return 256;   /* OneiOS: the same rule as above (gfx9-gfx11 linear pitch, 256 bytes); Jesvi: 64 */
 }
 
 /*
@@ -4274,8 +4306,11 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  * cannot import in place (format_minimum_alignment: 64), so a blurred material's surface got no
  * drawable at all and stayed black (the band at the top of the search page and the App Library).
  */
-- (NSUInteger)iosurfaceTextureAlignmentBytes         { return 64; }
-- (NSUInteger)iosurfaceReadOnlyTextureAlignmentBytes { return 64; }
+/* OneiOS: 256 on the A56 (radeonsi's linear pitch, above), so the surfaces CoreAnimation makes for this
+ * device could be imported in place once the A56 has an IOSurface import (docs/a56-gpu.md section 4: today
+ * every surface is served as a copy, whatever its rows). Jesvi: 64. */
+- (NSUInteger)iosurfaceTextureAlignmentBytes         { return 256; }
+- (NSUInteger)iosurfaceReadOnlyTextureAlignmentBytes { return 256; }
 
 /* Heaps are suballocation of one big allocation, and nothing here suballocates yet. Metal's
  * contract allows nil and a zero size-and-align, so these decline rather than lie. */
@@ -4330,50 +4365,52 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	shape.mip_levels = (unsigned)[d mipmapLevelCount];
 	shape.sample_count = (unsigned)[d sampleCount];
 	shape.usage = (unsigned)[d usage];
-	texture = rwd_texture_for_surface(_mesa, s, p, (const struct rwd_texture_shape *)&shape,
-					  &took, why, sizeof(why));
-	/* a surface the GPU cannot import in place, only because of its row length: a texture of
-	 * our own, filled from the surface and kept up to date with it (-redwoodRefreshCopy) */
-	/* (x1slte: also a plane of a two-plane surface, e.g. a video frame's luma or chroma: rwd_texture_for_surface
-	 * describes only single-plane ones in `took`, so the requested plane's row length is asked of the IOSurface) */
-	if (texture == NULL && took.surface == 0 && s != NULL) {
+	/*
+	 * OneiOS, the A56: no texture over an IOSurface's own memory yet. Jesvi-iOS imported a surface in place
+	 * through its kernel (kRedwoodSurface on RedwoodGPU: the surface's pages as a GPU buffer, its ID as the
+	 * "dmabuf" Mesa imports; src/redwooddrawable.m, not taken). The A56's kernel and Mesa have no such import
+	 * (docs/a56-gpu.md section 4), so every surface is served the way Jesvi served the ones its GPU could not
+	 * import: a texture of our own, filled from the surface (-redwoodCopySurface, again when its seed moves)
+	 * and written back after the GPU drew into it (-redwoodWriteBackCopy). The surface is described from
+	 * IOSurface's own calls, per plane for a two-plane one.
+	 */
+	texture = NULL;
+	BOOL force_copy = NO;
+	if (s != NULL) {
 		static size_t (*pc)(void *), (*rowp)(void *, size_t), (*wp)(void *, size_t), (*hp)(void *, size_t);
+		static size_t (*row1)(void *), (*w1)(void *), (*h1)(void *);
 		static uint32_t (*sid)(void *);
-		if (pc == NULL) {
+		if (sid == NULL) {
 			*(void **)&pc = dlsym(RTLD_DEFAULT, "IOSurfaceGetPlaneCount");
 			*(void **)&rowp = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRowOfPlane");
 			*(void **)&wp = dlsym(RTLD_DEFAULT, "IOSurfaceGetWidthOfPlane");
 			*(void **)&hp = dlsym(RTLD_DEFAULT, "IOSurfaceGetHeightOfPlane");
-			*(void **)&sid = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
-		}
-		if (pc != NULL && rowp != NULL && wp != NULL && hp != NULL && sid != NULL && pc(s) > 1 && p < pc(s) &&
-		    rowp(s, p) % 64 != 0 && wp(s, p) == shape.width && hp(s, p) == shape.height) {
-			took.surface = sid(s);
-			took.width = (unsigned)wp(s, p);
-			took.height = (unsigned)hp(s, p);
-			took.rowBytes = (unsigned)rowp(s, p);
-		}
-	}
-	/* a surface over the process's own memory (IOSurface made with an address): the kernel cannot
-	 * hand those pages to the GPU, so it is served as a copy like an unaligned one (PhotoImaging's
-	 * tiles in "Use as Wallpaper"); written back after the GPU when it is a target */
-	BOOL force_copy = NO;
-	if (texture == NULL && took.surface == 0 && s != NULL && strstr(why, "memory of the process's own") != NULL) {
-		static size_t (*row1)(void *), (*w1)(void *), (*h1)(void *);
-		static uint32_t (*sid1)(void *);
-		if (row1 == NULL) {
 			*(void **)&row1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRow");
 			*(void **)&w1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetWidth");
 			*(void **)&h1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetHeight");
-			*(void **)&sid1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+			*(void **)&sid = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
 		}
-		if (row1 && w1 && h1 && sid1 && w1(s) >= shape.width && h1(s) >= shape.height) {
-			took.surface = sid1(s);
+		if (pc != NULL && rowp != NULL && wp != NULL && hp != NULL && sid != NULL && pc(s) > 1 && p < pc(s)) {
+			if (wp(s, p) >= shape.width && hp(s, p) >= shape.height) {
+				took.surface = sid(s);
+				took.width = (unsigned)wp(s, p);
+				took.height = (unsigned)hp(s, p);
+				took.rowBytes = (unsigned)rowp(s, p);
+			}
+		} else if (row1 != NULL && w1 != NULL && h1 != NULL && sid != NULL && w1(s) >= shape.width &&
+			   h1(s) >= shape.height) {
+			took.surface = sid(s);
 			took.width = (unsigned)w1(s);
 			took.height = (unsigned)h1(s);
 			took.rowBytes = (unsigned)row1(s);
-			force_copy = YES;
 		}
+		force_copy = took.surface != 0;
+		if (!force_copy) {
+			snprintf(why, sizeof(why), "IOSurface %p (plane %lu) is smaller than the %ux%u texture asked of it, "
+			    "or IOSurface's calls are not in this process", s, (unsigned long)p, shape.width, shape.height);
+		}
+	} else {
+		snprintf(why, sizeof(why), "no IOSurface");
 	}
 	if (texture == NULL && took.surface != 0 && (took.rowBytes % 64 != 0 || force_copy) &&
 	    mesa.texture_create != NULL && mesa.texture_write != NULL) {
@@ -4489,23 +4526,16 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 - (void)setMetalAssertionsEnabled:(BOOL)enabled { _assertions = enabled; }
 
 /* Without this the device inherits _MTLDevice's own answer, which is "Apple GPU" -- true of
- * the code and false of the hardware. The name is Mesa's renderer string for this chip
- * (docs/dev/air.md: `Adreno 7c+ Gen 3, chip 0x06030500`), and the identifier beside it is asked
- * of the kernel rather than written down, so a different phone says something different.
- * Nothing in Metal's registration reads this; a person reading a log does. */
+ * the code and false of the hardware. OneiOS (the A56): the name is Mesa's own for the screen it
+ * opened (radeonsi's renderer string for the Xclipse 540, an RDNA3 part; Jesvi-iOS asked its
+ * kernel's msm/panfrost client for a chip id, which this port has not got). Without a screen the
+ * name says so. Nothing in Metal's registration reads this; a person reading a log does. */
 - (NSString *)name
 {
-	uint64_t chip = 0;
-
-	if (gpu_is_mali && gpu_param(_gpu, 0x03, &chip)) {
-		return [NSString stringWithFormat:@"Mali-G77 MP11 (product %#x, Redwood)",
-				 (unsigned)(chip & 0xffffffffu)];
+	if (_mesa != NULL && mesa.device_name != NULL) {
+		return [NSString stringWithFormat:@"%s (OneiOS)", mesa.device_name(_mesa)];
 	}
-	if (gpu_param(_gpu, 0x03, &chip)) {
-		return [NSString stringWithFormat:@"Adreno 7c+ Gen 3 (chip %#x, Redwood)",
-				 (unsigned)(chip & 0xffffffffu)];
-	}
-	return @"Redwood GPU (not started)";
+	return @"OneiOS Radeon (no GPU screen)";
 }
 
 /*
@@ -4620,12 +4650,11 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 @implementation RedwoodMetalBuffer
 
-- (instancetype)initWithDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithDevice:(OneiOSRadeonMetalDevice *)device
 			   gpu:(io_connect_t)gpu
 			length:(NSUInteger)length
 {
-	struct gem_new request = { .size = length, .flags = 0, .handle = 0 };
-	size_t size = sizeof(request);
+	(void)gpu;   /* (OneiOS: no kernel gpu client; kept so the callers stay as Jesvi wrote them) */
 
 	self = [super init];
 	if (self == nil) {
@@ -4656,75 +4685,14 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		_contents = mesa.buffer_map(_mesa);
 		return self;
 	}
-	if (gpu == IO_OBJECT_NULL || length == 0) {
-		m2m_log('E', "RES", "a buffer of %lu bytes needs a gpu client\n",
-		         (unsigned long)length);
-		[self release];
-		return nil;
-	}
-	if (gpu_is_mali) {
-		/* panfrost's CREATE_BO (0x42): the GPU's address comes back with the handle */
-		struct {
-			uint32_t size, flags, handle, pad;
-			uint64_t offset;
-		} bo = { .size = (uint32_t)length, .flags = 1 /* NOEXEC */ };
-		size_t bo_size = sizeof(bo);
-		mach_vm_address_t address = 0;
-		mach_vm_size_t mapped = 0;
-
-		if (length > UINT32_MAX ||
-		    IOConnectCallStructMethod(gpu, 0x42, &bo, sizeof(bo), &bo, &bo_size) != KERN_SUCCESS ||
-		    bo.handle == 0) {
-			m2m_log('E', "RES", "the kernel would not allocate %lu bytes\n", (unsigned long)length);
-			[self release];
-			return nil;
-		}
-		_owner = device;
-		_gpu = gpu;
-		_handle = bo.handle;
-		_length = length;
-		_iova = bo.offset;
-		if (IOConnectMapMemory64(gpu, _handle, mach_task_self(), &address, &mapped,
-					 kIOMapAnywhere) == KERN_SUCCESS) {
-			_contents = (void *)(uintptr_t)address;
-		} else {
-			m2m_log('E', "RES", "buffer %u is allocated but could not be mapped\n", _handle);
-		}
-		return self;
-	}
-	if (IOConnectCallStructMethod(gpu, kMsmGemNew, &request, sizeof(request), &request,
-				      &size) != KERN_SUCCESS || request.handle == 0) {
-		m2m_log('E', "RES", "the kernel would not allocate %lu bytes\n",
-		         (unsigned long)length);
-		[self release];
-		return nil;
-	}
-	_owner = device;
-	_gpu = gpu;
-	_handle = request.handle;
-	_length = length;
-
-	/* the address the GPU will see, which is what a command stream carries */
-	struct gem_info info = { .handle = _handle, .info = MSM_INFO_GET_IOVA };
-
-	size = sizeof(info);
-	if (IOConnectCallStructMethod(gpu, kMsmGemInfo, &info, sizeof(info), &info,
-				      &size) == KERN_SUCCESS) {
-		_iova = info.value;
-	}
-
-	/* and the address this processor will see: the mapping is as the memory is made,
-	 * write-combined, exactly as Mesa takes it */
-	mach_vm_address_t address = 0;
-	mach_vm_size_t mapped = 0;
-
-	if (IOConnectMapMemory64(gpu, _handle, mach_task_self(), &address, &mapped,
-				 kIOMapAnywhere) == KERN_SUCCESS) {
-		_contents = (void *)(uintptr_t)address;
-	} else {
-		m2m_log('E', "RES", "buffer %u is allocated but could not be mapped\n", _handle);
-	}
-	return self;
+	/* OneiOS: there is no second road. Jesvi-iOS fell back to its kernel's GEM (msm GEM_NEW or
+	 * panfrost CREATE_BO) when the compiler library was absent; the A56's memory is Mesa's alone
+	 * (guest pages wired by the kernel and imported by the host, contract K2), so without a screen
+	 * there is no buffer, and Metal's nil is the answer. */
+	RW_AGAIN('E', "RES", "a buffer of %lu bytes needs the GPU screen, and this device has none\n",
+	    (unsigned long)length);
+	[self release];
+	return nil;
 }
 
 - (struct rwa_buffer *)mesaBuffer
@@ -4763,20 +4731,8 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	if (_mesa != NULL) {
 		mesa.buffer_destroy(_mesa);
 		rw_note_free(false, 0);
-		[super dealloc];
-		return;
 	}
-	if (_contents != NULL) {
-		IOConnectUnmapMemory64(_gpu, _handle, mach_task_self(),
-				       (mach_vm_address_t)(uintptr_t)_contents);
-	}
-	if (_handle != 0) {
-		struct gem_close request = { .handle = _handle, .pad = 0 };
-		size_t size = sizeof(request);
-
-		IOConnectCallStructMethod(_gpu, kDrmGemClose, &request, sizeof(request), &request,
-					  &size);
-	}
+	/* (OneiOS: no kernel GEM buffer to unmap and close: every buffer is Mesa's) */
 	[super dealloc];
 }
 
@@ -4912,7 +4868,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 /* (its MTLTexture and MTLTextureImplementation conformance is declared with the others: rw_declare_protocols) */
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			      texture:(struct rwa_texture *)texture
 				shape:(const struct rwa_texture_shape *)shape
 {
@@ -5435,7 +5391,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 @implementation RedwoodMetalSampler
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			      sampler:(struct rwa_sampler *)sampler
 			   descriptor:(id)descriptor
 {
@@ -5465,7 +5421,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 @implementation RedwoodMetalDepthStencilState
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 				state:(struct rwa_depth_stencil *)state
 			   descriptor:(MTLDepthStencilDescriptor *)descriptor
 {
@@ -5546,7 +5502,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 @implementation RedwoodMetalComputePipeline
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			     compute:(struct rwa_compute *)compute
 				info:(const struct rwa_compute_info *)info
 			  descriptor:(id)descriptor
@@ -5597,7 +5553,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 @implementation RedwoodMetalRenderPipeline
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			       render:(struct rwa_render *)render
 				 info:(const struct rwa_render_info *)info
 			   descriptor:(id)descriptor
@@ -5885,7 +5841,7 @@ redwood_clear_semaphore_debt(id commandBuffer)
 }
 
 @implementation RedwoodMetalCommandQueue {
-	RedwoodMetalDevice *_owner;
+	OneiOSRadeonMetalDevice *_owner;
 	NSUInteger _outstanding;        /* buffers of this queue that still hold a slot */
 	NSUInteger _made, _returned;
 	/* What <MTLCommandQueueSPI> keeps about a queue and this driver cannot act on: the
@@ -5899,7 +5855,7 @@ redwood_clear_semaphore_debt(id commandBuffer)
 	volatile uint32_t _pendingCompletions;   /* on _fenceQueue now (the slow-completion record says how many were ahead) */
 }
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device descriptor:(id)descriptor
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device descriptor:(id)descriptor
 {
 	/* The initialiser IOGPUMetalCommandQueue itself sends to super (0x1ec16dabc). The
 	 * descriptor is not optional: the base validates it at its own line 137 and the first
@@ -6314,7 +6270,7 @@ rw_mps_facts(id commandBuffer, id device)
 
 		if (mesa.fence_wait([[_queue device] mesaDevice], fence, why, sizeof(why)) != 0) {
 			m2m_log('E', "CMD", "THE GPU DID NOT FINISH: %s\n", why);
-			_error = [[NSError errorWithDomain:@"RedwoodMetal" code:3
+			_error = [[NSError errorWithDomain:@"OneiOSRadeonMetal" code:3
 						  userInfo:@{ NSLocalizedDescriptionKey:
 							      [NSString stringWithUTF8String:why] }] retain];
 			_status = RW_CB_ERROR;
@@ -6734,7 +6690,7 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 					    work->size, why, sizeof(why));
 		if (rc != 0) {
 			m2m_log('E', "CMD", "the dispatch failed: %s\n", why);
-			_error = [[NSError errorWithDomain:@"RedwoodMetal" code:2
+			_error = [[NSError errorWithDomain:@"OneiOSRadeonMetal" code:2
 						  userInfo:@{ NSLocalizedDescriptionKey:
 							      [NSString stringWithUTF8String:why] }]
 				     retain];
@@ -6848,7 +6804,7 @@ done:
 	for (unsigned i = 0; i < work->colorCount; i++) {
 		color[i] = [work->color[i] mesaTexture];
 	}
-	/* (com.redwood.metal.dump) this draw written out, run on its own, and its pixel read
+	/* (com.oneios.radeonmetal.dump) this draw written out, run on its own, and its pixel read
 	 * before and after */
 	int dump = rw_dump_kind(work);
 	uint8_t before[2][16];
@@ -7169,7 +7125,7 @@ done:
 }
 
 /*
- * (com.redwood.metal.snap) The next screen-sized frame this process draws, read back after its
+ * (com.oneios.radeonmetal.snap) The next screen-sized frame this process draws, read back after its
  * command buffer finished: every 6th pixel each way, RGB, DEFLATE, base64, in lines of 1000
  * characters, so a boot log carries a picture of what was on the screen. Decoded by
  * tools/metal-snaps.py into PNGs.
@@ -7248,7 +7204,7 @@ done:
 }
 
 /*
- * (com.redwood.metal.dump) Which kind of draw this is for the dump -- 1 a colour fill (a
+ * (com.oneios.radeonmetal.dump) Which kind of draw this is for the dump -- 1 a colour fill (a
  * CoreAnimation pipeline whose label has no texture function: `..Xm_A2..`), 2 an image
  * (`..Xm_Timg..`), 0 neither or the budget spent -- taking one from the budget.
  */
@@ -7453,7 +7409,7 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 
 - (void)failWith:(const char *)reason
 {
-	_error = [[NSError errorWithDomain:@"RedwoodMetal" code:4
+	_error = [[NSError errorWithDomain:@"OneiOSRadeonMetal" code:4
 				  userInfo:@{ NSLocalizedDescriptionKey:
 					      [NSString stringWithUTF8String:reason] }] retain];
 	_status = RW_CB_ERROR;
@@ -7474,7 +7430,7 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 	}
 	if (mesa.finish([[_queue device] mesaDevice], why, sizeof(why)) != 0) {
 		m2m_log('E', "CMD", "THE GPU DID NOT FINISH: %s\n", why);
-		_error = [[NSError errorWithDomain:@"RedwoodMetal" code:3
+		_error = [[NSError errorWithDomain:@"OneiOSRadeonMetal" code:3
 					  userInfo:@{ NSLocalizedDescriptionKey:
 						      [NSString stringWithUTF8String:why] }] retain];
 		_status = RW_CB_ERROR;
@@ -9762,7 +9718,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
  * at multiples of them.
  */
 @implementation RedwoodMetalArgumentEncoder {
-	RedwoodMetalDevice *_owner;         /* not retained: the device owns everything here */
+	OneiOSRadeonMetalDevice *_owner;         /* not retained: the device owns everything here */
 	NSString *_label;
 	struct rwa_argbuf_layout _layout;
 	BOOL _fromModule;                   /* the layout came from a shader, not descriptors */
@@ -9778,7 +9734,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
  * and not an absence. */
 /* (its MTLArgumentEncoder conformance is declared with the others: rw_declare_protocols) */
 
-- (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
+- (instancetype)initWithRedwoodDevice:(OneiOSRadeonMetalDevice *)device
 			       layout:(const struct rwa_argbuf_layout *)layout
 			   fromModule:(BOOL)fromModule
 {
@@ -10180,12 +10136,12 @@ rw_function_argument_encoder(id self, SEL cmd, NSUInteger index)
 	id device = ((id (*)(id, SEL))objc_msgSend)(self, sel_getUid("device"));
 
 	(void)cmd;
-	if (![device isKindOfClass:[RedwoodMetalDevice class]]) {
+	if (![device isKindOfClass:[OneiOSRadeonMetalDevice class]]) {
 		m2m_log('E', "ENC", "-newArgumentEncoderWithBufferIndex: on a function whose device is "
 		         "a %s and not ours\n", class_getName(object_getClass(device)));
 		return nil;
 	}
-	return [(RedwoodMetalDevice *)device redwoodArgumentEncoderForFunction:self
+	return [(OneiOSRadeonMetalDevice *)device redwoodArgumentEncoderForFunction:self
 								  bufferIndex:index];
 }
 

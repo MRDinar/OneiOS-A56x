@@ -4,6 +4,15 @@
  */
 
 /*
+ * OneiOS: libOneiOSRadeonAir, the Galaxy A56's (docs/a56-gpu.md section 4). Jesvi-iOS a13e406's air_metal.c (MIT,
+ * userland/metal-amd/NOTICE), ported to Mesa 26 (cecc0e9: fp_math_ctrl, mesa_shader_stage, pipe_compute_caps, surfaces
+ * by value, the new clear/set_constant_buffer/set_sampler_views) and given the A56's screen: rwa_device_open opens
+ * radeonsi through oneios_radeonsi_screen_create (contract K3) where Jesvi opened freedreno or Panfrost over its
+ * xf86drm stand-in. Each change is marked "OneiOS" or "Mesa 26". Jesvi's comments about the Adreno and the Mali
+ * are kept as written: they say why the code is shaped as it is.
+ */
+
+/*
  * libredwoodair: air_run's compute path, as a library a Metal driver calls.
  *
  * The contract is air_metal.h and nothing else -- no NIR, no Gallium, no ir3 in the
@@ -43,22 +52,14 @@
 #include "util/blend.h"
 #include "target-helpers/inline_sw_helper.h"
 #include "null/null_sw_winsys.h"
-#if defined(GALLIUM_FREEDRENO) || defined(GALLIUM_PANFROST)
-#ifdef GALLIUM_FREEDRENO
-#include "freedreno/drm/freedreno_drm_public.h"
-#else
-/* the Exynos 990 phone's Mali-G77 (iokit/Kernel/RedwoodMali.cpp, tools/mesa/panfrost-darwin.patch) */
-#include "panfrost/drm/panfrost_drm_public.h"
+#ifdef ONEIOS_AIR_RADEONSI
+/* the A56's screen (K3): the guest Mesa stage's radeonsi over the virtio amdgpu context */
+#include "oneios_radeonsi_screen.h"
 #endif
-/* for rwa_texture_from_surface: a resource over memory somebody else allocated is a
- * winsys_handle, and the one modifier an IOSurface of this port's kernel can carry is
- * linear (MINISURF has no tiling and no compression at all). */
+/* for rwa_texture_from_surface and rwa_texture_from_buffer: a resource over memory somebody
+ * else allocated is a winsys_handle, and the layout this library asks for is linear. */
 #include "frontend/winsys_handle.h"
 #include "drm-uapi/drm_fourcc.h"
-#include "util/driconf.h"
-#include "util/xmlconfig.h"
-#include <xf86drm.h>
-#endif
 #include "util/format/u_format.h"
 #include "util/half_float.h"
 #include "util/u_atomic.h"
@@ -76,7 +77,7 @@ _Static_assert(sizeof(struct rwa_draw) == 336 && offsetof(struct rwa_draw, blend
  * ONE THREAD AT A TIME in the Gallium context. A Metal device is used from every thread of a
  * process and this library holds one pipe_context per device, which Mesa does not make safe to
  * share: backboardd died on 25 October (rc.jobs.metaldiag, Settings) in panfrost_draw_vbo reading
- * ctx->prog[PIPE_SHADER_FRAGMENT] as NULL between this library's bind_fs_state and the draw --
+ * ctx->prog[MESA_SHADER_FRAGMENT] as NULL between this library's bind_fs_state and the draw --
  * another thread of the window server was releasing a pipeline (rwa_render_destroy binds NULL
  * shaders) or creating one at the same moment. Every exported function takes this lock first and
  * gives it back on every return (the cleanup attribute); it is recursive because they call one
@@ -171,7 +172,7 @@ struct rwa_device {
    /* is_null_texture's answer (air_shader_info.null_query_ubo): per stage, the slots the
     * last bind_stage bound, one bit each. Bound as a user constant buffer, which Panfrost
     * reads when the draw or dispatch is emitted, so it has to outlive the bind. */
-   uint32_t null_query_word[PIPE_SHADER_TYPES][4];
+   uint32_t null_query_word[MESA_SHADER_STAGES][4];
 
    /* What a slot a shader asks is_null_texture about is bound to when the caller left it
     * empty: one texel of zeros of the declared shape, so the GPU is never given an empty
@@ -250,6 +251,38 @@ struct rwa_buffer {
  * programmer recognises, so a refusal names MTLPixelFormatRGBA32Float and not
  * R32G32B32A32_FLOAT.
  */
+/*
+ * OneiOS (Mesa 26): a render surface is a plain value now -- pipe_context lost create_surface
+ * and surface_destroy, and pipe_framebuffer_state holds its cbufs and zsbuf by value -- so the
+ * surfaces a texture keeps (struct rwa_texture below) are made here: the format, the level, the
+ * slice and a reference on the resource. A framebuffer is given a copy, and the driver takes its
+ * own references when it is set (util_copy_framebuffer_state), so letting one go here never
+ * pulls memory from under a pending batch.
+ */
+static struct pipe_surface *
+rwa_surface_make(struct pipe_resource *res, enum pipe_format format, unsigned level, unsigned layer)
+{
+   struct pipe_surface *s = calloc(1, sizeof(*s));
+   if (!s)
+      return NULL;
+   pipe_reference_init(&s->reference, 1);
+   s->format = format;
+   s->level = level;
+   s->first_layer = s->last_layer = layer;
+   pipe_resource_reference(&s->texture, res);
+   return s;
+}
+
+static void
+rwa_surface_release(struct pipe_surface **s)
+{
+   if (!*s)
+      return;
+   pipe_resource_reference(&(*s)->texture, NULL);
+   free(*s);
+   *s = NULL;
+}
+
 struct rwa_texture {
    struct rwa_device *device;
    struct pipe_resource *res;
@@ -407,37 +440,8 @@ say(char *why, size_t why_size, const char *fmt, ...)
    va_end(ap);
 }
 
-/* What the screen answers about compute, as one number. Returns false when it declines,
- * which softpipe does for most of them.
- *
- * The scratch is four words wide and not one: get_compute_param writes before it
- * returns the width, and some of these caps are a vector of three (the maximum block
- * size), so a one-word buffer would be written past by a cap nobody here asks for yet.
- */
-static bool
-compute_cap(struct pipe_screen *screen, enum pipe_compute_cap cap, uint64_t *out)
-{
-   uint64_t v[4] = { 0 };
-
-   if (!screen->get_compute_param)
-      return false;
-
-   int bytes = screen->get_compute_param(screen, PIPE_SHADER_IR_NIR, cap, v);
-   if (bytes == sizeof(uint64_t)) {
-      *out = v[0];
-   } else if (bytes == sizeof(uint32_t)) {
-      /* memcpy and not a cast: some of these caps are 32 bits wide and some 64, and
-       * reading a word of one through a pointer to the other is what the compiler is
-       * allowed to assume never happens.
-       */
-      uint32_t narrow;
-      memcpy(&narrow, v, sizeof(narrow));
-      *out = narrow;
-   } else {
-      return false;
-   }
-   return true;
-}
+/* (OneiOS: Jesvi's compute_cap() asked get_compute_param, which Mesa 26 replaced with the
+ * screen's struct pipe_compute_caps; rwa_device_open reads that struct directly.) */
 
 /* What a Gallium driver expects of a shader it is handed: NIR's own system values
  * lowered to the hardware's, and I/O as intrinsics rather than variables. This is
@@ -445,7 +449,7 @@ compute_cap(struct pipe_screen *screen, enum pipe_compute_cap cap, uint64_t *out
  * tools/mesa/air-ir3.patch; a fourth copy would be the point at which they should
  * become one function of the frontend.
  */
-static int
+static unsigned   /* (Mesa 26: nir_lower_io takes an unsigned type_size) */
 type_size_vec4(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -534,11 +538,11 @@ widen_16bit_varyings(nir_shader *nir)
                nir_def *narrow = base == GLSL_TYPE_FLOAT ? nir_f2f16(&b, &intr->def)
                                : base == GLSL_TYPE_INT   ? nir_i2i16(&b, &intr->def)
                                                          : nir_u2u16(&b, &intr->def);
-               nir_def_rewrite_uses_after(&intr->def, narrow, narrow->parent_instr);
+               nir_def_rewrite_uses_after(&intr->def, narrow);
             }
          }
       }
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_progress(true, impl, nir_metadata_control_flow);
    }
    _mesa_set_destroy(widened, NULL);
    return true;
@@ -637,98 +641,34 @@ rwa_device_open(char *why, size_t why_size)
     * the machine but its processor. It is how this library is tested without the phone
     * (tools/mesa/air/air_metal_test.c) and it is air_run's AIR_RUN_SOFTWARE under
     * another name. A driver never sets it: on the device the only screen worth opening
-    * is the Adreno's, and if there is none, saying so is more use than quietly
+    * is the GPU's (the A56's radeonsi), and if there is none, saying so is more use than quietly
     * computing the answer on the processor at a thousandth of the speed.
     */
    bool software = debug_get_bool_option("RWA_SOFTWARE", false);
    device->software = software;
 
-#ifdef GALLIUM_FREEDRENO
+#ifdef ONEIOS_AIR_RADEONSI
    if (!software) {
-      int fd = drmOpenWithType("msm", NULL, DRM_NODE_RENDER);
-      if (fd < 0) {
-         /* The ordinary case on this port, and not an error anybody should be
-          * surprised by: without gpu=1 the kernel starts no RedwoodGPU service, so
-          * there is no msm device for the shim to open (tools/mesa/redwood-drm).
-          */
-         say(why, why_size, "there is no GPU here: no msm device to open, which is what "
-                            "a kernel booted without gpu=1 looks like");
-         goto fail;
-      }
-
-      /* The driver option cache has to be real, not a zeroed struct: fd_screen_create
-       * passes it straight to driParseConfigFiles, which dereferences it. A zeroed one
-       * died at address 0x10 on the phone -- the first thing air_run ever did on a
-       * machine that has a GPU, and invisible on any machine that has not. This is the
-       * sequence osmesa_create_gpu_screen() uses in tools/mesa/freedreno-darwin.patch,
-       * which is the one CoreAnimation goes through on this device daily.
-       *
-       * static, because fd_screen keeps the cache it was given rather than copying it.
-       * One screen per process is what a Metal device amounts to; a second device would
-       * share these, which is why the parse below is done once.
+      /* OneiOS (the Galaxy A56): the Xclipse 540 (RDNA3) through radeonsi, as the guest Mesa
+       * stage makes it (userland/metal-amd: Mesa's amdgpu winsys over the virtio amdgpu native
+       * context, its Darwin vdrm reaching the A56 accelerator with open type 0x4149). This
+       * replaces Jesvi-iOS's freedreno (msm) and Panfrost screens over its xf86drm stand-in:
+       * the driconf cache, the render node and the winsys are the entry's business, and a
+       * NULL comes with its sentence (no accelerator, no AMDGPU capset, ...).
        */
-      static const driOptionDescription freedreno_options[] = {
-#include "freedreno/driinfo_freedreno.h"
-      };
-      static driOptionCache info, cache;
-      static struct pipe_screen_config config;
-      static bool options_parsed = false;
-
-      if (!options_parsed) {
-         driParseOptionInfo(&info, freedreno_options, ARRAY_SIZE(freedreno_options));
-         driParseConfigFiles(&cache, &info, 0, "msm", NULL, NULL, NULL, 0, NULL, 0);
-         config.options = &cache;
-         config.options_info = &info;
-         options_parsed = true;
-      }
-
-      device->screen = fd_drm_screen_create_renderonly(fd, NULL, &config);
+      char reason[256] = { 0 };
+      device->screen = oneios_radeonsi_screen_create(reason, sizeof(reason));
       if (!device->screen) {
-         say(why, why_size, "the kernel's msm device opened but freedreno made no screen "
-                            "for it, so this GPU is present and unusable");
-         goto fail;
-      }
-   }
-#elif defined(GALLIUM_PANFROST)
-   if (!software) {
-      /* The Mali-G77 of the Exynos 990 phone: the kernel's RedwoodMali service (boot-arg
-       * mali=1), reached through the same libdrm stand-in as the window server's Mesa, and
-       * the same option-cache sequence as osmesa_create_gpu_screen() in
-       * tools/mesa/panfrost-darwin.patch -- panfrost reads its driconf options at screen
-       * creation exactly as freedreno does, so the cache has to be real here too.
-       */
-      int fd = drmOpenWithType("panfrost", NULL, DRM_NODE_RENDER);
-      if (fd < 0) {
-         say(why, why_size, "there is no GPU here: no panfrost device to open, which is what "
-                            "a kernel booted without mali=1 looks like");
-         goto fail;
-      }
-      static const driOptionDescription panfrost_options[] = {
-#include "panfrost/driinfo_panfrost.h"
-      };
-      static driOptionCache info, cache;
-      static struct pipe_screen_config config;
-      static bool options_parsed = false;
-
-      if (!options_parsed) {
-         driParseOptionInfo(&info, panfrost_options, ARRAY_SIZE(panfrost_options));
-         driParseConfigFiles(&cache, &info, 0, "panfrost", NULL, NULL, NULL, 0, NULL, 0);
-         config.options = &cache;
-         config.options_info = &info;
-         options_parsed = true;
-      }
-
-      device->screen = panfrost_drm_screen_create(fd, &config);
-      if (!device->screen) {
-         say(why, why_size, "the kernel's panfrost device opened but panfrost made no screen "
-                            "for it, so this GPU is present and unusable");
+         say(why, why_size, "no radeonsi screen: %s",
+             reason[0] ? reason : "oneios_radeonsi_screen_create gave no reason");
          goto fail;
       }
    }
 #else
    if (!software) {
-      say(why, why_size, "this build of the library has no GPU driver in it, only "
-                         "software rasterisation");
+      say(why, why_size, "this build of the library has no GPU screen in it (Mesa was built "
+                         "without the guest Mesa stage's oneios_radeonsi_screen_create, "
+                         "-Doneios-air-screen=none), only software rasterisation for tests");
       goto fail;
    }
 #endif
@@ -740,9 +680,8 @@ rwa_device_open(char *why, size_t why_size)
       goto fail;
    }
 
-   device->nir_options =
-      device->screen->get_compiler_options(device->screen, PIPE_SHADER_IR_NIR,
-                                           PIPE_SHADER_COMPUTE);
+   /* (Mesa 26: the screen holds its NIR options per stage; get_compiler_options is gone) */
+   device->nir_options = device->screen->nir_options[MESA_SHADER_COMPUTE];
    if (!device->nir_options) {
       say(why, why_size, "%s takes no NIR, so no Metal shader can be given to it",
           device->screen->get_name(device->screen));
@@ -776,12 +715,17 @@ rwa_device_open(char *why, size_t why_size)
     * belief about the chip rather than the chip; it is a hint for choosing a
     * threadgroup size, and the dispatch below checks the size it is actually given
     * against the compiled variant, where the number is the hardware's.
+    *
+    * OneiOS, the A56 (RDNA3, radeonsi gfx/si_gfx_screen.c si_init_compute_caps):
+    * max_threads_per_block is 1024, and subgroup_sizes is a MASK of the wave sizes radeonsi
+    * compiles a compute shader in -- 64 | 32 on gfx10 and later, where it compiles compute
+    * as wave32 unless AMD_DEBUG=w64cs (the same function's max_subgroups uses 32). Jesvi's
+    * Mesa 25 cap was read as a number; here the smallest size in the mask is the width, so
+    * RDNA3 answers 32 (Apple's own width too) and softpipe, which leaves the mask 0, 1.
     */
-   uint64_t v;
-   device->max_threads_per_group =
-      compute_cap(device->screen, PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK, &v) ? v : 0;
-   device->thread_execution_width =
-      compute_cap(device->screen, PIPE_COMPUTE_CAP_SUBGROUP_SIZES, &v) ? v : 1;
+   const struct pipe_compute_caps *cc = &device->screen->compute_caps;
+   device->max_threads_per_group = cc->max_threads_per_block;
+   device->thread_execution_width = cc->subgroup_sizes ? 1u << (ffs(cc->subgroup_sizes) - 1) : 1;
    /* Never below Apple's 32: Apple's own kernels size their threadgroups and their
     * threadgroup reductions from it (MPS's statistics kernels read slots 16..31 of a
     * buffer filled by one thread per slot), and the Mali's 16 made CoreImage launch 16
@@ -1511,7 +1455,7 @@ texture_of_shape(struct rwa_device *device, const struct rwa_texture_shape *shap
                          "frontend refuses on the shader side too", type_name);
       return NULL;
    default:
-      unreachable("texture_type_name admitted a type this switch does not");
+      UNREACHABLE("texture_type_name admitted a type this switch does not");
    }
 
    if (width == 0) {
@@ -2111,9 +2055,9 @@ rwa_texture_destroy(struct rwa_texture *texture)
     */
    if (texture->view)
       texture->device->pipe->sampler_view_destroy(texture->device->pipe, texture->view);
-   pipe_surface_reference(&texture->surface, NULL);   /* (a pending batch holds its own) */
+   rwa_surface_release(&texture->surface);   /* (a pending batch holds its own) */
    for (unsigned i = 0; i < texture->others; i++)
-      pipe_surface_reference(&texture->other[i].surface, NULL);
+      rwa_surface_release(&texture->other[i].surface);
    if (!texture->is_view && texture->res && texture->res->next &&
        util_format_get_num_planes(texture->res->format) == 2) {
       struct pipe_resource *uv = texture->res->next;
@@ -4302,7 +4246,7 @@ placeholder_view(struct rwa_device *device, const struct rwa_slot *slot, bool st
  * sampler's two state objects is bound.
  */
 static int
-bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
+bind_stage(struct rwa_device *device, mesa_shader_stage stage,
            const struct air_shader_info *info, const struct rwa_slot *slots,
            const unsigned *ubo_extent, void **own_sampler, const bool *compare_sampler,
            const struct rwa_bindings *bindings, const struct rwa_buffer_bind *table,
@@ -4443,9 +4387,9 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
          if (ext != RWA_UBO_UNBOUNDED)
             ext = MAX3(ext, r->size, 16u);
          size_t can_read = ext != RWA_UBO_UNBOUNDED ? ext : r->size ? r->size : 65536;
-         if (left < can_read && stage < PIPE_SHADER_TYPES) {
-            static char *padded[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
-            static size_t padded_size[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
+         if (left < can_read && stage < MESA_SHADER_STAGES) {
+            static char *padded[MESA_SHADER_STAGES][PIPE_MAX_CONSTANT_BUFFERS];
+            static size_t padded_size[MESA_SHADER_STAGES][PIPE_MAX_CONSTANT_BUFFERS];
             char **p = &padded[stage][r->index];
 
             if (padded_size[stage][r->index] < can_read) {
@@ -4462,7 +4406,7 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
                cb.user_buffer = *p;
                cb.buffer_offset = 0;
                cb.buffer_size = (unsigned)can_read;
-               pipe->set_constant_buffer(pipe, stage, r->index, false, &cb);
+               pipe->set_constant_buffer(pipe, stage, r->index, &cb);
                break;
             }
          }
@@ -4499,7 +4443,7 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
             p_atomic_inc(&rwa_ubo_copied);
             p_atomic_add(&rwa_ubo_copied_bytes, (uint64_t)want);
          }
-         pipe->set_constant_buffer(pipe, stage, r->index, false, &cb);
+         pipe->set_constant_buffer(pipe, stage, r->index, &cb);
          break;
       }
 
@@ -4682,12 +4626,12 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
          .user_buffer = device->null_query_word[stage],
          .buffer_size = sizeof(device->null_query_word[stage]),
       };
-      pipe->set_constant_buffer(pipe, stage, info->null_query_ubo - 1, false, &word);
+      pipe->set_constant_buffer(pipe, stage, info->null_query_ubo - 1, &word);
    }
    if (num_ssbo)
       pipe->set_shader_buffers(pipe, stage, 0, num_ssbo, sb, writable);
    if (num_views)
-      pipe->set_sampler_views(pipe, stage, 0, num_views, 0, false, views);
+      pipe->set_sampler_views(pipe, stage, 0, num_views, 0, views);
    if (num_images)
       pipe->set_shader_images(pipe, stage, 0, num_images, 0, images);
    if (num_samplers)
@@ -4707,12 +4651,12 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
  * buffers are left bound (see struct rwa_bound).
  */
 static void
-unbind_stage(struct rwa_device *device, enum pipe_shader_type stage,
+unbind_stage(struct rwa_device *device, mesa_shader_stage stage,
              const struct rwa_bound *bound)
 {
    struct pipe_context *pipe = device->pipe;
    if (bound->num_views)
-      pipe->set_sampler_views(pipe, stage, 0, 0, bound->num_views, false, NULL);
+      pipe->set_sampler_views(pipe, stage, 0, 0, bound->num_views, NULL);
    if (bound->num_images)
       /* as `count` and not as trailing slots: Panfrost's unbind with NULL views clears
        * its image mask only over `count`, so trailing slots kept their bits with no
@@ -4816,7 +4760,7 @@ rwa_dispatch_tg(struct rwa_compute *compute, const struct rwa_bindings *bindings
     * the next dispatch or dropped at delete, as before.
     */
    struct rwa_bound bound = { 0 };
-   if (bind_stage(device, PIPE_SHADER_COMPUTE, &compute->info, compute->slots, compute->ubo_extent,
+   if (bind_stage(device, MESA_SHADER_COMPUTE, &compute->info, compute->slots, compute->ubo_extent,
                   compute->own_sampler,
                   compute->compare_sampler,
                   bindings, table, table_count, name, &bound, why, why_size) != 0)
@@ -4839,7 +4783,7 @@ rwa_dispatch_tg(struct rwa_compute *compute, const struct rwa_bindings *bindings
     * wait for work dispatched through another pipeline of the same device.
     */
    int rc = finish_or_say_why(device, true, "dispatch", why, why_size);
-   unbind_stage(device, PIPE_SHADER_COMPUTE, &bound);
+   unbind_stage(device, MESA_SHADER_COMPUTE, &bound);
    return rc;
 }
 
@@ -6370,7 +6314,7 @@ clear_each_attachment(struct pipe_context *pipe, const struct rwa_draw *draw)
          continue;
       for (unsigned c = 0; c < 4; c++)
          clear.f[c] = draw->clear_colors[4 * i + c];
-      pipe->clear(pipe, PIPE_CLEAR_COLOR0 << i, NULL, &clear, 0.0, 0);
+      pipe->clear(pipe, PIPE_CLEAR_COLOR0 << i, ~0u, 0xff, NULL, &clear, 0.0, 0);
    }
 }
 
@@ -6382,23 +6326,20 @@ texture_surface(struct rwa_device *device, struct rwa_texture *t, unsigned level
    layer += t->base_layer;
    if (level == 0 && layer == 0) {
       if (!t->surface)
-         t->surface = device->pipe->create_surface(device->pipe, t->res,
-            &(struct pipe_surface){ .format = t->format });
+         t->surface = rwa_surface_make(t->res, t->format, 0, 0);
       return t->surface;
    }
    for (unsigned i = 0; i < t->others; i++) {
       if (t->other[i].level == level && t->other[i].layer == layer)
          return t->other[i].surface;
    }
-   struct pipe_surface *s = device->pipe->create_surface(device->pipe, t->res,
-      &(struct pipe_surface){ .format = t->format, .u.tex.level = level,
-                              .u.tex.first_layer = layer, .u.tex.last_layer = layer });
+   struct pipe_surface *s = rwa_surface_make(t->res, t->format, level, layer);
    if (s) {
       /* eight kept per texture; past that the oldest is let go (a pending batch holds its own
        * reference), which costs only Panfrost's batching by pointer for that one */
       unsigned slot = t->others < ARRAY_SIZE(t->other) ? t->others++ : t->next_other++ % ARRAY_SIZE(t->other);
 
-      pipe_surface_reference(&t->other[slot].surface, NULL);
+      rwa_surface_release(&t->other[slot].surface);
       t->other[slot].level = level;
       t->other[slot].layer = layer;
       t->other[slot].surface = s;
@@ -8167,7 +8108,7 @@ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
              rwa_device_name(device), i);
          return -1;
       }
-      fb.cbufs[i] = surf[i];
+      fb.cbufs[i] = *surf[i];   /* (Mesa 26: the framebuffer holds surfaces by value) */
    }
    if (draw->depth) {
       zsurf = texture_surface(device, draw->depth, draw->depth_level, draw->depth_layer);
@@ -8176,7 +8117,7 @@ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
              rwa_device_name(device));
          return -1;
       }
-      fb.zsbuf = zsurf;
+      fb.zsbuf = *zsurf;
    }
    pipe->set_framebuffer_state(pipe, &fb);
 
@@ -8303,14 +8244,14 @@ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
 
    struct rwa_bound fbound = { 0 }, vbound = { 0 };
    int rc = -1;
-   if (bind_stage(device, PIPE_SHADER_FRAGMENT, &render->finfo, render->frag_slots,
+   if (bind_stage(device, MESA_SHADER_FRAGMENT, &render->finfo, render->frag_slots,
                   render->fs_ubo_extent, render->frag_own_sampler,
                   render->frag_compare_sampler,
                   &draw->fragment, draw->fragment_buffer_table, draw->fragment_buffer_table_count,
                   fname, &fbound, why, why_size) != 0)
       goto unbind;
    if (!render->generated_vertex &&
-       bind_stage(device, PIPE_SHADER_VERTEX, &render->vinfo, render->vert_slots,
+       bind_stage(device, MESA_SHADER_VERTEX, &render->vinfo, render->vert_slots,
                   render->vs_ubo_extent, render->vert_own_sampler,
                   render->vert_compare_sampler,
                   &draw->vertex, draw->vertex_buffer_table, draw->vertex_buffer_table_count, vname,
@@ -8346,7 +8287,7 @@ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
           format_has_stencil(draw->depth->res->format))
          mask |= PIPE_CLEAR_STENCIL;
       if (mask)
-         pipe->clear(pipe, mask, NULL, &clear,
+         pipe->clear(pipe, mask, ~0u, 0xff, NULL, &clear,
                      draw->clear_depth ? (double)*draw->clear_depth : 0.0,
                      draw->clear_stencil ? *draw->clear_stencil & 0xff : 0);
       clear_each_attachment(pipe, draw);
@@ -8407,9 +8348,9 @@ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
    rc = draw->deferred ? 0 : finish_or_say_why(device, true, "draw", why, why_size);
 
 unbind:
-   unbind_stage(device, PIPE_SHADER_FRAGMENT, &fbound);
+   unbind_stage(device, MESA_SHADER_FRAGMENT, &fbound);
    if (!render->generated_vertex)
-      unbind_stage(device, PIPE_SHADER_VERTEX, &vbound);
+      unbind_stage(device, MESA_SHADER_VERTEX, &vbound);
    /* The framebuffer is released before the surfaces are destroyed, and both before the
     * caller's next call, which may be rwa_texture_destroy on one of these attachments:
     * a context still holding a surface of a freed resource is the same trap as a bound
@@ -8447,12 +8388,13 @@ rwa_render_clear(struct rwa_device *device, const struct rwa_draw *draw, char *w
       if (!attachment_level(draw->color[i], DRAW_LEVEL(draw, i), DRAW_LAYER(draw, i), (int)i, &tw, &th,
                             why, why_size))
          return -1;
-      fb.cbufs[i] = texture_surface(device, draw->color[i], DRAW_LEVEL(draw, i), DRAW_LAYER(draw, i));
-      if (!fb.cbufs[i]) {
+      struct pipe_surface *cs = texture_surface(device, draw->color[i], DRAW_LEVEL(draw, i), DRAW_LAYER(draw, i));
+      if (!cs) {
          say(why, why_size, "%s would not make a render surface of colour attachment %u",
              rwa_device_name(device), i);
          return -1;
       }
+      fb.cbufs[i] = *cs;   /* (Mesa 26: by value) */
       w = w ? MIN2(w, tw) : tw;       /* the smallest attachment, as for a draw */
       h = h ? MIN2(h, th) : th;
       samples = MAX2(draw->color[i]->res->nr_samples, 1);
@@ -8462,12 +8404,13 @@ rwa_render_clear(struct rwa_device *device, const struct rwa_draw *draw, char *w
 
       if (!attachment_level(draw->depth, draw->depth_level, draw->depth_layer, -1, &tw, &th, why, why_size))
          return -1;
-      fb.zsbuf = texture_surface(device, draw->depth, draw->depth_level, draw->depth_layer);
-      if (!fb.zsbuf) {
+      struct pipe_surface *zs = texture_surface(device, draw->depth, draw->depth_level, draw->depth_layer);
+      if (!zs) {
          say(why, why_size, "%s would not make a render surface of the depth attachment",
              rwa_device_name(device));
          return -1;
       }
+      fb.zsbuf = *zs;
       if (!w) {
          w = tw;
          h = th;
@@ -8497,7 +8440,7 @@ rwa_render_clear(struct rwa_device *device, const struct rwa_draw *draw, char *w
    if (draw->clear_stencil && draw->depth && format_has_stencil(draw->depth->res->format))
       mask |= PIPE_CLEAR_STENCIL;
    if (mask)
-      pipe->clear(pipe, mask, NULL, &clear,
+      pipe->clear(pipe, mask, ~0u, 0xff, NULL, &clear,
                   draw->clear_depth ? (double)*draw->clear_depth : 0.0,
                   draw->clear_stencil ? *draw->clear_stencil & 0xff : 0);
    clear_each_attachment(pipe, draw);

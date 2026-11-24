@@ -404,6 +404,35 @@ gives CoreBrightness's `-[BrightnessSystemInternal initBLControl:]` mode 1 (BLCo
 before that thread instantiates BrightnessSystem; a session without the plug-in keeps VMBLControl. `oneios-bl-mode=0`
 in the kernel's boot arguments turns it off. Why and what to look for: `drivers/brightness/README.md`.
 
+### 7.2 The Galaxy A56's Metal plug-in (`userland/metal-amd`, iOS 16.5)
+
+`OneiOSRadeonMetal.bundle`: Jesvi-iOS a13e406's Metal device and AIR Metal layer (MIT; `userland/metal-amd/NOTICE`
+lists every file taken and changed) for the A56's 20F66 image, built by `userland/metal-amd/air/build.sh plugin`
+([building.md](building.md) section 9). The bundle holds `Info.plist` (`CFBundleExecutable` OneiOSRadeonMetal,
+`NSPrincipalClass` OneiOSRadeonMetalDevice), `OneiOSRadeonMetal` (the Objective-C device, arm64, iOS 16.5),
+`libOneiOSRadeonAir.dylib` (the AIR frontend, Mesa's Gallium and, from the guest Mesa stage's build, radeonsi; loaded
+with `dlopen` from beside the executable) and `oneios-target` (`iPhone10,3 20F66`). Metal finds it through the
+accelerator the kernel publishes on an amdgpu host (`MetalPluginName` OneiOSRadeonMetal,
+`MetalPluginClassName` OneiOSRadeonMetalDevice: [a56-gpu.md](a56-gpu.md) section 5).
+
+Which processes get a device (the plug-in decides, in `-initWithAcceleratorPort:`; a process it declines gets nil, no
+device, and keeps the road it has without one, as with NativeAdrenoMetal): every process but `backboardd`,
+`mediaserverd`, `PosterBoard`, `AegirPoster` and `WeatherPoster` (Jesvi-iOS's own list of processes kept off this
+Metal: [a56-gpu.md](a56-gpu.md) section 4 says why backboardd is). `OneiOSRadeonMetal.clients` beside the bundle (one
+process name a line, `*` for all), when it exists, decides instead. `oneios-radeon-backboardd=1` in the boot
+arguments gives backboardd the device (a test of the render server on this layer; not shown to work).
+`oneios-metal-profile=N` sets the feature profile (Jesvi's `metal_profile=`; default 1).
+
+Its log: os_log subsystem `com.oneios.radeonmetal` (`oneios-tool phone pull-log`), and for its errors, the device's
+start and the first two pipelines a kernel text row in `xnuhost.log`: `oneios-gpu-text: PROCESS[PID] RM ...` (hosted
+0039's rows; the accelerator's class must start with `AGX` for the kernel to log them).
+
+**Not placed yet.** The image hook (`oneios-tool image tweaks`) places `NativeAdrenoMetal.bundle` for the S24 Ultra
+image; no tool places this bundle in the 20F66 image, and the kernel's addon mount (hosted 0031) looks for
+`NativeAdrenoMetal.bundle/Info.plist` and the iPhone18,2's sealed `AGXMetalG18P.bundle`: the kernel stage decides how
+the A56's bundle is mounted (a56-gpu.md section 5). `oneios-tool ios gpuaddon` already keeps its name
+(`addons/OneiOSRadeonMetal.bundle/...`, `addons/OneiOSRadeonMetal.publish`).
+
 ## 8. What launchd, backboardd and SpringBoard need
 
 | Stage | Needs | Who |

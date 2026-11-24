@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- OneiOSRadeonMetal.bundle's Info.plist: Jesvi-iOS a13e406's userland/src/metal_plugin.plist (RedwoodMetal) with the
+     Galaxy A56's names (contract K3, docs/a56-gpu.md): the kernel publishes the A56 accelerator with
+     MetalPluginName=OneiOSRadeonMetal and MetalPluginClassName=OneiOSRadeonMetalDevice. Jesvi's notes on the keys are
+     kept; their addresses are of its iOS 16.5 cache (the S20's), read there, not here. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.redwood.metal</string>
+	<string>com.oneios.radeonmetal</string>
 	<key>CFBundleName</key>
-	<string>RedwoodMetal</string>
+	<string>OneiOSRadeonMetal</string>
 	<!-- What _CFBundleCopyExecutableName reads first (0x186e2f910). It would also fall back to
 	     the bundle directory's own name with the extension stripped, so this key is not
 	     strictly required; it is here because relying on a fallback is not the same as saying
 	     what we mean. -->
 	<key>CFBundleExecutable</key>
-	<string>RedwoodMetal</string>
+	<string>OneiOSRadeonMetal</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -29,6 +33,6 @@
 	     and reads this key. Naming the class here therefore covers both roads, and costs a
 	     line. -->
 	<key>NSPrincipalClass</key>
-	<string>RedwoodMetalDevice</string>
+	<string>OneiOSRadeonMetalDevice</string>
 </dict>
 </plist>

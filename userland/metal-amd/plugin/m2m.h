@@ -6,7 +6,7 @@
  *   m2m_watch_crashes()              ... and where (m2m_crash_record), where the process has no handler of its own
  *   m2m_log('E', "PSO", "...", ...)  one record: severity I/W/E/F, a category of 2-5 capitals
  *
- * One write(2) per record, so records from the threads of a process never interleave. The time,
+ * (Jesvi-iOS, for its /dev/m2m; on OneiOS the records go where the OneiOS note below says.) The time,
  * the process name and the pid are the kernel's. A record is one line: newlines inside the message
  * become " | ". Where /dev/m2m cannot be opened (an older kernel), records go to stdout as
  * "m2m-nodev: <sev> <CAT> <message>" so that nothing is lost, and the reason is said once.
@@ -27,63 +27,120 @@
 #include <sys/ucontext.h>
 #include <unistd.h>
 
-#define M2M_DEVICE              "/dev/m2m"
+/*
+ * OneiOS, the Galaxy A56's Metal plug-in (userland/metal-amd/NOTICE): Jesvi-iOS's m2m channel was a device of its
+ * own kernel (/dev/m2m). The A56's guest kernel has none, so the same calls write to two places of OneiOS:
+ *
+ *   every record    os_log, subsystem "com.oneios.radeonmetal", category CAT, "<sev> <message>" (iOS's own log:
+ *                   `oneios-tool phone pull-log DIR`, then `oneios-tool ioslog` on it)
+ *   some records    one text row of the kernel (hosted 0039), in xnuhost.log (`oneios-tool phone log`):
+ *                       oneios-gpu-text: PROCESS[PID] RM <sev> <CAT> <message, cut at 63 characters>
+ *                   for E and F records (at most 12 a process), I and W records of category DEV (the device's
+ *                   init: at most 10) and the first two pipelines made (I records of category PSO "pipeline N: ..." or
+ *                   "compute pipeline made: ..."). A row is
+ *                   streamed as IOServiceOpen calls of types 0x41477fff (a new row) and 0x414770cc (character cc) on
+ *                   the accelerator Metal handed the device (m2m_set_service), which the kernel answers with an
+ *                   error and turns into one line; a character is one call (about 70 us here), so the row budget
+ *                   above is what bounds the cost: never per frame.
+ *
+ * m2m_client() registered a role with Jesvi's kernel; it is kept as a no-op so the driver's calls stay as they are.
+ */
+#include <os/log.h>
+#include <IOKit/IOKitLib.h>
+#include <mach/mach.h>
+
 #define M2M_RECORD_MAX          1024
+#define M2M_ROW_MAX             63      /* the kernel's row (0039 hosted_gpu_row.text) */
 
-struct m2m_client {
-	char role[16];
-};
-#define M2M_IOC_CLIENT          _IOW('m', 1, struct m2m_client)
-
-static int m2m_fd = -1;
+static io_service_t m2m_service = IO_OBJECT_NULL;   /* the accelerator, once the device has it */
+static os_log_t m2m_os_log;
 static pthread_once_t m2m_once = PTHREAD_ONCE_INIT;
 
 static void
 m2m_open_once(void)
 {
-	m2m_fd = open(M2M_DEVICE, O_WRONLY | O_CLOEXEC);
-	if (m2m_fd < 0) {
-		printf("m2m-nodev: W M2M %s: %s; records follow on stdout\n", M2M_DEVICE, strerror(errno));
-		fflush(stdout);
+	m2m_os_log = os_log_create("com.oneios.radeonmetal", "metal");
+}
+
+/* The device hands over the accelerator's service; rows are streamed on it from then on. */
+static inline void
+m2m_set_service(io_service_t service)
+{
+	if (service != IO_OBJECT_NULL && m2m_service == IO_OBJECT_NULL) {
+		IOObjectRetain(service);
+		m2m_service = service;
 	}
+}
+
+static inline void
+m2m_row(const char *text)
+{
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	io_connect_t c = IO_OBJECT_NULL;
+
+	if (m2m_service == IO_OBJECT_NULL) {
+		return;
+	}
+	pthread_mutex_lock(&lock);      /* one row at a time: the kernel keeps one pending row a process */
+	if (IOServiceOpen(m2m_service, mach_task_self(), 0x41477fff, &c) == KERN_SUCCESS && c != IO_OBJECT_NULL) {
+		IOServiceClose(c);      /* (an accelerator that took the marker as a client type: not the A56's) */
+	}
+	for (unsigned i = 0; text[i] != '\0' && i < M2M_ROW_MAX; i++) {
+		unsigned char ch = (unsigned char)text[i];
+
+		c = IO_OBJECT_NULL;
+		if (IOServiceOpen(m2m_service, mach_task_self(), 0x41477000u | (ch >= 0x20 && ch < 0x7f ? ch : '?'), &c) ==
+		    KERN_SUCCESS && c != IO_OBJECT_NULL) {
+			IOServiceClose(c);
+		}
+	}
+	pthread_mutex_unlock(&lock);
+}
+
+static inline bool
+m2m_wants_row(char sev, const char *cat, const char *rec)
+{
+	static int errors, dev, pso;
+
+	if (sev == 'E' || sev == 'F') {
+		return __atomic_fetch_add(&errors, 1, __ATOMIC_RELAXED) < 12;
+	}
+	if (!strcmp(cat, "DEV")) {
+		return __atomic_fetch_add(&dev, 1, __ATOMIC_RELAXED) < 10;
+	}
+	if (!strcmp(cat, "PSO") && sev == 'I' &&
+	    (!strncmp(rec, "pipeline ", 9) || !strncmp(rec, "compute pipeline made", 21))) {
+		return __atomic_fetch_add(&pso, 1, __ATOMIC_RELAXED) < 2;
+	}
+	return false;
 }
 
 static inline void
 m2m_vlog(char sev, const char *cat, const char *fmt, va_list ap)
 {
 	char rec[M2M_RECORD_MAX + 16];
-	int head, n;
+	int n;
 
 	pthread_once(&m2m_once, m2m_open_once);
-	head = snprintf(rec, sizeof(rec), "%c %s ", sev, cat);
-	if (head < 0 || (size_t)head >= sizeof(rec)) {
-		return;
-	}
-	n = vsnprintf(rec + head, sizeof(rec) - (size_t)head, fmt, ap);
+	n = vsnprintf(rec, sizeof(rec), fmt, ap);
 	if (n < 0) {
 		return;
 	}
-	n = head + n < (int)sizeof(rec) - 1 ? head + n : (int)sizeof(rec) - 1;
-	while (n > head && (rec[n - 1] == '\n' || rec[n - 1] == ' ')) {
+	n = n < (int)sizeof(rec) - 1 ? n : (int)sizeof(rec) - 1;
+	while (n > 0 && (rec[n - 1] == '\n' || rec[n - 1] == ' ')) {
 		n--;
 	}
 	rec[n] = '\0';
-	/* one record, one line: a newline inside becomes " | " (as far as the record has room) */
 	for (char *nl = strchr(rec, '\n'); nl != NULL; nl = strchr(nl, '\n')) {
-		if ((size_t)n + 2 < sizeof(rec)) {
-			memmove(nl + 3, nl + 1, (size_t)(rec + n - nl));
-			memcpy(nl, " | ", 3);
-			n += 2;
-			nl += 3;
-		} else {
-			*nl = ' ';
-		}
+		*nl = ' ';      /* one record, one line */
 	}
-	if (m2m_fd >= 0) {
-		(void)write(m2m_fd, rec, (size_t)n);
-	} else {
-		printf("m2m-nodev: %s\n", rec);
-		fflush(stdout);
+	os_log_with_type(m2m_os_log, sev == 'E' || sev == 'F' ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT,
+	    "%{public}c %{public}s %{public}s", sev, cat, rec);
+	if (m2m_service != IO_OBJECT_NULL && m2m_wants_row(sev, cat, rec)) {   /* (records before the device: os_log only) */
+		char row[M2M_ROW_MAX + 1];
+
+		snprintf(row, sizeof(row), "RM %c %s %s", sev, cat, rec);
+		m2m_row(row);
 	}
 }
 
@@ -101,18 +158,11 @@ m2m_log(char sev, const char *cat, const char *fmt, ...)
 static inline void
 m2m_client(const char *role)
 {
-	struct m2m_client c;
-
-	pthread_once(&m2m_once, m2m_open_once);
-	memset(&c, 0, sizeof(c));
-	strlcpy(c.role, role, sizeof(c.role));
-	if (m2m_fd >= 0 && ioctl(m2m_fd, M2M_IOC_CLIENT, &c) != 0) {
-		m2m_log('W', "M2M", "client registration (%s) refused: %s", role, strerror(errno));
-	}
+	(void)role;     /* Jesvi's kernel registration; nothing of the kind here (see the top of this file) */
 }
 
 /*
- * Where a client died. The kernel's record ("F CRASH ... ended by signal N") says that it died; this one,
+ * Where a client died (OneiOS: to os_log, best effort from a signal handler; Jesvi wrote it to /dev/m2m), this one,
  * written from the signal handler before the process goes, says where: the faulting address, pc, lr and
  * the callers (frame pointers), each as image+offset(symbol) from dladdr, and for code in the shared cache
  * also the address as the cache was built (unslid), which `ipsw dyld a2s` names.
