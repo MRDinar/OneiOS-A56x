@@ -198,7 +198,8 @@ named!(
     DisplayFormat { Bgrx8 = "bgrx", Rgba16f = "rgba16f" }
 );
 named!(
-    /// gpu=: auto (3D when the host has KGSL, udmabuf and a dma heap), 3d (or do not start), 2d.
+    /// gpu=: auto (3D when the host has KGSL, udmabuf and a dma heap; on an amdgpu host without KGSL, the amdgpu
+    /// renderer when the gpuaddon carries OneiOSRadeonMetal and its self-test passes), 3d (or do not start), 2d.
     Gpu { Auto = "auto", ThreeD = "3d", TwoD = "2d" }
 );
 named!(
@@ -596,6 +597,8 @@ pub struct Config {
     pub display: DisplayBackend,
     pub display_format: DisplayFormat,
     pub gpu: Gpu,
+    /// gpu-node=PATH: the amdgpu render node (gpu3d_amdgpu; "" = /dev/dri/renderD128)
+    pub gpu_node: String,
     pub gpu_level: GpuLevel,
     /// gpu-priority=0: KGSL queue priorities as the guest asks, not by the owner's class (1)
     pub gpu_priority: bool,
@@ -888,6 +891,7 @@ impl Config {
             display_format: DisplayFormat::Bgrx8,
             gpu: Gpu::Auto,
             gpu_level: GpuLevel::Deadline,
+            gpu_node: String::new(),
             gpu_priority: true,
             width: 0,
             height: 0,
@@ -1006,6 +1010,7 @@ impl Config {
             "display-format" => self.display_format = named(DisplayFormat::parse(value))?,
             "gpu" => self.gpu = named(Gpu::parse(value))?,
             "gpu-level" => self.gpu_level = named(GpuLevel::parse(value))?,
+            "gpu-node" => self.gpu_node = text(value, 128)?,
             "gpu-priority" => self.gpu_priority = number(value, 0, 1)? == 1,
             "cpus" => {
                 let n = i64::from(parse::atoi(value));
@@ -1353,6 +1358,9 @@ impl Config {
         }
         if !self.given("gpu") {
             self.gpu = if image.given("gpu") { image.gpu } else { device.gpu };
+        }
+        if self.gpu_node.is_empty() {
+            self.gpu_node = image.gpu_node.clone();
         }
         if self.boot_args.is_empty() {
             self.boot_args = image.boot_args.clone();
