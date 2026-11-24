@@ -2973,7 +2973,8 @@ the 16 change lines).
 
 **Tested:** `cargo test -p oneios-kernel` (`staged::audio::tests::the_volume_curve_is_shengs` recomputes both tables of
 the staged source from the formula; the edit list on the synthetic source against `golden/synthetic/audio.out`), the
-kernel built with it (docs/switches.md "Tests"). **Not booted.** The phone check: the change line at a third of iOS's
+kernel built with it, `runtime/host-tests.sh` (no qemu part) passes (docs/switches.md "Tests": the hashes, the hand-off
+`out/handoff/audiovol-1c3e86a/`). **Not booted.** The phone check: the change line at a third of iOS's
 volume about `-16.x dB` and at half about `-9.0 dB`; iOS's log (`ioslog --proc audiomxd`) `Reconfiguring volume curve
 with dB range {-36, 0}`; by ear the middle of the slider clearly louder than before and the bottom steps still quiet;
 `oneios-audio-curve=0` gives the old `-29.0 dB` at step 70 again.

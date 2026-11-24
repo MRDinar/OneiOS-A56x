@@ -167,7 +167,10 @@ decoder-codecs=h264,hevc,vp9,av1
   `kernel/tests/host.sh` 13 of 13. Kernel `HOSTED_OUT=audiovol ONEIOS_CRYPTO=original` (193 patches, releasable; the
   audio archive compiled without a warning): `xnu.macho` `68774879`; prelinked to `out/kernel/24A446-audiovol/kernel.kc`
   `ff1c70e5` (`.hashes` `b32aeb51`), audit 0 failures, stubs-check 666 good 0 bad; the staged `DroidVMAudio.cpp`
-  `6769f38c` (45,220 bytes) in `golden/staged.sha256`. Not booted.
+  `6769f38c` (45,220 bytes) in `golden/staged.sha256`. `runtime/host-tests.sh` (no qemu part): workspace, lint,
+  lint-android, port, links and package pass; `audio::test_audio_helper::audio_helper` run alone passed (112 s, load
+  average 11.9 at its start, 5.0 at its end). Runtime 0.1.27-dev at 1c3e86a (xnuhost `b3581f79`) and the kernel handed
+  to the Mac as `out/handoff/audiovol-1c3e86a/`. Not booted.
 - Not tested on a phone: any non-default value, and most defaults (column "Phone").
 
 ## Found while building the Metal plug-in (2026-11-23)
