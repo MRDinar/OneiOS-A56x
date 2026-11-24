@@ -20,7 +20,7 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd)
-B=${AIR_HOST_BUILD:-$ROOT/out/metal-amd/host-build}
+B=${AIR_HOST_BUILD:-${METAL_AMD_OUT:-$ROOT/out/metal-amd}/host-build}
 command -v llvm-as >/dev/null || { echo "host-test: no llvm-as"; exit 1; }
 if [ -z "${AIR_HOST_BUILD:-}" ]; then
   bash "$HERE/build.sh" host || { echo "host-test: FAIL: build.sh host"; exit 1; }
