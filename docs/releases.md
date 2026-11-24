@@ -529,6 +529,16 @@ laptop with `cd out/a56gl-relwt && kernel/publish.sh --hosted a56gl-rel --upload
 pins it in place of `181d8bf2d60a` (which had the Metal half, 0108, but not this GL key), so the next release's runtime
 names it and Update the kernel builds the A56's kernel.kc from it. **Not booted** on any phone.
 
+The **iOS 27.2.1 (24B156) kernel** (2026-11-25, [ios-27.2.1.md](ios-27.2.1.md); **uploaded and pinned** 2026-11-25 from the
+build laptop as the second line of `kernel/release-kernel.txt`): `ONEIOS_OS_PROFILE=ios-27.2.1-24B156
+ONEIOS_CRYPTO=original HOSTED_OUT=ios272 kernel/build-hosted.sh` on main's series (the same series as `5966e71ce2aa`),
+`xnu-12377.121.6-ios-27.2.1-24B156-23df94f24c01`; its collection `09df2833` (prelink audit 0 failures, stubs 666 good).
+`kernel/publish.sh --hosted ios272 --upload`:
+[`kernel-xnu-12377.121.6-ios-27.2.1-24B156-23df94f24c01`](https://github.com/akshaynexus/OneiOS/releases/tag/kernel-xnu-12377.121.6-ios-27.2.1-24B156-23df94f24c01)
+(prerelease), archive 6,463,279 bytes, SHA-256 `4d429519e9e56fb84f512fa805c7b4d0bbcf1bda51fed8ce6deb0fbfe5a20564` (downloaded
+back; GitHub's digest agrees). An earlier pack of the same folder had `28a57a37…`: packing again stamps new file times in the
+archive; its three files (`xnu.macho` `3439037c…`, the record, `series.txt`) are byte for byte the same. **Not booted.**
+
 ## Released
 
 | Tag | Date | Commit | What |

@@ -121,6 +121,5 @@ Left 3 and 4 done (2026-11-25, on `ios272/userland`, which has `ios272/base` mer
   yet" second; its `assets/kb-24B156/` from `oneios-tool app kb 24B156`; `./gradlew test --rerun-tasks`: 754 tests, 0
   failures (80 skipped).
 
-Not done: no phone boot (the phone is not on this laptop); the 24B156 kernel is not uploaded (the coordinator's
-call: `kernel/publish.sh --hosted ios272 --upload`, then its line as the second line of `kernel/release-kernel.txt`);
-no release.
+Not done: no phone boot (the phone is not on this laptop); the 24B156 kernel is uploaded and pinned (2026-11-25: `kernel/publish.sh --hosted ios272 --upload`, SHA-256
+`4d429519…`, the second line of `kernel/release-kernel.txt`; [releases.md](releases.md)); the release that carries it is next.
