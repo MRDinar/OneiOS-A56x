@@ -3,11 +3,11 @@
 # AIR Metal layer (Jesvi-iOS a13e406's, on Mesa Gallium: userland/metal-amd/NOTICE). docs/a56-gpu.md section 4.
 #
 #   userland/metal-amd/air/build.sh MESA_SRC MESA_BUILD    the guest Mesa stage's call, after its Mesa step: copies the
-#        AIR sources to MESA_SRC/src/compiler/air, applies patches/mesa/5*.patch once, sets -Doneios-air=true and
+#        AIR sources to MESA_SRC/src/compiler/air, applies patches/mesa/5*.patch once (on the guest Mesa stage's 0001-4999), sets -Doneios-air=true and
 #        -Doneios-air-screen (radeonsi when MESA_SRC defines oneios_radeonsi_screen_create, else none), builds
 #        MESA_BUILD/src/gallium/targets/air-metal/libOneiOSRadeonAir.dylib (.so for a Linux build)
 #   userland/metal-amd/air/build.sh host                   the host test's Mesa: external/mesa-droidvm at its pin +
-#        patches/mesa/5*.patch, softpipe only, in out/metal-amd/host-build (air_metal_test, air2nir; host-test.sh runs them)
+#        patches/mesa/*.patch (0001-0006 then 5xxx), softpipe only, in out/metal-amd/host-build (air_metal_test, air2nir; host-test.sh runs them)
 #   userland/metal-amd/air/build.sh mesa-ios               the same Mesa cross-built for arm64-apple-ios16.5, softpipe only
 #        (no GPU screen), in out/metal-amd/mesa-ios: a library to build the bundle with before the guest Mesa stage's
 #        radeonsi Mesa exists (its device open then fails with a sentence)
@@ -33,12 +33,13 @@ say() { echo "metal-amd: $*"; }
 
 # The AIR sources and the 5xxx patches into a Mesa tree. The sources are copied, not linked, so the tree stays
 # whole when this checkout moves; a copy older than ours is replaced.
-into_mesa() {
-  local src=$1
+into_mesa() { # SRC [all]: the 5xxx patches (the guest Mesa stage applied 0001-4999), or with "all" every patch in name order
+  local src=$1 which=5
+  [ "${2:-}" = all ] && which=
   [ -f "$src/meson.options" ] || { echo "metal-amd: $src is no Mesa tree" >&2; exit 1; }
   mkdir -p "$src/src/compiler/air"
   cp "$HERE"/*.c "$HERE"/*.h "$HERE/meson.build" "$src/src/compiler/air/"
-  for p in "$AMD"/patches/mesa/5*.patch; do
+  for p in $(ls "$AMD"/patches/mesa/$which*.patch | LC_ALL=C sort); do   # 5002 sits on 0001 and 0005
     if git -C "$src" apply --reverse --check "$p" 2>/dev/null; then
       continue
     fi
@@ -66,7 +67,7 @@ mesa_tree() {
     git -C "$src" checkout -q "$MESA_PIN"
   fi
   [ "$(git -C "$src" rev-parse --short=7 HEAD)" = "$MESA_PIN" ] || { echo "metal-amd: $src is not at $MESA_PIN" >&2; exit 1; }
-  into_mesa "$src"
+  into_mesa "$src" all
 }
 
 # Mesa's options for a build of the AIR library alone (no OpenGL, no Vulkan, no window system)

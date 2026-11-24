@@ -411,8 +411,9 @@ builds Mesa's radeonsi (ACO, no LLVM) over the amdgpu virtio native context and 
 the guest kernel's accelerator user client (open type 0x4149, `DroidVMVirtgpuABI.h`), into `out/metal-amd/ios`:
 
 - `liboneios_radeonsi.dylib`: exports `oneios_radeonsi_screen_create(why, why_size)` alone (the radeonsi
-  `pipe_screen`, K3 of [a56-gpu.md](a56-gpu.md)); install name `@loader_path/`, so it travels inside the A56's Metal
-  plug-in (`OneiOSRadeonMetal.bundle`, section 4 of a56-gpu.md), which links it.
+  `pipe_screen`, K3 of [a56-gpu.md](a56-gpu.md)); install name `@loader_path/`. The A56's Metal plug-in does not load it: its
+  `libOneiOSRadeonAir.dylib` compiles the same target's sources in (section 4 of a56-gpu.md), so the bundle carries
+  one library with radeonsi in it.
 - `oneios-amdgpu-probe`: a lasting command-line tool for a root shell on the A56: the device, the capset's GPU facts,
   a guest BO, a GFX NOP IB and its fence, one `PASS`/`FAIL` line each; `--screen` adds the radeonsi screen and a
   clear read back.

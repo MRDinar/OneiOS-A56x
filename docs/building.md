@@ -1288,7 +1288,7 @@ build laptop, each step in tmux (`scripts/bg.sh NAME ...`):
 
 ```sh
 scripts/setup/get-references.sh mesa-droidvm Jesvi-iOS    # Mesa cecc0e9; Jesvi-iOS a13e406 is only read
-sh userland/metal-amd/air/host-test.sh        # Mesa cecc0e9 + patches/mesa/5*.patch, softpipe, in out/metal-amd/host-build
+sh userland/metal-amd/air/host-test.sh        # Mesa cecc0e9 + patches/mesa/*.patch (0001-0006, 5xxx), softpipe, in out/metal-amd/host-build
                                               # (4 minutes the first time, 700 MB); 8 checks through air_metal.h (no GPU)
 userland/metal-amd/air/build.sh mesa-ios      # the same Mesa for arm64-apple-ios16.5 (out/ios16-tbd), softpipe only:
                                               # out/metal-amd/mesa-ios/.../libOneiOSRadeonAir.dylib, no GPU screen in it
@@ -1296,6 +1296,9 @@ userland/metal-amd/air/build.sh plugin [MESA_BUILD]   # the bundle, from MESA_BU
 # -> out/metal-amd/OneiOSRadeonMetal.bundle (Info.plist, OneiOSRadeonMetal, libOneiOSRadeonAir.dylib, oneios-target
 #    "iPhone10,3 20F66"), OneiOSRadeonMetal.check.txt (ios macho-check --arch arm64 against out/ios16-tbd),
 #    OneiOSRadeonMetal.gpuaddon (addons/OneiOSRadeonMetal.bundle/...), metal_caps (Jesvi's probe, signed)
+# The A56's bundle with radeonsi (the integration, 2026-11-24): the guest Mesa build, whose hook builds the AIR
+# library with -Doneios-air-screen=radeonsi, then the plug-in from that build directory:
+userland/metal-amd/build.sh mesa && userland/metal-amd/air/build.sh plugin out/metal-amd/build-ios
 # The guest Mesa stage (radeonsi for Darwin) calls, after its own Mesa step:
 userland/metal-amd/air/build.sh MESA_SRC MESA_BUILD   # AIR sources + 5xxx patches into its tree, -Doneios-air=true,
                                               # -Doneios-air-screen=radeonsi when its tree defines
@@ -1306,7 +1309,9 @@ userland/metal-amd/air/build.sh MESA_SRC MESA_BUILD   # AIR sources + 5xxx patch
 `IOS_TBD` and `IOS_LD` default to the main checkout's `out/ios16-tbd` and `out/ios-toolchain` when the work tree has
 none. Built on the build laptop on 2026-11-24 (iPhoneOS 26.5 SDK headers, the 20F66 stubs): both Mach-Os PASS
 `macho-check` (arm64, iOS 16.5, 4 KiB pages; 171 and 149 symbols bound). With `mesa-ios`'s library the bundle has
-no GPU: its device open says so (a56-gpu.md section 4). No image places it yet, and nothing of it has run in iOS.
+no GPU: its device open says so (a56-gpu.md section 4). Built from `out/metal-amd/build-ios` (2026-11-24):
+`libOneiOSRadeonAir.dylib` 16,912,464 bytes with radeonsi, both Mach-Os PASS (175 and 206 imports bound), the
+gpuaddon 5 files, 3,844,888 bytes. No image places it yet, and nothing of it has run in iOS.
 
 ## 10. Rust tools (`oneios-tool`)
 

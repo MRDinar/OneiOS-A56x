@@ -17,26 +17,25 @@ Two options (meson.options):
 userland/metal-amd/air/build.sh sets both.
 
 diff --git a/meson.build b/meson.build
-index 75bed36..6a3a698 100644
+index 8788a07..dd900ff 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -1083,6 +1083,7 @@ with_gfx_compute = [
-   with_clc,
+@@ -1109,6 +1109,7 @@ with_gfx_compute = [
    with_gallium_va and with_video_encode,
    with_gallium_mediafoundation and with_video_encode,
+   get_option('oneios-radeonsi-screen'),
 +  get_option('oneios-air'),   # OneiOS: the AIR Metal library compiles Metal shaders (5002-air-metal-library.patch)
  ].contains(true)
  if with_gfx_compute
    pre_args += '-DHAVE_GFX_COMPUTE'
 diff --git a/meson.options b/meson.options
-index 93a60e3..4b6c6f5 100644
+index 84580e1..5381229 100644
 --- a/meson.options
 +++ b/meson.options
-@@ -915,3 +915,19 @@ option(
-   value : false,
-   description : 'Build panfrost Rust components.'
+@@ -932,3 +932,18 @@ option(
+   description : 'OneiOS: build src/gallium/targets/oneios-radeonsi (oneios_radeonsi_screen_create: ' +
+                 'the radeonsi pipe_screen over the amdgpu virtio context, with no GL or Vulkan frontend)',
  )
-+
 +# OneiOS (userland/metal-amd/patches/mesa/5002-air-metal-library.patch)
 +option(
 +  'oneios-air-screen',
@@ -53,12 +52,12 @@ index 93a60e3..4b6c6f5 100644
 +  description : 'OneiOS: build Mesa with its graphics and compute compilers (NIR, the Gallium helpers, radeonsi gfx) for the AIR Metal library, which needs no OpenGL or Vulkan (src/gallium/targets/air-metal)',
 +)
 diff --git a/src/gallium/meson.build b/src/gallium/meson.build
-index 67011f5..96a65fb 100644
+index 144a90a..ce9294a 100644
 --- a/src/gallium/meson.build
 +++ b/src/gallium/meson.build
-@@ -260,3 +260,9 @@ if with_teflon
-   subdir('frontends/teflon')
-   subdir('targets/teflon')
+@@ -268,3 +268,9 @@ if get_option('oneios-radeonsi-screen')
+   endif
+   subdir('targets/oneios-radeonsi')
  endif
 +
 +# OneiOS (userland/metal-amd/air): the AIR Metal library and its test, which need libgallium and the
@@ -68,10 +67,10 @@ index 67011f5..96a65fb 100644
 +endif
 diff --git a/src/gallium/targets/air-metal/meson.build b/src/gallium/targets/air-metal/meson.build
 new file mode 100644
-index 0000000..79d556c
+index 0000000..8b6c26d
 --- /dev/null
 +++ b/src/gallium/targets/air-metal/meson.build
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,62 @@
 +# Copyright © 2026 OneiOS contributors
 +# SPDX-License-Identifier: MIT
 +#
@@ -87,14 +86,24 @@ index 0000000..79d556c
 +# softpipe, which only the host test does).
 +
 +air_metal_c_args = []
++air_metal_sources = files('../../../compiler/air/air_metal.c')
++air_metal_incs = [inc_include, inc_src, inc_gallium, inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys,
++                  inc_gallium_drivers]
 +air_metal_deps = [dep_m, dep_thread, idep_air, idep_nir, idep_mesautil, idep_xmlconfig, driver_softpipe]
 +air_metal_link_args = []
 +if get_option('oneios-air-screen') == 'radeonsi'
 +  if not with_gallium_radeonsi
 +    error('oneios-air-screen=radeonsi needs radeonsi in -Dgallium-drivers')
 +  endif
++  if not get_option('oneios-radeonsi-screen')
++    error('oneios-air-screen=radeonsi needs -Doneios-radeonsi-screen=true (src/gallium/targets/oneios-radeonsi)')
++  endif
 +  air_metal_c_args += '-DONEIOS_AIR_RADEONSI=1'
-+  air_metal_deps += driver_radeonsi
++  # oneios_radeonsi_screen_create compiled into this library (the target's own sources, include directories and
++  # dependencies, radeonsi among them): the bundle carries one library, not this one beside liboneios_radeonsi.dylib
++  air_metal_sources += oneios_radeonsi_sources
++  air_metal_incs += oneios_radeonsi_incs
++  air_metal_deps += oneios_radeonsi_deps
 +endif
 +if host_machine.system() == 'darwin'
 +  # dlopened by its full path inside the bundle (OneiOSRadeonMetal.bundle/libOneiOSRadeonAir.dylib)
@@ -103,10 +112,9 @@ index 0000000..79d556c
 +
 +libair_metal = shared_library(
 +  'OneiOSRadeonAir',
-+  files('../../../compiler/air/air_metal.c'),
++  air_metal_sources,
 +  c_args : air_metal_c_args,
-+  include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
-+                         inc_gallium_winsys_sw, inc_gallium_winsys, inc_gallium_drivers],
++  include_directories : air_metal_incs,
 +  dependencies : air_metal_deps,
 +  link_with : [libgallium, libgalliumvl_stub, libws_null],
 +  link_args : air_metal_link_args,

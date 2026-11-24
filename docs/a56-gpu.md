@@ -173,8 +173,10 @@ connects), GET_CAPS of capset 6 with context type 2 and `virgl_renderer_capset_d
 (`drm_hw.h`, with `ENABLE_DRM_AMDGPU`: the amdgpu union holds `amdgpu_buffer_size_alignments` and `amdgpu_gpu_info` of
 libdrm 2.4.133), CONTEXT_INIT with 64 rings, the shmem's `rsp_mem_offset` set by the host, EXECBUFFER FENCE on any
 ring below 64 (amdgpu virtio numbers ring 0 for ccmds and 1.. for the hardware rings in the order of `AMD_IP_*`), and a
-service whose class matches `IOAcceleratorES`. The Metal layer links `liboneios_radeonsi.dylib` (or adds its sources to
-it) and calls `oneios_radeonsi_screen_create`.
+service whose class matches `IOAcceleratorES`. The Metal layer's library compiles this target's sources, include directories and dependencies
+(`oneios_radeonsi_sources`, `_incs`, `_deps`) into `libOneiOSRadeonAir.dylib` (5002, since the integration of
+2026-11-24), so the bundle carries one library with radeonsi in it; `liboneios_radeonsi.dylib` stays a library of its
+own for other users.
 
 **RADV over the same backend (read, not built).** RADV's winsys initialises through the same `ac_drm_device_initialize(fd,
 is_virtio)` and so the same amdgpu virtio context and vdrm backend; its physical device probe opens a render node by
@@ -279,9 +281,11 @@ Before any of them: the kernel's `oneios-gpu-plugin` / `oneios-gpu-open` lines o
 The renderer string is radeonsi's own (shape only here: `AMD Radeon ...`; a guess until the A56 prints it).
 
 **Not done.** The bundle is placed by no tool (the image hook knows `NativeAdrenoMetal.bundle`; the kernel's addon
-mount looks for that name: section 5). No in-place IOSurface import. The library has not been built with the guest
-Mesa stage's radeonsi (its tree had no `oneios_radeonsi_screen_create` when this was written); the bundle of
-2026-11-24 carries the softpipe-only `mesa-ios` library, whose device open fails by name. Panfrost's counters in
+mount looks for that name: section 5). No in-place IOSurface import. Since the integration of 2026-11-24 (in main) the bundle is
+built from the guest Mesa stage's tree: `userland/metal-amd/build.sh mesa` (0001-0006, then the hook: 5001-5002,
+`-Doneios-air-screen=radeonsi`) and `userland/metal-amd/air/build.sh plugin out/metal-amd/build-ios` give
+`libOneiOSRadeonAir.dylib` of 16,912,464 bytes with radeonsi, ACO and the Darwin vdrm backend in it; both Mach-Os
+`macho-check` PASS against the 20F66 stubs (175 and 206 imports bound). Not run in iOS. Panfrost's counters in
 `air_metal.c` (`rwa_gpu_cache_stats`) compile out and answer -1.
 
 **What the other stages must match.** Guest Mesa (section 3): define `struct pipe_screen
