@@ -116,8 +116,10 @@ Left 3 and 4 done (2026-11-25, on `ios272/userland`, which has `ios272/base` mer
   make-image` picks the plug-in, the kernel and `kb-<build>/` of the image's build; the app names them too.
 - **The Metal plug-in for 24B156**: `userland/metal/hooks/iPhone18,2-24B156.json` (the userland helper's, reviewed);
   built (`out/userland-u272/24B156`, the checks PASS); the capture plug-in has no per-build address and is shared.
-- **The app** (fork `ios272/app`, merged with `oneios` `99a7b0e`): Make iOS image offers "iOS 27.0.1 (24A446),
-  tested" first and "iOS 27.2.1 (24B156), new: not booted yet" second; `./gradlew test` passes.
+- **The app** (fork `ios272/app`, merged with `oneios` `99a7b0e`, then `oneios` fast-forwarded to it: `1311a47`, the
+  `app` pin here): Make iOS image offers "iOS 27.0.1 (24A446), tested" first and "iOS 27.2.1 (24B156), new: not booted
+  yet" second; its `assets/kb-24B156/` from `oneios-tool app kb 24B156`; `./gradlew test --rerun-tasks`: 754 tests, 0
+  failures (80 skipped).
 
 Not done: no phone boot (the phone is not on this laptop); the 24B156 kernel is not uploaded (the coordinator's
 call: `kernel/publish.sh --hosted ios272 --upload`, then its line as the second line of `kernel/release-kernel.txt`);
