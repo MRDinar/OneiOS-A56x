@@ -316,7 +316,13 @@ reordering included.
   go through the helper process (the pool a memfd the helper maps); AV1 and HEVC run with the stand-in in-process.
   The pictures are read back from the guest's buffers; there is a drain and a start; every pool buffer comes back.
   Then `decoder=off` and `decoder-codecs=vp9`.
-- `encctl decode` runs on an IVF and an Annex-B file with the stand-in.
+- `encctl decode` runs on an IVF and an Annex-B file with the stand-in. Until 2026-11-24 it failed 1 run in 3
+  ("nothing from the decoder for 5 s: 4 of 5 frames out", v0.1.21's first release run, and 1 of 3 runs alone on
+  the build laptop). The stand-in dropped a picture when all 4 of its output buffers were taken. That happened when
+  the drain came before the guest had queued its CAPTURE buffers, and then the last picture, which carries the end,
+  was lost. Now pictures wait for a buffer in order, as MediaCodec keeps them
+  (`the_stand_in_keeps_a_picture_while_every_output_buffer_is_taken`). Only the stand-in had this fault. The phone's
+  NDK backend did not.
 - `runtime/build.sh`: the helper and encctl link with `decode_ndk.rs`, and elf-check finds every NDK symbol in the
   API 30 stubs.
 

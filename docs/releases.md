@@ -489,6 +489,10 @@ scripts/bg.sh release scripts/release/release.sh 0.1.14                # build, 
 scripts/bg.sh -s release                                               # its state and log (logs/release.log)
 ```
 
+The script exports `ANDROID_HOME` as the SDK it found, `~/Android/Sdk` included. Gradle reads the SDK from that
+variable or from `local.properties` only. A run under tmux started from ssh had neither, and v0.1.21's first run
+failed in the guest's build with "SDK location not found".
+
 Options:
 - `--runtime-only` and `--apk-only` are CI's "runtime only" and "apk only"; an APK-only release is not marked
   latest.

@@ -498,6 +498,9 @@ pub struct StubCodec {
     inputs: Vec<Vec<u8>>,
     queued: VecDeque<(usize, usize, i64, u32)>,
     held: Option<(i64, u8)>,
+    /// pictures (pts, luma, flags) and the end (None) decoded while every output buffer was taken: they come out
+    /// in order as buffers are released, as MediaCodec holds them (it never drops one)
+    waiting: VecDeque<Option<(i64, u8, u32)>>,
     outputs: Vec<Option<Vec<u8>>>,
     /// output buffers ready, for the caller to hand to the core (index, info)
     pub out: VecDeque<(usize, OutInfo)>,
@@ -513,6 +516,7 @@ impl StubCodec {
             inputs: vec![vec![0; 2 << 20]; STUB_BUFFERS],
             queued: VecDeque::new(),
             held: None,
+            waiting: VecDeque::new(),
             outputs: vec![None; STUB_BUFFERS],
             out: VecDeque::new(),
         }
@@ -536,33 +540,48 @@ impl StubCodec {
         0..STUB_BUFFERS
     }
 
-    fn picture(&mut self, pts: i64, luma: u8, flags: u32) {
-        let Some(slot) = self.outputs.iter().position(Option::is_none) else { return };
-        let l = self.layout();
-        let mut buf = vec![128u8; l.source_bytes()];
-        buf[..(l.stride * l.slice) as usize].fill(luma);
-        let size = buf.len();
-        self.outputs[slot] = Some(buf);
-        self.out.push_back((slot, OutInfo { offset: 0, size, pts, flags }));
+    /// A picture (or the end, None) comes out after those that wait for an output buffer.
+    fn picture(&mut self, p: Option<(i64, u8, u32)>) {
+        self.waiting.push_back(p);
+        self.place_waiting();
+    }
+
+    /// The waiting pictures into the free output buffers, in order; the end needs no buffer. Before this, a picture
+    /// with every buffer taken was dropped: with the end on it (the last frame of a drain), no end came out, and
+    /// `encctl decode` on a host failed 1 run in 3 ("nothing from the decoder for 5 s: 4 of 5 frames out", v0.1.21's
+    /// first release run): the guest had not queued its capture buffers yet when the drain came.
+    fn place_waiting(&mut self) {
+        while let Some(&front) = self.waiting.front() {
+            let Some((pts, luma, flags)) = front else {
+                self.waiting.pop_front();
+                self.out.push_back((usize::MAX, OutInfo { flags: DEC_FLAG_END_OF_STREAM, ..OutInfo::default() }));
+                continue;
+            };
+            let Some(slot) = self.outputs.iter().position(Option::is_none) else { return };
+            self.waiting.pop_front();
+            let l = self.layout();
+            let mut buf = vec![128u8; l.source_bytes()];
+            buf[..(l.stride * l.slice) as usize].fill(luma);
+            let size = buf.len();
+            self.outputs[slot] = Some(buf);
+            self.out.push_back((slot, OutInfo { offset: 0, size, pts, flags }));
+        }
     }
 
     /// The queued inputs decoded: their pictures (one frame late) and input buffers back. The freed input indices.
     pub fn run(&mut self) -> Vec<usize> {
+        self.place_waiting();
         let mut freed = Vec::new();
         while let Some((index, size, pts, flags)) = self.queued.pop_front() {
             freed.push(index);
             if flags & DEC_FLAG_END_OF_STREAM != 0 {
-                match self.held.take() {
-                    Some((p, luma)) => self.picture(p, luma, DEC_FLAG_END_OF_STREAM),
-                    None => self
-                        .out
-                        .push_back((usize::MAX, OutInfo { flags: DEC_FLAG_END_OF_STREAM, ..OutInfo::default() })),
-                }
+                let last = self.held.take().map(|(p, luma)| (p, luma, DEC_FLAG_END_OF_STREAM));
+                self.picture(last);
                 continue;
             }
             let luma = self.inputs[index][..size].iter().fold(0u8, |a, b| a.wrapping_add(*b));
             if let Some((p, l)) = self.held.replace((pts, luma)) {
-                self.picture(p, l, 0);
+                self.picture(Some((p, l, 0)));
             }
         }
         freed
@@ -653,6 +672,7 @@ impl Decoder for StubDecoder {
     fn restart(&mut self) -> Result<(), i32> {
         // a real codec is flushed here: its buffers and the held picture are gone
         self.codec.held = None;
+        self.codec.waiting.clear();
         self.codec.out.clear();
         self.codec.outputs.iter_mut().for_each(|o| *o = None);
         self.core.flushed();
@@ -827,5 +847,48 @@ mod tests {
         assert!(matches!(g[1], DecEvent::Frame { index: 3, pts: 1, error: false, decode_us: 1.., .. }), "{g:?}");
         assert_eq!(mem[4096], 6);
         assert!(c.outputs.iter().all(Option::is_none)); // released
+    }
+
+    #[test]
+    fn the_stand_in_keeps_a_picture_while_every_output_buffer_is_taken() {
+        // v0.1.21's first release run: the last picture of a drain came while the guest had no capture buffer yet,
+        // every output buffer was taken, and the picture with the end on it was dropped: no end came out.
+        let mut c = StubCodec::new(64, 32);
+        let frames = STUB_BUFFERS + 2;
+        for i in 0..frames {
+            c.queue_input(i % STUB_BUFFERS, 1, i as i64, 0);
+            c.run();
+        }
+        c.queue_input(0, 0, 0, DEC_FLAG_END_OF_STREAM);
+        c.run();
+        // STUB_BUFFERS pictures out, none released: the rest (the last with the end on it) wait
+        assert_eq!(c.out.len(), STUB_BUFFERS);
+        assert_eq!(c.waiting.len(), frames - STUB_BUFFERS);
+        let mut seen = Vec::new();
+        while let Some((index, info)) = c.out.pop_front() {
+            seen.push((info.pts, info.flags));
+            c.release_output(index);
+            c.run();
+        }
+        let want: Vec<(i64, u32)> = (0..frames as i64)
+            .map(|p| (p, if p == frames as i64 - 1 { DEC_FLAG_END_OF_STREAM } else { 0 }))
+            .collect();
+        assert_eq!(seen, want);
+        assert!(c.waiting.is_empty());
+        // with nothing held, the end comes out after the waiting pictures, without a buffer
+        let mut c = StubCodec::new(64, 32);
+        c.outputs.iter_mut().for_each(|o| *o = Some(Vec::new()));
+        c.queue_input(0, 1, 7, 0);
+        c.run();
+        c.queue_input(1, 1, 8, 0);
+        c.run(); // picture 7 waits
+        c.held = None; // as if picture 8 had come out with the end already
+        c.queue_input(2, 0, 0, DEC_FLAG_END_OF_STREAM);
+        c.run();
+        assert!(c.out.is_empty() && c.waiting.len() == 2);
+        c.release_output(0);
+        c.run();
+        let got: Vec<usize> = c.out.iter().map(|(i, _)| *i).collect();
+        assert_eq!(got, vec![0, usize::MAX]);
     }
 }

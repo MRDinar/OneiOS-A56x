@@ -72,6 +72,9 @@ fi
 export ANDROID_NDK_ROOT
 if [ "$APK" = 1 ]; then
   [ -n "$SDK" ] || die "no Android SDK with build-tools 37.0.0 (set ANDROID_HOME)"
+  # Gradle finds the SDK only by ANDROID_HOME or local.properties: a run under tmux started from ssh has neither
+  # (v0.1.21's first run: "SDK location not found" in the guest's build).
+  export ANDROID_HOME=$SDK
   [ -f "$KEYSTORE" ] || die "no $KEYSTORE (docs/releases.md, \"The debug key\")"
   FORK_BRANCH=$(git config -f .gitmodules submodule.app.branch)
   FORK_COMMIT=$(git -C app rev-parse HEAD)
