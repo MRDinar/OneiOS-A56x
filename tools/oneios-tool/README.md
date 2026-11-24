@@ -1938,7 +1938,7 @@ from the OneOS app after 0.5.80, the row `how xnuhost ended` with the inner shel
 words of xnuhost's last `memory: the host is short of memory: ...` line when no `memory: the host's shortage is over`
 came after it, docs/booter.md 2.2 "The host's pressure"),
 then one row per part (start, memory, disks, virtio, tasks, cpu, perf, thermal, display, gpu, input, brightness,
-haptics, battery, bluetooth, wifi, audio, camera, encoder (with the guest's `ONEIOS CODEC:` lines), usb, return, and iOS's own report lines: launchd, memory,
+haptics, battery, bluetooth, wifi, audio, camera, encoder (xnuhost's `encoder:`, `decoder:` and, since 2026-11-25, the media worker's `media: 30 s` lines, with the guest's `ONEIOS CODEC:` lines), usb, return, and iOS's own report lines: launchd, memory,
 cpu, gpu, display, hid, wifi, iokit): how many lines it wrote, the problems among them (`xnuhost E` lines, and lines
 with a word such as `failed`, `dropped`, `none returned`, `died on its own` that is not a zero count), its last line
 and its first problem. Then the crashes and kills (panics, `sheng-exc` exceptions, the tasks' fatal traps, tasks
@@ -3213,7 +3213,9 @@ golden` in `crates/oneios-kernel`, 15 of 15.
 
 **`kernel gen codec`** (hevc-guest, 2026-11-15; the tenth archive, after `audio` in `kernel/build-hosted.sh`) builds
 `build/oneios-codec/liboneioscodec.a`, the hosted kernel's video encoder: UniXNU-droidvm's virtio-media transport
-(`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`), its
+(`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`; staged since 2026-11-25 with the edit of
+`staged/codec_transport.rs`, 7: the event queue on the device's interrupt, `-I` the codec folder for
+`OneiOSCodecWait.h`; checked by `the_transport_edit_fits_the_pinned_source`), its
 `AppleVideoToolboxParavirtualizationDriver` (`DroidVMVTParavirt.cpp`, the IOKit record; the late object without
 `__mod_init_func`, `__GLOBAL__sub_I_DroidVMVTParavirt.cpp` global), the sessions behind it (`DroidVMVTHost.cpp`,
 staged into the archive's folder with the edits of `staged/codec.rs`, the encoder's 1 to 5 (the hvcC's profile,

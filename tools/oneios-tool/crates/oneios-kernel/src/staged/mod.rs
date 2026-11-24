@@ -35,6 +35,7 @@ pub const OUTPUT_LATENCY: u32 = output_latency!();
 pub mod audio;
 pub mod codec;
 pub mod codec_decode;
+pub mod codec_transport;
 pub mod display;
 pub mod display_header;
 pub mod gpu;
