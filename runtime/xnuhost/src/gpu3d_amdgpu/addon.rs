@@ -88,3 +88,14 @@ fn bundle_in_addon(addon: Option<&[u8]>, build: Option<&str>, name: &str, what: 
     }
     Ok(Plugin { target: line, files: mine.len() })
 }
+
+/// The boot argument the A56's OpenGL ES needs the kernel to read (docs/a56-gpu.md 4a): only a kernel that has it
+/// names IOGLESBundleName OneiOSRadeonGL for the CPU-composition processes (SpringBoard among them). On an older A56
+/// kernel (181d8bf2d60a and before) those processes would find no GL driver, and with the CoreImage fixup left out
+/// SpringBoard's CoreImage would call glDisable through NULL (docs/gpu.md 5.2): so no GL, and the fixup kept.
+pub const GL_BOOT_ARG: &[u8] = b"oneios-gpu-amd-gl";
+
+/// Whether the kernel collection's bytes name [`GL_BOOT_ARG`] (its PE_parse_boot_argn string, in __cstring).
+pub fn kernel_knows_gl(kc: &[u8]) -> bool {
+    kc.windows(GL_BOOT_ARG.len()).any(|w| w == GL_BOOT_ARG)
+}

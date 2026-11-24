@@ -119,3 +119,4 @@ ARM64, drm2kgsl, the guest drivers. [iOSPlus10](https://github.com/akshaynexus/i
 Qualcomm phones, haptics and brightness, and NegroniGL (the A56's OpenGL ES layer). [Jesvi-iOS](https://github.com/jesvi-eulah/Jesvi-iOS) (jesvi-eulah): Metal on Mesa Gallium for iOS 16.5 (the AIR frontend and Metal
 device of the A56's plug-in). [OneiOS-A56](https://github.com/Musicalista/OneiOS-A56) (Musicalista): the A56 port and its
 amdgpu native-context renderer the Rust one is written from. [Darling](https://github.com/darlinghq/darling): Mach and XNU on Linux.
+Changes ported from forks of this repository, by their authors: [CREDITS.md](CREDITS.md).

@@ -85,13 +85,25 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   1440x3120: 1436x3120 at x = 2). Both layers are at the top of the built-in display's stack.
 - **The panel.** The modes come from surfaceflinger (`DisplayControl`, the way scrcpy reads them): the active
   one, and the native one, which is the largest the panel has at its highest refresh rate. With `--takeover` (a
-  session: system_server is gone) a panel that One UI left in a lower mode (FHD+ 1080x2340 is One UI's default
-  resolution setting) is put in the native mode: the display's desired mode specs are read, their default mode
-  replaced and their refresh ranges opened to that mode's rate, and written back
-  (`SurfaceControl.setDesiredDisplayModeSpecs`); the helper waits up to a second for the mode to become active.
-  Then the display's projection is set to the active mode, unrotated, so the layer space is the panel's own
-  pixels whatever rotation One UI left. If the mode is refused the panel stays as it was and the frame is
-  scaled. The return restarts surfaceflinger, which forgets both. Without `--takeover` nothing of the display is
+  session: system_server is gone) the panel is asked for the native mode in **every** takeover: the display's
+  desired mode specs are read, their default mode replaced and their refresh ranges opened to that mode's rate,
+  and written back (`SurfaceControl.setDesiredDisplayModeSpecs`). Asked even when the panel is already in that
+  mode, because One UI can leave it at its native resolution with the refresh ranges capped at 60 Hz (Motion
+  smoothness: Standard), which neither the size nor the mode id shows (ported 2026-11-25 from
+  orumanayurpanjayat-ux/OneiOS `84cb2ef`, CREDITS.md). The native mode is told by its id, not only its size
+  (1440x3120 at 60 Hz is another mode than 1440x3120 at 120 Hz): when the active id or size differs (FHD+
+  1080x2340 is One UI's default resolution setting) the helper waits up to a second (20 x 50 ms) for the mode to
+  become active; when it is already active it does not wait. Then the display's projection is set to the active
+  mode, unrotated, so the layer space is the panel's own pixels whatever rotation One UI left. If the mode is
+  refused the panel stays as it was, and the frame is scaled only when its size differs. The return restarts
+  surfaceflinger, which forgets both. The lines (`control/display.log`; `oneios-tool phone log --file display
+  --grep 'panel modes|native mode'`): `panel modes: active WxH (mode id A, up to R Hz), native WxH at R Hz (mode
+  id N)`, then one of `the panel is in its native mode WxH (mode id N), refresh ranges open to R Hz` (with `(it
+  was already in that mode: only the ranges were asked for)` when it was), `the native mode (id N) is not active
+  after 1 s: the panel stays at ...` or `the native mode was not asked for: ...`, each saying whether the frame is
+  shown 1:1 or scaled. Not booted with this change yet: the proof on the phone is the first line's `mode id` and
+  the second line, with the panel at 120 Hz under Motion smoothness Standard (`dumpsys SurfaceFlinger` beside the
+  session, or the guest's frame rate). Without `--takeover` nothing of the display is
   changed and the logical size comes from the display manager. The layer votes for the mode's highest refresh
   rate (`setFrameRate`, 120 Hz on this panel), which is the rate the guest's vsync tick runs at.
   Whether One UI's resolution setting is a panel mode or only a logical size on this phone is not known; the

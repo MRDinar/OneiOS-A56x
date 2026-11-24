@@ -1223,6 +1223,12 @@ fn stage_guest(stage: &str) -> (Option<String>, Option<String>, Vec<(String, Opt
     (below(default), below(v["camera"]["path"].as_str()), more.collect())
 }
 
+/// The staged runtime's folder when its runtime.json names the Galaxy A56's GPU plug-ins ("metal_a56", not null).
+fn stage_a56(stage: &str) -> Option<String> {
+    let v = std::fs::read_to_string(format!("{stage}/runtime/runtime.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())?;
+    (!v["metal_a56"].is_null()).then(|| format!("{stage}/runtime"))
+}
+
 /// The whole image set (`image build`): scripts/image/build.sh's steps in this process (README "make-image").
 fn make_image(rq: &Rq) -> Result<Done, Fail> {
     use oneios_imagebuild::{Args, Kernel, Prelink, Stop};
@@ -1265,6 +1271,8 @@ fn make_image(rq: &Rq) -> Result<Done, Fail> {
         runtime_metal,
         runtime_camera,
         runtime_more,
+        // the Galaxy A56's GPU plug-ins (runtime.json "metal_a56"): an iOS 16.5 set they are for gets its gpuaddon of them
+        runtime_a56: if rq.req.opt_flag("runtime_plugins")?.unwrap_or(true) { stage_a56(&stage) } else { None },
     };
     let no_kernel = rq.req.flag("no_kernel")?;
     let kc = match rq.req.opt_str("kc")? {

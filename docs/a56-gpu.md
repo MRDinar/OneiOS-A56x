@@ -895,47 +895,112 @@ The safe refusals:
 - The Metal plug-in (section 4) gives backboardd no device unless `oneios-radeon-backboardd=1` is in the boot
   arguments (a test boot only); `OneiOSRadeonMetal.clients` beside the bundle names the processes that get one;
   `oneios-metal-profile=N` changes the feature profile (default 1). A process without a device keeps today's road.
-- OpenGL ES (section 4a): xnuhost adds `oneios-gpu-amd-gl=1` when the gpuaddon carries `OneiOSRadeonGL.bundle`;
+- OpenGL ES (section 4a): xnuhost adds `oneios-gpu-amd-gl=1` when the gpuaddon carries `OneiOSRadeonGL.bundle` **and the
+  kernel reads that switch** (its kernel.kc names `oneios-gpu-amd-gl`: the A56 kernel `5966e71ce2aa` on; an older one, as
+  the pinned `181d8bf2d60a`, gives `gpu: OpenGL ES: the kernel does not read oneios-gpu-amd-gl ...: Metal alone, CPU
+  composition, the CoreImage fixup kept`, since on it SpringBoard would find no GL driver with the fixup left out);
   `boot-args=... oneios-gpu-amd-gl=0` in `xnuhost.conf` keeps the GL bundle unnamed (CPU composition, and the CoreImage
   fixup of docs/gpu.md 5.2 back). In iOS, `OneiOSRadeonGL.bundle/off` closes the gate in every process,
   `OneiOSRadeonGL.clients` names the processes, and `oneios-gl-softpipe=0|1` sets where softpipe stands in.
 
-### What an A56 user does today (2026-11-25), and what is left
+### What an A56 user does (2026-11-25): no computer, no new image
 
-Every part is built and host-tested in main; **none has run on an A56** (no A56 here, no qemu boot). To try it:
+Everything below is built and host-tested; **nothing of it has run on an A56** (no A56 here, no qemu boot).
 
-1. The runtime of the next release (xnuhost with `gpu3d_amdgpu`, the `galaxy-a56` row at `gpu=auto`, `early_2d`), and
-   the A56 kernel `xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa` ([releases.md](releases.md): built from
-   `release-kernel-a56` `4140abe`, packed, **not uploaded yet**; the pinned `181d8bf2d60a` has the Metal half, 0108,
-   but not the GL key of 4a). Update the kernel and Activate it in the app as before; the image stays.
-2. The gpuaddon with both bundles, built on the build laptop: `userland/metal-amd/build.sh all` (Mesa radeonsi, the
-   Metal layer's and the GL layer's hooks), then `userland/metal-amd/air/build.sh plugin out/metal-amd/build-ios` and
-   `userland/metal-amd/air/build.sh addon` (`out/metal-amd/OneiOSRadeonMetal.gpuaddon`, with `OneiOSRadeonGL.bundle`
-   when it is built). Check it with `gpuctl addon FILE 20F66`. Stage it on the phone with `oneios-tool phone addon FILE`
-   (it becomes `image/kernel.kc.gpuaddon`, its CDHashes go to owner-trust.json).
-3. Boot. Without step 2 the session is the 2D one of today (`gpu: 2D only: the gpuaddon has no OneiOSRadeonMetal
-   plug-in (the A56's Metal)`, laid out as `gpu=2d`). `gpu=2d` in the image's `xnuhost.conf` forces 2D at any time;
-   `boot-args-add=oneios-gpu-amd-gl=0` keeps backboardd off GL.
+**What ships.** The release's runtime carries the two A56 bundles beside the Adreno plug-in (`lib/guest/`,
+`runtime.json` `metal_a56`, runtime/package.sh 3c; release.sh builds them, or `--metal-amd-dir out/metal-amd`), and its
+`bin/oneios-tool` has `image a56-gpu-place`. The app (OneOS fork, `oneios` with `99a7b0e`, "oneios-a56-gpu-place")
+places them at Update the kernel.
 
-The lines that prove each stage, in order: section 2 (xnuhost: the row's `gpu=auto`, the self-test's `PASS` lines,
-`gpu: 3D on amdgpu ...; oneios-gpu-amd=1`, `gpu: OpenGL ES: ...`, `gpu: context N xnu:backboardd: amdgpu ...`),
-section 5 (the kernel: `oneios-gpu-amd: the A56 accelerator: ...`, `oneios-gpu-open: ... type 0x4149 -> 0x0`),
-section 3 (iOS's log: `vdrm-darwin: connected: ...`, `oneios-radeonsi: screen "..."`), sections 4 and 4a (`RM I DEV
-screen ...` for Metal clients; `RG I CTX GLES 3 context ...` and `RG I GLI first frame drawn ...` for backboardd), then
-the frame rate in `display: 10 s:` lines against today's.
+**The taps** (the OneOS app, OneiOS page, on the A56 with the iOS 16.5 image it already has):
+1. **Get the runtime** (the new release): stages it, with `lib/guest/OneiOS*.bundle` and the new `bin/oneios-tool`.
+2. **Update the kernel**: builds kernel.kc on the phone from the release kernel the runtime names (for the GL half,
+   `xnu-...-5966e71ce2aa`, pinned since 2026-11-25; an older runtime names `181d8bf2d60a`: the Metal half only), then **Activate**.
+   The activation runs `bin/oneios-tool image a56-gpu-place` on the 20F66 set and moves in `image/kernel.kc.gpuaddon`,
+   the merged `overlay/userland/owner-trust.json` and `manifest.json`, with `image.sha256` and `image.ids` rewritten;
+   the page then says "The A56's GPU addon (Metal and OpenGL ES for iOS 16.5) is in place too: ...". An iOS 27 set
+   never runs this step. Make iOS image (a new 20F66 image) places the same addon before its lists.
+3. **Switch to iOS 16.5**: xnuhost finds the addon, runs its amdgpu self-test, and turns the GPU path on.
+
+**On and off.** On: the addon in the set and `gpu=auto` (the `galaxy-a56` row's default) with the self-test passing;
+OpenGL ES for backboardd also needs the kernel to read `oneios-gpu-amd-gl` (`5966e71ce2aa` on). Off: `gpu=2d` in the
+image's `overlay/userland/xnuhost.conf` (2D, laid out as before); `boot-args-add=oneios-gpu-amd-gl=0` keeps backboardd
+on the CPU while apps keep Metal; Update the kernel's **Restore** puts back the set's previous owner-trust.json and
+addon (none before the first placing). A failed placing leaves the set as it was, the kernel activated, the session 2D.
+
+**The proof, in order** (`a56 gpu: ...` in the update's receipt, then `xnuhost.log` with `oneios-tool log summary`,
+then iOS's log with `phone pull-log`):
+1. the receipt: `a56 gpu: placed: ...`; the finish's `@@RESULT a56-gpu placed kernel.kc.gpuaddon SHA (8819312 bytes), owner-trust.json SHA`;
+2. `host: galaxy-a56 (...); defaults: gpu=auto, ...`, `sidecar .../kernel.kc.gpuaddon: N bytes`;
+3. the self-test: `gpu: self-test: PASS raw: ...` (three lines), `gpu: self-test: PASS renderer: ...` (three lines);
+4. `gpu: 3D on amdgpu (/dev/dri/renderD128): the gpuaddon's OneiOSRadeonMetal plug-in (iPhone10,3 20F66) and the
+   self-test passed; oneios-gpu-amd=1`, then `gpu: OpenGL ES: the gpuaddon's OneiOSRadeonGL (...); oneios-gpu-amd-gl=1:
+   CoreAnimation composites on it` (or, on an older kernel, `gpu: OpenGL ES: the kernel does not read oneios-gpu-amd-gl
+   ...: Metal alone, CPU composition, the CoreImage fixup kept`) and `ios16: CoreImage's GL fallback fixup left out: ...`;
+5. the kernel: `oneios-gpu: DRM capset (...) context type 2 (AMDGPU)...`, `oneios-gpu-amd: the A56 accelerator: AGXAccelerator,
+   MetalPluginName OneiOSRadeonMetal ...`, `oneios-gpu-addon: .../OneiOSRadeonMetal.bundle/Info.plist ...: visible (0)`;
+6. a process's device: `oneios-gpu-open: NAME[N] AGXAccelerator type 0x4149 -> 0x0`, `gpu: context N xnu:NAME: amdgpu ...`,
+   iOS's `vdrm-darwin: connected: ...` and `oneios-radeonsi: screen "..."`;
+7. backboardd: `oneios-gpu-amd: backboardd[N] kept off the Metal plug-in ...; OpenGL ES OneiOSRadeonGL seen`,
+   `RG I CTX GLES 3 context ... on AMD Radeon ...`, `RG I GLI first frame drawn ...`;
+8. the frame rate: `display: 10 s:` lines against the 2D session's.
 
 **Left, exactly:**
-- **Distribution.** Only `oneios-tool phone addon` (a computer with adb) stages the gpuaddon. The runtime package
-  (`runtime/package.sh` `METAL_DIR`, `runtime.json` "metal") and the phone's `serve make-image` carry and place one
-  plug-in, the Adreno one (target `iPhone18,2 24A446`); for an A56 user without a computer they need a second entry for
-  `iPhone10,3 20F66` (the two A56 bundles, or their gpuaddon) and make-image writing `kernel.kc.gpuaddon` for a 20F66
-  image. Not started.
-- **The kernel upload** of `5966e71ce2aa` and its pin (one command each, [releases.md](releases.md)).
+- **The release: done.** v0.1.26 (2026-11-25, [releases.md](releases.md)) carries the kernel `5966e71ce2aa` and the
+  two A56 bundles (`runtime.json` `metal_a56`); app 0.5.90. Checked after it: the assets, every runtime file, the kernel.
 - **A boot.** Unknowns only a boot shows: whether the Xclipse reads the guest's cached pages coherently (section 2),
   whether radeonsi's screen opens over the Darwin vdrm (section 3), whether CoreAnimation's GL shaders compile on
   Mesa and the per-frame IOSurface copies (4.5 MB written back per 720x1560 frame) beat CPU composition (4a), the
-  sandbox's verdicts on 20F66 (section 5).
+  sandbox's verdicts on 20F66 (section 5). The app's root script ran under bash and busybox ash in its tests, not
+  under the phone's mksh.
 - **Not ported:** an in-place IOSurface import (the vdrm's `CREATE_BLOB_USER` exists, no winsys calls it), the shader
   cache, timeline syncobjs, Jesvi-iOS's other CoreAnimation fixes (home indicator, colour matrices, blurs), Metal heaps,
   fences, indirect command buffers and the rest of section 4's list; RADV on the same Darwin vdrm (section 3: three
   small patches and the Vulkan runtime for Darwin, a guess) for NativeMetal/metal2vulkan later.
+
+**The app's step (OneOS `oneios-a56-gpu-place` 99a7b0e, host-tested, not booted).** On an iOS 16.5 (20F66) set,
+Update the kernel → Activate runs, after the kernel is activated, the staged runtime's `bin/oneios-tool image
+a56-gpu-place --stage STAGE --out make-kernel/out/a56gpu` (its SHA-256 checked against runtime.sha256 first). On
+`@@A56GPU placed: ...` root checks the three files against the line (`NGPUADD2`, at most 64 MiB, the manifest naming
+the new kernel.kc and owner-trust.json), then moves `image/kernel.kc.gpuaddon`, `image/overlay/userland/owner-trust.json`
+and `image/manifest.json` in and rewrites `image.sha256` and `image.ids`. `none`, an older runtime's tool, `error` or a
+failure leave the set as it was (an addon staged by `phone addon` stays), with the kernel activated and the session
+2D. The finish prints `@@RESULT a56-gpu placed|none|skipped ...`, the receipt gets `a56 gpu: ...`, and the activation
+message says what happened. `kernel.prev/` keeps the old owner-trust.json and addon (`gpu.kept`), and Restore puts them
+back; since the same commit Restore also sets `image.ids` again for every file it moves back (before it, a restored set
+failed the switch's preflight with "kernel.kc changed since it was staged", on the S24 Ultra too). The real tool's line
+was checked against the script's parse on the build laptop (the integrated bundles, a stage of the 20F66 set's
+manifest and owner-trust: the parse, the sums and the file set agree; `gpuctl addon` accepts the addon).
+
+## State at the hand-off of 2026-11-25
+
+**In main** (pushed): stages 1-5 of this file: references, the host renderer (`gpu3d_amdgpu`, `gpuctl amdgpu`,
+`gpuctl addon`, `early_2d`), guest Mesa radeonsi for Darwin, the AIR Metal layer, OpenGL ES (OneiOSRadeonGL), the
+kernel accelerator (0108 and the GL key), the integrated bundle build. `runtime/host-tests.sh` passed on main.
+
+**On branch `a56-gpu-ship`** (in main as `ae30bc2`..`20f92c2`, linear: the merge commit was flattened by the push's rebase):
+`21f9293` the release carries the A56 bundles (package.sh 3c, `ios bundle-record`, runtime.json `metal_a56`,
+release.sh `--metal-amd-dir`/`--no-metal-amd`) and `image a56-gpu-place` (also in Make iOS image); `228678f` OpenGL ES
+only on a kernel that reads `oneios-gpu-amd-gl` (keeps SpringBoard's CoreImage fixup on 181d8bf2d60a); `c055978` the
+placed line matches the app's parse, section 6's user steps; the hand-off commit: this note and the `app` pin moved to
+the fork's `oneios` `99a7b0e` (already pushed there, a fast-forward of 976b1fc: Update the kernel places the addon).
+Tests run on the branch: `runtime/package/test.sh` 31/31, `cargo test` of oneios-ios, oneios-package, oneios-imagebuild
+(a56gpu 5), oneios-serve; xnuhost 133 with fmt and clippy (host, android); the app's `./gradlew test` 742, 0 failures
+(the helper's run, on 99a7b0e). The end-to-end check (out/a56-e2e: a package of the real bundles, `image a56-gpu-place`
+on the 20F66 set's manifest and owner-trust, the app's parse, `gpuctl addon`) passed.
+
+**Done since (2026-11-25, the build laptop):**
+1. Merged (`ae30bc2`..`20f92c2` on main; the tree of the `--no-ff` merge `98e4a3b`, flattened by the push's rebase); `METAL_AMD=1 runtime/host-tests.sh` on that tree: workspace,
+   lint, lint-android, port, metal-amd, metal-amd-air, metal-amd-gl, links, package (31/31) pass, boot skipped
+   (no qemu), exit 0 (`out/a56ship-hosttests.log`). Pushed; the worktree and branch `a56-gpu-ship` removed.
+2. The kernel: `kernel/publish.sh --hosted a56gl-rel --upload` in `out/a56gl-relwt`; downloaded back, SHA-256
+   `e64762251fb8c00a291b6295a4c13d18ee3ae817590482dc1e996350fc365a18`; `kernel/release-kernel.txt` pins
+   `kernel-xnu-12377.121.6-ios-27.0.1-24A446-5966e71ce2aa` ([releases.md](releases.md)).
+
+**Next, in order:**
+1. Done: v0.1.26, `scripts/release/release.sh 0.1.26 --metal-amd-dir out/metal-amd` (exit 0, 2026-11-25; [releases.md](releases.md)).
+2. A boot on an A56 (section 6's taps and proof lines).
+3. Not done by owner's choice of this session: the licence rule change relayed on 2026-11-25 (code from repos with no
+   stated licence) was refused by the permission check; the owner sets it in docs/references.md section 5 directly.
+
+No tmux job of this work is running (the `hold` session keeps the server alive). Logs: `out/a56-gpu-helpers/`.

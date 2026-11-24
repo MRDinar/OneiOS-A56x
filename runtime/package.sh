@@ -15,8 +15,10 @@
 #                          iOS build's in kernel/<build>/ (KERNEL_MORE_DIRS, step 3a: iOS 27.2.1's 24B156)
 #   lib/guest/             the iOS plug-ins, when METAL_DIR (and CAMERA_DIR) are given: NativeAdrenoMetal.bundle with its
 #                          build record, camera/H9ISP.mediacapture, and NOTICE (their sources' licences and pins); the
-#                          phone's Make iOS image seeds them into the image (step 3b); another iOS build's in
-#                          lib/guest/<build>/ (METAL_MORE_DIRS, step 3c)
+#                          phone's Make iOS image seeds them into the image (step 3b); with METAL_AMD_DIR also the
+#                          Galaxy A56's OneiOSRadeonMetal.bundle and OneiOSRadeonGL.bundle with their records (runtime.json
+#                          "metal_a56"; the phone makes an iOS 16.5 image's kernel.kc.gpuaddon of them: step 3c); another iOS
+#                          build's plug-ins in lib/guest/<build>/ (METAL_MORE_DIRS, step 3d)
 #   NOTICE, LICENSE        licences; the APSL notice when a kernel is inside
 # Nothing of Apple's goes in: `oneios-tool package` (tools/oneios-tool/crates/oneios-package) refuses firmware names
 # and containers, and any Mach-O that is not our own source-built XNU or, under lib/guest/, our own ad hoc signed iOS
@@ -32,7 +34,8 @@
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release; a relative one is taken from the current folder), SOURCE_DATE_EPOCH (default: the commit time),
-#      KERNEL_MORE_DIRS (step 3a), METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/), METAL_MORE_DIRS (step 3c),
+#      KERNEL_MORE_DIRS (step 3a), METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/), METAL_AMD_DIR,
+#      REQUIRE_METAL_AMD (3c), METAL_MORE_DIRS (step 3d),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -243,7 +246,7 @@ if [ -n "${CAMERA_DIR:-}" ]; then
   cp "$CAMERA_DIR/H9ISP.mediacapture" "$GUEST/camera/"
   echo "package: capture plug-in from $CAMERA_DIR"
 fi
-# 3c. Other iOS builds of the same device (METAL_MORE_DIRS: folders, space-separated, each userland/metal/build.sh's
+# 3d. Other iOS builds of the same device (METAL_MORE_DIRS: folders, space-separated, each userland/metal/build.sh's
 # output for another target, ONEIOS_METAL_TARGET="iPhone18,2 24B156", with camera/H9ISP.mediacapture in it when the
 # capture plug-in goes too): each as lib/guest/<build>/, the build its bundle's oneios-target names, beside the default's
 # (METAL_DIR). Its record must name the same sources as the default's (lib/guest/NOTICE lists those). runtime.json lists
@@ -272,6 +275,67 @@ for d in ${METAL_MORE_DIRS:-}; do
     echo "package: capture plug-in for $target from $d/camera"
   fi
 done
+
+# 3c. The Galaxy A56's GPU plug-ins for iOS 16.5, when given: METAL_AMD_DIR (userland/metal-amd's output folder,
+# out/metal-amd: OneiOSRadeonMetal.bundle from `air/build.sh plugin`, gl/OneiOSRadeonGL.bundle from the GL hook of
+# `build.sh all`; docs/a56-gpu.md 6). Beside the Adreno plug-in, never instead of it: lib/guest/OneiOSRadeonMetal.bundle
+# and lib/guest/OneiOSRadeonGL.bundle, each with its build record (`oneios-tool ios bundle-record`: the CDHash of each
+# Mach-O, the target, the source pins), which `package manifest` checks as it checks the Adreno bundle (our own ad hoc
+# signed iOS code only) and names in runtime.json "metal_a56". The phone builds an iOS 16.5 image's kernel.kc.gpuaddon
+# of them at Update the kernel and Make iOS image (`oneios-tool image a56-gpu-place`); an iOS 27 image never takes them.
+# REQUIRE_METAL_AMD=1: no METAL_AMD_DIR is an error.
+IOSPLUS10_PIN=146e889430bab755329dde7104cc0fa002f44bfb   # akshaynexus/iOSPlus10 origin/main: NegroniGL (userland/metal-amd/gl/NOTICE)
+if [ -n "${METAL_AMD_DIR:-}" ]; then
+  AB=$METAL_AMD_DIR/OneiOSRadeonMetal.bundle GB=$METAL_AMD_DIR/gl/OneiOSRadeonGL.bundle
+  [ -f "$AB/OneiOSRadeonMetal" ] && [ -f "$AB/libOneiOSRadeonAir.dylib" ] && [ -f "$AB/oneios-target" ] ||
+    { echo "package: METAL_AMD_DIR=$METAL_AMD_DIR holds no whole OneiOSRadeonMetal.bundle (userland/metal-amd/air/build.sh plugin)" >&2; exit 1; }
+  [ -f "$GB/OneiOSRadeonGL" ] && [ -f "$GB/oneios-target" ] ||
+    { echo "package: METAL_AMD_DIR=$METAL_AMD_DIR holds no whole gl/OneiOSRadeonGL.bundle (userland/metal-amd/build.sh all)" >&2; exit 1; }
+  A56_TARGET=$(cat "$AB/oneios-target")
+  [ "$(cat "$GB/oneios-target")" = "$A56_TARGET" ] ||
+    { echo "package: OneiOSRadeonGL.bundle is for $(cat "$GB/oneios-target"), OneiOSRadeonMetal.bundle for $A56_TARGET" >&2; exit 1; }
+  mkdir -p "$GUEST"
+  cp -R "$AB" "$GB" "$GUEST/"
+  "$ONEIOS_TOOL" ios bundle-record "$ROOT" "$GUEST/OneiOSRadeonMetal.bundle" "$GUEST/OneiOSRadeonMetal.build.json" "$A56_TARGET" \
+    mesa-droidvm Jesvi-iOS
+  "$ONEIOS_TOOL" ios bundle-record "$ROOT" "$GUEST/OneiOSRadeonGL.bundle" "$GUEST/OneiOSRadeonGL.build.json" "$A56_TARGET" \
+    mesa-droidvm "iOSPlus10=$IOSPLUS10_PIN"
+  echo "package: the A56's GPU plug-ins (Metal, OpenGL ES) for $A56_TARGET from $METAL_AMD_DIR"
+  LIBDRM=$METAL_AMD_DIR/libdrm-2.4.133/amdgpu/amdgpu_bo.c
+  [ -f "$LIBDRM" ] || { echo "package: no $LIBDRM: libdrm's notice comes from the A56 Mesa build (userland/metal-amd/build.sh)" >&2; exit 1; }
+  {
+    [ ! -s "$GUEST/NOTICE" ] || echo
+    echo "lib/guest/OneiOSRadeonMetal.bundle and lib/guest/OneiOSRadeonGL.bundle: the Galaxy A56's GPU plug-ins for iOS 16.5"
+    echo "($A56_TARGET), run by the guest (iOS), never on Android, built from these sources (their .build.json \"sources\";"
+    echo "this repository's userland/metal-amd/ has the patches and the ported code, at the commit runtime.json names),"
+    echo "linked against stubs of the SDK, with no Apple code in them:"
+    echo
+    for name in mesa-droidvm Jesvi-iOS; do
+      ref=$(awk -v n="$name" '$1 == n && $2 ~ /^https:/ { print $2, $3; exit }' "$ROOT/scripts/setup/get-references.sh")
+      echo "  $name ${ref%% *} ${ref#* }"
+    done
+    echo "  iOSPlus10 https://github.com/akshaynexus/iOSPlus10.git $IOSPLUS10_PIN (NegroniGL, userland/negronigl)"
+    echo "  libdrm https://dri.freedesktop.org/libdrm/libdrm-2.4.133.tar.xz (2.4.133, Mesa's subprojects/libdrm.wrap)"
+    echo
+    echo "Mesa (radeonsi, ACO, the amdgpu virtio context, Gallium) is MIT and the licences of its LICENSING.md; Jesvi-iOS's"
+    echo "AIR frontend and Metal device (outside its xnu/) MIT; iOSPlus10's NegroniGL MIT; libdrm MIT. The corresponding"
+    echo "source is at the URLs and commits above. Their licence texts follow."
+    for f in mesa-droidvm/LICENSING.md mesa-droidvm/licenses Jesvi-iOS/LICENSE Jesvi-iOS/NOTICE; do
+      p=$ROOT/external/$f
+      [ -e "$p" ] || { echo "package: no $p: the A56 plug-ins' licence texts come from external/ (scripts/setup/get-references.sh)" >&2; exit 1; }
+      while IFS= read -r q; do
+        printf '\n==== %s\n\n' "${q#"$ROOT"/external/}"; cat "$q"
+      done < <(find "$p" -type f | LC_ALL=C sort)
+    done
+    for q in "$ROOT/userland/metal-amd/NOTICE" "$ROOT/userland/metal-amd/gl/NOTICE"; do
+      printf '\n==== %s\n\n' "${q#"$ROOT"/}"; cat "$q"
+    done
+    printf '\n==== libdrm 2.4.133 (amdgpu/amdgpu_bo.c, its notice)\n\n'
+    sed -n '1,/\*\//p' "$LIBDRM"
+  } >> "$GUEST/NOTICE"
+elif [ "${REQUIRE_METAL_AMD:-0}" = 1 ]; then
+  echo "package: REQUIRE_METAL_AMD=1 and no METAL_AMD_DIR (userland/metal-amd's output folder)" >&2; exit 1
+fi
 
 # 4. Notices.
 {
