@@ -324,6 +324,7 @@ checks still run there.
 | `lint` | `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | `boot` | only with `QEMU=1` (skipped by default since 2026-11-24: the phone is the test, CLAUDE.md): `runtime/xnuhost/check-arm64.sh smoke check` (when the NDK is there): the vCPU machinery alone, then the static Android xnuhost booting the Rust test kernel three times, under qemu-aarch64 on an x86_64 PC, as it is on an arm64 host |
 | `port` | `sh scripts/port/test-verify-host.sh` (the read-only phone preflight against stand-in phones) |
+| `metal-amd` | only with `METAL_AMD=1`, on Linux (a Mesa build of several minutes): `userland/metal-amd/host-test.sh`, the A56's guest Mesa (section 9, "The A56's guest Mesa"). It is not a `tests/host.sh`, so CI does not run it |
 | `links` | `runtime/package/elf-check-test.sh`, the link rule and the check of the next section (needs the NDK) |
 | `package` | `runtime/package/test.sh` (needs the NDK) |
 
@@ -1245,6 +1246,40 @@ or targets another build, so a successful image build cannot silently omit Metal
 for a deliberate CPU-only fallback, set `ONEIOS_ALLOW_NO_METAL=1` on the image build, which explicitly skips bundle
 placement. What the build does, what was changed for the iPhone's shared cache and what is verified:
 [gpu.md](gpu.md) section 7.
+
+### The A56's guest Mesa (radeonsi over the amdgpu virtio context, iOS 16.5)
+
+```sh
+scripts/setup/get-references.sh mesa-droidvm  # Mesa cecc0e9 (and the 20F66 stubs in out/ios16-tbd: the table above)
+scripts/bg.sh metal-amd userland/metal-amd/build.sh          # mesa, then probe (about 8 minutes the first time, 20 cores)
+userland/metal-amd/build.sh mesa                             # Mesa set up and liboneios_radeonsi.dylib (+ the Metal layer's hook)
+userland/metal-amd/build.sh probe                            # oneios-amdgpu-probe
+# -> out/metal-amd/ios/liboneios_radeonsi.dylib, oneios-amdgpu-probe, oneios-radeonsi.build.txt, *.cdhash, *.check.txt
+userland/metal-amd/host-test.sh                              # Linux: patches, the Linux build, the Darwin vdrm test (about 6 minutes)
+METAL_AMD=1 runtime/host-tests.sh                            # the same as the suite's metal-amd part
+```
+
+`build.sh` clones `external/mesa-droidvm` into `out/metal-amd/mesa` at cecc0e9 (never changing the reference), applies
+`userland/metal-amd/patches/mesa/*.patch` in name order (0001-4999: this build; `5xxx-air-*`: the Metal layer's) and
+clones again when the patch set changes. Darwin has no DRM: libdrm 2.4.133, the release Mesa's
+`subprojects/libdrm.wrap` pins, is fetched once into `out/metal-amd/dl` (sha256 checked against the wrap; `curl`) and
+unpacked into `out/metal-amd/libdrm-2.4.133` for its headers and amdgpu library. The meson cross file
+(`out/metal-amd/ios.cross`) names `scripts/ios/ios-clang` with `IOS_TBD=out/ios16-tbd IOS_MIN=16.5
+IOS_TARGET=arm64-apple-ios16.5` (the script's defaults) and `-D_DARWIN_C_SOURCE`; the build directory
+(`out/metal-amd/build-ios`) is set up again when the SDK, target, stubs or compiler change. Options: release,
+`-Dgallium-drivers=radeonsi -Damdgpu-virtio=true -Dllvm=disabled -Damd-use-llvm=false -Doneios-radeonsi-screen=true
+-Doneios-libdrm-dir=...`, every GL, EGL, GBM and Vulkan part off. Both binaries are signed by `oneios-tool ios sign`
+and checked by `oneios-tool ios macho-check --arch arm64 --tbd out/ios16-tbd` (arm64: the default `--arch arm64e` is
+iOS 27's). After `mesa`, `userland/metal-amd/air/build.sh MESA_SOURCE BUILD_DIR` runs when it exists. Needs: the
+toolchain of this section, meson, ninja, bison, flex, `llvm-ar`, python3 with mako and PyYAML (Mesa's build). Disk:
+about 0.7 GB for the iOS build, 1 GB more for the host test (`out/metal-amd/host`). `METAL_AMD_OUT=DIR` puts all of it
+elsewhere.
+
+Built on the build laptop on 2026-11-24 (SDK 26.5, ld64-956.6, clang 23.1.5): `liboneios_radeonsi.dylib` 17,368,448
+bytes (CDHash `d2135636...`), `oneios-amdgpu-probe` 17,405,216 bytes (`1dff01f2...`), both `macho-check` PASS (205 and 206
+imports bound); `host-test.sh`:
+patches, linux and vdrm (51 of 51 checks) pass. Not run in iOS; nothing places them in an image yet
+([a56-gpu.md](a56-gpu.md) section 3).
 
 ## 10. Rust tools (`oneios-tool`)
 

@@ -22,6 +22,9 @@
 #             an x86_64 PC, as it is on an arm64 host (the container on a Mac: check only, with the Mac's binaries)
 #   port      scripts/port/test-verify-host.sh: the read-only phone preflight against stand-in phones (S24 Ultra, S25
 #             Ultra, S25, S26 Ultra, A56, and refusals)
+#   metal-amd only with METAL_AMD=1, on Linux: userland/metal-amd/host-test.sh (the A56's guest Mesa: its patches apply
+#             to Mesa cecc0e9, Mesa builds for Linux with radeonsi and the amdgpu virtio context, and the Darwin vdrm
+#             backend against a fake of the kernel's user client)
 #   links     runtime/package/elf-check-test.sh, when the NDK is there (on a Mac: on the Mac, after the container): the
 #             link rule of Android shared objects (-z defs) and runtime/package/elf-check.sh, on a library linked without
 #             it (must fail) and on a stage of runtime/build.sh
@@ -98,6 +101,12 @@ suite() {
     part boot runtime/xnuhost/check-arm64.sh smoke check
   else results+=("boot: skipped (no NDK here: the static xnuhost and the test kernel need it)"); fi
   part port sh scripts/port/test-verify-host.sh
+  # METAL_AMD=1: the A56's guest Mesa (a Mesa build of several minutes, so not by default; Linux only).
+  if [ "${METAL_AMD:-0}" != 1 ]; then
+    results+=("metal-amd: skipped (runs only with METAL_AMD=1: userland/metal-amd/host-test.sh)")
+  elif [ "$(uname -s)" = Linux ]; then
+    part metal-amd sh userland/metal-amd/host-test.sh
+  else results+=("metal-amd: skipped (Linux only: it builds Mesa for Linux)"); fi
   if ndk_ok; then
     part links runtime/package/elf-check-test.sh
     part package runtime/package/test.sh
