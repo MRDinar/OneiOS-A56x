@@ -52,6 +52,7 @@ line and test case was kept ([runtime/RUST.md](../runtime/RUST.md)); the Rust GP
 | `drm2kgsl/glue/oneios_sys.c`, `.h` | Host builds only: every `open` and `ioctl` of the renderer through a table the tests set (the stand-in KGSL), instead of the C tests' `-Wl,--wrap` |
 | `drm2kgsl/glue/oneios_kgsl_layout.c` | Host builds only: the sizes and offsets of drm2kgsl's `msm_kgsl.h` that the tests' stand-in KGSL mirrors in Rust (`src/gpu3d_kgsl/tests/kgsl.rs`), checked by `layout_matches_msm_kgsl_h` |
 | `drm2kgsl/host_c11.h` | Only for the host build of those sources (mesa's C11 threads shim beside a new glibc) |
+| `src/gpu3d_amdgpu.rs`, `src/gpu3d_amdgpu/` | The Galaxy A56's renderer: the amdgpu native context (Mesa's protocol) on an amdgpu render node by raw ioctls, its self-test, and the choice between it, KGSL's and 2D (a host with `/dev/kgsl-3d0` keeps this path unchanged): [a56-gpu.md](a56-gpu.md) 2 |
 | `tools/gpuctl.rs` | The renderer alone, for the phone (section 4); the bin `gpuctl` |
 
 **drm2kgsl is linked in, statically. There is no helper process.** `runtime/xnuhost/drm2kgsl/build.rs` compiles
@@ -787,7 +788,9 @@ adb shell su -c '/data/local/tmp/gpuctl routes'                                 
 adb shell su -c '/data/local/tmp/gpuctl submit -v'                                # with drm2kgsl's own log lines
 ```
 
-The fork's Hardware checks screen runs it with no argument. The steps:
+The fork's Hardware checks screen runs it with no argument. On the Galaxy A56 (no KGSL) `gpuctl amdgpu [NODE] [-v]`
+runs the amdgpu renderer's self-test instead (not part of the run of all): the steps and lines of
+[a56-gpu.md](a56-gpu.md) section 2, last line `ok` or `FAILED at: ...`. The steps:
 
 - `gpuctl nodes` opens the three device nodes, prints udmabuf's limits and the limits xnuhost splits by.
 - `gpuctl routes` asks KGSL directly, by raw ioctls and without drm2kgsl, in processes of its own. First each way

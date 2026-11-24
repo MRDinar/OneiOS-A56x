@@ -13,6 +13,11 @@
 //!                     (two udmabufs, by size) and 1100 separate pages (two, by count); commands at the end of each are
 //!                     run by the GPU, so the last udmabuf is bound where it belongs
 //!   gpuctl            all of them, in this order; `routes` only reports there (its failures are not the run's)
+//!   gpuctl amdgpu [NODE]  the Galaxy A56's path (an amdgpu render node, default /dev/dri/renderD128; not in the run of
+//!                     all): xnuhost's start-time self-test (gpu3d_amdgpu/selftest.rs), the fork's raw steps (a udmabuf
+//!                     imported, mapped, a GFX NOP IB run, its fence waited for), then the same through the amdgpu
+//!                     renderer's own calls (capset, context, shmem, GEM_NEW and a blob of 3 udmabufs, BO_VA_OP,
+//!                     CS_SUBMIT, the virtio fence retired); "gpu: self-test: PASS ..." lines, then "ok" or the FAIL line
 //! It stands where virtio_gpu.rs stands in xnuhost: the same renderer (gpu3d_kgsl.rs), a memfd of its own as the guest's
 //! RAM. Each step prints what it found; the last line is "ok" or the step that failed and why. Nothing is left behind:
 //! the KGSL contexts and the memory go with the process.
@@ -897,6 +902,31 @@ fn large(g: &mut Gpu) -> Result<(), Failed> {
     Ok(())
 }
 
+/// `gpuctl amdgpu [NODE] [-v]`: the amdgpu self-test xnuhost runs at the start; the exit status.
+fn amdgpu(args: &[String]) -> i32 {
+    use xnuhost::gpu3d_amdgpu as amd;
+    VERBOSE.store(args.iter().any(|a| a == "-v"), Ordering::Relaxed);
+    let node = args.iter().find(|a| *a != "-v").map_or(amd::DEFAULT_NODE, String::as_str);
+    let sys: Arc<dyn amd::Dev> = Arc::new(amd::System);
+    match amd::node_check(&*sys, node) {
+        Ok(driver) => println!("{node}: {driver}"),
+        Err(why) => {
+            println!("FAILED at: the render node: {why}");
+            return 1;
+        }
+    }
+    match amd::selftest::run(sys, node, log_line) {
+        Ok(()) => {
+            println!("ok");
+            0
+        }
+        Err(line) => {
+            println!("FAILED at: {line}");
+            1
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut what = args.get(1).map_or("all", String::as_str);
@@ -905,9 +935,12 @@ fn main() {
         VERBOSE.store(true, Ordering::Relaxed);
         what = "all";
     }
+    if what == "amdgpu" {
+        std::process::exit(amdgpu(&args[2..]));
+    }
     let all = what == "all";
     if !all && !["nodes", "routes", "probe", "submit", "large"].contains(&what) {
-        eprintln!("usage: gpuctl [nodes|routes|probe|submit|large] [-v]");
+        eprintln!("usage: gpuctl [nodes|routes|probe|submit|large] [-v]\n       gpuctl amdgpu [NODE] [-v]");
         std::process::exit(2);
     }
     if all || what == "nodes" {

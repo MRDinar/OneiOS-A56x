@@ -15,7 +15,9 @@ use crate::blk::Blk;
 use crate::config::{self, Config, Encoder, Gpu, Pen};
 use crate::imageset::{DiskIdentity, ImageSet, Verify};
 use crate::ramfix::{self, Huge};
-use crate::{cpu, display, gic, gpu3d, hostcalls, input, input_script, mem, pen, sysreg, task, uart, virtio_blk};
+use crate::{
+    cpu, display, gic, gpu3d, gpu3d_amdgpu, hostcalls, input, input_script, mem, pen, sysreg, task, uart, virtio_blk,
+};
 use crate::{virtio_gpu, virtio_input};
 
 /// The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
@@ -439,8 +441,11 @@ impl Session {
             logi!("pen: pen=off: the input script's pen lines are left out");
         }
         // The GPU: the 2D scanout always; with it the 3D half on the phone's Adreno (drm2kgsl on KGSL), when the host
-        // has it.
+        // has it, or on an amdgpu host without KGSL (the Galaxy A56's Xclipse) the amdgpu renderer when the kernel's
+        // gpuaddon carries the A56's Metal plug-in and the renderer's self-test passes (gpu3d_amdgpu::choose,
+        // docs/a56-gpu.md 2); then the guest is told with oneios-gpu-amd=1 (K5).
         let mut gpu = None;
+        let mut addon_read: Option<Option<Vec<u8>>> = None;
         if pool_bytes != 0 {
             // The GPU's level and priorities (gpu3d_kgsl, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
             std::env::set_var("ONEIOS_GPU_LEVEL", config.gpu_level.as_str());
@@ -449,14 +454,76 @@ impl Session {
             }
             let m = mem::state();
             let pool = mem::ram(phys + window, pool_bytes).map_or(std::ptr::null_mut(), |p| p.as_ptr());
-            // the memfd from its offset 0 (mem.rs)
-            match gpu3d::kgsl_open(m.fd, m.fd_phys, m.head + m.size, pool, phys + window, pool_bytes, gpu_log) {
-                Ok(g) => gpu = Some(g),
-                Err(why) if config.gpu == Gpu::ThreeD => {
+            let node = if config.gpu_node.is_empty() { gpu3d_amdgpu::DEFAULT_NODE } else { config.gpu_node.as_str() };
+            let kgsl = std::path::Path::new("/dev/kgsl-3d0").exists();
+            let sys: std::sync::Arc<dyn gpu3d_amdgpu::Dev> = std::sync::Arc::new(gpu3d_amdgpu::System);
+            let build = self.image_set.as_ref().map(|s| s.build.clone());
+            let kernel = config.kernel.clone();
+            let choice = gpu3d_amdgpu::choose(
+                config.gpu == Gpu::ThreeD,
+                kgsl,
+                if kgsl { Err(String::new()) } else { gpu3d_amdgpu::node_check(&*sys, node) },
+                || {
+                    let addon = sidecar(&kernel, "gpuaddon", 64 << 20);
+                    let found = gpu3d_amdgpu::plugin_in_addon(addon.as_deref(), build.as_deref());
+                    addon_read = Some(addon);
+                    found
+                },
+                || gpu3d_amdgpu::selftest::run(sys.clone(), node, gpu_log),
+            );
+            let fail = |why: String| {
+                if config.gpu == Gpu::ThreeD {
                     loge!("gpu: no 3D: {}", why);
                     return Err(BootFailed);
                 }
-                Err(why) => logi!("gpu: 2D only: {}", why),
+                logi!("gpu: 2D only: {}", why);
+                Ok(())
+            };
+            match choice {
+                // the memfd from its offset 0 (mem.rs)
+                gpu3d_amdgpu::Choice::Kgsl => {
+                    match gpu3d::kgsl_open(m.fd, m.fd_phys, m.head + m.size, pool, phys + window, pool_bytes, gpu_log) {
+                        Ok(g) => gpu = Some(g),
+                        Err(why) if config.gpu == Gpu::ThreeD => {
+                            loge!("gpu: no 3D: {}", why);
+                            return Err(BootFailed);
+                        }
+                        Err(why) => logi!("gpu: 2D only: {}", why),
+                    }
+                }
+                gpu3d_amdgpu::Choice::Amdgpu(target) => {
+                    let opened = gpu3d::amdgpu_open(
+                        node,
+                        m.fd,
+                        m.fd_phys,
+                        m.head + m.size,
+                        pool,
+                        phys + window,
+                        pool_bytes,
+                        gpu_log,
+                    );
+                    match opened {
+                        Err(why) => fail(why)?,
+                        Ok(_) if add_boot_arg(&mut config.boot_args, "oneios-gpu-amd=1").is_err() => {
+                            fail("no room in the boot arguments for oneios-gpu-amd=1".into())?
+                        }
+                        Ok(g) => {
+                            logi!(
+                                "gpu: 3D on amdgpu ({}): the gpuaddon's {} plug-in ({}) and the self-test passed; {}",
+                                node,
+                                gpu3d_amdgpu::PLUGIN,
+                                target,
+                                if config.boot_args.split(' ').any(|w| w == "oneios-gpu-amd=1") {
+                                    "oneios-gpu-amd=1"
+                                } else {
+                                    "the command line's oneios-gpu-amd= is kept"
+                                }
+                            );
+                            gpu = Some(g);
+                        }
+                    }
+                }
+                gpu3d_amdgpu::Choice::TwoD(why) | gpu3d_amdgpu::Choice::Refuse(why) => fail(why)?,
             }
         }
         let have_3d = gpu.is_some();
@@ -571,7 +638,11 @@ impl Session {
         }
         let ramdisk = sidecar(&config.kernel, "ramdisk", 1 << 30);
         let mut trust = sidecar(&config.kernel, "trustcache", 16 << 20);
-        let addon = sidecar(&config.kernel, "gpuaddon", 64 << 20);
+        // read once: the GPU's choice may have read it already (an amdgpu host)
+        let addon = match addon_read.take() {
+            Some(addon) => addon,
+            None => sidecar(&config.kernel, "gpuaddon", 64 << 20),
+        };
         let policies = sidecar(&config.kernel, "vroot", 128 << 20);
         // Apple's trust caches of the set (IM4P) and the owner module, as the sidecar the kernel takes, unless one is
         // shipped.

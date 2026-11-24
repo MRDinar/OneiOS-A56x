@@ -169,9 +169,11 @@ static TABLE: [HostDevice; 5] = [
         takeover: true,
     },
     // docs/a56.md, profiles/ios-*-a56.toml, docs/a56-oneos-fork.md. [F] SM-A566E, a56x, s5e8855 (the fork's gate:
-    // ro.soc.model); platform s5e8855 [I]. gpu=2d [F]: no KGSL (Xclipse 540 on amdgpu, /dev/dri/renderD128) and xnuhost's
-    // 3D half is drm2kgsl only, so gpu=auto would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the
-    // fork's A56 session passes --gpu 2d. panel-fallback=1080x2340@120 [F] (the fork's docs/a56-guide.md), as for the
+    // ro.soc.model); platform s5e8855 [I]. gpu=auto (2026-11-24, docs/a56-gpu.md 2; gpu=2d before): no KGSL (Xclipse 540
+    // on amdgpu, /dev/dri/renderD128), so xnuhost takes its amdgpu renderer (gpu3d_amdgpu.rs) only when the kernel's
+    // gpuaddon carries the A56's Metal plug-in (OneiOSRadeonMetal) and the renderer's self-test passes at the start;
+    // otherwise the session is 2D as before, with a "gpu: 2D only: ..." line saying which (its 8 MiB GPU pool then
+    // unused). gpu=2d in the image's xnuhost.conf or on the command line keeps it 2D. panel-fallback=1080x2340@120 [F] (the fork's docs/a56-guide.md), as for the
     // S25. Touch, battery and thermal node names on the A56 are [U]: samsung stays.
     // 2026-11-24 (port/a56-full, the fork Musicalista/OneiOS-A56 to c83b9ca): the guest frame 720x1560 @2x at 60 Hz [F]
     // (c83b9ca, e8747cc: the same 360x780 points as 1080x2340 @3x, 2.25x fewer pixels for its CPU compositor; the display
@@ -187,7 +189,7 @@ static TABLE: [HostDevice; 5] = [
         socs: &["s5e8855"],
         platforms: &["s5e8855"],
         config: &[
-            "gpu=2d",
+            "gpu=auto",
             "panel-fallback=1080x2340@120",
             "width=720",
             "height=1560",

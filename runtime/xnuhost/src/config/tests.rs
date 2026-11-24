@@ -1197,11 +1197,19 @@ fn host_device() {
     assert!(c.host == find("galaxy-s26-ultra") && c.host_line.contains("matched by ro.product.model=SM-S948B"));
     assert!(c.host_line.contains("; defaults: ONEIOS_BRIGHT_MAX=2300"));
     assert_eq!(host_clear(c), off);
-    // The A56: gpu=2d, under the command line and the image set.
+    // The A56: gpu=auto (its amdgpu renderer when the gpuaddon has the plug-in and the self-test passes, else 2D;
+    // gpu=2d before 2026-11-24), under the command line and the image set.
     let props = host_props(&dir, "a56", "SM-A566E", "s5e8855");
     let c = rig.finish(Some(&props), None, None).unwrap();
-    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::TwoD);
-    assert!(c.host_line.contains("; defaults: gpu=2d") && !c.host_line.contains("not taken"));
+    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::Auto);
+    assert!(c.host_line.contains("; defaults: gpu=auto") && !c.host_line.contains("not taken"));
+    // gpu-node=: the amdgpu render node, "" (renderD128) unless the image set or the command line names one
+    assert!(c.gpu_node.is_empty());
+    write(format!("{image}/xnuhost.conf"), "gpu-node=/dev/dri/renderD129\n");
+    assert_eq!(rig.finish(Some(&props), None, None).unwrap().gpu_node, "/dev/dri/renderD129");
+    assert_eq!(rig.finish(Some(&props), None, Some("gpu-node=/x")).unwrap().gpu_node, "/x");
+    fs::remove_file(format!("{image}/xnuhost.conf")).unwrap();
+    let c = rig.finish(Some(&props), None, None).unwrap();
     // and (2026-11-24, the fork's c83b9ca and e8747cc) the guest frame 720x1560 @2x at 60 Hz, the 4 s graceful return
     // (kernel 0106), haptics on the vibrator HAL with the evdev search behind it
     assert!(c.width == 720 && c.height == 1560 && c.scale == 2 && c.hz == 60 && c.return_graceful_ms == 4000);
@@ -1229,9 +1237,9 @@ fn host_device() {
     assert!(c.width == 720 && c.scale == 3 && c.host_line.contains("scale=2 not taken"));
     let c = rig.finish(Some(&props), None, Some("height=2340")).unwrap();
     assert!(c.width == 0 && c.height == 2340 && c.scale == 3);
-    let c = rig.finish(Some(&props), None, Some("gpu=auto")).unwrap();
+    let c = rig.finish(Some(&props), None, Some("gpu=2d")).unwrap();
     assert!(
-        c.gpu == Gpu::Auto && c.host_line.contains("gpu=2d not taken (the command line or the image set gives it)")
+        c.gpu == Gpu::TwoD && c.host_line.contains("gpu=auto not taken (the command line or the image set gives it)")
     );
     assert_eq!(rig.finish(Some(&props), Some("none"), None).unwrap().gpu, Gpu::Auto);
     let c = rig.finish(Some(&props), Some("NONE"), None).unwrap();
@@ -1239,7 +1247,7 @@ fn host_device() {
     let conf = format!("{image}/xnuhost.conf");
     write(&conf, "gpu=3d\n");
     let c = rig.finish(Some(&props), None, None).unwrap();
-    assert!(c.gpu == Gpu::ThreeD && c.host_line.contains("gpu=2d not taken"));
+    assert!(c.gpu == Gpu::ThreeD && c.host_line.contains("gpu=auto not taken"));
     assert_eq!(rig.finish(Some(&props), None, Some("gpu=2d")).unwrap().gpu, Gpu::TwoD); // the command line over the image set
     write(&conf, "host-device=none\n"); // the image set may turn it off
     let c = rig.finish(Some(&props), None, None).unwrap();
@@ -1250,7 +1258,7 @@ fn host_device() {
     // property file that cannot be read.
     let props = host_props(&dir, "s24u", "SM-S928B", "SM8650");
     let c = rig.finish(Some(&props), Some("galaxy-a56"), None).unwrap();
-    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::TwoD);
+    assert!(c.host == find("galaxy-a56") && c.gpu == Gpu::Auto);
     assert!(c.host_line.contains("host-device=galaxy-a56 (forced); read: ro.product.model=SM-S928B"));
     assert!(rig.finish(Some(&props), Some("pixel-11"), None).is_err());
     let mut c = Config::new();
