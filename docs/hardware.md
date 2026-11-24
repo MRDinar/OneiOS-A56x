@@ -27,7 +27,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | CPU | `droidvm-amp.patch` + `DroidVMCpufreq.c` (UniXNU-droidvm, unchanged) | `runtime/bridges/cpu`: topology, vCPU plan, thread placement, the cpufreq device | host built and tested; kernel side waits for release-kernel (series, archive) and booter (device tree, placement calls) |
 | GPU | UniXNU-droidvm's virtio-gpu 3D + NativeAdreno user client (unchanged) | booter's `runtime/xnuhost/src/virtio_gpu.rs` + drm2kgsl | booter's; not owned here (section 2) |
 | Wi-Fi / network | `kernel/patches/oneios-hosted/net`: `IO80211Controller`/`IO80211Interface` under the collection's `IOEthernetController`/`IOEthernetInterface`, a station that asks the host, UniXNU-droidvm's virtio-net transport (section 3) | `runtime/bridges/wifi`: wlan0 is iOS's for the session: frames by AF_PACKET, scans by nl80211, joins by the vendor's supplicant (AIDL V2 over `/dev/binder`); `wifictl`; the old tap/NAT route only with `wifi=tap` | both built; host tested (132 + 35 checks, the binder client on a real binder driver); on the phone beside One UI: the supplicant's service and an nl80211 scan (53 networks) answer our client; **not yet run in a session** (wifid, a join, DHCP) |
-| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted |
+| Bluetooth | `drivers/bluetooth` (port of iOSPlus10's transport) on `drivers/bridge` | `runtime/bridges/bt`: the HAL over `/dev/hwbinder` (HIDL), or over `/dev/binder` when the phone has only the AIDL HAL (the Galaxy A56, 2026-11-24; host-tested, not run on an A56) | both built; on by default in a session since 2026-11-11; the HAL (HIDL 1.1) is found in every session, but until 2026-11-23 bluetoothd never powered on (in a VM it powers on only with transport 10). Fixed 2026-11-23 (section 4, "Bluetooth powers on"): the nub's transport-encoding 10 and `BT_HCI_TRANSPORT=H4:POSIX` in bluetoothd's environment (hosted 0087); host-tested and built, not yet booted |
 | AirDrop | none: the guest's Wi-Fi driver refuses wifip2pd's `VIRTUAL_IF_*` and `AWDL_*` requests, so iOS has no `awdl0` | `wifictl p2p` (read only): every radio's peer-to-peer paths and Google's Wonder radio (its subcommands, who holds it); `wifictl wonder`: a session on Wonder's raw path beside wlan0, AWDL's frames counted, everything closed after it and wlan0's link checked (`oneios-tool phone wifi p2p\|wonder`) | does not work: iOS has no `awdl0`; Bluetooth (sharingd needs it: the toggle could not switch) was off in every session until the fix of 2026-11-23 (section 4, not yet booted). The radio path exists: One UI's driver has Google's open Wonder raw 802.11 path (PASSTHRU vdev, nl80211 vendor commands under `00:1a:11`, source in Samsung's `S928BXXU5DZDP` release); Google's AWDL engine is closed, so ours must be OWL or our own. The Wonder tools are built and host-tested, not run on the phone (section 4a) |
 | Haptics | `drivers/haptics` (port of iOSPlus10's LaurelVibrator and haptic node) and, since 2026-11-12, the Actuator IOAudio2Device of the audio archive (UI and keyboard taps) | `runtime/bridges/haptics`: evdev force feedback | both built; host tested with a fake actuator; the `vibrator` path ran in sessions (alerts), the Actuator path: Core Haptics' server gave up at its start for want of a preset, fixed by hosted 0078; then the Actuator ran I/O in silence for want of its DSP chain, hosted 0086, not yet on the phone (section 5) |
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.rs`, `audio/aaudio_helper.rs` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
@@ -1146,6 +1146,12 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   the file is the 17 characters of the address and a NUL (`od -c`), and `br_bt_address` (C) took the NUL for a
   character that is not part of an address. Fixed 2026-11-12 (`hci.c`, now `hci.rs` `bt_address`: the text ends at the first NUL; a test with
   the phone's layout); not yet run on the phone.
+- **Galaxy A56 (SM-A566E, Android 17, Exynos s5e8855) [F: the A56 fork's session of 2026-11-21 and our session of
+  issue 73]:** the HAL is the stable **AIDL** `android.hardware.bluetooth.IBluetoothHci/default` (process
+  `android.hardware.bluetooth-service.default`; `vendor.samsung.hardware.bluetooth.ISehBluetooth/default` beside it),
+  registered with servicemanager on `/dev/binder`. hwservicemanager has no Bluetooth HIDL service: before the AIDL
+  client, our session logged `bluetooth: no android.hardware.bluetooth@1.x::IBluetoothHci/default from
+  hwservicemanager: Broken pipe` and iOS got no controller. The AIDL client of "The bridge" below is for it.
 
 ### iOS side (`drivers/bluetooth`, port of iOSPlus10 `patches/laurel/xnu/2600-laurel-bluetooth-wcn3990.patch`)
 
@@ -1174,6 +1180,31 @@ join enabled requested by "..." enabled 1`). The Settings switch off and on, or 
   `sendHciCommand` returns is answered at once. No `initializationComplete` within 15 s
   (`ONEIOS_BT_INIT_TIMEOUT_MS`) is a failure with a line naming SELinux. `hci_hidl::probe()` asks for the
   service once at xnuhost's start. `ONEIOS_HWBINDER` names another binder device (the PC test).
+- AIDL mode (same file, 2026-11-24; ported from the A56 fork's `bt/hci_hidl.c`, Musicalista/OneiOS-A56 `26a2276`):
+  only when hwservicemanager has no HIDL HAL (the probe of the S24 Ultra, which has one, returns 11 before
+  `/dev/binder` is opened, and its open and parcels are the HIDL ones as before), `probe()` asks servicemanager on
+  `/dev/binder` (`ONEIOS_BINDER` names another device) with `IServiceManager.getService` (code 1) for
+  `android.hardware.bluetooth.IBluetoothHci/default`, checks its descriptor (`INTERFACE_TRANSACTION`) and asks its
+  version, and returns 20; `open_hidl` then speaks AIDL on the same two threads. The codes are
+  FIRST_CALL_TRANSACTION + the declaration order of AOSP's `IBluetoothHci.aidl` and `IBluetoothHciCallbacks.aidl`
+  (frozen version 1, `aidl_api/android.hardware.bluetooth/1`, checked against AOSP main 2026-11-24): `close` 1,
+  `initialize` 2, `sendAclData` 3, `sendHciCommand` 4, `sendIsoData` 5, `sendScoData` 6; callbacks
+  `aclDataReceived` 1, `hciEventReceived` 2, `initializationComplete` 3 (`Status`, an int: 0 = SUCCESS),
+  `isoDataReceived` 4, `scoDataReceived` 5. Our callback object (`aidl::Parcel::put_local`: VINTF stability 0x3f, as
+  a VINTF HAL requires) also answers the descriptor, ping, `getInterfaceVersion` (1) and `getInterfaceHash`
+  (`f0eb2eb6...`, version 1's). The token's header is `SYST` (a stable-AIDL HAL on libbinder_ndk runs the system
+  libbinder, an LLNDK library); a HAL that refuses it (BAD_TYPE or PERMISSION_DENIED) gets `initialize` once more
+  with `VNDR`, and every later call uses the header it took. A send parcel may be 64 KiB (`aidl::Parcel::set_limit`;
+  a byte[] is in the parcel, not a scatter buffer). Parcels: `bt/aidl_parcel.rs`. The fork's version and hash codes
+  (0x00fffffe, 0x00fffffd) were off by one; ours are libbinder's (0x00ffffff, 0x00fffffe). Log lines:
+  `bluetooth: the AIDL HAL android.hardware.bluetooth.IBluetoothHci/default (version N) on servicemanager: no HIDL
+  HAL on hwservicemanager (WHY)` at the probe, xnuhost's `bluetooth: on: the phone's controller through its HAL
+  (AIDL), address ...`, then at bluetoothd's open `bluetooth: HAL AIDL (version N, token header SYST) found,
+  initialising ...` and `bluetooth: HAL initialisation complete: the controller is on (status 0)`. With neither HAL:
+  one line naming both, `bluetooth: no Bluetooth HAL: no android.hardware.bluetooth@1.x::IBluetoothHci/default from
+  hwservicemanager (WHY), no android.hardware.bluetooth.IBluetoothHci/default from servicemanager (WHY)`.
+  `bluetooth=hidl` (no probe) always opens the HIDL HAL: on an A56 use the default `bluetooth=auto`. Host-tested
+  (`test_hidl_binder`'s AIDL scenarios, below); not run on an A56.
 - `devices/bridge_dev.rs`: an `OB_HCI_OPEN` while the controller is failed (the HAL died or never finished) closes it and
   opens it again, so a new bluetoothd client starts over.
 - `hidl_parcel.rs` (on `hal/hidl.rs`, `hal/binder.rs`): the parcels (interface token, `hidl_string`, `hidl_vec<uint8_t>` as scatter-gather buffer
@@ -1389,8 +1420,8 @@ The owner's request (2026-11-22): Bluetooth must work in iOS sessions; it is als
 `s9b-ioslog/ioslog.txt`, xnuhost's `kbd-debug/xnuhost-s9.log`):
 
 - The host side works. xnuhost: `bluetooth: on: the phone's controller through its HAL 1.1, address
-  a4:a4:90:4a:53:2f` (the HAL is the HIDL 1.1 one of section 4, so the A56 fork's AIDL client is not needed on this
-  phone). Guest: `ONEIOS BRIDGE: on: ... channels 0x77 (... 4 Bluetooth)`, `ONEIOS BT: on: ...`, `ONEIOS BT:
+  a4:a4:90:4a:53:2f` (the HAL is the HIDL 1.1 one of section 4, so the AIDL client ported from the A56 fork on
+  2026-11-24 is never reached on this phone). Guest: `ONEIOS BRIDGE: on: ... channels 0x77 (... 4 Bluetooth)`, `ONEIOS BT: on: ...`, `ONEIOS BT:
   transport up 300 ms after the start: control com.apple.uart.sk.bluetooth ...`.
 - bluetoothd never opens it. bluetoothd[75]: `DeviceTree transport = 0x00000001`, `HCI Transport is set to H4`,
   `Beginning asynchronous power init`, `Bluetooth is running inside a Virtual Machine, so skipping chip
@@ -1485,6 +1516,17 @@ stack (for example `Filter Accept List add error`, `BT VSC init failed`).
   `readBuffer`/`readEmbeddedBuffer` parent links), call back two-way from their own thread, `interfaceChain` on our
   callback, Reset and Read BD_ADDR answered, ACL echoed, close; no HAL registered; no `initializationComplete`; a
   HAL that dies. First phone test: `bridgectl bt` must print two Command Complete events (`runtime/bridges/README.md`).
+- [U] the AIDL mode (the A56) against a real libbinder_ndk and the A56's HAL: not run. Tested on the PC (2026-11-24,
+  `test_hidl_binder`'s AIDL scenarios): no context manager on the hwbinder (the A56's `Broken pipe`), a fake
+  servicemanager and IBluetoothHci on a second device of the same binderfs (`ONEIOS_BINDER`, served with
+  `hal::aidl`): the probe line, initialize with our callback object, its descriptor and version asked from the HAL's
+  own thread, initializationComplete, Reset and Read BD_ADDR answered through hciEventReceived before they return,
+  ACL (8 bytes and 5000, past the 4 KiB parcel), ISO and SCO echoed, close; a HAL that refuses the `SYST` header
+  (the `VNDR` retry); neither HAL (the line naming both, the HIDL error returned); an AIDL HAL that dies (the state
+  turns failed). The parcels' bytes against libbinder's layout: `bt::aidl_parcel`'s unit tests. SELinux on
+  `/dev/binder` (the HAL calling back into our domain) is [U] as for HIDL; the A56 fork's session found the HAL, so
+  the lookup is allowed there [F]. On an A56, `bridgectl bt` prints `HAL AIDL (android.hardware.bluetooth.IBluetoothHci/default) registered`
+  and must print the same two Command Complete events.
 - booter: the tree's node. `runtime/loader/src/machine.rs` publishes `/bluetooth` with `transport-encoding` 10 (the
   virtual transport of Apple's VMs) or, with the HAL (`bluetooth=hidl`, or `auto` when the HAL is registered, the
   default since 2026-11-11), `transport-encoding` 1 (H4; it was 3, H4BC, until 2026-11-12), `transport-speed` 3000000 and the phone's
@@ -4233,7 +4275,7 @@ environment variable that is set) > the table's default > the built-in default.
 | `galaxy-s25-ultra` | `SM-S938*`, `pa3q`, `SM8750`, platform `sun` [F] (YumikoHayamato/OneiOS: the fork's SM-S938B) | `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] the fork's sessions 1-7 (2026-11-19, One UI 9.0): the kernel's first passive trip on the SoC zones is 105 C and the hot one 125 C, so the S24's SoC rule (HEAVY 95 C, TRAPPING 105 C, one reading) put iOS in TRAPPING (its "too hot" screen) at each throttle: 20 level changes in 8 minutes, 5 into TRAPPING, on single junction spikes (68 -> 104 -> 68 C between two polls). With the trips (115/120 C) and the lowest of 3 readings (15 s) the SoC rule stayed under them; the levels came from the case, as on the S24. The SoC rule takes no step: this changes what iOS is told, not what xnuhost runs (`runtime/bridges/thermal/README.md`, "The SoC rule on the phone's own trips"). Not set: the backlight (`panel0-backlight` max 12750 [F], One UI's manual top not measured on this phone; the S26's 2300 is not assumed). The panel is 1440x3120 [F] (`nt37801`, DSI command mode), from the display helper's report. Otherwise: the Adreno 830 fence path is the default everywhere (drm2kgsl `0007`), the Oryon CPU rule is automatic (`topology.c`), the panel's mode comes from the display helper's report (`width=`/`height=` would override it, so 1080x2340 is not forced); every bridge's node names are [U] (`tools/probe/s25-probe.sh` answers them), so every backend stays samsung |
 | `galaxy-s25` | `SM-S931*`, `pa1q`, `SM8750`, `sun` [F] (the `S931BXXUCDZIF` vendor_boot DT compatible list) | `panel-fallback=1080x2340@120`, `ONEIOS_THERMAL_SOC_TRIPS=1`, `ONEIOS_THERMAL_SOC_SAMPLES=3` | [F] a 1080x2340 panel (xaxaapple/s25ver's device profile and `xnuhost.h`), and the shipped dtbo names it `PA1_S6E3FAE_AMB616FL03` with modes at 120/80/60/48/30/24/10 Hz: only the mode assumed where the panel cannot be read, a panel that is read still wins; without it such a session drew 1440x3120, 1.78 times the pixels, scaled down at every flush (port-forks-gap). The same dtbo has the touch (`stm,stm_ts_spi`, `samsung,ss_touch`) and haptics (`cirrus,cs40l26a`) nodes [F]. Otherwise as the S25 Ultra; its runtime node names and Bluetooth HAL (HIDL or AIDL) are [U]. The SoC rule as the S25 Ultra's [I] (same SM8750): the thresholds come from this phone's own trips, read at the start and logged |
 | `galaxy-s26-ultra` | `SM-S948*`, `m3q`, SoC `SM8850`, platform `canoe` [F] (YMGPwcca/OneiOS: the fork's SM-S948B, `S948BXXS4BZIG`; codename and platform since 2026-11-23, `docs/s26.md`) | `ONEIOS_BRIGHT_MAX=2300` | [F] the fork's phone with One UI in control: One UI's manual top (screen_brightness 255) wrote 2300 to `panel0-backlight`, whose `max_brightness` is 12750 (`brightness/tests.rs`, `sm8850_manual_brightness_cap`; the C's `test_brightness.c`). Without it iOS's slider top writes 12750, 5.5 times One UI's manual top (heat, current). Conservative; not a claim about the panel's maximum. `takeover: true` (2026-11-23): `session-mode=takeover` is allowed, where their root-only Framework-takeover experiment ran with the touchscreen grabbed ([booter.md](booter.md) 2.9d); `touch-exclusive` itself is not a default (that mode turns it on). The native-touchscreen priority and the `cpu-hw-trip-*` exclusion already apply on every phone |
-| `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d`, `panel-fallback=1080x2340@120` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). The panel: 1080x2340 [F] (the fork's `docs/a56-guide.md`), as for the S25. Touch, haptics, battery and thermal names [U]: samsung stays |
+| `galaxy-a56` | `SM-A566*`, `a56x`, SoC `s5e8855` (the fork's gate: `ro.soc.model`), platform `s5e8855` [I] | `gpu=2d`, `panel-fallback=1080x2340@120` | [F] no KGSL (Xclipse 540 on amdgpu, `/dev/dri/renderD128`) and xnuhost's 3D half is drm2kgsl only, so `gpu=auto` would only fail to open KGSL and keep an 8 MiB GPU pool nothing uses; the fork's A56 session passes `--gpu 2d` (`docs/a56.md`). The panel: 1080x2340 [F] (the fork's `docs/a56-guide.md`), as for the S25. Bluetooth: the AIDL HAL, no HIDL one [F]: the probe finds it with no setting (section 4, AIDL mode, 2026-11-24; not run on an A56). Touch, haptics, battery and thermal names [U]: samsung stays |
 
 **The S24 Ultra's models.** One entry for every model number, matched by `ro.product.model`'s prefix (record: `profiles/host-galaxy-s24-ultra-sm8650.toml`; host-tested for
 each one below: `runtime/bridges/hw/test_hw_backend.rs`, `host.rs`, `scripts/port/test-verify-host.sh`, `tools/oneios-tool/tests/phone/run.sh`):
