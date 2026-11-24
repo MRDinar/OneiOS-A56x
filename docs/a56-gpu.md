@@ -138,8 +138,12 @@ Nothing outlives it (its memfd, renderer, fence thread and DRM files go when it 
   plug-in whose `oneios-target` names the image set's build, and **(b)** the self-test passes; then
   `oneios-gpu-amd=1` is added to the boot arguments (K5);
 - otherwise 2D exactly as before, one line saying why; with `gpu=3d` the session refuses to start instead.
-`gpu=2d` (the command line, the image's `xnuhost.conf`) gives the 2D path with no GPU pool, as before. When (a) or (b)
-fails under `gpu=auto` the 8 MiB GPU pool stays reserved and unused (as a KGSL phone whose KGSL fails).
+`gpu=2d` (the command line, the image's `xnuhost.conf`) gives the 2D path with no GPU pool, as before. Under `gpu=auto`
+an A56 whose gpuaddon has no A56 plug-in is laid out as `gpu=2d` too, before the RAM is laid out
+(`gpu3d_amdgpu::early_2d`, test `an_a56_without_its_plugin_is_laid_out_as_2d`): no GPU pool, the window and device
+tree of the 2D session before this renderer (fixed in the integration of 2026-11-24; the first version kept the pool).
+Only a failing self-test (b) with the plug-in present leaves the 8 MiB pool reserved and unused, as on a KGSL phone
+whose KGSL fails.
 
 **Host tests** (`cargo test -p xnuhost --lib gpu3d_amdgpu`, in `runtime/host-tests.sh`): the capset's bytes;
 `address32_hi` without a high range; only an amdgpu or sgpu node; a DRM file per context, EEXIST, a wrong capset;

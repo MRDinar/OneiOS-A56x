@@ -1185,3 +1185,18 @@ fn the_layout_is_the_headers() {
         assert_eq!(ccmd::NAMES.len(), ccmd::REQ_SIZE.len());
     }
 }
+
+/// Today's A56 (gpu=auto, no A56 plug-in in the gpuaddon) is laid out as gpu=2d: no GPU pool, the same window and device
+/// tree as before this renderer. Everywhere else the layout is decided as before (the pool is kept) and `choose` decides.
+#[test]
+fn an_a56_without_its_plugin_is_laid_out_as_2d() {
+    let ok_plugin = || Ok(Plugin { target: "iPhone10,3 20F66".into(), files: 3 });
+    let never = || -> Result<Plugin, String> { panic!("not asked") };
+    let why = "the gpuaddon has no OneiOSRadeonMetal plug-in (the A56's Metal)";
+    assert_eq!(early_2d(true, false, true, || Err(why.to_owned())), Some(why.to_owned()));
+    assert_eq!(early_2d(true, false, true, ok_plugin), None);
+    // an S24 Ultra (KGSL), a host with no amdgpu node, gpu=3d (or not auto): the addon is not even read
+    assert_eq!(early_2d(true, true, true, never), None);
+    assert_eq!(early_2d(true, false, false, never), None);
+    assert_eq!(early_2d(false, false, true, never), None);
+}

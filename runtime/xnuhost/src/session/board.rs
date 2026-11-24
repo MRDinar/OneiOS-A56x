@@ -238,7 +238,27 @@ impl Session {
         // hosted_pa_in_gpu_pool, up to 64 MiB): GPU_POOL_BYTES + MEDIA_POOL_BYTES must stay under that.
         let (fb_width, fb_height) = (self.fb.0, self.fb.1);
         let fb_bytes = (fb_width as u64 * fb_height as u64 * 4 + 0x1f_ffff) & !0x1f_ffff;
-        let pool_bytes = if config.gpu != Gpu::TwoD { GPU_POOL_BYTES } else { 0 };
+        // An amdgpu host without KGSL (the Galaxy A56) under gpu=auto whose kernel's gpuaddon has no A56 plug-in is laid
+        // out as gpu=2d: no GPU pool, the window and device tree of today's 2D session (gpu3d_amdgpu::early_2d). The
+        // addon read here is kept for the GPU's choice and the kernel's sidecar below.
+        let node = if config.gpu_node.is_empty() { gpu3d_amdgpu::DEFAULT_NODE } else { config.gpu_node.as_str() };
+        let kgsl = std::path::Path::new("/dev/kgsl-3d0").exists();
+        let mut addon_read: Option<Option<Vec<u8>>> = None;
+        let early_2d = gpu3d_amdgpu::early_2d(
+            config.gpu == Gpu::Auto,
+            kgsl,
+            !kgsl && config.gpu == Gpu::Auto && gpu3d_amdgpu::node_check(&gpu3d_amdgpu::System, node).is_ok(),
+            || {
+                let addon = sidecar(&config.kernel, "gpuaddon", 64 << 20);
+                let found = gpu3d_amdgpu::plugin_in_addon(addon.as_deref(), None);
+                addon_read = Some(addon);
+                found
+            },
+        );
+        if let Some(why) = &early_2d {
+            logi!("gpu: 2D only: {}", why);
+        }
+        let pool_bytes = if config.gpu != Gpu::TwoD && early_2d.is_none() { GPU_POOL_BYTES } else { 0 };
         let media_bytes = if config.encoder != Encoder::Off { MEDIA_POOL_BYTES } else { 0 };
         let window = config.ram_bytes - fb_bytes - pool_bytes - media_bytes;
         // 2 MiB host pages for the RAM where this kernel allows them (fix-ram-hugepages; ramfix huge_choose): shmem THP
@@ -445,7 +465,6 @@ impl Session {
         // gpuaddon carries the A56's Metal plug-in and the renderer's self-test passes (gpu3d_amdgpu::choose,
         // docs/a56-gpu.md 2); then the guest is told with oneios-gpu-amd=1 (K5).
         let mut gpu = None;
-        let mut addon_read: Option<Option<Vec<u8>>> = None;
         if pool_bytes != 0 {
             // The GPU's level and priorities (gpu3d_kgsl, drm2kgsl patch 0008; docs/gpu.md 2.2b) read these.
             std::env::set_var("ONEIOS_GPU_LEVEL", config.gpu_level.as_str());
@@ -454,8 +473,6 @@ impl Session {
             }
             let m = mem::state();
             let pool = mem::ram(phys + window, pool_bytes).map_or(std::ptr::null_mut(), |p| p.as_ptr());
-            let node = if config.gpu_node.is_empty() { gpu3d_amdgpu::DEFAULT_NODE } else { config.gpu_node.as_str() };
-            let kgsl = std::path::Path::new("/dev/kgsl-3d0").exists();
             let sys: std::sync::Arc<dyn gpu3d_amdgpu::Dev> = std::sync::Arc::new(gpu3d_amdgpu::System);
             let build = self.image_set.as_ref().map(|s| s.build.clone());
             let kernel = config.kernel.clone();
@@ -464,7 +481,8 @@ impl Session {
                 kgsl,
                 if kgsl { Err(String::new()) } else { gpu3d_amdgpu::node_check(&*sys, node) },
                 || {
-                    let addon = sidecar(&kernel, "gpuaddon", 64 << 20);
+                    // the layout's read when it made one (an amdgpu host), else now
+                    let addon = addon_read.take().unwrap_or_else(|| sidecar(&kernel, "gpuaddon", 64 << 20));
                     let found = gpu3d_amdgpu::plugin_in_addon(addon.as_deref(), build.as_deref());
                     addon_read = Some(addon);
                     found

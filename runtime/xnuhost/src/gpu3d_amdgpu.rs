@@ -1570,6 +1570,18 @@ pub fn choose(
     }
 }
 
+/// Before the memory is laid out: an amdgpu host without KGSL (`kgsl` false, `node` an amdgpu render node) under
+/// gpu=auto whose gpuaddon has no plug-in (`plugin`, asked only then) is laid out as gpu=2d: no GPU pool, the kernel's
+/// window and device tree of a 2D session (the Galaxy A56 as before this renderer). Some(why) then, for the line
+/// "gpu: 2D only: WHY"; None everywhere else (KGSL hosts, other hosts, gpu=3d, a plug-in present: `choose` decides).
+/// The image's build is not known yet here; `choose` checks the plug-in's target against it later.
+pub fn early_2d(auto: bool, kgsl: bool, node: bool, plugin: impl FnOnce() -> Result<Plugin, String>) -> Option<String> {
+    if !auto || kgsl || !node {
+        return None;
+    }
+    plugin().err()
+}
+
 /// gpu3d::amdgpu_open's renderer: [`Amdgpu::open`] on the system.
 #[allow(clippy::too_many_arguments)]
 pub fn open(
