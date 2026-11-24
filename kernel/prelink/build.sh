@@ -111,8 +111,10 @@ step kclasses --xnuprelink "$XNUPRELINK" --kernelcache "$INPUT" --native "$WORK/
   --map "$WORK/match.map.json" --reviewed "$REVIEWED" --out "$WORK/kclasses.json"
 step structors --xnuprelink "$XNUPRELINK" --kernelcache "$INPUT" --native "$WORK/native.macho" \
   --map "$WORK/match.map.json" --reviewed "$REVIEWED" --classes "$WORK/kclasses.json" --out "$WORK/structors.json"
-WEAK=(); for f in "$WORK/aligned-native.json" "$WORK/aligned-reference.json"; do [ -f "$f" ] && WEAK+=(--weak "$f"); done
+# Without a reference, an aligned-reference.json of an earlier run with one is removed BEFORE the weak list is made
+# (2026-11-25: the list took the stale file, the line after it removed it, and the vtables step stopped on a missing file).
 [ -n "$REFERENCE" ] || rm -f "$WORK/aligned-reference.json"
+WEAK=(); for f in "$WORK/aligned-native.json" "$WORK/aligned-reference.json"; do [ -f "$f" ] && WEAK+=(--weak "$f"); done
 step vtables --xnuprelink "$XNUPRELINK" --kernelcache "$INPUT" --native "$WORK/native.macho" \
   --map "$WORK/match.map.json" --reviewed "$REVIEWED" --classes "$WORK/kclasses.json" --also "$WORK/structors.json" "${WEAK[@]}" \
   --out "$WORK/vtables.json"
