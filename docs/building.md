@@ -260,7 +260,7 @@ with `wc -c`, CPUs with `getconf _NPROCESSORS_ONLN`, checksums with `sha256sum` 
 ```sh
 runtime/build.sh STAGE            # -> STAGE/bin/xnuhost (static, the task stub inside it), the bridges' helpers, the
                                   #    display helper, and the phone checks (gpuctl, bridgectl, wifictl, brightctl,
-                                  #    batteryctl, thermalctl, displayctl, camctl, encctl: its `encctl decode FILE` tests the decoder, 2026-11-24); then the NEEDED and symbol
+                                  #    batteryctl, thermalctl, sensorctl: `sensorctl qrtr` is read only, 2026-11-25, displayctl, camctl, encctl: its `encctl decode FILE` tests the decoder, 2026-11-24); then the NEEDED and symbol
                                   #    check of the stage (runtime/package/elf-check.sh, below)
 runtime/package.sh 0.1.0-dev      # -> out/release/oneios-runtime-0.1.0-dev-arm64.tar.zst + .sha256 + runtime.json,
                                   #    with bin/oneios-tool (below), and oneios-tool-0.1.0-dev-android-arm64 + .sha256;
@@ -275,7 +275,7 @@ runtime/tests/host.sh             # what CI runs for the runtime: cargo test, fm
 
 `runtime/build.sh STAGE` runs `cargo build --release --locked --target aarch64-linux-android` twice: the static programs
 (`crt-static`; target dir `runtime/target/android-static`: `xnuhost` and `gpuctl` of the `xnuhost` crate; `bridgectl`,
-`wifictl`, `brightctl`, `batteryctl`, `thermalctl` of `onebridges`) and the dynamic ones that call Android's libraries
+`wifictl`, `brightctl`, `batteryctl`, `thermalctl`, `sensorctl` of `onebridges`) and the dynamic ones that call Android's libraries
 (`runtime/target/android`: `oneios-audio` of `onebridges`, `oneios-camera` and `camctl` of `onecamera`,
 `oneios-encoder` and `encctl` of `oneencoder`), then `runtime/display/build-android.sh` (`oneios-display`,
 `displayctl`, `liboneios-display.so`, `oneios-display.dex`) and copies `runtime/bridges/net/oneios-net.sh`; every
@@ -770,6 +770,10 @@ $T phone wifi p2p                  # the staged wifictl p2p as root (read only):
                                    #   AirDrop verdicts, Wonder's files; then a summary of those lines (--save FILE keeps the report)
 $T phone wifi wonder --seconds 30 --freq 5745   # wifictl wonder: a monitor interface on Wonder's radio beside wlan0,
                                    #   AWDL's frames counted, everything closed after, wlan0's link checked (docs/hardware.md 4a)
+$T phone qrtr                      # read only: whether a root process reaches the sensor hub (SSC) over QRTR (the staged
+                                   #   sensorctl qrtr: QRTR's nodes and services, service 400 and one lookup); --sensors: each
+                                   #   SUID with its attributes; --binary STAGE/bin/sensorctl before the runtime is staged (pushed,
+                                   #   run, removed); --save FILE. Decides sensors=auto (runtime/bridges/sensors/README.md)
 $T phone procs                     # every process with its CPU share and RAM (read only, with or without a session):
                                    #   what of One UI still runs beside iOS and what it costs (docs/plan-ios-first-session.md)
 $T phone procs --seconds 30 --raw > procs.raw; $T phone procs --from procs.raw --sort mem   # keep a capture; its report by RAM
@@ -1378,7 +1382,7 @@ Apple-file check, manifest and archive) and `debug` (the tests' helpers). `image
 (the key from Apple's key service, every byte authenticated), on the PC and, as `serve`'s `aea`, on the phone. Since the third Linux round also `phone` (the adb
 workflow of section 6: status, stage, sums, switch, return, log, the Data store's copy, and in a session the display
 helper's restart, the touch IC's wake and the panel's level; since 2026-11-23 `phone procs`, the process list with CPU
-and RAM), `app` (the fork's app of
+and RAM; since 2026-11-25 `phone qrtr`, whether the sensor hub answers over QRTR, read only), `app` (the fork's app of
 section 7: version, doctor, build, install, stage-scripts) and `cycle` (one test cycle: build, tests, stage, switch, watch, hold, return, collect). Since 2026-11-21 also
 `image tweaks` (the root tweaks and the image build's userland hook: the port of `userland/roottweak` and
 `userland/image-hook`, `apply`, `hook`, `daemons`, `cdhash`, `boot-check`; compared with the Python by

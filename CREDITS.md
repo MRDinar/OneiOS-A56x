@@ -3,7 +3,8 @@
 The projects this one builds on are credited in [README.md](README.md) "Credits" and, with their licences, in
 [docs/references.md](docs/references.md). This file names the people whose changes in a fork of this repository were
 ported here: which commit, what it did, and where it is now. A fork of this repository is under this repository's
-terms; each port's commit message names its source as well.
+terms; each port's commit message names its source as well. The last section names the other iOS-on-Android ports whose code
+was taken file by file (not forks of this repository).
 
 ## orumanayurpanjayat-ux/OneiOS
 
@@ -44,3 +45,15 @@ The Galaxy S25 Ultra fork (branch `s25-ultra-sm8750`). Author: **YumikoHayamato*
 | Fork commit | What it did | Here |
 |---|---|---|
 | `cdb297bbf` "native path, step 6" (the display part) | With `ONEIOS_DISPLAY_PRESENT=ahb` the display helper posts its frames in three write-only AHardwareBuffers (`CPU_WRITE_RARELY`) on a child of its layer with ASurfaceTransaction, each filled with the damage since it was last filled, at most two in flight, refilled after its release fence; the window path kept when anything is missing. Measured on the S25: 85% of the helper's time had been the CPU caches' maintenance of the window's whole buffer at each lock and post; 60 frames a second at 49.5% of a core became 114 at 17.1% | Rewritten in Rust on the run loop's `Layer` (`runtime/display/src/xhd/present.rs`, the NDK half in `src/jni.rs`), behind xnuhost's `display-present=ahb` (default) through the `options` message (docs/switches.md); the child made from the layer's window rather than by the Java half; host tests `test_present_*`. Their copy-loop floor (`ONEIOS_DISPLAY_UCLAMP_MIN`), the frame-time line, `displayctl pool` and the PL030 kernel patch of the same commit are not ported (a VM's path) |
+
+## Other ports' code taken file by file
+
+### The sensors and auto-brightness (fix/sensors-als, 2026-11-25; host-tested and built, not booted)
+
+| Source | Authors, licence | What was taken | Here |
+|---|---|---|---|
+| [DenialOfGravity/ios-redfin](https://github.com/DenialOfGravity/ios-redfin) 23019ab4 `phone/sensors/` (`sns.c`, `pb.c`, `sensor.c`, `test_sensd.c`), `phone/wifi/qmi.c` | dipa-studio (Copyright (c) 2026), MIT | the Qualcomm SEE client's message build and parse, the lookup/attribute/stream sequence and data types, the independently encoded test vectors | `runtime/bridges/sensors/` (Rust; the QRTR transport is Linux's own) |
+| ios-redfin 23019ab4 `xnu/patches/1298-redfin-auto-brightness-true-tone.patch`, `0971-redfin-sensor-hid-services.patch` | dipa-studio, MIT | the last light reading re-posted within 15 ms of a wake (CoreBrightness's 250 ms first-sample timeout); the SPU usage pairs and the illuminance field | `drivers/brightness/OneiOSALSDevice.cpp`, `kernel/patches/oneios-hosted/hid/OneiOSALSEvents.cpp` |
+| [Droid-VM/UniXNU-droidvm](https://github.com/Droid-VM/UniXNU-droidvm) f9121cd `package/DroidVMMotionHid.inc`, `DroidVMSensorProcessor.cpp`, `DroidVMMotion.c` | Droid-VM, BSD-2-Clause-Patent | the motion sensors as an iPad's SPU HID devices and their command channel, proven on iPadOS 27 24A446 | staged into the HID archive (`kernel/patches/oneios-hosted/hid`, `oneios-tool kernel gen hid`) |
+| [UniXNU/ShengHidInput](https://github.com/UniXNU/ShengHidInput) 24f1f3f `NativeHidInput.cpp` | UniXNU, BSD-2-Clause-Patent | the event driver's vtable copy (dispatch wrapped, every slot's discriminator checked) | `kernel/patches/oneios-hosted/hid/OneiOSALSEvents.cpp` |
+| [jesvi-eulah/Jesvi-iOS](https://github.com/jesvi-eulah/Jesvi-iOS) a13e406 `userland/src/inject_sensors.c` | Jesvi-iOS (HakiOS), MIT (`userland/`) | what CoreBrightness checks on an ALS service: Built-In, VendorID 0x5ac, `ALSCurveInfo`, the illuminance field 0xC000B | `drivers/brightness/OneiOSALSDevice.cpp` |

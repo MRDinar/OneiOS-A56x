@@ -117,6 +117,15 @@ fn settings_and_sizes() {
             && c.set("clusters", "EEPPPPPPP").is_err()
             && c.set("clusters", "EX").is_err()
     );
+    // sensors=: off by default; auto, ssc; the rate 5..200; the light by index 0..7 or auto
+    let mut s = Config::new();
+    assert!(s.sensors == Sensors::Off && s.sensors_hz == 50 && s.sensors_light.is_none());
+    assert!(s.set("sensors", "auto").is_ok() && s.sensors == Sensors::Auto && s.set("sensors", "hal").is_err());
+    assert!(s.set("sensors", "ssc").is_ok() && s.sensors == Sensors::Ssc);
+    assert!(s.set("sensors-hz", "100").is_ok() && s.sensors_hz == 100 && s.set("sensors-hz", "4").is_err());
+    assert!(s.set("sensors-hz", "201").is_err() && s.sensors_hz == 100);
+    assert!(s.set("sensors-light", "1").is_ok() && s.sensors_light == Some(1) && s.set("sensors-light", "8").is_err());
+    assert!(s.set("sensors-light", "auto").is_ok() && s.sensors_light.is_none());
     let mut c = Config::new();
     assert!(c.set("pen-mirror", "maybe").is_err() && !c.given("pen-mirror")); // a bad value refused
     assert!(c.set("encoder", "mediacodec").is_err() && !c.given("encoder") && c.encoder == Encoder::Off);
@@ -305,6 +314,12 @@ fn image_set_settings() {
     let c =
         run(&[&img1[..], &["--set", "pen=off", "--set", "pen-rotate=auto", "--set", "pen-mirror=0"]].concat()).unwrap();
     assert!(c.pen == Pen::Off && c.pen_rotate == PenRotate::Auto && !c.pen_mirror);
+    // The image set's sensors=, sensors-hz=, sensors-light= apply; the command line wins.
+    write(&path, &format!("boot-args=-v debug=0x8\nsensors=auto\nsensors-hz=25\nsensors-light=1\n{set_meminfo}\n"));
+    let c = run(&img1).unwrap();
+    assert!(c.sensors == Sensors::Auto && c.sensors_hz == 25 && c.sensors_light == Some(1));
+    let c = run(&[&img1[..], &["--set", "sensors=off", "--set", "sensors-hz=50"]].concat()).unwrap();
+    assert!(c.sensors == Sensors::Off && c.sensors_hz == 50 && c.sensors_light == Some(1));
     // The image set's encoder= applies (until 2026-11-22 it was read, then dropped: encoder=auto in the phone's
     // xnuhost.conf never gave the guest its encoder); the command line wins.
     write(&path, &format!("boot-args=-v debug=0x8\nencoder=auto\n{set_meminfo}\n"));
@@ -1617,6 +1632,16 @@ fn the_switches() {
         ),
         "{line}"
     );
+    // sensors-als (2026-11-25): the hub's switches after decoder-codecs, the guest's two before oneios-wifi-rssi
+    let mut s = Config::default();
+    assert!(s.switches_line().contains(
+        " decoder-codecs=h264,hevc,vp9,av1 astc=1 sensors=off sensors-hz=50 sensors-light=auto oneios-motion=0 oneios-als-spu=0 oneios-wifi-rssi=1 "
+    ));
+    assert!(s.set("sensors", "auto").is_ok() && s.set("sensors-light", "1").is_ok());
+    s.boot_args = "oneios-motion=15 oneios-als-spu=1".into();
+    let line = s.switches_line();
+    assert!(line.contains(" sensors=auto sensors-hz=50 sensors-light=1 oneios-motion=15 oneios-als-spu=1 "), "{line}");
+    assert!(line.ends_with("not at the default: sensors sensors-light oneios-motion oneios-als-spu"), "{line}");
     // takeover-ram (2026-11-23): the takeover's memory steps and option C, in the line after stop-loop and ram-fit-terms.
     let mut m = Config::default();
     assert!(m.switches_line().contains(

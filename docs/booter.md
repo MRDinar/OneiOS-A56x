@@ -1571,7 +1571,7 @@ and feature handshake) at `0x0a000000 + n * 0x1000`, SPI `32 + n`, in this order
 | --- | --- | --- | --- |
 | Block, read-only (`F_RO`) | `src/virtio_blk.rs`, `src/blk.rs` | `os.img`, `systemos.img`, `app.img`, a tar `data.seed` | UniXNU `NativeVirtioBlock` (node `virtio-mmio-N`, `compatible` `virtio,mmio`) |
 | Block, writable | same | `<data>/data.img`, sparse, 32 GiB logical, flush = `fdatasync`, on the disk's flush thread ("Disks" below), timed (`disk NAME: 30 s: reads .., writes .., flushes N in T ms (max X ms)` every 30 s per busy disk, `since the start` at the stop, `disk NAME: a flush took N ms` for the first 16 of 500 ms or more: a flush holds every other request of the guest to that disk) | the Data store window (node `data-store`) |
-| Input | `src/virtio_input.rs`, `src/input.rs` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
+| Input (and, with `sensors=auto\|ssc`, the motion device: "Sensors" in 2.8) | `src/virtio_input.rs`, `src/input.rs`, `src/motion.rs` | `/dev/input/event*`: the multitouch events of the one device that is the screen (`INPUT_PROP_DIRECT`; a multitouch pointer device such as the S24 Ultra's `sec_touchpad` is not taken; the log line gives the screen's x and y ranges) and the three side keys, unchanged evdev codes, the panel's own axis ranges | UniXNU-droidvm `DroidVMVirtioInput.c` |
 | GPU, 2D scanout | `src/virtio_gpu.rs`, `src/display.rs` | the display back end | UniXNU-droidvm `DroidVMVirtioGpuDisplay.cpp` under IOMobileFramebufferLegacy: `kernel/patches/oneios-hosted/display/` (a 2D resource per surface, up to 16384 backing entries each) |
 | Console | `src/uart.rs` | the log | XNU's PL011 console (`uart0`) |
 | Bridge channel, network, sound | `runtime/bridges` (the bridges agent's; `docs/hardware.md`) | haptics and Bluetooth HCI; a tap with built-in DHCP; an AAudio helper process | `drivers/bridge`, `DroidVMVirtioNet.c`, `DroidVMVirtioSnd.c` |
@@ -1948,6 +1948,30 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   (`pen-abs`, `pen-ev`, `pen-syn`, `pen-hover`, `pen-stroke`, `pen-button`, `pen-out`: the head of `input_script.rs`) go
   through the same filter; `tools/input-demo.script` has a hover, two strokes (a pressure ramp; a tilted even one) and
   the side button. Host tests: `src/pen/tests.rs` (`test_pen` of `tests/test_xnuhost.c` in the C).
+- **Sensors** (`src/motion.rs`, `runtime/bridges/sensors`, fix/sensors-als 2026-11-25; `docs/hardware.md` 7i). Settings:
+  **`sensors=off`** (the default until a phone session proves it), `auto` or `ssc`; `sensors-hz=5..200` (50: the
+  accelerometer's and gyroscope's rate; the magnetometer's at most 25); `sensors-light=auto|0..7` (which of the hub's
+  light sensors). From the command line, else the image set's `xnuhost.conf` (`overlay/userland/xnuhost.conf` on the
+  phone). With the bridges on and sensors not off, after the pen and before the GPU, the board opens the phone's sensor
+  hub (`sensors::Hub::open`: QRTR's name server for QMI service 400, then each sensor's SUID and attributes, at most
+  1.5 s per answer; nothing streams yet). With an accelerometer the board gets a **virtio-input device after the touch
+  screen and the pen, `/arm-io/input-N`**, "OneiOS motion sensors" (`INPUT_PROP_ACCELEROMETER`, no keys; `ABS_X/Y/Z` the
+  gravity vector, 256 per g, +-16 g; `ABS_RX/RY/RZ` 16 per degree per second, +-2000; `ABS_HAT0X/HAT0Y/HAT1X` 16 per
+  microtesla with a magnetometer), and `oneios-motion=7` (15 with a magnetometer) is added to the guest's command line
+  unless it has an `oneios-motion=`; with a light sensor `oneios-als-spu=1` likewise. The bridges then start the hub's
+  thread: one frame per accelerometer sample to that device (none while more than 60 events wait for the guest's
+  buffers: counted as dropped), each light reading to the brightness bridge (`Bright::als_feed`; the evdev `als_rear` is
+  then not opened); the streams stop while iOS's display is off (the bridge device's `OB_BRIGHT_POWER`) and at the stop
+  (`Bridges::close`, first). No hub (no QRTR, no service 400, no answer): `sensors=auto` boots as with `off` (one line);
+  `sensors=ssc` too, but with no light sensor at all (the rear one gives 0 lux on the S24). Log lines: `sensors: on: ssc
+  (sensors=auto): service 400 version V at node N port P; accelerometer SUID "name" (vendor), streaming ...; motion device
+  /arm-io/input-N at 50 Hz, the light for the brightness bridge, on change; oneios-motion=15 oneios-als-spu=1`, or
+  `sensors: off: source old (sensors=auto): WHY: no motion device, the rear light sensor as before`; `sensors: light N:
+  ...: used`; `sensors: streaming: ...`; `sensors: paused: ...` / `sensors: resumed: ...`; every 60 s `sensors: 60 s:
+  accelerometer N, gyroscope N, magnetometer N samples; N motion frames to the guest, N dropped (the guest had no
+  buffers); light N readings, last N.NNN lux; paused N s`. The guest's side: `kernel/patches/oneios-hosted/hid/README.md`.
+  Host tests: `src/motion.rs`, `config/tests.rs` (the settings, the image set's, the switches line),
+  `cargo test -p onebridges sensors::`. **Not booted.**
 - `session/ready` is created at the guest's first presented frame (or by the `ready` host call). The guest's
   display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame drawn
   there): a flush of a resource whose backing starts at `boot_args.Video`'s address is shown but is not that

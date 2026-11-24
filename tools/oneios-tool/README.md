@@ -2092,6 +2092,12 @@ oneios-tool phone wifi p2p [--station IFACE] [--save FILE]   # the staged wifict
                                               #   the AirDrop verdicts, Wonder's files; then a summary of those lines
 oneios-tool phone wifi wonder [--seconds 30] [--freq 2437|5220|5745] [--country CC] [--save FILE]
                                               # wifictl wonder (docs/hardware.md 4a), its lines as they come (adb exec-out)
+oneios-tool phone qrtr [--sensors] [--binary FILE] [--save FILE]
+                                              # read only: can a root process beside One UI reach the sensor hub (SSC) over
+                                              #   QRTR: sensorctl qrtr lists the QRTR nodes and services, says whether the SNS
+                                              #   service (400) is there and answers a lookup; --sensors: every SUID and its
+                                              #   attributes (no stream). --binary: this machine's sensorctl pushed to
+                                              #   /data/local/tmp/oneios-sensorctl, run, removed (runtime/bridges/sensors/README.md)
 oneios-tool phone procs [--seconds 5] [--sort cpu|mem] [--top N] [--kernel] [--raw] [--from FILE]
                                               # every process with its CPU share and RAM, with or without a session (read only):
                                               #   the session, the fork's watchers, the kernel's threads, and each Android or
@@ -2251,6 +2257,8 @@ tools/oneios-tool/tests/phone/run.sh          # 258 checks against the stand-in 
                                               #   phones, their host-built tools; docs/hardware.md 7e;
                                               #   12 of them serve.sh, 2026-11-15: `oneios-tool serve` on the stand-in's stage,
                                               #   its local forms against the adb forms, the refusals in a session); ALL OK
+                                              #   since 2026-11-25 also qrtr.sh's 14 (`phone qrtr` with a stand-in sensorctl: staged,
+                                              #   --binary pushed and removed, a closed QRTR);
                                               #   since 2026-11-23 also procs.sh's 38 (`phone procs` on a made-up /proc). The Mac,
                                               #   2026-11-23: 265 ok, ALL OK (hw-backend.sh skipped: the bridges' host tools do not
                                               #   build there; before that day the suite failed on the Mac: lib.sh, below)

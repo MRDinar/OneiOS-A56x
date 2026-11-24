@@ -229,6 +229,14 @@ named!(
     Pen { Off = "off", Auto = "auto" }
 );
 named!(
+    /// sensors=: off (the default until a phone session proves it) | auto: the phone's sensor hub (SSC) over QRTR when
+    /// its service 400 answers (runtime/bridges/sensors): the accelerometer, gyroscope and magnetometer as the guest's
+    /// motion device /arm-io/input-N with oneios-motion=7 (15 with a magnetometer), the front light sensor for the
+    /// brightness bridge with oneios-als-spu=1; else the old path (no motion device, the rear light sensor) | ssc: the same,
+    /// but no rear light sensor when the hub has no light.
+    Sensors { Off = "off", Auto = "auto", Ssc = "ssc" }
+);
+named!(
     /// pen-rotate=: the digitizer's frame turned clockwise onto the panel's; auto from the two aspects.
     PenRotate { Auto = "auto", R0 = "0", R90 = "90", R180 = "180", R270 = "270" }
 );
@@ -460,6 +468,9 @@ const GIVEN_KEYS: &[&str] = &[
     "pen",
     "pen-rotate",
     "pen-mirror",
+    "sensors",
+    "sensors-hz",
+    "sensors-light",
     "encoder",
     "camera-vm",
     "camera-model",
@@ -654,6 +665,11 @@ pub struct Config {
     pub pen_rotate: PenRotate,
     /// pen-mirror=1: then mirrored left to right
     pub pen_mirror: bool,
+    pub sensors: Sensors,
+    /// sensors-hz=N (5..200, default 50): the accelerometer's and gyroscope's rate (the magnetometer's at most 25)
+    pub sensors_hz: u32,
+    /// sensors-light=N: the hub's Nth ambient_light sensor; unset (auto): the first that does not say "rear"
+    pub sensors_light: Option<u32>,
     pub encoder: Encoder,
     pub camera_vm: CameraVm,
     /// camera-model=NAME: /product unique-model with the cameras (MobileGestalt's HWModelDescriptionForCamera;
@@ -926,6 +942,9 @@ impl Config {
             pen: Pen::Off,
             pen_rotate: PenRotate::Auto,
             pen_mirror: false,
+            sensors: Sensors::Off,
+            sensors_hz: 50,
+            sensors_light: None,
             encoder: Encoder::Off,
             camera_vm: CameraVm::Hide,
             camera_model: CAMERA_MODEL.to_owned(),
@@ -1116,6 +1135,11 @@ impl Config {
             "pen" => self.pen = named(Pen::parse(value))?,
             "pen-rotate" => self.pen_rotate = named(PenRotate::parse(value))?,
             "pen-mirror" => self.pen_mirror = flag(value)?,
+            "sensors" => self.sensors = named(Sensors::parse(value))?,
+            "sensors-hz" => self.sensors_hz = number(value, 5, 200)?,
+            "sensors-light" => {
+                self.sensors_light = if value == "auto" { None } else { Some(number(value, 0, 7)?) };
+            }
             "encoder" => self.encoder = named(Encoder::parse(value))?,
             "camera-vm" => self.camera_vm = named(CameraVm::parse(value))?,
             "camera-model" => {
@@ -1330,6 +1354,10 @@ impl Config {
         take!(self, image, "pen", pen);
         take!(self, image, "pen-rotate", pen_rotate);
         take!(self, image, "pen-mirror", pen_mirror);
+        // sensors=, sensors-hz=, sensors-light= of the image set: how a phone session turns the sensor hub on.
+        take!(self, image, "sensors", sensors);
+        take!(self, image, "sensors-hz", sensors_hz);
+        take!(self, image, "sensors-light", sensors_light);
         // encoder= of the image set: the way a phone session turns the video encoder on (the OneOS app passes no --set
         // encoder=). Until 2026-11-22 it was read and then dropped, so encoder=auto in xnuhost.conf did nothing.
         take!(self, image, "encoder", encoder);
@@ -2360,6 +2388,12 @@ impl Config {
             ("decoder", self.decoder.as_str().to_string(), "auto"),
             ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
             ("astc", on(self.astc).to_string(), "1"),
+            // sensors-als (2026-11-25): the sensor hub, and the guest switches xnuhost adds when it gives the guest its parts
+            ("sensors", self.sensors.as_str().to_string(), "off"),
+            ("sensors-hz", self.sensors_hz.to_string(), "50"),
+            ("sensors-light", self.sensors_light.map_or("auto".to_string(), |n| n.to_string()), "auto"),
+            ("oneios-motion", arg("oneios-motion", "0"), "0"),
+            ("oneios-als-spu", arg("oneios-als-spu", "0"), "0"),
             ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
             ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
             ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),

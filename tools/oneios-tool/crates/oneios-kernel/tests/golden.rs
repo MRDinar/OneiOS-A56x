@@ -230,6 +230,51 @@ fn the_pen_edits_fit_the_pinned_source() {
 }
 
 #[test]
+fn the_motion_edits_fit_the_pinned_sources() {
+    // sensors-als, 2026-11-25: the motion sensors' edits (staged/hid_motion.rs) on the real DroidVMVirtioInput.c (after the
+    // phone's own edits), DroidVMMotionHid.inc and NativeHidInput.cpp (after hid.rs and hid_pen.rs), where external/ has them.
+    let package = repo().join("external/UniXNU-droidvm/package");
+    let native = repo().join("external/NativeHidInput/NativeHidInput.cpp");
+    if !package.join("DroidVMMotionHid.inc").exists() || !native.exists() {
+        eprintln!("external/UniXNU-droidvm or external/NativeHidInput is not here: the motion edits were not checked");
+        return;
+    }
+    let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
+    // The transport: the magnetometer's axes kept, published inside the frame's seqlock, each frame counted and the devices woken.
+    let transport = build_oneios_hid::staged_motion_transport(
+        build_oneios_hid::staged_transport(read(package.join("DroidVMVirtioInput.c")), "", "").unwrap()).unwrap();
+    assert!(transport.contains("e->code >= 0x10 && e->code <= 0x12) {\n        oneios_motion_mag_raw[e->code - 0x10] = e->value;"));
+    let publish = transport.find("static void motion_publish(").unwrap();
+    let body = &transport[publish..publish + transport[publish..].find("\n}\n").unwrap()];
+    let (copied, closed, kicked) = (body.find("oneios_motion_mag[i] = oneios_motion_mag_raw[i]").unwrap(),
+                                    body.rfind("droidvm_motion.seq = droidvm_motion.seq + 1;").unwrap(), body.find("oneios_motion_kick();").unwrap());
+    assert!(copied < closed && closed < kicked, "the magnetometer is published inside the seqlock, the devices woken after it");
+    assert!(build_oneios_hid::staged_motion_transport(transport).is_err());   // applied twice: the anchors are gone
+    // The motion devices: a unit of its own, the compass, ticks driven by the frames (a 1 s guard), the reports counted.
+    let motion = build_oneios_hid::staged_motion_hid(read(package.join("DroidVMMotionHid.inc"))).unwrap();
+    assert!(motion.starts_with("// SPDX-License-Identifier: BSD-2-Clause-Patent\n") && motion.contains("#include <IOKit/hid/IOHIDDevice.h>"));
+    assert!(motion.contains("DROIDVM_MOTION_ORIENTATION, DROIDVM_MOTION_COMPASS };"));
+    assert!(motion.contains("static const unsigned char compass[] = DROIDVM_MOTION_VECTOR(0x0a, 0x83, 0x85);"));
+    assert!(motion.contains("? (int64_t)raw[i] * 1000 / 16"));
+    assert!(motion.contains("        source->setTimeoutMS(1000);\n") && !motion.contains("        source->setTimeoutMS(10);\n"));
+    assert!(motion.contains("if (kind < 4) oneios_motion_timers[kind] = timer;"));
+    assert!(motion.contains("oneios_motion_reports[self->kind] = oneios_motion_reports[self->kind] + 1;"));
+    assert!(motion.trim_end().ends_with("if (timer) timer->setTimeoutUS(1);\n    }\n}"));
+    assert!(build_oneios_hid::staged_motion_hid(motion).is_err());
+    // NativeHidInput's slot table exported for the light sensor's wrapper, inside its pointer-authentication branch.
+    let hid = build_oneios_hid::staged_hid_slots(
+        build_oneios_hid::staged_hid_pen(build_oneios_hid::staged_hid(read(native)).unwrap()).unwrap()).unwrap();
+    let export = hid.find("extern \"C\" const uint16_t *oneios_hid_driver_slots(unsigned *count)").unwrap();
+    assert!(hid[..export].rfind("#if __has_feature(ptrauth_calls)").unwrap() > hid[..export].rfind("#else").unwrap_or(0));
+    assert_eq!(hid.matches("oneios_hid_driver_slots(unsigned").count(), 1);
+    // What the archive must define for the new parts.
+    for name in ["_oneios_motion_kick", "__GLOBAL__sub_I_DroidVMMotionHid.cpp", "__GLOBAL__sub_I_DroidVMSensorProcessor.cpp",
+                 "_droidvm_motion_register", "_oneios_hid_driver_slots", "_oneios_als_spu_wrap", "_oneios_als_spu_wrapped"] {
+        assert!(build_oneios_hid::REQUIRED.contains(&name), "{name}");
+    }
+}
+
+#[test]
 fn the_contact_identifier_is_a_free_one_of_1_to_28_and_the_pointer_gets_29() {
     // hid, 2026-11-12 (a6346c1): backboardd drops a touch whose identifier is 30 or more (MAX_PATH_COUNT)
     let staged = golden("synthetic/hid_transport.out");

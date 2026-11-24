@@ -169,13 +169,23 @@ Rank is usefulness for the S24 Ultra under xnuhost. "State" is the repo's own cl
 | 17 | [YahiaAngelo/vphone-linux](https://github.com/YahiaAngelo/vphone-linux) 9c75e88 | see repo | reims-vgpu + metal2vulkan for Apple's own ParavirtualizedGraphics | QEMU | Works on PCs | Fallback GPU path only |
 | 18 | [oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel) 63fc2b4 (read at 62e09f8, 2026-11-25) | MIT for its own work, APSL-2.0 for what extends XNU or came from HakiOS (its README "Licence"; GitHub detects none) | HakiOS: own loader, drivers and "hakios-metal" (a Metal driver without Vulkan: 110 fps page swipes on A642L) | SM7325 | iOS 16.5 | Watch: a second Metal design, bare-metal and xnu-8796 today |
 | 19 | [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) 45263be and its forks | MIT | xnu-8796 bare-metal, iOS 16, CPU-rendered | SM7150 and many others | Home screen | Not useful: no PAC userland, no GPU through Linux |
-| 20 | [DenialOfGravity/ios-redfin](https://github.com/DenialOfGravity/ios-redfin) 23019ab4 `main` (cefcd91 `redfin-int`) | MIT | `phone/sensors/`: a Qualcomm SEE client (QMI service 400 over QRTR, protobuf), sensors as SPU HID services (0971, 0972), auto-brightness's cached re-post and True Tone (1298) | SM7250 Pixel 5 | iOS 16.7.16: every sensor, auto-brightness, cameras, 2-way audio | **Port** (2026-11-25): its `sns.c`/`pb.c` onto Linux's `AF_QIPCRTR` for the S24's sensor hub; [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) sections 1-2 |
+| 20 | [DenialOfGravity/ios-redfin](https://github.com/DenialOfGravity/ios-redfin) 23019ab4 `main` (cefcd91 `redfin-int`) | MIT | `phone/sensors/`: a Qualcomm SEE client (QMI service 400 over QRTR, protobuf), sensors as SPU HID services (0971, 0972), auto-brightness's cached re-post and True Tone (1298) | SM7250 Pixel 5 | iOS 16.7.16: every sensor, auto-brightness, cameras, 2-way audio | **Ported** (fix/sensors-als, 2026-11-25; not booted): `sns.c`, `pb.c`, `phone/wifi/qmi.c` and `sensor.c`'s sequence onto Linux's `AF_QIPCRTR` (`runtime/bridges/sensors`), `test_sensd.c`'s byte vectors (`sensors/tests.rs`), 1298's cached re-post (`drivers/brightness/OneiOSALSDevice.cpp`); [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) sections 1-2 |
 | 21 | [coreycusick/ios-guacamole](https://github.com/coreycusick/ios-guacamole) 53e6c5e `ios27` | MIT (camera files HakiOS MIT) | `userland/camera/`: an iOS 27.2 FigCaptureDevice plug-in and `capture_hooks.c` (the capture graph's start fixes) | SM8150 OnePlus 7 Pro | iOS 27.2: live preview and photos (2026-11-18), speakers | **Port** (2026-11-25): camera input for `fix/s24-fps-heat-camera`, [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) section 3 |
 
 The per-area plan for sensors, auto-brightness, camera, audio and Bluetooth taken from these and from UniXNU-sheng
 (`hal/ShengAudioPlugIn.c`'s volume curve, iPadOS 27.0.1) and UniXNU-droidvm (its motion HID classes) is
 [ports-2026-11-25-hw.md](ports-2026-11-25-hw.md) (2026-11-25, research only: nothing ported then; the volume curve was taken
 the same day on fix/audio-volume-rt, section 2 "Audio" above).
+
+**Ported for the sensors (fix/sensors-als, 2026-11-25; host-tested and built, not booted):**
+
+| Source @ commit, file | Licence | Here |
+| --- | --- | --- |
+| DenialOfGravity/ios-redfin 23019ab4 `phone/sensors/sns.c`, `pb.c`, `sensor.c`, `test_sensd.c`, `phone/wifi/qmi.c` (Copyright (c) 2026 dipa-studio) | MIT | `runtime/bridges/sensors/sns.rs`, `pb.rs`, `mod.rs`, `tests.rs` (MIT): the SEE client on Linux's QRTR |
+| ios-redfin 23019ab4 `xnu/patches/1298-redfin-auto-brightness-true-tone.patch` (the cached sample re-posted within 15 ms of a wake), `0971` (the SPU usage pairs, `setIntegerValue` of the illuminance) | MIT | `drivers/brightness/OneiOSALSDevice.cpp` (MIT), `kernel/patches/oneios-hosted/hid/OneiOSALSEvents.cpp` |
+| Droid-VM/UniXNU-droidvm f9121cd `package/DroidVMMotionHid.inc`, `DroidVMSensorProcessor.cpp`, `DroidVMMotion.c` (row 1, the pinned checkout) | BSD-2-Clause-Patent | staged into the HID archive by `oneios-tool kernel gen hid` (`staged/hid_motion.rs`: the compass kind, frame-driven ticks, the transport's magnetometer axes) |
+| UniXNU/ShengHidInput 24f1f3f `NativeHidInput.cpp` (row 7): the event driver's vtable copy with its 220 checked discriminators | BSD-2-Clause-Patent | `kernel/patches/oneios-hosted/hid/OneiOSALSEvents.cpp` wraps the light sensor's event driver the same way (the table exported from the staged copy) |
+| jesvi-eulah/Jesvi-iOS a13e406 `userland/src/inject_sensors.c` (pinned in `scripts/setup/get-references.sh`) | MIT (`userland/`) | what CoreBrightness checks on an ALS service (Built-In, VendorID 0x5ac, `ALSCurveInfo`, field 0xC000B): `drivers/brightness/OneiOSALSDevice.cpp` |
 
 ### The ios-sweet fork network
 
