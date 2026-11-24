@@ -2083,20 +2083,43 @@ pub fn view_boot_args(args: &mut String, size: usize, view: u64, window: u64) ->
     Ok(multiplier)
 }
 
-/// xh_scale_fixups: -[CADisplayMode preferredScale] of QuartzCore, read in 24A446's cache (docs/userland.md, "The UI
-/// scale"): a mode with no preferred scale of its own is @2x in a virtual device (or what the mode's own field says,
-/// when more), else @2x when taller than 1080 pixels and @1x otherwise. Nothing there answers 3, so for a scale of 3
-/// both answers are changed: the virtual device's floor, and the height test's result. A scale of 2 is what the code
-/// gives unchanged. The kernel applies a fixup only where the original bytes match. Appends to `list` what fits.
+/// The @3x fixups of -[CADisplayMode preferredScale] per iOS build (scale_fixups): the build, and its entries
+/// (subcache, file offset, original bytes, new bytes). One function, the same 32 instructions in each build, only its
+/// place in dyld_shared_cache_arm64e.01 differs (docs/userland.md, "The UI scale", has how each was found).
+/// - 24A446: the function at 0x40b1758 (0x1844b1758), entry 11 of QuartzCore's -[CADisplayMode] method list.
+/// - 24B156 (27.2.1): at 0x3f9d6f4 (0x18439d6f4), entry 11 of the same list (its 31 selectors are 24A446's), found by
+///   the function's own bytes (one match in .01) and checked by its selector name; the original bytes are the same.
+pub const SCALE_FIXUPS_3X: &[(&str, &[&str])] = &[
+    (
+        "24A446",
+        &[
+            "dyld_shared_cache_arm64e.01,40b17a8,49008052,69008052", // mov w9, #2 -> mov w9, #3
+            "dyld_shared_cache_arm64e.01,40b17bc,280080520895889a,680080521f2003d5", // mov w8, #1; cinc x8, x8, hi -> mov w8, #3; nop
+        ],
+    ),
+    (
+        "24B156",
+        &[
+            "dyld_shared_cache_arm64e.01,3f9d744,49008052,69008052", // mov w9, #2 -> mov w9, #3
+            "dyld_shared_cache_arm64e.01,3f9d758,280080520895889a,680080521f2003d5", // mov w8, #1; cinc x8, x8, hi -> mov w8, #3; nop
+        ],
+    ),
+];
+
+/// xh_scale_fixups: -[CADisplayMode preferredScale] of QuartzCore, read in 24A446's cache and 24B156's
+/// (docs/userland.md, "The UI scale"): a mode with no preferred scale of its own is @2x in a virtual device (or what
+/// the mode's own field says, when more), else @2x when taller than 1080 pixels and @1x otherwise. Nothing there
+/// answers 3, so for a scale of 3 both answers are changed: the virtual device's floor, and the height test's result.
+/// A scale of 2 is what the code gives unchanged. The entries are the image set's build's (SCALE_FIXUPS_3X; none for
+/// a build not there). The kernel applies a fixup only where the original bytes match. Appends to `list` what fits.
 pub fn scale_fixups(build: Option<&str>, scale: u32, list: &mut TextFixups) {
-    const FIXUPS_24A446_3X: &[&str] = &[
-        "dyld_shared_cache_arm64e.01,40b17a8,49008052,69008052", // mov w9, #2 -> mov w9, #3
-        "dyld_shared_cache_arm64e.01,40b17bc,280080520895889a,680080521f2003d5", // mov w8, #1; cinc x8, x8, hi -> mov w8, #3; nop
-    ];
-    if scale != 3 || build != Some("24A446") {
+    if scale != 3 {
         return;
     }
-    for f in FIXUPS_24A446_3X {
+    let Some((_, fixups)) = SCALE_FIXUPS_3X.iter().find(|(b, _)| Some(*b) == build) else {
+        return;
+    };
+    for f in fixups.iter() {
         if !list.push_within(f, TEXT_FIXUPS_SIZE) {
             break;
         }

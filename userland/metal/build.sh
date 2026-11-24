@@ -3,6 +3,8 @@
 #
 #   scripts/bg.sh metal userland/metal/build.sh            everything (about 25 minutes the first time)
 #   userland/metal/build.sh stage|turnip|plugin|finish|addon   one step
+#   ONEIOS_METAL_TARGET="iPhone18,2 24B156" userland/metal/build.sh   for iOS 27.2.1 (hooks/iPhone18,2-24B156.json), in
+#                               out/userland-24B156 (the default target, iPhone18,2 24A446, is out/userland's)
 #   METAL_RUNTIME=rt userland/metal/build.sh ...            the same with the bridge on metal2vulkan-rt (userland/metal/rt: the
 #                               pin development 6462199fa and its patches, the bridge rewritten on its API), in out/metal-rt and
 #                               out/userland-rt unless METAL_WORK and METAL_OUT say otherwise; the default stays 624bab3
@@ -51,6 +53,10 @@ case "$RUNTIME" in
   rt) DEFAULT_WORK=$ROOT/out/metal-rt DEFAULT_OUT=$ROOT/out/userland-rt ;;
   *) echo "metal: METAL_RUNTIME=$RUNTIME: 624bab3 or rt" >&2; exit 2 ;;
 esac
+# Another target than the default (the image's device and build, hooks/<device>-<build>.json): its own output folder,
+# out/userland-<build> (out/userland-rt-<build>), so that the default's bundle stays; the work folder is shared (stage
+# stages the sources again, only the plug-in is built again).
+[ "$TARGET_ID" = "iPhone18,2 24A446" ] || DEFAULT_OUT=$DEFAULT_OUT-${TARGET_ID#* }
 W=${METAL_WORK:-$DEFAULT_WORK}
 R=$W/root
 EXT=$ROOT/external

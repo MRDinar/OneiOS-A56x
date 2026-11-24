@@ -14,7 +14,8 @@
 #   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record
 #   lib/guest/             the iOS plug-ins, when METAL_DIR (and CAMERA_DIR) are given: NativeAdrenoMetal.bundle with its
 #                          build record, camera/H9ISP.mediacapture, and NOTICE (their sources' licences and pins); the
-#                          phone's Make iOS image seeds them into the image (step 3b)
+#                          phone's Make iOS image seeds them into the image (step 3b); another iOS build's in
+#                          lib/guest/<build>/ (METAL_MORE_DIRS, step 3c)
 #   NOTICE, LICENSE        licences; the APSL notice when a kernel is inside
 # Nothing of Apple's goes in: `oneios-tool package` (tools/oneios-tool/crates/oneios-package) refuses firmware names
 # and containers, and any Mach-O that is not our own source-built XNU or, under lib/guest/, our own ad hoc signed iOS
@@ -30,7 +31,7 @@
 # Env: ANDROID_NDK_ROOT (default $HOME/Android/Sdk/ndk/28.2.13676358, on macOS $HOME/Library/Android/sdk/ndk/...;
 #      the revision is checked; runtime/build.sh gets it as NDK unless NDK is set), ANDROID_API (35),
 #      KERNEL_DIR, OUT_DIR (out/release; a relative one is taken from the current folder), SOURCE_DATE_EPOCH (default: the commit time),
-#      METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/),
+#      METAL_DIR, CAMERA_DIR, REQUIRE_METAL (step 3b; neither given: no lib/guest/), METAL_MORE_DIRS (step 3c),
 #      PACKAGE_EXTRA_DIR (a folder copied into the package as it is; used by the tests).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -224,6 +225,35 @@ if [ -n "${CAMERA_DIR:-}" ]; then
   cp "$CAMERA_DIR/H9ISP.mediacapture" "$GUEST/camera/"
   echo "package: capture plug-in from $CAMERA_DIR"
 fi
+# 3c. Other iOS builds of the same device (METAL_MORE_DIRS: folders, space-separated, each userland/metal/build.sh's
+# output for another target, ONEIOS_METAL_TARGET="iPhone18,2 24B156", with camera/H9ISP.mediacapture in it when the
+# capture plug-in goes too): each as lib/guest/<build>/, the build its bundle's oneios-target names, beside the default's
+# (METAL_DIR). Its record must name the same sources as the default's (lib/guest/NOTICE lists those). runtime.json lists
+# every target in "metals" and "cameras"; "metal" and "camera" stay the default's (docs/releases.md).
+for d in ${METAL_MORE_DIRS:-}; do
+  [ "$HAVE_METAL" = 1 ] || { echo "package: METAL_MORE_DIRS without METAL_DIR: runtime.json \"metal\" names the default target's bundle" >&2; exit 1; }
+  B=$d/NativeAdrenoMetal.bundle
+  [ -f "$B/NativeAdrenoMetal" ] && [ -f "$B/oneios-target" ] && [ -f "$d/NativeAdrenoMetal.build.json" ] ||
+    { echo "package: METAL_MORE_DIRS: $d holds no whole NativeAdrenoMetal.bundle with NativeAdrenoMetal.build.json beside it" >&2; exit 1; }
+  target=$(cat "$B/oneios-target")
+  build=${target#* }
+  case "$build" in ''|*[!A-Za-z0-9]*|"$target") echo "package: $B/oneios-target says '$target', not '<device> <build>'" >&2; exit 1 ;; esac
+  [ ! -e "$GUEST/$build" ] || { echo "package: METAL_MORE_DIRS: a second bundle for build $build ($d)" >&2; exit 1; }
+  for name in NativeMetal metal2vulkan mesa-droidvm Droid-VM-UniXNU NativeAdreno AdrenoPM4 NativeMobileDisplay; do
+    [ "$("$ONEIOS_TOOL" json get --default none "$d/NativeAdrenoMetal.build.json" "sources.$name")" = \
+      "$("$ONEIOS_TOOL" json get --default none "$METAL_DIR/NativeAdrenoMetal.build.json" "sources.$name")" ] ||
+      { echo "package: $d is built from another $name than $METAL_DIR (lib/guest/NOTICE lists the default's sources): build both from one checkout" >&2; exit 1; }
+  done
+  mkdir -p "$GUEST/$build"
+  cp -R "$B" "$GUEST/$build/"
+  cp "$d/NativeAdrenoMetal.build.json" "$GUEST/$build/"
+  echo "package: Metal plug-in for $target from $d (lib/guest/$build/)"
+  if [ -f "$d/camera/H9ISP.mediacapture" ]; then
+    mkdir -p "$GUEST/$build/camera"
+    cp "$d/camera/H9ISP.mediacapture" "$GUEST/$build/camera/"
+    echo "package: capture plug-in for $target from $d/camera"
+  fi
+done
 
 # 4. Notices.
 {

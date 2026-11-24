@@ -185,6 +185,26 @@ if [ -f "$ROOT/external/metal2vulkan/LICENSE-GPL-2.0" ] && [ -f "$ROOT/external/
   grep -q 'lib/guest/NOTICE' "$T/notice" || fail "NOTICE does not name lib/guest/NOTICE"
   grep -q '^package: Metal plug-in for iPhone18,2 24A446 from ' "$T/log" || fail "no Metal line"
   ok "the guest plug-ins: lib/guest/ in runtime.json (metal: 2 CDHashes, camera), lib/guest/NOTICE with the licences"
+  # another iOS build of the device (METAL_MORE_DIRS): lib/guest/<build>/, listed in "metals" and "cameras" after the
+  # default's, which "metal" and "camera" still name
+  rm -rf "$T/g3"; guest_dir "$T/g3" "iPhone18,2 24B156"
+  METAL_DIR=$T/g CAMERA_DIR=$T/g/camera METAL_MORE_DIRS=$T/g3 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || { cat "$T/log"; fail "package with two targets"; }
+  zstd -dc "$P" | tar -xO runtime.json > "$T/m.json"
+  [ "$("${J[@]}" get "$T/m.json" metal.target)|$("${J[@]}" get "$T/m.json" camera.path)|$("${J[@]}" len "$T/m.json" metals)|$("${J[@]}" get "$T/m.json" metals.0.target)|$("${J[@]}" get "$T/m.json" metals.1.target)|$("${J[@]}" get "$T/m.json" metals.1.bundle)|$("${J[@]}" get "$T/m.json" cameras.1.path)|$("${J[@]}" get "$T/m.json" cameras.1.target)" = \
+    "iPhone18,2 24A446|lib/guest/camera|2|iPhone18,2 24A446|iPhone18,2 24B156|lib/guest/24B156/NativeAdrenoMetal.bundle|lib/guest/24B156/camera|iPhone18,2 24B156" ] || { cat "$T/m.json"; fail "runtime.json's metals and cameras"; }
+  for f in NativeAdrenoMetal.bundle/NativeAdrenoMetal NativeAdrenoMetal.bundle/oneios-target NativeAdrenoMetal.build.json camera/H9ISP.mediacapture; do
+    grep -q "\"path\": \"lib/guest/24B156/$f\"" "$T/m.json" || fail "lib/guest/24B156/$f is not in runtime.json"
+  done
+  grep -q '^package: Metal plug-in for iPhone18,2 24B156 from .* (lib/guest/24B156/)$' "$T/log" || { cat "$T/log"; fail "no line for the second target"; }
+  ok "two targets: lib/guest/24B156/ beside lib/guest/, runtime.json \"metals\" and \"cameras\" list both, \"metal\" stays 24A446's"
+  rc=0; METAL_MORE_DIRS=$T/g3 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q 'METAL_MORE_DIRS without METAL_DIR' "$T/log" || { cat "$T/log"; fail "METAL_MORE_DIRS alone: exit $rc"; }
+  rc=0; METAL_DIR=$T/g METAL_MORE_DIRS="$T/g3 $T/g3" "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q 'a second bundle for build 24B156' "$T/log" || { cat "$T/log"; fail "one build twice: exit $rc"; }
+  "${J[@]}" set "$T/g3/NativeAdrenoMetal.build.json" sources.NativeMetal '"0000000000000000000000000000000000000000"'
+  rc=0; METAL_DIR=$T/g METAL_MORE_DIRS=$T/g3 "$ROOT/runtime/package.sh" $V > "$T/log" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && grep -q 'is built from another NativeMetal than' "$T/log" || { cat "$T/log"; fail "another target of other sources: exit $rc"; }
+  ok "stopped: METAL_MORE_DIRS without METAL_DIR, one build twice, a second target built from other sources"
   apple_dylib() { mkdir -p "$T/extra/lib/guest/x"; "$ONEIOS_TOOL" debug fixture apple-dylib "$T/extra/lib/guest/x/lib.dylib"; }
   refuse "Apple's code under lib/guest/ (not ad hoc, com.apple.*)" apple_dylib
   grep -q 'not signed ad hoc (com.apple.test.dylib)' "$T/log" || { cat "$T/log"; fail "the refusal does not say why"; }

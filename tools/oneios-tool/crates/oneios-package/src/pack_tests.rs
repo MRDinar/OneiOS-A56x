@@ -283,3 +283,60 @@ fn a_metal_bundle_must_match_its_record() {
     let camera_only: Vec<_> = files.iter().filter(|(p, _)| !p.starts_with("lib/guest/NativeAdrenoMetal")).cloned().collect();
     assert_eq!(refusal_of("camera-only", &camera_only), format!("{CAMERA_DIR}/H9ISP.mediacapture: the capture plug-in without the Metal bundle, whose target says which iOS both are built for"));
 }
+
+#[test]
+fn a_second_target_is_listed_beside_the_default() {
+    let (mut files, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    // the second target as runtime/package.sh's METAL_MORE_DIRS places it: lib/guest/24B156/
+    let more: Vec<(String, Vec<u8>)> = guest_files("iPhone18,2 24B156", "iPhone18,2 24B156")
+        .0
+        .into_iter()
+        .filter(|(p, _)| p.starts_with("lib/guest/"))
+        .map(|(p, b)| (p.replacen("lib/guest/", "lib/guest/24B156/", 1), b))
+        .collect();
+    files.extend(more.clone());
+    assert_eq!(refusal_of("two-ok", &files), "");
+    let borrowed: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let root = stage("two-manifest", &borrowed);
+    std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    manifest(&root, "0.1.0", "00", "0", "0.4.80", "0").unwrap();
+    let document = json::load(root.join(MANIFEST)).unwrap();
+    // an older reader's keys: the default's, as before
+    assert_eq!(document.get("metal").and_then(|m| m.get("target")).and_then(Value::as_str), Some("iPhone18,2 24A446"));
+    assert_eq!(document.get("metal").and_then(|m| m.get("bundle")).and_then(Value::as_str), Some(METAL_BUNDLE));
+    assert_eq!(document.get("camera").and_then(|c| c.get("path")).and_then(Value::as_str), Some(CAMERA_DIR));
+    // the lists: the default first, then lib/guest/24B156/
+    let metals = document.get("metals").and_then(Value::as_list).unwrap();
+    let t: Vec<(&str, &str)> = metals.iter().map(|m| (m.get("target").and_then(Value::as_str).unwrap(), m.get("bundle").and_then(Value::as_str).unwrap())).collect();
+    assert_eq!(t, [("iPhone18,2 24A446", METAL_BUNDLE), ("iPhone18,2 24B156", "lib/guest/24B156/NativeAdrenoMetal.bundle")]);
+    assert_eq!(metals[1].get("record").and_then(Value::as_str), Some("lib/guest/24B156/NativeAdrenoMetal.build.json"));
+    let cameras = document.get("cameras").and_then(Value::as_list).unwrap();
+    let c: Vec<(&str, &str)> = cameras.iter().map(|c| (c.get("target").and_then(Value::as_str).unwrap(), c.get("path").and_then(Value::as_str).unwrap())).collect();
+    assert_eq!(c, [("iPhone18,2 24A446", CAMERA_DIR), ("iPhone18,2 24B156", "lib/guest/24B156/camera")]);
+    let _ = std::fs::remove_dir_all(&root);
+
+    // refused: a folder that is not its bundle's build; two bundles for one target; another target without the default
+    let (mut wrong, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    wrong.extend(more.iter().map(|(p, b)| (p.replacen("lib/guest/24B156/", "lib/guest/24B157/", 1), b.clone())));
+    assert_eq!(refusal_of("two-folder", &wrong), "lib/guest/24B157/NativeAdrenoMetal.bundle: oneios-target says 'iPhone18,2 24B156', its folder names build 24B157");
+    let (mut twice, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    twice.extend(guest_files("iPhone18,2 24A446", "iPhone18,2 24A446").0.into_iter().filter(|(p, _)| p.starts_with("lib/guest/")).map(|(p, b)| (p.replacen("lib/guest/", "lib/guest/24A446/", 1), b)));
+    assert_eq!(refusal_of("two-same", &twice), "lib/guest/24A446/NativeAdrenoMetal.bundle: a second Metal bundle for 'iPhone18,2 24A446'");
+    let mut alone: Vec<(String, Vec<u8>)> = vec![("bin/xnuhost".to_string(), b"#!/bin/sh\n".to_vec())];
+    alone.extend(more.clone());
+    assert_eq!(refusal_of("two-alone", &alone), format!("lib/guest/24B156/: another target's plug-ins without the default's ({METAL_BUNDLE}), which runtime.json \"metal\" names"));
+}
+
+#[test]
+fn one_target_lists_itself() {
+    let (files, _) = guest_files("iPhone18,2 24A446", "iPhone18,2 24A446");
+    let borrowed: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+    let root = stage("one-list", &borrowed);
+    std::fs::set_permissions(root.join("bin/xnuhost"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    manifest(&root, "0.1.0", "00", "0", "0.4.80", "0").unwrap();
+    let document = json::load(root.join(MANIFEST)).unwrap();
+    assert_eq!(document.get("metals").and_then(Value::as_list).map(|l| l.len()), Some(1));
+    assert_eq!(document.get("metals").and_then(Value::as_list).unwrap()[0], *document.get("metal").unwrap());
+    assert_eq!(document.get("cameras").and_then(Value::as_list).map(|l| l.len()), Some(1));
+    let _ = std::fs::remove_dir_all(&root);
+}
