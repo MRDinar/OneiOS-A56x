@@ -376,7 +376,10 @@ The kernel is not built in CI. A build machine builds it (`kernel/README.md`), a
    `out/kernel/current` (the VM kernel of `kernel/build-linux.sh`, which xnuhost does not run). Before 2026-11-21
    the script still called the deleted `runtime/package/pack.py`, so it could not pack anything.
 2. `kernel/release-kernel.txt` gets one line, `kernel-<build id> <sha256 of the archive>`, in a commit.
-3. The runtime job (of every build, not only a release) downloads that archive, checks the SHA-256, and `runtime/package.sh` checks the build record
+3. The runtime job (of every build, not only a release) downloads that archive (from the release of that tag in the
+   repository the workflow runs in; a fork whose CI keeps our `kernel/release-kernel.txt` and has no such release takes it
+   from akshaynexus/OneiOS, where `kernel/publish.sh` uploads it: since 2026-11-25, ported from
+   orumanayurpanjayat-ux/OneiOS `79cf4fb`/`d5018d0`, CREDITS.md; not yet run in a fork's CI), checks the SHA-256, and `runtime/package.sh` checks the build record
    again before the kernel goes into the package as `kernel/xnu.macho` and `kernel/xnu.macho.build.json`;
    `runtime.json`'s `"kernel"` is then `{"path": "kernel/xnu.macho", "build_id", "sha256", "xnu", "profile",
    "record": "kernel/xnu.macho.build.json"}`, taken from the record.
