@@ -3148,6 +3148,17 @@ checked by `the_edit_lists_write_what_the_python_functions_wrote`. Run on the Li
 fresh checkout (not caused by this change). `cargo test -p oneios-kernel` alone does not compile: `oneios-prelink`'s
 `toml` needs the `serde` feature, which only the whole workspace turns on.
 
+Since 2026-11-24 (a56-gpu, the Galaxy A56's Metal accelerator; `docs/a56-gpu.md` 5) `kernel gen gpu` also stages:
+- NativeAdreno's `NativeAdrenoAccelerator.cpp`, with the new edit list `staged/gpu.rs` `ACCELERATOR`: the A56
+  accelerator's open types and its CPU-composition filter in `copyProperty` and a new `serializeProperties`;
+  `staged_accelerator_text`, with the made-up `synthetic/accelerator.in`/`.out`;
+- two more edits of `GPU`: the Metal plug-in's names come from `OneiOSAdreno.cpp`;
+- two more edits of `GPU3D`: each DRM context made is reported to `OneiOSAdreno.cpp`.
+
+The archive's sources gain `gpu/OneiOSGpuChoice.h`. `the_gpu_edits_fit_the_pinned_sources` applies the three lists to
+the real pinned files, when `external/` has them. Run in this worktree on the build laptop: `cargo test -q --test
+golden` in `crates/oneios-kernel`, 15 of 15.
+
 **`kernel gen codec`** (hevc-guest, 2026-11-15; the tenth archive, after `audio` in `kernel/build-hosted.sh`) builds
 `build/oneios-codec/liboneioscodec.a`, the hosted kernel's video encoder: UniXNU-droidvm's virtio-media transport
 (`DroidVMVirtioMedia.c`, the Mach record, `-DDROIDVM_DEVICE_DYNAMIC=1`), its
