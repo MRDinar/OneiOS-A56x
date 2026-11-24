@@ -549,8 +549,11 @@ static ALOG: OnceLock<PathBuf> = OnceLock::new();
 fn alog(line: &str) {
     use std::io::Write;
     println!("  fake AIDL HAL: {line}");
+    // One write of the whole line: the HAL's callback thread and its call thread both log here, and writeln!'s
+    // separate writes of the text and the newline let one land inside the other ("callback 0x1: yesiso 8", the
+    // v0.1.24 release run's failure at the order check). One O_APPEND write of a short line is not split.
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(ALOG.get().unwrap()) {
-        let _ = writeln!(f, "{line}");
+        let _ = f.write_all(format!("{line}\n").as_bytes());
     }
 }
 
