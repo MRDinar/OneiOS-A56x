@@ -3287,6 +3287,12 @@ compile deadline on a phone with every core at its top clock. What changed:
   (CoreMedia's notification center, the stream as the object), as H10ISP's does; ported from Jesvi-iOS
   `userland/src/camera_device.c` `post()` (a13e406, MIT), where BWFigVideoCaptureDevice waited for StreamStopped and
   every stop otherwise timed out. Switch `oneios-camera-notify=0`.
+- A crash of cameracaptured in the Metal plug-in's reflection (`nmb_compute_pipeline_reflection`, SIGSEGV at 0): a
+  compute pipeline rebuilt with its unset function constants zero freed its function before the reflection read it
+  (CCPortrait's kernels in cameracaptured's precompilation, every boot on Droid-VM). Ported from Droid-VM/NativeMetal
+  3c46b5e (MIT) as a frontend edit (docs/gpu.md "What the camera needs"); no switch (a crash fix). Proof: no
+  cameracaptured crash report naming `nmb_compute_pipeline_reflection`, no `oneios-kill` exit of cameracaptured with the
+  Camera app open.
 - Checked, no change needed: the names the plug-in takes (`VideoOutputConfigurations`, `VideoOutputsEnabled`,
   `VideoOutputHandlers`, `PixelBufferHandler`, `BufferPool`, the outputs `PrimaryScaler`, `SecondaryScaler`,
   `StillImage`) are in 24A446's CMCaptureCore as they were in iOS 16 (`oneios-tool sym cstr`); iOS 27 adds outputs

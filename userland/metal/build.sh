@@ -10,7 +10,7 @@
 # What is built (docs/gpu.md section 7, docs/userland.md 7.1):
 #   libvulkan_freedreno.dylib   Mesa's Turnip (external/mesa-droidvm cecc0e9 + Droid-VM-UniXNU patches/mesa, the list of
 #                               scripts/data/adreno-compiler-inputs.json, + this folder's trace-turnip-init.patch and
-#                               turnip-idle-bo-cache.patch) with the darwin virtio-gpu backend, a Mach-O dylib
+#                               turnip-idle-bo-cache.patch and turnip-submit-split.patch) with the darwin virtio-gpu backend, a Mach-O dylib
 #   libadreno_metal_bridge.a    metal2vulkan (external/metal2vulkan 624bab3 + NativeMetal bridge/patches + Droid-VM-UniXNU
 #                               patches/metal2vulkan + this folder's m2v-spare-command-pools.patch, m2v-idle-memory.patch and m2v-compile-deadline.patch) behind
 #                               NativeMetal's C ABI; Rust, arm64e-apple-ios, std from source
@@ -101,6 +101,7 @@ stage() {
   # clone below (a fresh METAL_WORK has no mesa-work yet: applied before the clone, stage stopped with git's status 128).
   cp "$HERE/trace-turnip-init.patch" "$R/patches/mesa/"
   cp "$HERE/turnip-idle-bo-cache.patch" "$R/patches/mesa/"
+  cp "$HERE/turnip-submit-split.patch" "$R/patches/mesa/"
   cp "$HERE/trace-metal-vulkan-init.patch" "$R/patches/metal2vulkan/"
   cp "$HERE/trace-metal-surfaces.patch" "$R/patches/"
   # Not a trace: spare command pools follow their recent use (docs/gpu.md, "Who keeps a blob"), applied after the trace
@@ -139,6 +140,11 @@ stage() {
   if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/turnip-idle-bo-cache.patch" 2>/dev/null; then
     git -C "$R/.cache/mesa-work" apply "$HERE/turnip-idle-bo-cache.patch"
   fi
+  # A kernel submission ends only where a command buffer begins (Droid-VM/UniXNU fb9fb47: the GPU hang at 5-10% of
+  # backboardd's starts), after the idle one, applied once as well.
+  if ! git -C "$R/.cache/mesa-work" apply --reverse --check "$HERE/turnip-submit-split.patch" 2>/dev/null; then
+    git -C "$R/.cache/mesa-work" apply "$HERE/turnip-submit-split.patch"
+  fi
   [ -d "$R/.cache/gpu-reference/metal2vulkan/.git" ] || git clone -q "$EXT/metal2vulkan" "$R/.cache/gpu-reference/metal2vulkan"
   # The staged scripts and sources: what differs from upstream, each said.
   # clang 23's -Wunused-but-set-global: Xcode 27.2's clang 21 does not know it (and -Werror makes an unknown
@@ -148,6 +154,22 @@ stage() {
   local rt=()
   [ "$RUNTIME" = rt ] && rt=(--rt)
   "$ONEIOS_TOOL" ios metal-stage-edit "$R" "$HOOKS" "$JOBS" "$knows" "${rt[@]}"
+  # The bridge script takes the translator's source only as the pin plus a prefix of its patch list ("Translator source
+  # differs from the pinned revision plus its recorded patches"). A list whose order or a patch that changed since the
+  # last stage leaves a tree that is no prefix (2026-11-25: main's 90101, 90102, 90110 came before this branch's
+  # m2v-compile-deadline.patch, which an older stage had applied right after m2v-idle-memory.patch). So the list and the
+  # patches are remembered (a checksum in build/m2v-patches.stamp); when they changed, or when no stage recorded them and
+  # the tree has changes, the source goes back to the pin and the script applies the whole list again (the bridge is
+  # then built again, as it would be for any patch change).
+  local m2v=$R/.cache/gpu-reference/metal2vulkan stamp=$R/build/m2v-patches.stamp want
+  want=$(cat "$R/scripts/build-adreno-metal-bridge.py" "$R"/drivers/AdrenoMetal/bridge/patches/*.patch \
+    "$R"/patches/metal2vulkan/*.patch 2>/dev/null | cksum)
+  if { [ -f "$stamp" ] && [ "$(cat "$stamp")" != "$want" ]; } \
+    || { [ ! -f "$stamp" ] && [ -n "$(git -C "$m2v" status --porcelain)" ]; }; then
+    git -C "$m2v" checkout -q -- . && git -C "$m2v" clean -qfd
+    say "the translator's patch list or a patch changed since the last stage: $m2v is back at the pin (the bridge script applies the list again)"
+  fi
+  printf '%s\n' "$want" > "$stamp"
   # drivers/brightness/BacklightMode.inc (owner: brightness): backboardd's CoreBrightness gets BLControl, not the
   # VMBLControl that vmm-present selects, and no frame-synchronous brightness (no handler for it here), so the slider
   # reaches the backlight service as brightness-nits. The plug-in is the OneiOS code
