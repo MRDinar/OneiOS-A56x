@@ -69,6 +69,17 @@ What xnuhost has to supply for drm2kgsl, as crosvm does [F] (`drm2kgsl_renderer.
 - environment switches worth keeping: `DRM2KGSL_PRIORITIES=3` (render server on its own ringbuffer),
   `DRM2KGSL_PWR_CONSTRAINT`, `NCTX_NO_WAITTS`.
 
+### Frame rate and camera code taken from other ports (fix/s24-fps-heat-camera, 2026-11-25)
+
+| Ours | Taken from | Licence of the file | What |
+|---|---|---|---|
+| `userland/metal/DisplayLinks.inc` | [qiumochen/UniXNU-zizhan](https://github.com/qiumochen/UniXNU-zizhan) 42629e5 `userland/ui_compat18.c` `display_link_rates` (itself from hakios 7caa457) | SPDX MIT in the file (the repo's LICENSE is BSD-2-Clause-Patent) | the in-process animation manager's display links at the panel's rate; matched by part of the class name for iOS 27's AnimationKit, all three link makers hooked |
+| `userland/metal/SnapshotFormat.inc` | [rafsanbasunia/ios-garnet](https://github.com/rafsanbasunia/ios-garnet) f6276db `userland/src/inject_sb.c` `snapshot_output_format` | MIT (the HakiOS authors; `userland/src/` of its two-licence LICENSE) | SpringBoard's app snapshots JPEG or PNG, not ATX |
+| `userland/camera/OneiOSCaptureDevice.c` `post()` | [jesvi-eulah/Jesvi-iOS](https://github.com/jesvi-eulah/Jesvi-iOS) a13e406 `userland/src/camera_device.c` `post()` | MIT (the HakiOS authors) | the stream's Start and Stop notifications |
+
+Ideas only, no code: zizhan's ASTC on (`73df2a4`, `e3be892`; ours is the loader's `astc=` with NativeMetal's own
+layout) and its 60..120 reading of Core Animation's rates (our `sheng-vsync-min`).
+
 ### GPU (Metal on the Galaxy A56's Xclipse 540, iOS 16.5; added 2026-11-24)
 
 The A56 port's design and what each stage takes: [a56-gpu.md](a56-gpu.md) section 1. In short:
@@ -191,7 +202,10 @@ SM8650 boards (row 15 and `houji` forks); none has Metal.
 ### Ports read for the GPU, heat and stability (2026-11-25)
 
 Read for [ports-2026-11-25-gpu.md](ports-2026-11-25-gpu.md) (what to port, ranked, with switches and proof lines). No
-pin changed; the commits are those read.
+pin changed; the commits are those read. Taken since (fix/s24-fps-heat-camera, 2026-11-25, not booted): Turnip's submit split
+(`fb9fb47`, `userland/metal/turnip-submit-split.patch`), the reflection crash fix (`3c46b5e`, a frontend edit of
+`ios metal-stage-edit`) and the write-only present buffers (`cdb297bbf`, rewritten in Rust in
+`runtime/display/src/xhd/present.rs`; CREDITS.md).
 
 | Repo, commit read | Licence | What is in it for us |
 | --- | --- | --- |

@@ -1499,6 +1499,10 @@ ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym find EAGLContext:                
 ONEIOS_DSC_DIR=out/ios16-cache oneios-tool sym callers 0x194c99a00               # the branches to that stub (unslid)
 ONEIOS_DSC_DIR=out/ios272-cache oneios-tool sym dis 0x18434cff4 0x60          # 24B156's framebuffer_pixel_format, with the addresses it reads
 ONEIOS_DSC_DIR=out/ios272-cache oneios-tool sym find --no-index _ca_debug_options   # a data symbol (the index keeps code only)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym cstr PrimaryScaler                 # where a name stands as a C string (2026-11-25)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym ptrs 0x1f5fdcb7c                    # the words that point at it (selrefs, CFStrings)
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym refs 0x256d8f92e                    # the adrp pairs that form it, named
+ONEIOS_DSC_DIR=out/ios27-cache oneios-tool sym dis 0x2ad2b51e4 0x10                 # 16 instructions, with branches, pages and strings named
 ```
 
 A kernel panic of a session (`panic(cpu N caller 0x...)`, also when the console lost its first letters: `anic(cpu 0 caller 0x...)`, the fault's pc and lr, the `frame 0x...` lines), named in

@@ -2,7 +2,8 @@
 //! word, and with the addresses an instruction reaches worked out: a branch's target, and the address an `adrp`
 //! page plus a following `add` or load/store offset make (what blacktop's `ipsw dyld disass` printed for the Metal
 //! plug-in's hooks, docs/gpu.md section 7). Names come from the index when it has them (code only: the index keeps
-//! the symbols an image's __TEXT can get, so a data address has no name).
+//! the symbols an image's __TEXT can get, so a data address has no name: a data address an adrp + add/load/store
+//! makes is named by the C string there, or by the string or symbol a pointer word there points at).
 
 use crate::cache::{branch_target, Cache};
 use anyhow::{bail, Context, Result};
@@ -90,8 +91,16 @@ fn texts(words: &[u32]) -> Result<Vec<Option<String>>> {
     Ok(out)
 }
 
-/// The lines of `sym dis`: `count` instructions from `start` (unslid), each named by `name` where it can be.
-pub fn lines(cache: &Cache, start: u64, count: u64, name: &dyn Fn(u64) -> Option<String>) -> Result<Vec<String>> {
+/// The lines of `sym dis`: `count` instructions from `start` (unslid), each address named by `name` where it can be;
+/// an address an adrp + add/load/store makes that `name` does not know is named by `data` (a C string there, the
+/// string or symbol a pointer there points at: fix/s24-fps-heat-camera's reading of selector and string uses).
+pub fn lines(
+    cache: &Cache,
+    start: u64,
+    count: u64,
+    name: &dyn Fn(u64) -> Option<String>,
+    data: &dyn Fn(u64) -> Option<String>,
+) -> Result<Vec<String>> {
     if start & 3 != 0 {
         bail!("dis: {start:#x} is not a multiple of 4");
     }
@@ -109,12 +118,14 @@ pub fn lines(cache: &Cache, start: u64, count: u64, name: &dyn Fn(u64) -> Option
     for (i, (&w, text)) in words.iter().zip(texts).enumerate() {
         let pc = start + 4 * i as u64;
         let mut note = None;
+        let mut is_data = false;
         if let Some((rd, page)) = adrp(w, pc) {
             pages[rd as usize] = Some(page);
             note = Some(page);
         } else if let Some((rn, off, then)) = page_offset(w) {
             let sum = pages[rn as usize].map(|page| page + off);
             note = sum;
+            is_data = true;
             match then {
                 Then::Holds(rd) => pages[rd as usize] = sum,
                 Then::Loads(rt) => pages[rt as usize] = None,
@@ -128,7 +139,7 @@ pub fn lines(cache: &Cache, start: u64, count: u64, name: &dyn Fn(u64) -> Option
         let mut line = format!("{pc:#x}  {w:08x}  {}", text.unwrap_or_else(|| "(not an instruction llvm-mc knows)".into()));
         if let Some(t) = note {
             line.push_str(&format!("    ; {t:#x}"));
-            if let Some(n) = name(t) {
+            if let Some(n) = name(t).or_else(|| if is_data { data(t) } else { None }) {
                 line.push_str(&format!(" {n}"));
             }
         }

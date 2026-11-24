@@ -35,3 +35,12 @@ our pin was ported by itself. Authors: **lateautumn233** and **HuJK** (BSD-2-Cla
 |---|---|---|
 | `96e8c1f` "virtio-media: completion interrupts instead of polling" (lateautumn233) | `DroidVMVirtioMedia.c`: the device's level SPI attached, the event worker and command waiters woken by it instead of a 1 ms poll; events copied under the transport's lock and delivered without it | Edit 7 of the codec archive (`tools/oneios-tool/crates/oneios-kernel/src/staged/codec_transport.rs`), with a guard timeout and the command queue kept `NO_INTERRUPT` (xnuhost answers commands inside the notify, and honours the flag on that device: `Device::quiet_queues`); boot argument `oneios-codec-irq=0` keeps the poll (docs/switches.md) |
 | `2cd4c8e` "either ADT name for the window's interrupt, and polling where there is none" (HuJK) | The INTID from `droidvm,intid` or `gic-spi`; a window with neither, or an SPI that cannot be attached, polled as before | The same, with `interrupts` too (`OneiOSCodecWait.h` `oneios_media_polled_why`) |
+
+## YumikoHayamato/OneiOS
+
+The Galaxy S25 Ultra fork (branch `s25-ultra-sm8750`). Author: **YumikoHayamato** (commits signed "Stiven"). Ported
+2026-11-25 (branch `fix/s24-fps-heat-camera`), not booted on a phone at the time of the port.
+
+| Fork commit | What it did | Here |
+|---|---|---|
+| `cdb297bbf` "native path, step 6" (the display part) | With `ONEIOS_DISPLAY_PRESENT=ahb` the display helper posts its frames in three write-only AHardwareBuffers (`CPU_WRITE_RARELY`) on a child of its layer with ASurfaceTransaction, each filled with the damage since it was last filled, at most two in flight, refilled after its release fence; the window path kept when anything is missing. Measured on the S25: 85% of the helper's time had been the CPU caches' maintenance of the window's whole buffer at each lock and post; 60 frames a second at 49.5% of a core became 114 at 17.1% | Rewritten in Rust on the run loop's `Layer` (`runtime/display/src/xhd/present.rs`, the NDK half in `src/jni.rs`), behind xnuhost's `display-present=ahb` (default) through the `options` message (docs/switches.md); the child made from the layer's window rather than by the Java half; host tests `test_present_*`. Their copy-loop floor (`ONEIOS_DISPLAY_UCLAMP_MIN`), the frame-time line, `displayctl pool` and the PL030 kernel patch of the same commit are not ported (a VM's path) |

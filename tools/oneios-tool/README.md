@@ -698,7 +698,7 @@ oneios-tool ios macho-check [--tbd DIR | --sdk] [--local DYLIB]... [--arch A] FI
 oneios-tool ios tbds [--cache DIR] [--image systemos.img] [--out DIR] [NAME...]   # the guest's .tbd stubs (out/ios27-tbd; an arm64 cache, iOS 16.5's, gives arm64-ios stubs)
 oneios-tool ios tbd-diff [--a-listed] [--show N] A B                            # two stub trees, by what the linker reads
 oneios-tool ios codesign ARGS...                         # `codesign` for the Metal build's scripts (shim/codesign runs it)
-oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list; since 2026-11-25 the shader fixes 90101, 90102 and their switch 90110 after them, off without oneios-m2v-shader-fix=1; turnip-idle-bo-cache.patch in the Mesa list, the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
+oneios-tool ios metal-stage-edit ROOT HOOKS JOBS KNOWS [--rt]   # userland/metal/build.sh stage: the staged copy's changes (since 2026-11-23 also: m2v-spare-command-pools.patch and m2v-idle-memory.patch in the bridge's list; since 2026-11-25 the shader fixes 90101, 90102 and their switch 90110 after them, off without oneios-m2v-shader-fix=1, then m2v-compile-deadline.patch; turnip-idle-bo-cache.patch and turnip-submit-split.patch in the Mesa list; the camera edits of the frontend (since 2026-11-25 also NativeMetal 3c46b5e: the rebuilt compute function kept until the reflection is read); the command pool and GPU memory rows' calls in the plug-in; with --rt, METAL_RUNTIME=rt: the plug-in script links userland/metal/rt's bridge and does not build the old one)
 oneios-tool ios metal-record ROOT BUNDLE RECORD HOOKS TARGET   # build.sh finish: NativeAdrenoMetal.build.json
 oneios-tool ios bundle-record ROOT BUNDLE RECORD TARGET [NAME[=COMMIT]...]   # package.sh 3c: an A56 bundle's build record (CDHashes, pins)
 oneios-tool image a56-gpu-place --stage STAGE --out DIR   # the app at Update the kernel: an iOS 16.5 set's kernel.kc.gpuaddon, owner-trust.json, manifest.json
@@ -1696,6 +1696,27 @@ code only. `find --no-index` reads each image's own symbol table and the `.symbo
 copy of a cache (the main file, `.01`, `.25.dylddata`, `.26.dyldreadonly`, `.symbols`, `.81.dyldlinkedit`: what
 24B156's hooks needed) is read as far as it goes; the index says how many subcache files are not there and those
 images get no names.
+
+**`sym cstr`, `sym ptrs`, `sym refs`, `sym dis` (2026-11-25, fix/s24-fps-heat-camera):** reading the cache's data and
+code, for answering "does iOS 27 still have this name, and who uses it" without IDA. All four read the cache itself
+(`ONEIOS_DSC_DIR`) and name addresses from the index. The branch had its own `dis ADDR LEN` (llvm-objdump); the merge
+into main (2026-11-25) kept main's `dis ADDR [COUNT]` (llvm-mc, docs/gpu.md section 7) and gave it the branch's naming
+of strings and pointers.
+
+```sh
+oneios-tool sym cstr TEXT...                     # every address where TEXT stands as a whole C string (a selector, a class, a key)
+oneios-tool sym ptrs [--slide HEX] ADDR...       # every 8-byte word that points at ADDR (its low 36 bits): selrefs, class refs, CFStrings
+oneios-tool sym refs [--slide HEX] ADDR...       # every adrp + add/ldr/str pair in an image's __TEXT that forms ADDR, named
+oneios-tool sym dis [--slide HEX] ADDR [COUNT]   # the dis above (llvm-mc): an adrp + add/ldr address with no symbol is named by
+                                                 # the C string there, or the string or symbol a pointer there points at
+```
+
+A TEXT `cstr` does not find is said (status 1); `ptrs` and `refs` say each address nothing points at or forms. The
+scans run on every core (`cstr` over 24A446's 7.3 GB cache: 12 s). Used on 24A446 (`ONEIOS_DSC_DIR=out/ios27-cache`)
+to find that the capture stream's output names (`PrimaryScaler`, `SecondaryScaler`, `StillImage`, `VideoOutputHandlers`,
+`PixelBufferHandler`, `BufferPool`) are iOS 27's too (CMCaptureCore), that the in-process animation manager is
+AnimationKit's (`docs/s24-fps-heat-camera.md`), and that `+[XBApplicationSnapshotManifestImpl _outputFormatForSnapshot:]`
+is still a class method. Tests: `tests/synthetic.rs` `strings_pointers_and_page_pairs`.
 
 ```sh
 ONEIOS_DSC_DIR=<cache folder> tools/oneios-tool/tests/sym/compare-golden.sh

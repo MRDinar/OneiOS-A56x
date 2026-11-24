@@ -78,6 +78,9 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
                 a.push(Value::String("patches/mesa/trace-turnip-init.patch".into()));
                 // userland/metal/turnip-idle-bo-cache.patch: the idle trim of Turnip's BO cache, applied after the trace patch.
                 a.push(Value::String("patches/mesa/turnip-idle-bo-cache.patch".into()));
+                // userland/metal/turnip-submit-split.patch (Droid-VM/UniXNU fb9fb47): a kernel submission ends only where a
+                // command buffer begins, after the idle one.
+                a.push(Value::String("patches/mesa/turnip-submit-split.patch".into()));
             }
             _ => bail!("{}: no list \"patches\"", pins.display()),
         },
@@ -105,8 +108,8 @@ pub fn stage_edit(root: &Path, hooks: &Path, jobs: &str, knows: bool, rt: bool) 
             ("timeout=1800)", "timeout=10800)".into(), "a longer limit for the fat-LTO Rust build"),
             (
                 "\n\ndef git_tree(*steps):",
-                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90110-shader-fix-switch.patch')\n\n\ndef git_tree(*steps):".into(),
-                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch); the Adreno shader fixes 0101 and 0102 behind their switch, off without oneios-m2v-shader-fix=1 (90110-shader-fix-switch.patch)",
+                "\n\nPATCHES.append(ROOT / 'patches/metal2vulkan/trace-metal-vulkan-init.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-spare-command-pools.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-idle-memory.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90101-large-indexed-constants-to-blob.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90102-blob-constant-gep-pointers.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/90110-shader-fix-switch.patch')\nPATCHES.append(ROOT / 'patches/metal2vulkan/m2v-compile-deadline.patch')\n\n\ndef git_tree(*steps):".into(),
+                "record Vulkan initialization diagnostics in the translator patch stack; spare command pools follow their recent use (m2v-spare-command-pools.patch); the idle trim ages the spare image blocks, the memory census (m2v-idle-memory.patch); the Adreno shader fixes 0101 and 0102 behind their switch, off without oneios-m2v-shader-fix=1 (90110-shader-fix-switch.patch); the compile deadline per process (m2v-compile-deadline.patch)",
             ),
         ],
     )?;
@@ -384,6 +387,25 @@ fn frontend_camera_edits() -> Vec<(&'static str, String, &'static str)> {
             )
             .into(),
             "NBLibrary answers newFunctionWithName:constantValues:pipelineLibrary:error: (CMImaging's FigMetalContext)",
+        ),
+        (
+            concat!(
+                " // Metal builds a kernel that reads a constant nobody set; the runtime refuses it: once more with those constants zero.\n",
+                " if(!handle) {\n",
+                "  NBFunction *rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);\n"
+            ),
+            concat!(
+                " // Metal builds a kernel that reads a constant nobody set; the runtime refuses it: once more with those constants zero.\n",
+                " // OneiOS (oneios-tool ios metal-stage-edit; Droid-VM/NativeMetal 3c46b5e, MIT): the rebuilt function lives to the end of\n",
+                " // the call, as the reflection below reads its handle: held in the block alone, ARC freed it with the block and the\n",
+                " // reflection read a released function (cameracaptured's CCPortrait kernels: SIGSEGV at 0 in\n",
+                " // nmb_compute_pipeline_reflection during its precompilation, every boot).\n",
+                " NBFunction *rebuilt=nil;\n",
+                " if(!handle) {\n",
+                "  rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);\n"
+            )
+            .into(),
+            "a compute pipeline rebuilt with its unset constants zero keeps its function until the reflection is read (NativeMetal 3c46b5e: cameracaptured's crash)",
         ),
     ]
 }
@@ -968,6 +990,9 @@ mod tests {
         assert_eq!(text.matches("nbKnownOptions(").count(), 8);
         assert!(text.contains("pipelineLibrary:(id)library\n                                 error:(NSError **)error {"));
         assert!(text.contains("heap.options=(MTLResourceOptions)heapOptions;"));
+        // NativeMetal 3c46b5e: the rebuilt function is declared before the retry's block, not inside it
+        assert!(text.contains(" NBFunction *rebuilt=nil;\n if(!handle) {\n  rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);\n"));
+        assert!(!text.contains("  NBFunction *rebuilt=zeroRestFunction((NBFunction *)d.computeFunction);"));
         // a frontend that no longer has an anchor is refused, not built without the fix
         std::fs::write(dir.join("d/F.mm"), "nothing").unwrap();
         assert!(edit(&dir, "d/F.mm", &edits).is_err());

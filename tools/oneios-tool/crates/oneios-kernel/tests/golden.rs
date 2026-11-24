@@ -191,6 +191,13 @@ fn the_display_edits_fit_the_pinned_sources() {
     let staged = build_oneios_display::staged_scanout(std::fs::read_to_string(&scanout).unwrap()).unwrap();
     assert_eq!(staged.matches("scanoutFormat(r)").count(), 3);                  // CREATE_2D and the two SET_SCANOUT_BLOBs
     assert!(!staged.contains("r.width, r.height, 2, 0,") && staged.contains("format == 2 ? OneiOSHalf : 0};"));
+    // fix/s24-fps-heat-camera: the slowest refresh rate reported, in NativeMobileDisplay's display (where external/ has it).
+    let legacy = repo().join("external/NativeMobileDisplay/NativeLegacyDisplay.cpp");
+    if legacy.exists() {
+        let staged = build_oneios_display::staged_legacy(std::fs::read_to_string(&legacy).unwrap()).unwrap();
+        assert_eq!(staged.matches("sheng-vsync-min").count(), 1);
+        assert!(staged.contains("words[2]=longest;words[3]=longestTime;"));
+    }
 }
 
 #[test]

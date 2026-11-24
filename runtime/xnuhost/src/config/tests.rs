@@ -1245,9 +1245,11 @@ fn host_device() {
             == PanelMode { width: 720, height: 1560, hz: 60 }
     );
     assert!(c.hw.choose(Bridge::Haptics, Backend::Unset).0 == Backend::Treble && c.hw.fallback_allowed());
-    assert!(c
-        .host_line
-        .contains("width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble"));
+    assert!(c.host_line.contains(
+        "width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, astc=0, hw-backend-haptics=treble"
+    ));
+    assert!(!c.astc); // the A56 keeps its device tree without ASTC (2026-11-25)
+    assert!(rig.finish(Some(&props), None, Some("astc=1")).unwrap().astc);
     // the frame is one setting: an image set made at the panel's scale (roottweak writes scale=3) gets the frame and @2x;
     // an image set or a command line that gives a width or a height keeps its own frame and scale
     let conf = format!("{image}/xnuhost.conf");
@@ -1555,11 +1557,14 @@ fn the_switches() {
         ("stop-loop", "poll"),
         ("uclamp-rule", "all"),
         ("display-post", "serial"),
+        ("display-present", "window"),
         ("timer-coalesce", "0"),
+        ("astc", "0"),
     ] {
         assert!(c.set(k, v).is_ok(), "{k}={v}");
     }
-    assert!(c.display_post_serial);
+    assert!(c.display_post_serial && !c.display_present_ahb);
+    assert!(Config::default().display_present_ahb, "display-present=ahb by default");
     for (k, v) in [
         ("gpu-blob-entries", "65533"),
         ("gpu-blob-entries", "1024"),
@@ -1573,33 +1578,42 @@ fn the_switches() {
         ("uclamp-rule", "some"),
         ("wifi-buffers", "off"),
         ("display-post", "1"),
+        ("display-present", "1"),
         ("timer-coalesce", "sometimes"),
+        ("astc", "on"),
     ] {
         assert!(c.set(k, v).is_err(), "{k}={v} refused");
     }
     c.boot_args = "-v oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 \
                    oneios-disable-allowed=0 oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 \
-                   oneios-audio-rt=0 oneios-audio-curve=0 oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-dont-care=0 \
-                   oneios-queue-priority=0"
+                   oneios-audio-rt=0 oneios-audio-curve=0 oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-keep-room=0 \
+                   oneios-dl-full=0 sheng-vsync-min=24 oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 \
+                   oneios-m2v-shader-fix=1 oneios-dont-care=0 oneios-queue-priority=0"
         .into();
     let line = c.switches_line();
     assert!(line.contains(" wifi-joined-scan=plain ") && line.contains(" gpu-blob-entries=16384 "), "{line}");
-    assert!(line.contains(" decoder=off decoder-codecs=vp9,av1 "), "{line}");
+    assert!(
+        line.contains(" display-post=serial display-present=window decoder=off decoder-codecs=vp9,av1 astc=0 "),
+        "{line}"
+    );
     assert!(
         line.contains(
             " oneios-wifi-rssi=0 oneios-telemetry-jobs=1 oneios-pool-cut=0 oneios-pressure-big=0 oneios-disable-allowed=0 \
              oneios-nested-exact=0 oneios-upgrade-flush=1 oneios-fill-fast-fault=0 oneios-audio-rt=0 oneios-audio-curve=0 \
-             oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-dont-care=0 oneios-queue-priority=0 (docs/switches.md)"
+             oneios-idle-spares=0 oneios-bo-cache-idle=0 oneios-keep-room=0 oneios-dl-full=0 sheng-vsync-min=24 \
+             oneios-compile-s=0 oneios-snapshot-astc=1 oneios-camera-notify=0 oneios-m2v-shader-fix=1 oneios-dont-care=0 \
+             oneios-queue-priority=0 (docs/switches.md)"
         ),
         "{line}"
     );
     assert!(
         line.ends_with(
             "not at the default: stop-loop timer-coalesce uclamp-rule gpu-down gpu-blob-entries wifi-ring-wait wifi-send-wait \
-             wifi-buffers wifi-joined-scan encoder-10bit encoder-warmup display-post decoder decoder-codecs oneios-wifi-rssi \
-             oneios-telemetry-jobs oneios-pool-cut oneios-pressure-big oneios-disable-allowed oneios-nested-exact \
-             oneios-upgrade-flush oneios-fill-fast-fault oneios-audio-rt oneios-audio-curve oneios-idle-spares \
-             oneios-bo-cache-idle oneios-dont-care oneios-queue-priority"
+             wifi-buffers wifi-joined-scan encoder-10bit encoder-warmup display-post display-present decoder decoder-codecs astc \
+             oneios-wifi-rssi oneios-telemetry-jobs oneios-pool-cut oneios-pressure-big oneios-disable-allowed \
+             oneios-nested-exact oneios-upgrade-flush oneios-fill-fast-fault oneios-audio-rt oneios-audio-curve \
+             oneios-idle-spares oneios-bo-cache-idle oneios-keep-room oneios-dl-full sheng-vsync-min oneios-compile-s \
+             oneios-snapshot-astc oneios-camera-notify oneios-m2v-shader-fix oneios-dont-care oneios-queue-priority"
         ),
         "{line}"
     );

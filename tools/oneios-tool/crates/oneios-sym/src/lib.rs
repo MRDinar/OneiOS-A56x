@@ -24,6 +24,9 @@ usage: oneios-tool sym [--slide HEX] [--stdin | -] [--dsc DIR] [--index DIR] [--
        oneios-tool sym find [--slide HEX] NAME...
        oneios-tool sym callers [--slide HEX] ADDR...
        oneios-tool sym dis [--slide HEX] ADDR [COUNT]
+       oneios-tool sym refs [--slide HEX] ADDR...
+       oneios-tool sym cstr [--slide HEX] TEXT...
+       oneios-tool sym ptrs [--slide HEX] ADDR...
 
 Name user addresses of a boot log (the kernel's sheng-exc / sheng-ubt / oneios-ubt lines) in the image set's dyld
 shared cache: image + nearest symbol (local symbols from the .symbols file, else the image's own symbol table) for
@@ -46,8 +49,13 @@ ONEIOS_DSC_DIR the index built last is used.
   callers ADDR  every b and bl in the cache whose target is ADDR (slid by --slide, else unslid), named; needs the
                 cache itself (ONEIOS_DSC_DIR), not only the index
   dis ADDR      COUNT instructions (hex, default 0x40) from ADDR, as llvm-mc reads them (LLVM_MC=PATH), with the
-                address each branch, adrp and adrp+add/load/store reaches and its name where the index has one;
-                needs the cache itself
+                address each branch, adrp and adrp+add/load/store reaches and its name where the index has one, else
+                the C string there or the string or symbol a pointer there points at; needs the cache itself
+  refs ADDR     every adrp + add/ldr/str pair in the cache that forms ADDR (a string, a selector reference, a
+                global), named; needs the cache
+  ptrs ADDR     every 8-byte word of the cache that points at ADDR (its low 36 bits): a selector's references
+                (__objc_selrefs), a class's, a string's; needs the cache
+  cstr TEXT     every address where TEXT stands as a whole C string (a selector name, a class name); needs the cache
 
 Kernel addresses (a panic's caller, pc, lr and frame lines) are `oneios-tool sym kernel`'s: its own --help.";
 
@@ -194,6 +202,9 @@ enum Mode {
     Find,
     Callers,
     Dis,
+    Refs,
+    Cstr,
+    Ptrs,
 }
 
 /// `oneios-tool sym`'s command line (clap). `index` as the first word builds the index; `-` reads the addresses
@@ -252,6 +263,9 @@ fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
             "find" if i == 0 => o.mode = Mode::Find,
             "callers" if i == 0 => o.mode = Mode::Callers,
             "dis" if i == 0 => o.mode = Mode::Dis,
+            "refs" if i == 0 => o.mode = Mode::Refs,
+            "cstr" if i == 0 => o.mode = Mode::Cstr,
+            "ptrs" if i == 0 => o.mode = Mode::Ptrs,
             "-" | "--stdin" => o.stdin = true,
             "--no-index" => o.no_index = true,
             "--force" => o.force = true,
@@ -259,7 +273,7 @@ fn options(cli: Cli, loc: &mut Locate) -> Result<Options> {
             "--dsc" => loc.dsc = Some(PathBuf::from(value()?)),
             "--index" => loc.index_parent = Some(PathBuf::from(value()?)),
             other if other.starts_with("--") => bail!("unknown option {other}"),
-            other if o.mode == Mode::Find => o.names.push(other.to_string()),
+            other if o.mode == Mode::Find || o.mode == Mode::Cstr => o.names.push(other.to_string()),
             other => o.addrs.push(address(other)?),
         }
     }
@@ -325,6 +339,9 @@ fn run_inner(cli: Cli, mut loc: Locate, input: &mut dyn Read, out: &mut dyn Writ
     }
     if o.mode == Mode::Dis {
         return dis_command(&o, &loc, out, err);
+    }
+    if matches!(o.mode, Mode::Refs | Mode::Cstr | Mode::Ptrs) {
+        return read_command(&o, &loc, out, err);
     }
     if o.stdin {
         let mut text = String::new();
@@ -602,7 +619,20 @@ fn dis_command(o: &Options, loc: &Locate, out: &mut dyn Write, err: &mut dyn Wri
         Some(Name { image, symbol: Some((symbol, offset)) }) => Some(format!("{image} {symbol} + {offset:#x}")),
         _ => None,
     };
-    for line in dis::lines(&cache, start, count, &name)? {
+    // An address an adrp + add/load/store makes that is not code: the C string there, else the string or symbol the
+    // pointer word there points at (a selector reference, a CFString's text, a class).
+    let data = |a: u64| {
+        if let Some(s) = cache.string_at(a) {
+            return Some(format!("{s:?}"));
+        }
+        let p = cache::pointer_target(cache.read(a, 8).and_then(|b| cache::u64_at(b, 0))?);
+        match (cache.string_at(p), name(p)) {
+            (Some(s), _) => Some(format!("-> {p:#x} {s:?}")),
+            (None, Some(n)) => Some(format!("-> {p:#x} {n}")),
+            _ => None,
+        }
+    };
+    for line in dis::lines(&cache, start, count, &name, &data)? {
         if slide == 0 {
             writeln!(out, "{line}")?;
         } else {
@@ -647,4 +677,79 @@ fn find_in_cache(o: &Options, loc: &Locate, slide: i128, out: &mut dyn Write) ->
         writeln!(out, "{}  {}  {name}", hex(value as i128 + slide), path.rsplit('/').next().unwrap_or(path))?;
     }
     Ok(status)
+}
+
+/// `sym refs`, `sym cstr`, `sym ptrs`: the commands that read the cache itself (with the index for the names).
+fn read_command(o: &Options, loc: &Locate, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32> {
+    let word = match o.mode {
+        Mode::Refs => "refs",
+        Mode::Ptrs => "ptrs",
+        _ => "cstr",
+    };
+    let Some(dsc) = &loc.dsc else {
+        bail!("{word}: set ONEIOS_DSC_DIR (or --dsc DIR) to the folder that holds {}: the cache is read", cache::MAIN_NAME);
+    };
+    let index = open_index(loc, err)?;
+    let cache = Cache::open(dsc)?;
+    if cache.uuid != index.uuid {
+        bail!("{}: not the cache of the index {}", cache.dir.display(), index.dir.display());
+    }
+    let slide = o.slide.unwrap_or(0);
+    let named = |a: u64| match index.name(a) {
+        Some(Name { image, symbol: Some((symbol, offset)) }) => format!("{image}  {symbol} + {offset:#x}"),
+        Some(Name { image, symbol: None }) => format!("{image}  ?"),
+        None => "(not in a cache image's __TEXT)".to_string(),
+    };
+    match o.mode {
+        Mode::Cstr => {
+            if o.names.is_empty() {
+                bail!("cstr: give the text to look for");
+            }
+            let mut status = 0;
+            for text in &o.names {
+                let found = cache.cstr(text.as_bytes());
+                if found.is_empty() {
+                    writeln!(out, "{text}: not in the cache as a C string")?;
+                    status = 1;
+                }
+                for a in found {
+                    writeln!(out, "{}  {}  {text:?}", hex(a as i128 + slide), named(a))?;
+                }
+            }
+            Ok(status)
+        }
+        Mode::Ptrs => {
+            if o.addrs.is_empty() {
+                bail!("ptrs: give the address(es) pointed at");
+            }
+            let targets: Vec<u64> = o.addrs.iter().filter_map(|&a| u64::try_from(a - slide).ok()).collect();
+            let found = cache.ptrs(&targets);
+            for &t in &targets {
+                if !found.iter().any(|f| f.1 == t) {
+                    writeln!(out, "{}: no pointer of the cache holds it", hex(t as i128 + slide))?;
+                }
+            }
+            for (at, t) in found {
+                let image = index.image_of(at).map(|i| index.image_name(i).to_string()).unwrap_or_else(|| "?".into());
+                writeln!(out, "{}  {image}  -> {}", hex(at as i128 + slide), hex(t as i128 + slide))?;
+            }
+            Ok(0)
+        }
+        _ => {
+            if o.addrs.is_empty() {
+                bail!("refs: give the address(es) referred to");
+            }
+            let targets: Vec<u64> = o.addrs.iter().filter_map(|&a| u64::try_from(a - slide).ok()).collect();
+            let found = cache.refs(&targets)?;
+            for &t in &targets {
+                if !found.iter().any(|f| f.2 == t) {
+                    writeln!(out, "{}: no adrp pair forms it", hex(t as i128 + slide))?;
+                }
+            }
+            for (adrp, at, target) in found {
+                writeln!(out, "{}  {}  -> {} (adrp at {})", hex(at as i128 + slide), named(at), hex(target as i128 + slide), hex(adrp as i128 + slide))?;
+            }
+            Ok(0)
+        }
+    }
 }
