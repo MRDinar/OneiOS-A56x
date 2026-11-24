@@ -2601,7 +2601,7 @@ yet: the audio test cycle adds it (below).
   periods in order, the linger, a 200 ms start stall followed by silence (the backlog cut as silence, a marker 1 s
   later on time), a guest 40 ms late every 0.5 s (underruns raise the target; it is back at 20 ms 5 s after), the
   latency per stage at six phases of the pulls (below), MMAP not refused (NONE) and MMAP in use anyway (opened again
-  NONE), LOW_LATENCY only with `ONEIOS_AUDIO_PERF=low`, a clean stop when the socket closes: 11,101 checks (most are the guest's sends; timing checks are skipped, each with a line, when a loaded host runs the test late).
+  NONE), LOW_LATENCY only with `ONEIOS_AUDIO_PERF=low`, a clean stop when the socket closes: 11,101 checks (most are the guest's sends; timing checks are skipped, each with a line, when a loaded host runs the test late: since 2026-11-25 "late" also counts a canary thread on a 2 ms absolute schedule, because a host that ran only the helper's own writer late failed `audio_helper` with 1 underrun at a load average of 24 while the fake server and the sends were on time).
   Since 2026-11-15 the fake HAL can also give MMAP exclusive or shared, and the test checks the path choice, the MMAP
   level, the end-to-end figure, the probe and the target's recovery on MMAP (20,213 checks; "Latency end to end"
   below). `devices/test_devices.rs` (the C's `test_bridges.c`) checks
