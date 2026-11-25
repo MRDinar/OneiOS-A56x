@@ -1,8 +1,8 @@
 # OneiOS
 
-> iOS 27 next to One UI on a rooted Samsung Galaxy S24 Ultra — switched to and back the way OneOS switches Androids. Nothing flashed, the image lives in a folder, One UI's kernel keeps running.
+> iOS 16 next to One UI on a rooted Samsung A56 — switched to and back the way OneOS switches Androids. Nothing flashed, the image lives in a folder, One UI's kernel keeps running.
 
-**Status: experimental, under active development.** On the phone it boots to the Home Screen (unlock works, GPU-composited, touch, keyboard and S Pen work) and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest. The phone results below are of the C runtime: the host runtime (xnuhost, its loader, the bridges, the display helper) was rewritten in Rust on 2026-11-23 ([runtime/RUST.md](runtime/RUST.md)); its host tests pass and it boots the test kernel under qemu, but **no phone has run the Rust runtime yet**.
+**Status: experimental, under active development.** On the phone it boots to the Home Screen and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest. The phone results below are of the C runtime: the host runtime (xnuhost, its loader, the bridges, the display helper) was rewritten in Rust on 2026-11-23 ([runtime/RUST.md](runtime/RUST.md)); its host tests pass and it boots the test kernel under qemu, but **no phone has run the Rust runtime yet**.
 
 OneOS's guests are Android systems that run unchanged on One UI's Linux kernel. iOS's userland needs Apple's kernel (XNU), so OneiOS runs a source-built XNU **as a process on One UI's kernel** (`runtime/xnuhost`, Rust): iOS's processes are Linux processes whose system calls and faults go to it. How it fits together: [docs/architecture.md](docs/architecture.md).
 
@@ -78,18 +78,6 @@ one setting turns one back: [docs/switches.md](docs/switches.md) has the table a
 | Mac kernel panics in first 2 s | Old news, Mac runtime boots with Linux `kernel.kc` | `kernel/prelink/README.md` |
 | Kernels built from `main` between the A56 merge (`b2fa083`) and 2026-11-21 died at launchd (`mach_ports_lookup() failed: -300`, panic `initproc exited`) | Fixed: hosted 0068 is opt-in (`oneios-legacy-registered-ports=1`); PC boot to SpringBoard again | `kernel/patches/oneios-hosted/README.md` (A56 section) |
 | Never goals | Passcode, Face ID, Wallet, calls, SMS | — |
-
-## Devices
-
-Primary target: the rooted Galaxy S24 Ultra. S25, S25 Ultra, S26 Ultra and Galaxy A-series run in forks; portable work lands here. Full map: [docs/forks.md](docs/forks.md).
-
-| | Device | Status | Best result |
-|---|---|---|---|
-| ![Galaxy S24 Ultra](docs/images/s24-ultra.jpg) | Galaxy S24 Ultra (SM-S928, SM8650) — **this repo** | Boots to Home Screen, returns to One UI | Daily driver target |
-| ![Galaxy S25 Ultra](docs/images/s25-ultra.jpg) | Galaxy S25 Ultra (SM-S938, SM8750) — [YumikoHayamato/OneiOS](https://github.com/YumikoHayamato/OneiOS) (branch `s25-ultra-sm8750`), denis fork, [s25ver snapshot](https://github.com/xaxaapple/s25ver) | SpringBoard, touch and the key return on device (fork sessions 1-7); ported: Oryon topology, Adreno 830 fences, the thermal trips rule, udmabuf ENOMEM fallback | Big-only-SoC bug fixed for all |
-| | Galaxy S25 (SM-S931B, SM8750) — [NoNameBuilder/OneiOS](https://github.com/NoNameBuilder/OneiOS) | Source-level port, no on-device run; ported: host profile, stand-in tests, firmware facts | `panel-fallback=1080x2340@120` by detection |
-| ![Galaxy S26 Ultra](docs/images/s26-ultra.jpg) | Galaxy S26 Ultra (SM-S988, SM8850) — [YMGPwcca/OneiOS](https://github.com/YMGPwcca/OneiOS) | ~600 s iOS run on device | Haptics + backend tests ported |
-| ![Galaxy A56](docs/images/a56.jpg) | Galaxy A56 (SM-A566E, Exynos 1580) — [Musicalista/OneiOS-A56](https://github.com/Musicalista/OneiOS-A56) | iOS 16.5 to lock screen on device; touch works in the fork since 2026-11-21 (its kernel patch 0079: here hosted 0103 since 2026-11-24, in the release kernel `...-16bd44f9d737`, not booted here) | GPU template, bootstrap, triage tools; since 2026-11-23 our own iOS 16.5 image and the OneOS app's A56 path; since 2026-11-24 the fork's touch, Wi-Fi interface, LaunchServices, log flush, frame and idle-jobs fixes and its AIDL Bluetooth client ([docs/a56.md](docs/a56.md) "The second port"; on an A56 our runtime reached the lock screen on 2026-11-24, touch did not work then); since 2026-11-24 a GPU path for its Xclipse 540 (a Rust amdgpu renderer in xnuhost, Mesa radeonsi on Darwin, Jesvi-iOS's Metal layer and iOSPlus10's OpenGL ES layer so backboardd can composite on it, the accelerator in the kernel): built and host-tested, **not booted** ([docs/a56-gpu.md](docs/a56-gpu.md)) |
 
 Device photos: official Samsung product images ([samsung.com](https://www.samsung.com/us/smartphones/galaxy-s25-ultra/), Samsung Newsroom press kits), © Samsung Electronics — used for device identification. A56 photo: [Captainmorlypogi1959 via Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Samsung_Galaxy_A56_5G_2025_(cropped).jpg) (CC BY-SA 4.0).
 
