@@ -9,7 +9,8 @@
 #   runtime  the Metal plug-in and the capture plug-in built from HEAD (userland/metal/build.sh with METAL_OUT
 #            OUT/guest, its work in out/metal, about 7 minutes after the first; userland/camera/build.sh OUT/guest/camera),
 #            and again for each other iOS build of METAL_TARGETS (iPhone18,2 24B156: OUT/guest-24B156, the same capture
-#            plug-in), then runtime/package.sh VERSION with them as lib/guest/ and lib/guest/<build>/ (METAL_DIR,
+#            plug-in; each plug-in build is taken from out/release-cache when its inputs are those of an earlier one:
+#            plugin_key, cached_build), then runtime/package.sh VERSION with them as lib/guest/ and lib/guest/<build>/ (METAL_DIR,
 #            CAMERA_DIR, REQUIRE_METAL=1, METAL_MORE_DIRS) and the kernels pinned in kernel/release-kernel.txt (one line
 #            each, the first the default; each after it another build's, kernel/<build>/: KERNEL_MORE_DIRS; downloaded and
 #            checked as CI does), then the package's checks: drm2kgsl in xnuhost and gpuctl, elf-check.sh, the members, the Metal
@@ -147,6 +148,47 @@ rm -rf "$OUT"; mkdir -p "$OUT/files" "$LOGS"
 echo "release: $TAG at $SHA${FORK_COMMIT:+, app/ $FORK_COMMIT}; logs in $LOGS"
 
 # --- The lanes.
+# The plug-ins' build cache (2026-11-25): a release whose plug-in inputs are those of an earlier build takes that build
+# (a reflink copy on btrfs: no time, no space) instead of building it again; each built one is kept in
+# out/release-cache/NAME/KEY/ (the newest 3 of each NAME). The key (plugin_key WHAT...): the git tree of HEAD at each
+# path, each `ext:NAME` reference checkout's commit and its count of changed files, and the toolchain (rustc 1.98,
+# clang, the iOS SDKs). Before it every release built the Metal plug-in twice (27.0.1, 27.2.1): 10-20 minutes for a
+# runtime change that did not touch them. --metal-dir and --metal-amd-dir still take a folder as they are.
+plugin_key() {
+  local p e
+  {
+    for p in "$@"; do
+      case $p in
+        ext:*) e=${p#ext:}; echo "$e $(git -C "external/$e" rev-parse HEAD 2>/dev/null) $(git -C "external/$e" status --porcelain 2>/dev/null | wc -l)" ;;
+        */*|*.*) echo "$p $(git rev-parse "HEAD:$p" 2>/dev/null)" ;;
+        *) echo "$p" ;; # a target or a name
+      esac
+    done
+    rustc +1.98.0 --version 2>/dev/null || true
+    clang --version 2>/dev/null | head -n 1 || true
+    ls -d "$HOME"/.config/swiftpm/swift-sdks/*/ 2>/dev/null || true
+  } | sha256sum | cut -c1-16
+}
+cached_build() { # NAME KEY OUT COMMAND...
+  local name=$1 key=$2 out=$3; shift 3
+  local c=$ROOT/out/release-cache/$name/$key
+  if [ -d "$c" ]; then
+    rm -rf "$out"; mkdir -p "$(dirname "$out")"
+    cp -a --reflink=auto "$c" "$out"
+    echo "$name: the inputs of an earlier build ($key): taken from out/release-cache, not built"
+    return 0
+  fi
+  "$@"
+  rm -rf "$c.part"; mkdir -p "$(dirname "$c")"
+  cp -a --reflink=auto "$out" "$c.part" && mv "$c.part" "$c"
+  ls -dt "$ROOT/out/release-cache/$name"/*/ 2>/dev/null | tail -n +4 | while read -r old; do rm -rf "$old"; done
+  echo "$name: built; kept as out/release-cache/$name/$key"
+}
+a56_build() { # OUT
+  METAL_AMD_OUT=$1 userland/metal-amd/build.sh all
+  METAL_AMD_OUT=$1 userland/metal-amd/air/build.sh plugin "$1/build-ios"
+}
+
 lane_runtime() {
   local k=$ROOT/out/release-local/kernel
   KERNEL_DIR=$OUT/no-kernel
@@ -177,13 +219,21 @@ lane_runtime() {
   # Every target of METAL_TARGETS after the first (the default, iPhone18,2 24A446) is another iOS build's plug-in,
   # lib/guest/<build>/ (runtime/package.sh METAL_MORE_DIRS), with the same capture plug-in (it has no build's addresses).
   local guest=() g=$OUT/guest more_metal="" target t
+  # The tools the plug-ins' builds run, by tree (oneios-tool ios ... and its crates).
+  local tools=(scripts/ios scripts/lib/oneios-tool.sh tools/oneios-tool/Cargo.lock tools/oneios-tool/crates/oneios-ios
+    tools/oneios-tool/crates/oneios-common tools/oneios-tool/crates/oneios-json tools/oneios-tool/crates/oneios-sym
+    tools/oneios-tool/crates/oneios-image tools/oneios-tool/crates/oneios-tweaks)
+  local metal_in=(userland/metal drivers/brightness "${tools[@]}" ext:NativeMetal ext:metal2vulkan ext:mesa-droidvm
+    ext:Droid-VM-UniXNU ext:NativeAdreno ext:AdrenoPM4 ext:NativeMobileDisplay)
   case $METAL in
     build)
-      METAL_OUT=$g userland/metal/build.sh
-      userland/camera/build.sh "$g/camera"
+      cached_build metal-24A446 "$(plugin_key "${METAL_TARGETS[0]}" "${metal_in[@]}")" "$g" \
+        env METAL_OUT="$g" userland/metal/build.sh
+      cached_build camera "$(plugin_key camera userland/camera "${tools[@]}")" "$g/camera" userland/camera/build.sh "$g/camera"
       for target in "${METAL_TARGETS[@]:1}"; do
         t=$g-${target#* }
-        ONEIOS_METAL_TARGET=$target METAL_OUT=$t userland/metal/build.sh
+        cached_build "metal-${target#* }" "$(plugin_key "$target" "${metal_in[@]}")" "$t" \
+          env ONEIOS_METAL_TARGET="$target" METAL_OUT="$t" userland/metal/build.sh
         rm -rf "$t/camera"; cp -R "$g/camera" "$t/camera"
         more_metal="$more_metal $t"
       done
@@ -198,8 +248,7 @@ lane_runtime() {
   local ga=$OUT/guest-a56
   case $METAL_AMD in
     build)
-      METAL_AMD_OUT=$ga userland/metal-amd/build.sh all
-      METAL_AMD_OUT=$ga userland/metal-amd/air/build.sh plugin "$ga/build-ios"
+      cached_build metal-a56 "$(plugin_key a56 userland/metal-amd "${tools[@]}" ext:mesa-droidvm)" "$ga" a56_build "$ga"
       guest+=(METAL_AMD_DIR="$ga" REQUIRE_METAL_AMD=1) ;;
     dir) guest+=(METAL_AMD_DIR="$METAL_AMD_FROM" REQUIRE_METAL_AMD=1) ;;
     none) echo "--no-metal-amd: no A56 GPU plug-ins in this runtime" ;;

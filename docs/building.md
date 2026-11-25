@@ -1115,6 +1115,10 @@ A tag `vN.N.N` on `main` (or a dispatch with a version) runs `.github/workflows/
 runtime package with the pinned NDK and the fork's APK (submodule `app/`, the head of `oneios`) on two runners at
 once, and attaches both with their `.sha256` to the release. No kernel, no image, no package set. See
 [releases.md](releases.md).
+Since 2026-11-25 a release takes each plug-in build (the Metal plug-in of 27.0.1 and of 27.2.1, the capture plug-in, the
+A56's) from `out/release-cache/NAME/KEY/` when its inputs (the git trees it reads, the reference checkouts' commits, the
+toolchain) are those of an earlier build, and builds only what changed: a runtime-only release no longer rebuilds them
+(10-20 minutes before).
 `scripts/release/release.sh VERSION [--build-only]` (run under `scripts/bg.sh`) builds the same files on the build
 machine, runs CI's checks and the host tests in parallel, and publishes the release without waiting for the
 runners. Its runtime carries the Metal plug-in and the capture plug-in, built from HEAD in the runtime lane
