@@ -134,7 +134,7 @@ new file mode 100644
 index 0000000..0e1ce8a
 --- /dev/null
 +++ b/src/oneios/oneios_drm.c
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,304 @@
 +/*
 + * OneiOS: libdrm's xf86drm functions for a Darwin (iOS) process (oneios_drm.h says what the descriptor is).
 + *
@@ -336,6 +336,12 @@ index 0000000..0e1ce8a
 +   d->device.nodes = d->nodes;
 +   d->device.available_nodes = 1 << DRM_NODE_RENDER;
 +   d->device.bustype = DRM_BUS_PCI;
++   d->device.bustype = DRM_BUS_PCI;
++   d->device.businfo.pci = &d->bus;
++   d->device.deviceinfo.pci = &d->info;
++   d->info.vendor_id = 0x1002;
++   d->info.device_id = 0x744c;
+
 +   d->device.businfo.pci = &d->bus;
 +   d->device.deviceinfo.pci = &d->info;
 +   *device = &d->device;
