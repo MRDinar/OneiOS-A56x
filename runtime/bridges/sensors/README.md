@@ -112,6 +112,10 @@ device's (`DroidVMMotionHid.inc`: 256 per g, 16 per deg/s); the magnetometer's a
   A..B Hz, ...; motion device /arm-io/input-K at 50 Hz, the light for the brightness bridge, on change; oneios-motion=15
   oneios-als-spu=1`, or `sensors: off: source old (sensors=auto): WHY: no motion device, the rear light sensor as
   before`, or `sensors: off: sensors=ssc: WHY: ...`.
+- `sensors: motion: the kernel's AppleSPUHIDDevice (com.apple.driver.AppleSPU is not in KERNEL): the accelerometer is
+  the guest's motion device`, or `sensors: motion: not given to the guest: KERNEL has com.apple.driver.AppleSPU, whose
+  AppleSPUHIDDevice would clash with the kernel's (v0.1.29's panic); prelink it again. The light sensor only` (a collection
+  prelinked before 2026-11-25's roots: `docs/hardware.md` 7i, "Motion").
 - `sensors: light N: SUID "name" (vendor) ...: used`: each light sensor the hub has.
 - `sensors: streaming: accelerometer, gyroscope, magnetometer, light (paused while iOS's display is off)`.
 - `sensors: paused: iOS's display is off, every stream stopped on the hub` / `sensors: resumed: ...`.

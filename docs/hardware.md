@@ -33,7 +33,7 @@ for Android, and the kernel-side drivers compile and link-check against the kern
 | Audio | `DroidVMVirtioSnd.c` + `DroidVMAudio.cpp`: the hosted kernel's audio archive since 2026-11-12 (before: not built, no device in iOS) | `devices/virtio_snd.rs`, `audio/aaudio_helper.rs` (`oneios-audio`) | helper run on the phone beside One UI (plays and records, 0 underruns, about 130 ms); host-tested against a fake AAudio; in sessions iOS's I/O thread failed for large buffers (system sounds 3 s late or lost): hosted 0052, not yet run; no volume (audiomxd threw at every volume set: no hardware volume control on the Speaker) and the host at One UI's media volume: the control and the host at full scale, 2026-11-22, not yet on the phone (section 6, "Volume") |
 | Camera | `drivers/camera`: the `oneios,camera` transport, `/dev/oneios-camera`; `userland/camera`: the capture plug-in (`H9ISPCaptureDeviceCreate`) | `runtime/bridges/camera`: helper `oneios-camera` (provider HAL in a session, Camera2 NDK with One UI), ring, device, `camctl` | host and kernel sides built and host-tested; in iOS (2026-11-22) the plug-in makes its device, CMCapture made no source (no `/product unique-model`: fixed with the camera nodes, not run yet, section 7); one phone run (2026-11-11): cameraserver lists 4 cameras and opens one for a root client, no frame arrived (no binder threads in the process: fixed, the fix not yet run on the phone); the HAL back end never run (section 7) |
 | Backlight and light sensor | `drivers/brightness`: the backlight service (port of iOSPlus10's `AppleARMBacklight`), the light readings; the HID light sensor device, built into the hosted kernel's HID archive | `runtime/bridges/brightness`: the backlight sysfs node, `als_rear` by evdev, `brightctl` | both built; host tested; in a PC boot the HID device starts and Apple's `AppleUSBALSService` attaches to it; on the phone backboardd finds the service; the slider reached no request because CoreBrightness ran VMBLControl (fixed 2026-11-12 in backboardd through the Metal plug-in, not yet run; section 7a) |
-| Motion sensors and the front light (2026-11-25; on by default since the merge into main: xnuhost `sensors=auto`, `sensors=off` turns it off; **the motion half is off since v0.1.30**: its kernel class `AppleSPUHIDDevice` clashed with `com.apple.driver.AppleSPU`'s and v0.1.29 panicked at kernel start on the S24 Ultra; the front light sensor stays) | the HID archive: UniXNU-droidvm's `AppleSPUHIDDevice`s (accelerometer, gyroscope, orientation) and a compass (`oneios-motion=MASK`); the light sensor as an iPhone's SPU ALS (`oneios-als-spu=1`) | `runtime/bridges/sensors`: the sensor hub (SSC) over QRTR (QMI 400, ported from ios-redfin), xnuhost's motion device `/arm-io/input-N`; `sensorctl`, `oneios-tool phone qrtr` | host-tested and built; not booted; whether One UI lets a root process reach the hub is unknown until `phone qrtr` runs (section 7i) |
+| Motion sensors and the front light (2026-11-25; on by default since the merge into main: xnuhost `sensors=auto`, `sensors=off` turns it off; the motion half was off in v0.1.30: its kernel class `AppleSPUHIDDevice` clashed with `com.apple.driver.AppleSPU`'s and v0.1.29 panicked at kernel start on the S24 Ultra; on again on fix/motion-spu-clash, where `prelink roots` leaves AppleSPU and the kexts that link it out of both collections and xnuhost gives the motion device only to a collection without it; the front light sensor stays either way) | the HID archive: UniXNU-droidvm's `AppleSPUHIDDevice`s (accelerometer, gyroscope, orientation) and a compass (`oneios-motion=MASK`); the light sensor as an iPhone's SPU ALS (`oneios-als-spu=1`) | `runtime/bridges/sensors`: the sensor hub (SSC) over QRTR (QMI 400, ported from ios-redfin), xnuhost's motion device `/arm-io/input-N`; `sensorctl`, `oneios-tool phone qrtr` | host-tested and built. On the S24 Ultra (v0.1.29, 2026-11-25 05:05) the hub answered a root process (`sensors: on: ssc (sensors=auto): service 400 ...`, `sensors: streaming: accelerometer, gyroscope, magnetometer, light`), then the kernel panicked on the AppleSPU clash; the fix (fix/motion-spu-clash) is not booted (section 7i) |
 | Battery | `drivers/battery`: an `IOPMPowerSource` powerd reads | `runtime/bridges/battery`: Android's `power_supply` nodes, polled, changes sent over the bridge channel; `batteryctl` | both built; host tested with a fake sysfs; one phone session (2026-11-12 23:45, on the charger): published, and a "plugged in" sound before the lock screen (the startup chime: section 7c) |
 | Thermal | `drivers/thermal`: `OneiOSThermal` (the readings and the level in the registry); `userland/helpers/oneios-thermal` sets iOS's `com.apple.system.thermalpressurelevel` from it | `runtime/bridges/thermal`: the thermal zones, Samsung's thermistors, the battery's sensors; a level on iOS's scale; xnuhost's CPU step when hot; `thermalctl` | host built and tested; the bridge and `thermalctl` run on the phone (2026-11-12); the step, the driver and the helper not yet run; an idle session's heat traced to the guest's idle cache flush (xnuhost's `setway-skip`: -40% CPU) (section 7d) |
 | Hardware backends (2026-11-15) | - | `runtime/bridges/hw`, `hal`: `hw-backend=samsung\|treble` (default samsung, unchanged), per bridge `hw-backend-<bridge>`; treble = the AIDL HALs through servicemanager, evdev by capabilities, standard sysfs classes by named paths | treble done for the backlight, battery, thermal sensors and vibrator (host and stand-in phone tests, both backends); touch and keys share one capability lookup; the light sensor, Wi-Fi, Bluetooth, display next; not run on a phone (section 7e, the audit table) |
@@ -2196,8 +2196,9 @@ What ButtonResolver needs to get ready [V: ButtonResolver, Haptics.framework and
   (`UpdateSSHBAsset`).
 - `-[BRInterfaceAOP playState:forSpeed:error:]` is scalar method 2 with three scalars in; the configuration goes in
   with `IORegistryEntrySetCFProperty` on the service.
-- Apple's `AppleSPUHapticsAudioDriver` is in the kernelcache (the string is in `kernelcache.macho` and in our
-  `kernel.kc`), but it belongs to the always-on processor's kexts, which have no hardware to match here: neither
+- Apple's `AppleSPUHapticsAudioDriver` is in the kernelcache (the string is in `kernelcache.macho`; in our `kernel.kc`
+  until 2026-11-25, when `prelink roots` left com.apple.driver.AppleSPU out: section 7, "Motion"), but it belongs to the
+  always-on processor's kexts, which have no hardware to match here: neither
   service exists, so ButtonResolver is never ready and backboardd's `BKButtonHapticsController` queue waits for good
   (section above). Also read: backboardd's `_BKHIDXXApplyButtonDefinitions` does not wait on this home-button type
   (`not configuring SSHB because we don't have a real home button`); its `_BKHIDXXPlayHaptic` does.
@@ -4533,7 +4534,9 @@ Details: `runtime/bridges/sensors/README.md` (the host, the route, the HAL fallb
   `poll()`; streams stop while iOS's display is off and at the stop (closing the sockets ends them on the hub).
 - Motion frames go to a third virtio-input device, `/arm-io/input-N` "OneiOS motion sensors" (INPUT_PROP_ACCELEROMETER;
   the gravity vector 256 per g in iOS's sign, 16 per degree per second, 16 per microtesla); xnuhost adds `oneios-motion=7`
-  (15 with a magnetometer). Light readings go to the brightness bridge (`Bright::als_feed`, then `OB_BRIGHT_ALS`) in place
+  (15 with a magnetometer). Only when the kernel collection has no `com.apple.driver.AppleSPU` member (`motion_allowed`,
+  `session/board.rs`; v0.1.30 gave none at all): else `sensors: motion: not given to the guest: KERNEL has
+  com.apple.driver.AppleSPU, ...; prelink it again`, and with one `sensors: motion: the kernel's AppleSPUHIDDevice ...`. Light readings go to the brightness bridge (`Bright::als_feed`, then `OB_BRIGHT_ALS`) in place
   of `als_rear`; xnuhost adds `oneios-als-spu=1`.
 - No hub (auto): `sensors: off: source old ...`, no motion device, the rear light sensor: the boot of before.
 - [I] about 125 wake-ups a second of the bridge's thread and 50 frames a second to the guest while iOS's display is on,
@@ -4544,10 +4547,20 @@ Details: `runtime/bridges/sensors/README.md` (the host, the route, the HAL fallb
 - Motion (`oneios-motion=MASK`): UniXNU-droidvm's `AppleSPUHIDDevice`s (proven on iPadOS 27 24A446 there: locationd and
   CoreMotion, backboardd's autorotation) for the accelerometer `{0xff00, 3}`, gyroscope `{0xff00, 9}`, device orientation
   `{0x20, 0x8a}` and, ours, the compass `{0xff00, 0x0a}`; their SPU command channel `AppleSPUHIDDeviceUserClient`.
-  The iPhone collection has Apple's `com.apple.driver.AppleSPU` (classes of the same names, not loaded: our tree has no
-  sensor processor) [F kernelcache 24A446]: the motion class registers in a module load of its own, only when the names
-  are free, and the archive's own IOHIDEventDriver personality for `{0xff0c, 3}` on Transport SPU (score 100000) keeps
-  Apple's `AppleSPUGestureDriver` (the same pair) from being tried.
+  Apple's `com.apple.driver.AppleSPU` has classes of the same names, and it was in both collections until 2026-11-25:
+  v0.1.29 panicked at kernel start (S24 Ultra, 24B156: "Kext com.apple.driver.AppleSPU class AppleSPUHIDDevice is a
+  duplicate"). The archive's IOHIDEventDriver personality for `{0xff0c, 3}` on Transport SPU (score 100000) wins the
+  match, but does not keep Apple's `AppleSPUGestureDriver` (the same pair and transport) from being tried:
+  `IOService::probeCandidates` loads the kext of every personality that passes `matchPassive`
+  (`IOCatalogue::isModuleLoaded`), whatever its score, before it starts the best one [F xnu-12377 IOService.cpp,
+  IOCatalogue.cpp]. So `prelink roots` leaves AppleSPU out of both collections, with the kexts that link it and
+  would bring it back as a dependency (AppleALSColorSensor, whose `AppleSPUCT7xx` match the SPU light sensor's
+  `{0xff00, 4}`, AppleEmbeddedLightSensor, AOPTouchKext, AppleHIDTransportSCMCommon; `kernel/prelink/README.md`), as
+  UniXNU-droidvm's iPad kernelcache has no AppleSPU [F kernelcache 24A446 and 24B156]. Two guards for a collection
+  prelinked before: xnuhost gives no motion device when the collection has a `com.apple.driver.AppleSPU` member, and
+  the kernel registers no motion class when that kext has an OSKext (`oneios_motion_register`). Its line names whose
+  classes are in use: `oneios-hid: motion: AppleSPUHIDDevice registered below IOHIDDevice, ...; the kernel's classes:
+  com.apple.driver.AppleSPU is not in the collection`.
 - Light (`oneios-als-spu=1`): the light sensor as an iPhone's SPU ALS `{0xff00, 4}` (Transport SPU, Built-In, VendorID
   0x5ac, `ALSCurveInfo`: Jesvi-iOS's reading of CoreBrightness), its event driver's events turned into ambient light
   events, and the last reading re-posted within 15 ms of a wake (ios-redfin 1298: CoreBrightness's 250 ms
@@ -4557,7 +4570,9 @@ Details: `runtime/bridges/sensors/README.md` (the host, the route, the HAL fallb
 
 - `oneios-tool phone qrtr`: `qrtr: SSC: service 400 version V at node N port P answers: ...`.
 - xnuhost: `sensors: on: ssc ...`, `sensors: streaming: ...`, `sensors: 60 s: accelerometer N, ... light N readings, last N lux`.
-- The kernel: `oneios-hid: motion: AppleSPUHIDDevice accelerometer, gyroscope, orientation, compass published`, its 60 s
+- The kernel: no `class AppleSPUHIDDevice is a duplicate` panic; `oneios-hid: motion: AppleSPUHIDDevice registered below
+  IOHIDDevice, ...; the kernel's classes: com.apple.driver.AppleSPU is not in the collection`,
+  `oneios-hid: motion: AppleSPUHIDDevice accelerometer, gyroscope, orientation, compass published`, its 60 s
   line, `ONEIOS ALS: SPU ambient light service (0xff00/4) published`, `ONEIOS ALS: IOHIDEventDriver's dispatch wrapped`,
   `ONEIOS ALS: 60 s: ...`.
 - iOS (`oneios-tool phone pull-log DIR`, `ioslog --proc locationd`, `--proc backboardd`): locationd's `CLIoHidInterface`

@@ -24,9 +24,18 @@ use onebridges::sensors;
 /// The pool behind /arm-io/virtio-gpu drm-host-pool, as Droid-VM's boards size it (--pre-alloc drm-host-mb=8):
 /// drm2kgsl keeps its first 2 MiB unused, the rest holds 16 KiB of response buffer per 3D context.
 const GPU_POOL_BYTES: u64 = 8 << 20;
-/// Whether the sensor hub's accelerometer becomes the guest's motion device (and `oneios-motion=7|15` a boot argument).
-/// Off since v0.1.29's panic (2026-11-25): the kernel's AppleSPUHIDDevice clashes with com.apple.driver.AppleSPU's.
-const MOTION_TO_GUEST: bool = false;
+/// The kext whose classes have the names of the kernel's motion classes (AppleSPUHIDDevice, AppleSPUHIDDeviceUserClient).
+/// v0.1.29 panicked at kernel start with it in the collection (2026-11-25: "Kext com.apple.driver.AppleSPU class
+/// AppleSPUHIDDevice is a duplicate"): its AppleSPUGestureDriver matched the motion devices and IOKit loaded it. `prelink
+/// roots` leaves it out since (FORCE_OUT, with the kexts that link it); a collection prelinked before still has it.
+const SPU_KEXT: &str = "com.apple.driver.AppleSPU";
+
+/// Whether the sensor hub's accelerometer may become the guest's motion device (and `oneios-motion=7|15` a boot argument):
+/// only when the collection has no com.apple.driver.AppleSPU member. An MH_EXECUTE kernel has no kexts at all.
+fn motion_allowed(kernel: &Kernel) -> bool {
+    !kernel.entries.iter().any(|e| e.name == SPU_KEXT)
+}
+
 /// The video encoder's media pool (runtime/bridges/encoder): the V4L2 OUTPUT (NV12) and CAPTURE (bitstream) buffers
 /// the guest maps. 48 MiB fits 1080p-class widget/screenshot snapshots across the device's session slots; with the 8
 /// MiB GPU pool it stays under the hosted kernel's 64 MiB mappable-pool bound (the RAM layout below).
@@ -490,18 +499,27 @@ impl Session {
                             what.push(format!("{} {suid} {desc}", kind.name()));
                         }
                         let mut guest = Vec::new();
-                        // No motion device for now (v0.1.29's panic, phone 2026-11-25 05:05): with oneios-motion the
-                        // kernel registers AppleSPUHIDDevice, and com.apple.driver.AppleSPU (in the collection) loads
-                        // after it with its own class of that name: "OSMetaClass: Kext com.apple.driver.AppleSPU class
-                        // AppleSPUHIDDevice is a duplicate" at kernel start, on 24A446 and 24B156 alike. The light
-                        // sensor below is not affected. Back when the kernel's motion class no longer clashes.
+                        // The motion device only with a collection that has no com.apple.driver.AppleSPU (v0.1.29's
+                        // panic, phone 2026-11-25 05:05: with oneios-motion the kernel registers AppleSPUHIDDevice, and
+                        // AppleSPU, in the collection then, loaded after it with its own class of that name). The light
+                        // sensor below is not affected either way.
+                        let motion_ok = motion_allowed(&kernel);
                         if hub.has(sensors::Kind::Accel) {
-                            logi!(
-                                "sensors: motion: not given to the guest (its kernel class clashes with \
-                                 com.apple.driver.AppleSPU's AppleSPUHIDDevice: v0.1.29's panic); the light sensor only"
-                            );
+                            if motion_ok {
+                                logi!(
+                                    "sensors: motion: the kernel's AppleSPUHIDDevice ({SPU_KEXT} is not in {}): the \
+                                     accelerometer is the guest's motion device",
+                                    config.kernel
+                                );
+                            } else {
+                                logi!(
+                                    "sensors: motion: not given to the guest: {} has {SPU_KEXT}, whose AppleSPUHIDDevice \
+                                     would clash with the kernel's (v0.1.29's panic); prelink it again. The light sensor only",
+                                    config.kernel
+                                );
+                            }
                         }
-                        if MOTION_TO_GUEST && hub.has(sensors::Kind::Accel) && !slots.full() {
+                        if motion_ok && hub.has(sensors::Kind::Accel) && !slots.full() {
                             let input_n = slots.kinds.iter().filter(|k| **k == DeviceKind::Input).count();
                             let (base, spi) = slots.next();
                             let dev = virtio_input::create(base, spi).ok_or(BootFailed)?;
@@ -1037,6 +1055,19 @@ mod tests {
         let chosen = tree.child("chosen").unwrap();
         assert_eq!(chosen.get("ours").unwrap().str(), Some("1"));
         assert_eq!(chosen.get("theirs").unwrap().str(), Some("3"));
+    }
+
+    #[test]
+    fn motion_only_without_the_spu_kext() {
+        let entry = |name: &str| xnuloader::macho::FilesetEntry { name: name.into(), vmaddr: 0, fileoff: 0 };
+        let mut kernel = Kernel { fileset: true, ..Kernel::default() };
+        kernel.entries = vec![entry("com.apple.kernel"), entry("com.apple.iokit.IOHIDFamily")];
+        assert!(motion_allowed(&kernel));
+        kernel.entries.push(entry("com.apple.driver.AppleSPU"));
+        assert!(!motion_allowed(&kernel)); // a collection prelinked before 2026-11-25: v0.1.29's panic
+        kernel.entries = vec![entry("com.apple.driver.AppleSPURose")]; // the exact identifier only
+        assert!(motion_allowed(&kernel));
+        assert!(motion_allowed(&Kernel::default())); // MH_EXECUTE: no kexts
     }
 
     #[test]

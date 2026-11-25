@@ -99,11 +99,40 @@ XnuPrelink). With one field it does exactly what it did before. Such a kernel's 
 Every kext of the collection is a root, except one all of whose IOKit personalities attach to hardware xnuhost
 does not present (an Apple SoC block, I2C/SPI/SPMI part, RTBuddy/AFK/AOP endpoint, SEP endpoint, PCIe, USB,
 Thunderbolt, accessory port), and seven decided by hand (`FORCE_OUT`: `kec.pthread`, the SEP keystore and its two
-clients, the ANE HAL, FairPlayIOKit, and IOAudioCodecs, whose start waits for FairPlayIOKit). The profile's 31 roots are kept whatever their personalities. A left-out kext that a kept one
+clients, the ANE HAL, FairPlayIOKit, and IOAudioCodecs, whose start waits for FairPlayIOKit; since 2026-11-25 also
+the sensor processor AppleSPU and the four kexts that link it, below). The profile's 31 roots are kept whatever their personalities. A left-out kext that a kept one
 links against returns for its code only, without personalities. FairPlayIOKit is out although it is not hardware
 (obfuscated calls through computed tables; reason in `prelink roots`). Today (2026-11-12): 319 in the kernelcache, 130
 roots, 150 in the closure (20 returned dependencies), 169 absent, 135 fileset entries (15 of the closure are codeless
 KPIs). The counts of 2026-11-10 (133, 154, 139) were from before the last three `FORCE_OUT` entries.
+
+**The sensor processor is out (2026-11-25, fix/motion-spu-clash).** Five more `FORCE_OUT` entries:
+`com.apple.driver.AppleSPU` and every kept kext that links it, AppleALSColorSensor, AppleEmbeddedLightSensor,
+AOPTouchKext and AppleHIDTransportSCMCommon (a library; it links AppleHIDTransport, which links AppleSPU). v0.1.29
+panicked at kernel start on the S24 Ultra with AppleSPU in the collection: "Kext com.apple.driver.AppleSPU class
+AppleSPUHIDDevice is a duplicate; kext __kernel__ already has a class by that name". The HID archive registers classes
+of AppleSPU's names for the motion devices (`kernel/patches/oneios-hosted/hid`, "Motion sensors"), and IOKit loads the
+kext of **every** personality that passes `matchPassive`, whatever its probe score (`IOService::probeCandidates` calls
+`IOCatalogue::isModuleLoaded`, which loads it at once), so a personality of a higher score cannot keep it out:
+AppleSPU's `AppleSPUGestureDriver` (`{0xff0c, 3}`, Transport SPU) matched the motion devices. A left-out kext that
+returns as a dependency loads with its user, so the four that link it go too: AppleALSColorSensor's `AppleSPUCT7xx`
+personalities match the SPU light sensor (`{0xff00, 4}`, any transport; its exclave paths are on the stub as well).
+None of the five has a device here; the light sensor's event driver is the kernel's IOHIDEventDriver. UniXNU-droidvm's
+iPad kernelcache has no AppleSPU at all. Counts on both kernelcaches (24A446 and 24B156) after: 125 roots (130
+before), 194 left out (19 returned as dependencies), 144 in the closure (150: AppleHIDTransport is gone as well), 129
+fileset entries (135). With the release kernels of main 0f4ad03 (`current-hosted-rel24a` `f7ed2b9a`,
+`current-hosted-rel272` `e5129d1e`): `audit: 2707 paired, 82 functions on the stub, 9 data unpaired; 0 failures`
+(24A446) and `2706 paired, 82 on the stub, 10 data unpaired; 0 failures` (24B156): 10 fewer functions on the stub
+than before (the left-out kexts' Tightbeam imports), `prelink stubs-check` 666 good, 0 bad on both. The pairing files
+(`pairs-*`, `stubs-*`, the reviewed records) are unchanged, so is the app's kb (`oneios-tool app kb 24A446 --check`,
+`24B156 --check`: none changed); the phone's prelink takes the rule from the runtime's own `bin/oneios-tool`, so a
+runtime built from this source leaves AppleSPU out on the phone too. A collection prelinked before still has it: xnuhost
+then gives no motion device, and the kernel registers no motion class. The kernels of this fix (`HOSTED_OUT=motion24a
+ONEIOS_CRYPTO=original`, `xnu.macho` `37792182...`; `HOSTED_OUT=motion272 ... ONEIOS_OS_PROFILE=ios-27.2.1-24B156`,
+`a10fe0a4...`; 193 patches, releasable, on the build laptop): `kernel.kc` `ca2d9187...` (`.hashes` `dd1c8eb1...`,
+2707 paired, 82 on the stub, 9 data unpaired, 0 failures) and `08f46a72...` (`.hashes` `842711cd...`, 2706 paired, 82
+on the stub, 10 data unpaired, 0 failures), `stubs-check` 666 good, 0 bad on both, no AppleSPU fileset entry in
+either. Not booted.
 IOGPUFamily and what it links are roots; AGXG18P (the GPU's own driver) is left out. NativeAdreno's `AGXAccelerator`
 is linked into the kernel under IOGPUFamily's `IOAcceleratorES` (`kernel/patches/oneios-hosted/gpu`, `docs/gpu.md`
 5.1): two more `native_original_branches`, the class's constructor and base destructor.

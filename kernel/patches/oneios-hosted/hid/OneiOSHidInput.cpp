@@ -137,7 +137,8 @@ static uint32_t oneios_pen = 0;
 static uint32_t oneios_motion = 0;
 // oneios-als-spu=1 (default 0): the light sensor's event driver is wrapped (OneiOSALSDevice.cpp reads the same switch).
 static uint32_t oneios_als_spu = 0;
-// The motion class registered (1), or why not: 2 the class name is taken, 3 the registration failed; 0 not asked for.
+// The motion class registered (1), or why not: 2 the class name is taken, 3 the registration failed, 4 com.apple.driver.AppleSPU
+// is in the collection (its load would register a second AppleSPUHIDDevice); 0 not asked for.
 static uint32_t oneios_motion_registered = 0;
 
 void
@@ -629,9 +630,12 @@ oneios_hid_personalities(void)
 	// backboardd only after the DriverKit driver's 120 s (phone, 2026-11-12: +256 s into the boot).
 	// sensors-als, 2026-11-25: the motion devices (DroidVMMotionHid.inc: every descriptor ends with an empty {0xff0c, 3}
 	// application collection, the pair of IOHIDFamily's "HID Sensor" personality) and the SPU light sensor {0xff00, 4}, both on
-	// the SPU transport. On the iPhone collection com.apple.driver.AppleSPU's AppleSPUGestureDriver has the same {0xff0c, 3} and
-	// Transport SPU on an IOHIDInterface: without a personality of a higher score it would be tried, and its kext's load would
-	// clash with the AppleSPUHIDDevice class registered here (the kext is not loaded: the tree has no sensor processor).
+	// the SPU transport. A higher score does not keep Apple's personalities of the same pairs from being tried: probeCandidates
+	// loads the kext of every candidate that passes matchPassive (IOCatalogue::isModuleLoaded) before it starts the best one.
+	// v0.1.29 (2026-11-25) panicked so: com.apple.driver.AppleSPU's AppleSPUGestureDriver ({0xff0c, 3}, Transport SPU) matched
+	// the motion devices, the kext loaded, and its AppleSPUHIDDevice was a duplicate of the one registered here. AppleSPU and the
+	// kexts that link it are left out of the collection since (prelink roots, FORCE_OUT), and oneios_motion_register refuses
+	// a collection that still has it.
 	static const struct { const char *transport; uint32_t page, usage; } devices[] = {
 		{"SPI", 0x0d, 0},       // the touch screen (NativeHidInput::newTransportString): Digitizer, any usage
 		{"Virtual", 0x01, 0x06}, // the buttons: Generic Desktop / Keyboard
@@ -691,15 +695,27 @@ oneios_hid_personalities(void)
 
 // The motion class (sensors-als, 2026-11-25): in a module load of its own, after the touch screen's, on this same thread (see
 // below), so that a clash of its name can never take NativeHidInput's classes with it. AppleSPUHIDDevice and its channel's
-// AppleSPUHIDDeviceUserClient are the names of the iPhone's own classes in com.apple.driver.AppleSPU (in this collection, not
-// loaded: the tree has no sensor processor; that kext's AppleSPUHIDDevice personality wants an AppleSPUHIDInterface): the
-// platform sandbox lets SpringBoard and backboardd open only the services and user clients it names (DroidVM's reading). Then
-// the SPU channel's class (DroidVMSensorProcessor.cpp's own module load); without it the orientation device is left out, as
-// backboardd and SpringBoard crashed with locationd on the iPad without the channel.
+// AppleSPUHIDDeviceUserClient are the names of the iPhone's own classes in com.apple.driver.AppleSPU: the platform sandbox lets
+// SpringBoard and backboardd open only the services and user clients it names (DroidVM's reading). Then the SPU channel's class
+// (DroidVMSensorProcessor.cpp's own module load); without it the orientation device is left out, as backboardd and SpringBoard
+// crashed with locationd on the iPad without the channel.
+// The name check below sees only kexts already loaded. A collection that has com.apple.driver.AppleSPU at all can load it later
+// (a candidate's kext is loaded whatever its score, a dependency with its user) and panics then: v0.1.29, "class
+// AppleSPUHIDDevice is a duplicate". So the classes register only when the collection has no such kext (prelink roots leaves it
+// out since 2026-11-25, as UniXNU-droidvm's iPad kernelcache has none); one prelinked before is refused with its own line.
 static void
 oneios_motion_register(const OSMetaClass *bound)
 {
 	if (!oneios_motion) {
+		return;
+	}
+	OSKext *spu = OSKext::lookupKextWithIdentifier("com.apple.driver.AppleSPU");
+	const bool spuInCollection = spu != nullptr;
+	OSSafeReleaseNULL(spu);
+	if (spuInCollection) {
+		oneios_motion_registered = 4;
+		IOLog("oneios-hid: motion: com.apple.driver.AppleSPU is in this kernel collection (prelinked before 2026-11-25's roots): its "
+		    "load would register a second AppleSPUHIDDevice and panic; no motion devices (prelink the collection again)\n");
 		return;
 	}
 	static const char *const names[] = {"AppleSPUHIDDevice", "AppleSPUHIDDeviceUserClient"};
@@ -738,7 +754,8 @@ oneios_motion_register(const OSMetaClass *bound)
 		oneios_motion &= ~4u;
 		IOLog("oneios-hid: motion: the SPU channel's class did not register (%d): the device orientation is left out\n", channel);
 	}
-	IOLog("oneios-hid: motion: AppleSPUHIDDevice registered below IOHIDDevice%s (oneios-motion=0x%x)\n",
+	IOLog("oneios-hid: motion: AppleSPUHIDDevice registered below IOHIDDevice%s (oneios-motion=0x%x); the kernel's classes: "
+	    "com.apple.driver.AppleSPU is not in the collection\n",
 	    channel == 0 ? ", its SPU channel AppleSPUHIDDeviceUserClient too" : "", oneios_motion);
 }
 
@@ -759,7 +776,7 @@ oneios_motion_publish(IOService *resource)
 	}
 	if (oneios_motion_registered != 1) {
 		IOLog("oneios-hid: motion: nothing published: %s\n", oneios_motion_registered == 2 ? "the class name AppleSPUHIDDevice is taken"
-		    : "the class did not register");
+		    : oneios_motion_registered == 4 ? "com.apple.driver.AppleSPU is in the collection" : "the class did not register");
 		return;
 	}
 	static const char *const names[] = {"accelerometer", "gyroscope", "orientation", "compass"};
