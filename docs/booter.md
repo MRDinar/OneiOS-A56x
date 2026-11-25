@@ -1954,7 +1954,11 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   light sensors). From the command line, else the image set's `xnuhost.conf` (`overlay/userland/xnuhost.conf` on the
   phone). With the bridges on and sensors not off, after the pen and before the GPU, the board opens the phone's sensor
   hub (`sensors::Hub::open`: QRTR's name server for QMI service 400, then each sensor's SUID and attributes, at most
-  1.5 s per answer; nothing streams yet). With an accelerometer the board gets a **virtio-input device after the touch
+  1.5 s per answer; nothing streams yet). With an accelerometer, and a kernel collection that has no
+  `com.apple.driver.AppleSPU` member (`motion_allowed`, `session/board.rs`: with it in the collection v0.1.29 panicked
+  at kernel start, "class AppleSPUHIDDevice is a duplicate"; `prelink roots` leaves it out since 2026-11-25, and v0.1.30
+  gave no motion device at all; the line `sensors: motion: the kernel's AppleSPUHIDDevice (...)` or `sensors: motion:
+  not given to the guest: KERNEL has com.apple.driver.AppleSPU, ...` says which), the board gets a **virtio-input device after the touch
   screen and the pen, `/arm-io/input-N`**, "OneiOS motion sensors" (`INPUT_PROP_ACCELEROMETER`, no keys; `ABS_X/Y/Z` the
   gravity vector, 256 per g, +-16 g; `ABS_RX/RY/RZ` 16 per degree per second, +-2000; `ABS_HAT0X/HAT0Y/HAT1X` 16 per
   microtesla with a magnetometer), and `oneios-motion=7` (15 with a magnetometer) is added to the guest's command line
@@ -1970,7 +1974,7 @@ The `blk.rs` flush counts and times count every `fdatasync`, whichever side (vCP
   ...: used`; `sensors: streaming: ...`; `sensors: paused: ...` / `sensors: resumed: ...`; every 60 s `sensors: 60 s:
   accelerometer N, gyroscope N, magnetometer N samples; N motion frames to the guest, N dropped (the guest had no
   buffers); light N readings, last N.NNN lux; paused N s`. The guest's side: `kernel/patches/oneios-hosted/hid/README.md`.
-  Host tests: `src/motion.rs`, `config/tests.rs` (the settings, the image set's, the switches line),
+  Host tests: `src/motion.rs`, `config/tests.rs` (the settings, the image set's, the switches line), `session::board::tests::motion_only_without_the_spu_kext`,
   `cargo test -p onebridges sensors::`. **Not booted.**
 - `session/ready` is created at the guest's first presented frame (or by the `ready` host call). The guest's
   display driver also presents the boot framebuffer (the console, and later a blank or CPU-copied frame drawn

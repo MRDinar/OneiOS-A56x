@@ -3047,7 +3047,11 @@ KERNEL=<runtime 0.1.13>/kernel/xnu.macho XNUPRELINK=external/Droid-VM-UniXNU/kit
 
 A golden exists for the kernelcache alone (`kernelcache.txt`) and for the released kernel (`326e2144...`, the
 `kernel/xnu.macho` of the runtime package v0.1.13, from the release `kernel-xnu-...-703a6b34e73f`, no reference;
-`kernel.kc` `276aadac...`); for any other kernel the script says there is none and exits 3 (`UPDATE=1` records
+`kernel.kc` `276aadac...`, `c961e687...` since 2026-11-25: `prelink roots` leaves com.apple.driver.AppleSPU and the four
+kexts that link it out, which changed select, the binds, the draft, emit, audit, record and `kernel.kc`, not the
+pairing steps' files; recorded again then, 35 of 35 the same on a second run. `kernelcache.txt` is not in git:
+the `.gitignore` rule `kernelcache*`, which keeps Apple's files out, takes it too, so each checkout records its own
+with `UPDATE=1` and no KERNEL: 10 of 10 the same on a second run, 2026-11-25); for any other kernel the script says there is none and exits 3 (`UPDATE=1` records
 that run instead). In the JSON records and the stdout the work folder, the commit of `kernel.kc.build.json` and
 the folders of absolute input paths are taken out before hashing; the matcher folder's commit stays, so the
 golden's `XNUPRELINK` is the kit at `b74ed7c` (another folder changes `kernel.kc.build.json` only). Both were

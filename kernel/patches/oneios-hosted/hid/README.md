@@ -285,7 +285,7 @@ it. "HID events queued" is the count each such user client keeps of the events A
 "event driver" lines (`AppleUserHIDEventService`, then `IOHIDEventDriver` 120 s later) the reports are accepted
 and go nowhere, and `contacts begun` stays 0.
 
-## Motion sensors (sensors-als, 2026-11-25; the kernel's default 0, xnuhost adds oneios-motion with sensors=auto, its default; not booted)
+## Motion sensors (sensors-als, 2026-11-25; the kernel's default 0, xnuhost adds oneios-motion with sensors=auto, its default, to a collection without AppleSPU; v0.1.29 panicked, the fix is not booted)
 
 The accelerometer, gyroscope, device orientation and compass as an iPhone's sensor processor publishes them, from the
 S24 Ultra's sensor hub (xnuhost `sensors=`, `runtime/bridges/sensors`). After UniXNU-droidvm f9121cd, which proved the
@@ -306,8 +306,8 @@ the frame's seqlock and wakes the devices after each frame.
 | `DroidVMMotionHid.cpp` (staged from `DroidVMMotionHid.inc`) | `AppleSPUHIDDevice`, one per kind: the accelerometer `{0xff00, 3}` and gyroscope `{0xff00, 9}` (Sensor page acceleration and angular velocity: milli-g, milliradians per second), the device orientation `{0x20, 0x8a}` (one bit per UIDeviceOrientation and the vendor timestamp child CoreMotion needs), and ours, the compass `{0xff00, 0x0a}` (ios-redfin 0971's pair; Sensor page Compass 3D, magnetic flux X/Y/Z 0x0485-0x0487, thousandths of a microtesla: IOHIDEventDriver's `parseCompassElement`). Each descriptor ends with an empty `{0xff0c, 3}` application collection, the pair of IOHIDFamily's "HID Sensor" personality |
 | `DroidVMSensorProcessor.cpp` | `AppleSPUHIDDeviceUserClient`, the SPU command channel (type `ashd`, selectors 0-6, all taken, none does anything) that CoreMotion's orientation notifier opens through AppleSPULib; without it backboardd and SpringBoard crashed with locationd on the iPad. Its own module load (`droidvm_sensor_processor_register`); when that fails the orientation device is left out |
 | `DroidVMMotion.c` | `kern.droidvm_motion` (read only): the latest frame and orientation, registered when the transport finds the device (it replaces our old empty `droidvm_motion_register`) |
-| Registration (`OneiOSHidInput.cpp` `oneios_motion_register`) | In a module load of its own after the touch screen's, on bsd_init's thread like the others, only when `oneios-motion` is not 0 and neither class name exists yet. The class names are the iPhone's own (the platform sandbox lets backboardd and SpringBoard open only the services and user clients it names): `com.apple.driver.AppleSPU` of this collection has both, but it is not loaded (the tree has no sensor processor, and its `AppleSPUHIDDevice` personality wants an `AppleSPUHIDInterface`). A clash or a failed registration leaves the touch screen's classes as they were and says so |
-| Personality `{"SPU", 0xff0c, 3}` (`oneios_hid_personalities`) | IOHIDEventDriver at score 100000. The collection's `AppleSPUGestureDriver` (com.apple.driver.AppleSPU) has the same pair and Transport SPU on an `IOHIDInterface`: without ours it would be tried first and its kext's load would clash with the class names above |
+| Registration (`OneiOSHidInput.cpp` `oneios_motion_register`) | In a module load of its own after the touch screen's, on bsd_init's thread like the others, only when `oneios-motion` is not 0 and neither class name exists yet. The class names are the iPhone's own (the platform sandbox lets backboardd and SpringBoard open only the services and user clients it names): `com.apple.driver.AppleSPU` has both. Since 2026-11-25 the registration also refuses a collection that has that kext at all (`OSKext::lookupKextWithIdentifier`; state 4): the name check sees only loaded kexts, and AppleSPU in the collection loads later (next row). A clash or a failed registration leaves the touch screen's classes as they were and says so |
+| Personality `{"SPU", 0xff0c, 3}` (`oneios_hid_personalities`) | IOHIDEventDriver at score 100000: it is the driver that starts. It does **not** keep Apple's personalities of the same pair from being tried: `IOService::probeCandidates` loads the kext of every candidate that passes `matchPassive` (`IOCatalogue::isModuleLoaded`), whatever its score. v0.1.29 (S24 Ultra, 2026-11-25 05:05, 24B156) panicked so 15 ms after the devices were published: `AppleSPUGestureDriver` (`{0xff0c, 3}`, Transport SPU) matched, com.apple.driver.AppleSPU loaded, "class AppleSPUHIDDevice is a duplicate". The fix is in the prelink: `prelink roots` leaves AppleSPU out of both collections, with AppleALSColorSensor (its `AppleSPUCT7xx` match the SPU light sensor's `{0xff00, 4}` on any transport), AppleEmbeddedLightSensor, AOPTouchKext and AppleHIDTransportSCMCommon, which link it and would bring it back as a dependency (`kernel/prelink/README.md`, "Which kexts"). UniXNU-droidvm's iPad kernelcache has no AppleSPU either |
 
 Guest wake-ups: the iPad's source ticks every 10 ms per device whatever happens (100 a second per kind). Staged, a device
 ticks when the transport publishes a frame (`oneios_motion_kick` re-arms each published device's timer at once) and
@@ -316,13 +316,16 @@ published kind while the host sends frames, 1 a second per kind while it sends n
 
 Log: `droidvm input /arm-io/input-N: OneiOS motion sensors, motion sensors` (the transport), `oneios-hid: virtio-input: N
 device(s) in the device tree, N started; motion sensors among them`, `oneios-hid: motion: AppleSPUHIDDevice registered
-below IOHIDDevice, its SPU channel AppleSPUHIDDeviceUserClient too (oneios-motion=0x7)`, a `HID device started under
+below IOHIDDevice, its SPU channel AppleSPUHIDDeviceUserClient too (oneios-motion=0x7); the kernel's classes:
+com.apple.driver.AppleSPU is not in the collection` (whose classes are in use), a `HID device started under
 IOHIDResource` line per kind, `oneios-hid: motion: AppleSPUHIDDevice accelerometer, gyroscope, orientation published
 (oneios-motion=0x7)`, and every 60 s while frames come (from the touch screen's 1 s tick) `oneios-hid: motion: 60 s: N
 frames from the host, reports: accelerometer N, gyroscope N, orientation N, compass N; SPU channel opens N, commands N
 (since the boot)`. Each way it does not happen has its line: `... xnuhost has a motion device; nothing published
 (oneios-motion=0)`, `... oneios-motion=0x7, but xnuhost gave no motion device ...`, `... the class name AppleSPUHIDDevice
-is taken (com.apple.driver.AppleSPU loaded?) ...`, `... did not register below IOHIDDevice ...`, `... the SPU channel's
+is taken (com.apple.driver.AppleSPU loaded?) ...`, `... com.apple.driver.AppleSPU is in this kernel collection (prelinked
+before 2026-11-25's roots): ... no motion devices (prelink the collection again)` (then `nothing published:
+com.apple.driver.AppleSPU is in the collection`), `... did not register below IOHIDDevice ...`, `... the SPU channel's
 class did not register (N): the device orientation is left out`. In iOS's log (`oneios-tool phone pull-log`): locationd's
 `CLIoHidInterface` matching the services, CoreMotion's orientation, backboardd's interface orientation changes.
 
