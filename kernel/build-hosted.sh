@@ -1,4 +1,4 @@
-# !/usr/bin/env bash
+#!/usr/bin/env bash
 # (made again when stale, or when a link of it is broken: the layout was written from a worktree that is gone)
   [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/xnu-host-cc" ] && [ -x "$TOOLCHAIN/unixnu/CommandLineTools/usr/bin/ld" ] &&
     [ "$TOOLCHAIN/unixnu" -nt "$ROOT/kernel/linux/clang-wrapper" ] || "$ROOT/kernel/linux/unixnu-layout.sh"#!/bin/bash
