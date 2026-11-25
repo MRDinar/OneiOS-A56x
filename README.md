@@ -1,5 +1,10 @@
 # OneiOS
 
+[![Device: Galaxy A56 5G](https://img.shields.io/badge/Device-Samsung%20Galaxy%20A56%205G-blue.svg)](https://github.com/Musicalista/OneiOS-A56)
+[![SoC: Exynos 1580](https://img.shields.io/badge/SoC-Exynos%201580%20(4nm)-orange.svg)](https://github.com/Musicalista/OneiOS-A56)
+[![GPU: AMD Xclipse 540](https://img.shields.io/badge/GPU-Samsung%20Xclipse%20540%20(RDNA3)-red.svg)](https://github.com/Musicalista/OneiOS-A56)
+[![Knox: 0x0 Safe](https://img.shields.io/badge/Knox-0x0%20Intact-brightgreen.svg)](https://github.com/Musicalista/OneiOS-A56)
+
 > iOS 16 next to One UI on a rooted Samsung A56 — switched to and back the way OneOS switches Androids. Nothing flashed, the image lives in a folder, One UI's kernel keeps running.
 
 **Status: experimental, under active development.** On the phone it boots to the Home Screen and returns to One UI. See [what works](#what-works) and [known issues](#known-issues) below — both are kept honest. The phone results below are of the C runtime: the host runtime (xnuhost, its loader, the bridges, the display helper) was rewritten in Rust on 2026-11-23 ([runtime/RUST.md](runtime/RUST.md)); its host tests pass and it boots the test kernel under qemu, but **no phone has run the Rust runtime yet**.
