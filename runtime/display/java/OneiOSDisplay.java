@@ -28,9 +28,26 @@ public final class OneiOSDisplay {
 
     private static void log(String line) { System.err.println("oneios-display: " + line); }
 
+    /** run()'s answer when xnuhost closed the socket without asking this helper to stop. */
+    static final int CLOSED = 6;
+    /** As many reconnections as xnuhost restarts the guest in place (XNUHOST_RESTARTS, session.rs guest_restart). */
+    static final int RECONNECTS = 8;
+
     public static void main(String[] args) {
         int code;
-        try { code = run(args); } catch (Throwable failure) { failure.printStackTrace(System.err); code = 5; }
+        try {
+            // A guest restart in place (iOS restarting itself, or its kernel starting the Data store over for a new
+            // seed: the first boot of every new image) re-execs xnuhost, which closes this socket and makes it again.
+            // The helper connects again instead of leaving: before 2026-11-25 it left, xnuhost found "no helper
+            // connected within 10 s", and iOS ran on with nothing showing it (phone, v0.1.30, a new 27.2.1 image).
+            // The return to One UI kills this process (oneios_return.sh); without that, nOpen's wait ends it.
+            code = run(args);
+            for (int again = 1; code == CLOSED && again <= RECONNECTS; again++) {
+                log("xnuhost closed the socket without a stop: connecting again (" + again + " of " + RECONNECTS + "; a guest restart in place)");
+                code = run(args);
+            }
+            if (code == CLOSED) code = 0;
+        } catch (Throwable failure) { failure.printStackTrace(System.err); code = 5; }
         System.err.flush();
         System.exit(code);
     }
@@ -154,7 +171,8 @@ public final class OneiOSDisplay {
             nClose(handle);
         }
         log("layer removed");
-        return result < 0 ? 4 : 0;
+        // nRun: 0 xnuhost closed the socket (End::Closed), 1 asked to stop (End::Stopped), < 0 a failure.
+        return result < 0 ? 4 : result == 0 ? CLOSED : 0;
     }
 
     // ---- layers -------------------------------------------------------------------------------

@@ -175,8 +175,14 @@ NDK's `ANativeWindow` on that `Surface`, from the mapped memfd straight into the
   It logs what it found and what it set: `panel colour mode N (of ...); HDR types [...], luminance max ... nits, max
   average ..., min ...` (read only), `buffers tagged srgb (dataspace 0x8810000)`, and in `first frame posted` the
   buffer's format and dataspace and the guest frame's pixels.
-- **Leaving.** On SIGTERM, SIGINT or SIGHUP, and when the socket closes (xnuhost ended, or a newer helper
-  connected), it removes its layers and exits 0. Killed with SIGKILL, surfaceflinger drops a dead client's layers.
+- **Leaving.** On SIGTERM, SIGINT or SIGHUP it removes its layers and exits 0. When xnuhost closes the socket without
+  that (since 2026-11-25), it removes its layers and **connects again**, up to 8 times (`connecting again (N of 8; a guest
+  restart in place)`): a guest restart in place (iOS restarting itself, or its kernel starting the Data store over for a
+  new seed, the first boot of every new image) re-execs xnuhost, which makes the socket again and waits 10 s for a
+  helper. Before, the helper left there, xnuhost logged `display: no helper connected within 10 s`, and iOS ran on with
+  nothing on the panel (phone, v0.1.30, the first boot of a 27.2.1 image). When xnuhost ended for good the return kills
+  the helper (`oneios_return.sh`); else its `--wait` ends the next connect. Killed with SIGKILL, surfaceflinger drops a
+  dead client's layers.
 
 ```
 oneios-display (--session DIR | --socket PATH) [--takeover] [--wait SECONDS] [--logical WxH]
