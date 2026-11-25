@@ -172,9 +172,9 @@ impl<'a> Iterator for Reader<'a> {
     }
 }
 
-/// Every field of a message, or Err for a malformed one.
-pub fn fields(p: &[u8]) -> Result<Vec<Field<'_>>, ()> {
-    Reader::new(p).collect()
+/// Every field of a message, or None for a malformed one.
+pub fn fields(p: &[u8]) -> Option<Vec<Field<'_>>> {
+    Reader::new(p).collect::<Result<_, ()>>().ok()
 }
 
 /// Repeated floats: one FIXED32 field per value, or one LEN field packed. Appends to `out` up to `max` values.

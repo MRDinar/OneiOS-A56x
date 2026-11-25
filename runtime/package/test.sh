@@ -68,6 +68,15 @@ grep -q '"path": "lib/profiles/ios-27.0.1-iPhone18-2.toml"' "$T/x/runtime.json" 
 # the Galaxy A56's iOS 16.5 profile (docs/a56.md): the OneOS fork's Make iOS image sends it on an A56
 cmp -s "$T/x/lib/profiles/ios-16.5-a56.toml" "$ROOT/profiles/ios-16.5-a56.toml" || fail "lib/profiles/ has no A56 profile"
 ok "lib/profiles/: the IPSW profiles for the phone's fetch"
+# The switch catalog (package.sh step 1d): there, in runtime.json, version 1, and read back by `switches --runtime`
+# (what the OneOS app runs on the phone) as this tree's catalog.
+grep -q '"path": "lib/switches.json"' "$T/x/runtime.json" || fail "lib/switches.json is not in runtime.json"
+[ "$("${J[@]}" get "$T/x/lib/switches.json" version)" = 1 ] || fail "lib/switches.json is not a catalog of version 1"
+N=$("${J[@]}" len "$T/x/lib/switches.json" switches)
+[ "$N" -gt 40 ] || fail "lib/switches.json has $N switches"
+"$ONEIOS_TOOL" switches --json --runtime "$T/x" > "$T/switches.json" || fail "switches --runtime does not read lib/switches.json"
+"$ONEIOS_TOOL" switches --json | cmp -s - "$T/switches.json" || fail "lib/switches.json is not this tree's catalog"
+ok "lib/switches.json: the switch catalog ($N switches)"
 # Its dynamic ELF files were checked against the NDK's API 30 stubs (elf-check.sh), twice: runtime/build.sh on its
 # stage, then package.sh on the package's content.
 [ "$(grep -c '^elf-check: .* 0 failures$' "$T/log")" = 2 ] || { cat "$T/log"; fail "package.sh did not run elf-check.sh twice"; }

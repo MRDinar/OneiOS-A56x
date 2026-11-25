@@ -1770,3 +1770,197 @@ fn ios16_coreimage_fixup_is_left_out_only_with_the_a56_gl_driver() {
     assert!(!ios16_gl_driver(true, "oneios-gpu-amd-gl=0")); // the bundle there, turned off in the conf
     assert!(!ios16_gl_driver(true, ""));
 }
+
+/// The switch catalog (oneios-switches, which oneios-tool's `switches` and `conf` and the OneOS app's Switches screen
+/// read) agrees with this parser: every key the parser takes is in it; a switch's rule takes exactly the values the
+/// parser takes; a key's rule takes none the parser refuses (it may be stricter, or loose for the keys named below);
+/// every conf switch has its value for the line; the catalog's number readers are xh-core's.
+#[test]
+fn the_catalog() {
+    use oneios_switches::{check, Place, KEYS, KEY_PREFIXES, SWITCHES};
+    // every key of `apply`, read from its source
+    let source = include_str!("../config.rs");
+    let start = source.find("    fn apply(&mut self, key: &str, value: &str)").expect("apply");
+    let body = &source[start..start + source[start..].find("\n    }\n").expect("apply's end")];
+    let mut parsed: Vec<&str> = Vec::new();
+    // (the match's own arms: 12 spaces in; an inner match's words, as ram-view's "off", are further in)
+    let arm = |l: &&str| l.starts_with("            \"") && l.contains("=>");
+    for line in body.lines().filter(arm).map(str::trim) {
+        let names = line.split("=>").next().unwrap().split(" if ").next().unwrap();
+        parsed.extend(names.split('|').map(|n| n.trim().trim_matches('"')));
+    }
+    assert!(parsed.len() > 100 && parsed.contains(&"astc") && parsed.contains(&"data-store"), "{parsed:?}");
+    let conf_switches: Vec<&str> = SWITCHES.iter().filter(|s| s.place == Place::Conf).map(|s| s.name).collect();
+    for name in &parsed {
+        assert!(
+            conf_switches.contains(name) || KEYS.iter().any(|k| k.name == *name),
+            "{name}: the parser takes it, the catalog (runtime/switches) does not have it"
+        );
+    }
+    for name in conf_switches.iter().chain(KEYS.iter().map(|k| &k.name)) {
+        assert!(parsed.contains(name), "{name}: in the catalog, not a key of the parser");
+    }
+    assert!(source.contains(&format!("_ if key.starts_with(\"{}\")", KEY_PREFIXES[0])));
+    assert!(Config::default().set("hw-backend", "samsung").is_ok());
+
+    let long = "a".repeat(2000);
+    let samples = |rule: &oneios_switches::Rule| -> Vec<String> {
+        let mut v: Vec<String> = [
+            "",
+            "0",
+            "1",
+            "2",
+            "3",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "yes",
+            "no",
+            "true",
+            "false",
+            "on",
+            "off",
+            "auto",
+            "keep",
+            "default",
+            "none",
+            "x",
+            "1x",
+            "5",
+            "7",
+            "8",
+            "16384",
+            "65532",
+            "65533",
+            "512M",
+            "1G",
+            "0x10",
+            "08",
+            "4096",
+            "99999999999999999999",
+            "h264",
+            "vp9,av1",
+            "vp9, av1",
+            "h264,h264",
+            "h264,",
+            "netd,media",
+            "netd,netd",
+            "netd, media",
+            "a b",
+            "iPhone18,2",
+            "1T",
+            "1024G",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        v.extend(rule.values.iter().cloned());
+        v.extend(rule.also.iter().cloned());
+        v.push(rule.values.join(","));
+        for n in [rule.min - 1, rule.min, rule.max, rule.max + 1] {
+            v.push(n.to_string());
+        }
+        if rule.max_len > 0 {
+            v.push("a".repeat(rule.max_len - 1));
+            v.push("a".repeat(rule.max_len));
+        }
+        v.push(long.clone());
+        v
+    };
+    // a switch: exactly the parser's values; its default and its value for the line
+    let c = Config::default();
+    for s in SWITCHES.iter().filter(|s| s.place == Place::Conf) {
+        let rule = s.rule();
+        for v in samples(&rule) {
+            assert_eq!(
+                check(&rule, &v).is_ok(),
+                Config::default().set(s.name, &v).is_ok(),
+                "{}={v:?}: the catalog and the parser differ",
+                s.name
+            );
+        }
+        assert_eq!(c.switch_value(s.name).as_deref(), Some(s.default), "{}: the default's value", s.name);
+    }
+    // a key: never a value the parser refuses (these are checked loosely: their rule is the length at most)
+    const LOOSE: [&str; 8] =
+        ["host-device", "panel-fallback", "text-fixup", "camera-model", "clusters", "disk", "disk-rw", "data-store"];
+    for k in KEYS {
+        let rule = k.rule();
+        for v in samples(&rule) {
+            if check(&rule, &v).is_ok() && !LOOSE.contains(&k.name) {
+                assert!(
+                    Config::default().set(k.name, &v).is_ok(),
+                    "{}={v:?}: the catalog takes it, the parser does not",
+                    k.name
+                );
+            }
+        }
+    }
+    assert!(
+        Config::default().set("host-device", "auto").is_ok()
+            && Config::default().set("text-fixup", "a,0,00,00").is_ok()
+    );
+    // a choice is the whole of its type's names
+    let names = |all: Vec<&'static str>| all;
+    for (name, all) in [
+        ("wifi-joined-scan", names(WifiJoinedScan::ALL.iter().map(|v| v.as_str()).collect())),
+        ("encoder-10bit", Encoder10::ALL.iter().map(|v| v.as_str()).collect()),
+        ("decoder", Decoder::ALL.iter().map(|v| v.as_str()).collect()),
+        ("gpu-down", GpuDown::ALL.iter().map(|v| v.as_str()).collect()),
+        ("uclamp-rule", UclampRule::ALL.iter().map(|v| v.as_str()).collect()),
+        ("stop-loop", StopLoop::ALL.iter().map(|v| v.as_str()).collect()),
+        ("session-mode", SessionMode::ALL.iter().map(|v| v.as_str()).collect()),
+        ("sensors", Sensors::ALL.iter().map(|v| v.as_str()).collect()),
+        ("display-format", DisplayFormat::ALL.iter().map(|v| v.as_str()).collect()),
+        ("gpu", Gpu::ALL.iter().map(|v| v.as_str()).collect()),
+        ("gpu-level", GpuLevel::ALL.iter().map(|v| v.as_str()).collect()),
+        ("bluetooth", Bluetooth::ALL.iter().map(|v| v.as_str()).collect()),
+        ("haptics", Haptics::ALL.iter().map(|v| v.as_str()).collect()),
+        ("wifi", Wifi::ALL.iter().map(|v| v.as_str()).collect()),
+        ("pen", Pen::ALL.iter().map(|v| v.as_str()).collect()),
+        ("pen-rotate", PenRotate::ALL.iter().map(|v| v.as_str()).collect()),
+        ("encoder", Encoder::ALL.iter().map(|v| v.as_str()).collect()),
+        ("camera-vm", CameraVm::ALL.iter().map(|v| v.as_str()).collect()),
+    ] {
+        let rule = oneios_switches::switch(name)
+            .map(|s| s.rule())
+            .or_else(|| oneios_switches::key_named(name).map(|k| k.rule()));
+        let mut catalog = rule.expect(name).values;
+        let mut all: Vec<String> = all.iter().map(|s| s.to_string()).collect();
+        catalog.sort();
+        all.sort();
+        assert_eq!(catalog, all, "{name}: the catalog's words and the type's");
+    }
+    // the numbers as xh-core reads them
+    for v in ["0", " -12", "+7", "12 ", "1x", "", "-", "99999999999999999999", "-99999999999999999999", "0x10", "010"] {
+        let xh = xh_core::parse::strtol(v, 10).filter(|(_, rest)| rest.is_empty()).map(|(n, _)| n);
+        assert_eq!(oneios_switches::strtol_whole(v), xh, "strtol {v:?}");
+    }
+    for v in [
+        "0",
+        "1",
+        "512M",
+        "512m",
+        "1G",
+        "4k",
+        "0x10",
+        "0x10K",
+        "0x",
+        "0xz",
+        "010",
+        "08",
+        "0k",
+        "+5",
+        " 5",
+        "-5",
+        "5 ",
+        "1T",
+        "",
+        "18446744073709551615",
+        "18446744073709551616",
+        "17179869184G",
+    ] {
+        assert_eq!(oneios_switches::size(v), parse_size(v), "size {v:?}");
+    }
+}

@@ -550,6 +550,8 @@ impl Bridges {
         b
     }
 
+    // (one call, from start_bridges above: the parts it starts are its arguments)
+    #[allow(clippy::too_many_arguments)]
     fn start_session_bridges(
         &mut self,
         config: &mut Config,

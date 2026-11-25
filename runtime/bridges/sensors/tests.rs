@@ -64,7 +64,7 @@ fn protobuf_round_trips_and_refuses_malformed() {
     assert_eq!(out, [1.0, 2.0, 3.0]);
     // a length past the end, a cut varint, a group, field 0
     for bad in [&[0x0a, 0x05, b'a'][..], &[0x08, 0x80], &[0x0b], &[0x00, 0x01]] {
-        assert!(pb::fields(bad).is_err(), "{bad:x?}");
+        assert!(pb::fields(bad).is_none(), "{bad:x?}");
     }
 }
 

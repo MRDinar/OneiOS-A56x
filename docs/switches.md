@@ -11,7 +11,19 @@ Rules for a switch (and for every helper that lands a behaviour change from now 
 - The default is the new behaviour (main's). The other value is the behaviour before the change, as close as the
   code allows; the table says where it is not exact.
 - A row in this table in the same commit: key, values, default, what it changes, the commit, whether a phone ran it.
+  And its row in the switch catalog, `runtime/switches/src/lib.rs` (`SWITCHES`: where, the rule of its values,
+  default, off value, group, a short title, one or two sentences of help, the phone state, a warning), in the same
+  commit: xnuhost's `switches:` line is made from that list, and `config::tests::the_catalog` fails when it and
+  xnuhost's parser disagree.
 - No switch for pure logging, and none for a crash fix whose "off" would be the abort again.
+
+**The OneOS app's Switches screen reads this catalog** (since 2026-11-25): `bin/oneios-tool switches --json
+--runtime DIR` (the staged runtime's `lib/switches.json`) lists every switch with its title, help, group, values and
+phone state, and `bin/oneios-tool conf show|set|unset|check|write|restore` reads and changes the image's
+`overlay/userland/xnuhost.conf` (a boot-arg switch as a word of its one `boot-args-add=` line), checking every value
+as xnuhost does, so a file xnuhost would refuse is not written without the user's `--force`
+([tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "switches and conf"). The app keeps no list of its own:
+a new switch is on the screen with the runtime that has it.
 
 xnuhost logs every switch once, after the `versions:` line:
 

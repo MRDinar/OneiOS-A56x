@@ -685,6 +685,126 @@ An edited file keeps its keys' order and is written as Python's `json.dump(..., 
 non-ASCII as `\uXXXX`, a newline at the end), so a file the scripts edited before reads the same. Tests: 4 unit
 tests (paths, selectors, the written bytes against `json.dumps`' for the same edits).
 
+## switches and conf: xnuhost's switches and an image's xnuhost.conf (2026-11-25)
+
+`oneios-tool switches` and `oneios-tool conf` (crate `crates/oneios-conf`) are what the OneOS app's Switches screen
+runs, as root, from the staged runtime's `bin/oneios-tool`: the app parses no conf file and keeps no list of switches
+of its own. No network, no Android API; a command reads one small file and the built-in catalog (3 ms on the build
+laptop).
+
+**One source:** the catalog is `runtime/switches` (crate `oneios-switches`, a member of `runtime/`'s workspace and a
+path dependency here): every switch of [docs/switches.md](../../docs/switches.md) with its rule, default, off value,
+group, title, help and phone state, and every other key of xnuhost.conf with its rule. xnuhost's own `switches:` line
+is made from the same table, and `runtime/xnuhost/src/config/tests.rs` `the_catalog` fails when they disagree: a key
+xnuhost's parser takes that the catalog lacks (or the other way), a switch whose rule takes another value than the
+parser does, a key whose rule takes a value the parser refuses, a choice whose words are not its type's, the
+catalog's number readers against xh-core's. A new switch is a row there, in the commit that adds it.
+
+```sh
+oneios-tool switches [--json] [--runtime DIR]        # the catalog (DIR/lib/switches.json with --runtime)
+oneios-tool conf show FILE [--json] [--runtime DIR]  # the file as xnuhost reads it
+oneios-tool conf check FILE [--json] [--runtime DIR] # its errors and unknown keys; exit 1 with an error
+oneios-tool conf set FILE NAME=VALUE... [--json] [--runtime DIR]
+oneios-tool conf unset FILE NAME... [--json] [--runtime DIR]
+oneios-tool conf write FILE [--force] [--json] [--runtime DIR] < NEW-TEXT
+oneios-tool conf restore FILE [--json] [--runtime DIR]
+```
+
+Exit status: 0 done; 1 refused, the file untouched (with `--json` a JSON `{"error": "..."}` on standard output;
+`conf write` adds the `errors`, `unknown` and `warnings` of the text); 2 a wrong command line (clap's; also a `set`
+word without `=`). With `--json` all output is UTF-8 JSON on one line; without it, short text lines.
+
+**`switches --json`:** `{"version": 1, "switches": [...], "keys": [...], "key_prefixes": ["hw-backend"]}`. A
+switch's fields (always all of them, `null` where one does not apply):
+
+| Field | What |
+|---|---|
+| `name` | the key (a conf line's key, or a boot argument's name) |
+| `where` | `conf` (its own `key=value` line) or `boot-arg` (a word of the file's `boot-args-add=` line: a kernel or plug-in switch) |
+| `kind` | `bool`, `choice`, `int` or `text` |
+| `values` | a choice's words, else null |
+| `min`, `max` | an int's range, else null |
+| `default` | the value when the file does not name it (main's behaviour; for a boot-arg the kernel's or the plug-in's) |
+| `off` | the value that turns the change back (the behaviour before it); null for an option whose default is already off, or a setting with no "before" |
+| `group` | Session, Memory, CPU, GPU, Wi-Fi, Video, Display, Sensors, Audio, Camera, iOS |
+| `title`, `help` | a list row's name (40 bytes at most); one or two plain sentences: what it does, what off does |
+| `phone` | `tested`, `not booted` or `broken` (docs/switches.md's column "Phone", for the default) |
+| `warning` | text or null (`oneios-motion`: a kernel collection that still has AppleSPU panics with it; `ram-ondemand`: against the fixed-RAM rule) |
+| `restart` | `session` for every switch: each is read once at a session's start. None needs Update the kernel; a boot-arg one needs a kernel or plug-in that has it (the current release's do) |
+| `also` | words taken besides the kind's (`auto`, `keep`, or `0` for a range that starts above it) |
+| `items`, `unique`, `trim` | a comma list (kind `text`): the items it takes, whether each only once, whether blanks around an item are taken; else null |
+| `max_len` | a plain `text`'s limit in bytes (0: none); else null |
+| `word` | null, or what any other one word means (`oneios-disable-allowed`: a product type) |
+| `part` | who reads it: `xnuhost`, `fork` (the app's switch), `kernel`, `metal` (the Metal plug-in), `camera`, `display` |
+| `auto` | null, or when xnuhost chooses another value itself with the switch not written (`oneios-als-spu`) |
+| `line` | whether xnuhost's `switches:` line has it (`takeover-stops` not) |
+
+A bool takes `1`/`yes`/`true`/`0`/`no`/`false` as a conf line, `0` or `1` as a boot-arg (the app writes `1` and
+`0`). `keys`: `{"name", "kind" (also "size"), "values", "min", "max", "items", "unique", "trim", "max_len", "also",
+"many"}` for every other key xnuhost reads (`pen`, `encoder`, `ram`, `boot-args`, ...; `many`: each line adds one, as
+`text-fixup`). A key that starts with one of `key_prefixes` (`hw-backend-*`) is taken with any value. `--runtime DIR`
+prints that runtime's `lib/switches.json` (in the runtime package since 2026-11-25, `runtime/package.sh` step 1d;
+exit 1 when it has none: leave `--runtime` out), so the screen describes the xnuhost the phone has staged; `conf
+--runtime DIR` checks with it. One entry:
+
+```json
+{"name":"display-present","where":"conf","kind":"choice","values":["ahb","window"],"min":null,"max":null,"default":"ahb","off":"window","group":"Display","title":"Present in hardware buffers","help":"ahb: the display helper posts frames in write-only hardware buffers, with no CPU cache work per frame (falls back by itself where the phone lacks them). window: through the layer's window, as before.","phone":"not booted","warning":null,"restart":"session","also":[],"items":null,"unique":null,"trim":null,"max_len":null,"word":null,"part":"display","auto":null,"line":true}
+```
+
+**`conf show FILE --json`:** `{"path", "text" (the whole file), "set" ({key: value}: every key xnuhost reads but
+boot-args-add, the last line's value), "boot_args_add" ({word: value} of the boot-args-add= line xnuhost uses, its
+last; `""` for a word without `=`, as `-v`), "unknown" ([keys xnuhost does not read, lines that are not KEY=VALUE]),
+"errors" ([{"line": N, "message"}]), "warnings" ([{"line", "message"}]), "exists" (bool), "backup" (FILE.bak is
+there)}`. A missing FILE is an empty file (exit 0). An **error** is what xnuhost refuses, and it then refuses the
+whole file and the session does not start (`xnuhost: FILE:N: bad setting KEY`): a line without `=`, a key it does not
+read (both are in `unknown` too), a kernel switch written as a key, a value the key's rule does not take; also a
+boot-args-add= word of a kernel switch with a value its rule does not take, and a boot-args-add= of 512 bytes or
+more. A **warning**: a key given again (the last wins), a boot-args-add= word given again (the first wins), a word
+`boot-args=` names already (boot-args-add's is not used), a conf key written into boot-args-add=, a switch with a
+`warning` set off its default. `host-device`, `panel-fallback`, `text-fixup`, `camera-model`, `clusters` and the
+disks are checked for their length only. For example:
+
+```sh
+$ printf '# the S24 Ultra session\npen=auto\nencoder=auto\nboot-args-add=-v oneios-pool-cut=0\n# gpu-down=bottom\ndisplay-present=window\n' > xnuhost.conf
+$ oneios-tool conf show xnuhost.conf --json
+{"path":"xnuhost.conf","text":"# the S24 Ultra session\npen=auto\nencoder=auto\nboot-args-add=-v oneios-pool-cut=0\n# gpu-down=bottom\ndisplay-present=window\n","set":{"pen":"auto","encoder":"auto","display-present":"window"},"boot_args_add":{"-v":"","oneios-pool-cut":"0"},"unknown":[],"errors":[],"warnings":[],"exists":true,"backup":false}
+$ oneios-tool conf set xnuhost.conf gpu-down=top --json        # exit 1, the file untouched
+{"error":"gpu-down=top: gpu-down takes one of governor, bottom"}
+$ printf 'gpu-down=top\nnot a line\n' | oneios-tool conf write xnuhost.conf --json   # exit 1
+{"error":"the text has 2 errors: xnuhost would refuse the file; nothing written (--force writes it anyway)","errors":[{"line":1,"message":"gpu-down=top: gpu-down takes one of governor, bottom; xnuhost refuses the file"},{"line":2,"message":"\"not a line\" is not KEY=VALUE: xnuhost refuses the file"}],"unknown":["not a line"],"warnings":[]}
+```
+
+**`conf set FILE NAME=VALUE...`, `conf unset FILE NAME...`:** NAME is a catalog switch (or another key of `keys`, but
+`boot-args-add` and the `many` ones, which `conf write` changes). A `conf` switch is its own `NAME=VALUE` line: the
+last line of that key is changed in its place (a Windows line keeps its `\r`), its other lines removed, else the line
+is added at the end. A `boot-arg` switch is a word of the last `boot-args-add=` line, kept one line: the other words
+first in their order, then the switches' words in the catalog's order (the same line whatever order they were set
+in); the line is added at the end when there is none, and removed when no word is left. Comments, blank lines and
+unknown lines stay as they are. A value its rule does not take, an unknown NAME or a boot-args-add= over 511 bytes is
+refused (exit 1) and nothing is written; the pairs of one command are changed together or not at all. `unset` returns
+a switch to its default (its line or word removed). A file that is not UTF-8 is refused (edit it whole). Nothing is
+written when the text does not change. `conf set xnuhost.conf gpu-down=bottom oneios-m2v-shader-fix=0` on the file
+above leaves `boot-args-add=-v oneios-pool-cut=0 oneios-m2v-shader-fix=0` and adds `gpu-down=bottom` at the end (the
+comment `# gpu-down=bottom` kept).
+
+**`conf write FILE`:** the whole new text on standard input (the app's own editor), checked as `check` does and
+written only when it has no error (exit 1 with them otherwise); `--force` writes it anyway (the app asks the user
+first). **`conf restore FILE`:** FILE.bak goes back, and the text it replaces becomes FILE.bak (a second restore
+undoes the first); exit 1 when there is no FILE.bak.
+
+**Every write** (`set`, `unset`, `write`, `restore`): a temporary file in FILE's folder, given FILE's mode, owner (as
+root) and SELinux label (where it can be read and set), written and synced, then renamed over FILE (a reader sees the
+old text or the new, never half); a link is followed (the file it names is replaced, the link kept). The text it
+replaces is kept as `FILE.bak` (one backup; a new file is 0644 and makes none). `--json` then prints the new `conf
+show`.
+
+Tests: `cargo test -p oneios-conf` (7: the JSON read back to the same rules; a file read as xnuhost reads it, its
+errors and warnings; set and unset keeping every other line; the boot-args-add= merge and its stable order; the
+refusals, all or nothing; the atomic write with its mode and one backup, restore twice, a link); `cargo test -p
+oneios-switches` in `runtime/` (every switch's default and off pass its rule, the rules, the numbers); xnuhost's
+`config::tests::the_catalog`; `runtime/package/test.sh` (`lib/switches.json` packed, in runtime.json, version 1,
+read back by `switches --runtime` as this tree's catalog).
+
 ## ios: the iOS user-space toolchain's steps (2026-11-21)
 
 `oneios-tool ios` (crate `crates/oneios-ios`) is what `scripts/ios/{ios-sign,macho-check,make-tbds}.py`,
@@ -2119,7 +2239,7 @@ oneios-tool phone sparse-write OUT [--gunzip] [--expect-size N]   # stdin to OUT
 
 **The host phone in `status` (2026-11-21).** After `root: yes`, one line: `host: galaxy-s24-ultra (Galaxy S24 Ultra
 (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; defaults: none (today's)`, or for another known phone its
-defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble, hw-backend-fallback=1`), or `host: unknown
+defaults (`galaxy-s26-ultra ... defaults: ONEIOS_BRIGHT_MAX=2300`, `galaxy-a56 ... defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, astc=0, hw-backend-haptics=treble, hw-backend-fallback=1`), or `host: unknown
 phone (ro.product.model=... ...): xnuhost keeps today's defaults (host-device=NAME forces one)`. One `adb shell` call as
 the shell user: `getprop` of `ro.product.model`, `ro.product.device`, `ro.board.platform`, `ro.soc.model`,
 `ro.soc.manufacturer`, and `/sys/devices/soc0/{machine,soc_id}`, `/proc/device-tree/compatible`; matched in xnuhost's

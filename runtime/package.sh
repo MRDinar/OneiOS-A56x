@@ -10,6 +10,8 @@
 #                          out/release/oneios-tool-VERSION-android-arm64 with its .sha256 (the same bytes)
 #   lib/                 what a helper loads that is not a program: oneios-display.dex (runtime/display, the
 #                          SurfaceControl layer that bin/oneios-display runs with app_process)
+#   lib/switches.json      xnuhost's switch catalog (`oneios-tool switches --json`, step 1d), which the OneOS app's
+#                          Switches screen reads with bin/oneios-tool switches --runtime DIR
 #   scripts/               runtime/scripts/* (session helpers), when there are any
 #   kernel/                the XNU built by kernel/ (out/kernel/current, or KERNEL_DIR), with its build record; another
 #                          iOS build's in kernel/<build>/ (KERNEL_MORE_DIRS, step 3a: iOS 27.2.1's 24B156)
@@ -146,6 +148,16 @@ fi
 mkdir -p "$STAGE/lib/profiles"
 for p in "$ROOT"/profiles/*.toml; do n=${p##*/}; cp "$p" "$STAGE/lib/profiles/$(echo "$n" | tr , -)"; done
 chmod 0644 "$STAGE"/lib/profiles/*.toml
+
+# 1d. The switch catalog (runtime/switches, the list xnuhost's switches line is made from) as lib/switches.json,
+# written by this tree's oneios-tool (`oneios-tool switches --json`): the OneOS app's Switches screen reads it with
+# `bin/oneios-tool switches --json --runtime DIR`, so it describes the xnuhost of this package whatever tool reads it
+# (tools/oneios-tool/README.md, "switches"; docs/switches.md).
+"$ONEIOS_TOOL" switches --json > "$STAGE/lib/switches.json" ||
+  { echo "package: oneios-tool switches --json failed" >&2; exit 1; }
+"$ONEIOS_TOOL" switches --json --runtime "$STAGE" > /dev/null ||
+  { echo "package: lib/switches.json does not read back" >&2; exit 1; }
+chmod 0644 "$STAGE/lib/switches.json"
 
 # 2. Scripts (0755 when they have a #! line).
 if [ -d "$ROOT/runtime/scripts" ] && [ -n "$(ls -A "$ROOT/runtime/scripts")" ]; then

@@ -243,7 +243,7 @@ pub fn parse(d: &[u8]) -> Option<Sns<'_>> {
 
 fn suid_of(p: &[u8]) -> Option<Suid> {
     let (mut s, mut got) = (Suid::default(), 0);
-    for f in pb::fields(p).ok()? {
+    for f in pb::fields(p)? {
         match (f.num, f.wire) {
             (1, pb::FIXED64) => {
                 s.low = f.v;
@@ -269,7 +269,7 @@ pub struct Event<'a> {
 
 /// A sns_client_event_msg: its SUID and its events; None when malformed.
 pub fn events(p: &[u8]) -> Option<(Suid, Vec<Event<'_>>)> {
-    let fields = pb::fields(p).ok()?;
+    let fields = pb::fields(p)?;
     let mut suid = Suid::default();
     for f in &fields {
         if f.num == 1 && f.wire == pb::LEN {
@@ -279,7 +279,7 @@ pub fn events(p: &[u8]) -> Option<(Suid, Vec<Event<'_>>)> {
     let mut out = Vec::new();
     for f in fields.iter().filter(|f| f.num == 2 && f.wire == pb::LEN) {
         let mut e = Event { msg_id: 0, timestamp: 0, payload: &[] };
-        for g in pb::fields(f.data).ok()? {
+        for g in pb::fields(f.data)? {
             match (g.num, g.wire) {
                 (1, pb::FIXED32) => e.msg_id = g.v as u32,
                 (2, pb::FIXED64) => e.timestamp = g.v,
@@ -295,7 +295,7 @@ pub fn events(p: &[u8]) -> Option<(Suid, Vec<Event<'_>>)> {
 /// 768 from the lookup: the data type and its SUIDs (default first).
 pub fn suid_event(p: &[u8]) -> Option<(String, Vec<Suid>)> {
     let (mut data_type, mut suids) = (String::new(), Vec::new());
-    for f in pb::fields(p).ok()? {
+    for f in pb::fields(p)? {
         match (f.num, f.wire) {
             (1, pb::LEN) => data_type = String::from_utf8_lossy(f.data).into_owned(),
             (2, pb::LEN) => suids.extend(suid_of(f.data)),
@@ -335,8 +335,8 @@ fn attr_value(p: &[u8], v: &mut Value, depth: u32) -> Option<()> {
     if depth > 3 {
         return Some(());
     }
-    for f in pb::fields(p).ok()?.iter().filter(|f| f.num == 1 && f.wire == pb::LEN) {
-        for g in pb::fields(f.data).ok()? {
+    for f in pb::fields(p)?.iter().filter(|f| f.num == 1 && f.wire == pb::LEN) {
+        for g in pb::fields(f.data)? {
             match (g.num, g.wire) {
                 (1, pb::LEN) => attr_value(g.data, v, depth + 1)?, // a subtype, e.g. a range [min, max]
                 (2, pb::LEN) if v.text.is_none() => v.text = Some(String::from_utf8_lossy(g.data).into_owned()),
@@ -353,9 +353,9 @@ fn attr_value(p: &[u8], v: &mut Value, depth: u32) -> Option<()> {
 /// 128: the attributes.
 pub fn attr_event(p: &[u8]) -> Option<Attrs> {
     let mut a = Attrs::default();
-    for f in pb::fields(p).ok()?.iter().filter(|f| f.num == 1 && f.wire == pb::LEN) {
+    for f in pb::fields(p)?.iter().filter(|f| f.num == 1 && f.wire == pb::LEN) {
         let (mut id, mut v) = (-1i64, Value::default());
-        for g in pb::fields(f.data).ok()? {
+        for g in pb::fields(f.data)? {
             match (g.num, g.wire) {
                 (1, pb::VARINT) => id = i64::from(g.v as u32 as i32),
                 (2, pb::LEN) => attr_value(g.data, &mut v, 0)?,
@@ -384,7 +384,7 @@ pub fn attr_event(p: &[u8]) -> Option<Attrs> {
 /// 1025: the floats and the status (accuracy 0-3); None when it is not a sns_std_sensor_event.
 pub fn sensor_event(p: &[u8]) -> Option<(Vec<f32>, u32)> {
     let (mut data, mut status) = (Vec::new(), 0u32);
-    for f in pb::fields(p).ok()? {
+    for f in pb::fields(p)? {
         match (f.num, f.wire) {
             (1, pb::FIXED32 | pb::LEN) => pb::floats(&f, &mut data, 16),
             (1, _) => return None,
@@ -397,7 +397,7 @@ pub fn sensor_event(p: &[u8]) -> Option<(Vec<f32>, u32)> {
 
 /// 130: the error.
 pub fn error_event(p: &[u8]) -> Option<u64> {
-    pb::fields(p).ok()?.iter().find(|f| f.num == 1 && f.wire == pb::VARINT).map(|f| f.v)
+    pb::fields(p)?.iter().find(|f| f.num == 1 && f.wire == pb::VARINT).map(|f| f.v)
 }
 
 /// For the tests and sensorctl's dump: one field per line.

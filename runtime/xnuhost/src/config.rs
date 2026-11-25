@@ -778,9 +778,8 @@ fn text(value: &str, size: usize) -> Result<String, BadSetting> {
 /// What the OneOS switch may stop in session-mode=takeover (takeover-stops=): One UI's zygote's restart list, which
 /// every return restarts already, less what a bridge uses (docs/plan-ios-first-session.md 4, stage 2b). The first six
 /// are the switch's default; netd and media only when named (a Wi-Fi join and an encode without them are not yet
-/// checked on the phone).
-pub const TAKEOVER_STOPPABLE: [&str; 8] =
-    ["cameraserver", "mediaextractor", "mediametrics", "media.tuner", "perfmond", "wificond", "netd", "media"];
+/// checked on the phone). The list is the switch catalog's (oneios-switches), which oneios-tool's `conf` checks with.
+pub use oneios_switches::TAKEOVER_STOPPABLE;
 
 /// takeover-stops=: default, none, or names of TAKEOVER_STOPPABLE separated by commas, each once.
 fn takeover_stops_ok(value: &str) -> bool {
@@ -2353,11 +2352,49 @@ impl FitTerms {
 }
 
 impl Config {
+    /// The value of a switch of xnuhost.conf (a catalog row with Place::Conf) as the switches line writes it; None for
+    /// a name that is not one (`config::tests::the_catalog` checks every row has one).
+    pub fn switch_value(&self, name: &str) -> Option<String> {
+        let on = |b: bool| if b { "1" } else { "0" }.to_string();
+        Some(match name {
+            "session-mode" => self.session_mode.as_str().to_string(),
+            "takeover-stops" if self.takeover_stops.is_empty() => "default".to_string(),
+            "takeover-stops" => self.takeover_stops.clone(),
+            "stop-loop" => self.stop_loop.as_str().to_string(),
+            "takeover-reclaim" => on(self.takeover_reclaim),
+            "takeover-swappiness" => self.takeover_swappiness.map_or("keep".to_string(), |n| n.to_string()),
+            "task-trim" => on(self.task_trim),
+            "timer-coalesce" => on(self.timer_coalesce),
+            "ram-fit-terms" => (if self.ram_fit_terms_old { "old" } else { "tasks" }).to_string(),
+            "ram-ondemand" => on(self.ram_ondemand),
+            "uclamp-rule" => self.uclamp_rule.as_str().to_string(),
+            "gpu-down" => self.gpu_down.as_str().to_string(),
+            "gpu-blob-entries" => self.gpu_blob_entries.to_string(),
+            "wifi-ring-wait" => on(self.wifi_ring_wait),
+            "wifi-send-wait" => on(self.wifi_send_wait),
+            "wifi-buffers" => on(self.wifi_buffers),
+            "wifi-joined-scan" => self.wifi_joined_scan.as_str().to_string(),
+            "encoder-10bit" => self.encoder_10bit.as_str().to_string(),
+            "encoder-warmup" => on(self.encoder_warmup),
+            "display-post" => (if self.display_post_serial { "serial" } else { "apart" }).to_string(),
+            "display-present" => (if self.display_present_ahb { "ahb" } else { "window" }).to_string(),
+            "decoder" => self.decoder.as_str().to_string(),
+            "decoder-codecs" => oneencoder::switches::codecs_text(self.decoder_codecs),
+            "astc" => on(self.astc),
+            // sensors-als (2026-11-25): the sensor hub; the guest switches xnuhost adds are boot-args (the catalog's)
+            "sensors" => self.sensors.as_str().to_string(),
+            "sensors-hz" => self.sensors_hz.to_string(),
+            "sensors-light" => self.sensors_light.map_or("auto".to_string(), |n| n.to_string()),
+            _ => return None,
+        })
+    }
+
     /// The switches line (docs/switches.md), once at the start: every switch's value, and which are not at their
-    /// default (main's behaviour). Kernel switches are boot-args: their value as boot-args gives it, else the kernel's.
+    /// default (main's behaviour). The switches, their order and their defaults are the catalog's
+    /// (oneios_switches::SWITCHES, which oneios-tool's `switches` and the OneOS app's Switches screen read too). Kernel
+    /// switches are boot-args: their value as boot-args gives it, else the kernel's (the catalog's default).
     pub fn switches_line(&self) -> String {
-        let on = |b: bool| if b { "1" } else { "0" };
-        let arg = |name: &str, default: &'static str| -> String {
+        let arg = |name: &str, default: &str| -> String {
             let key = format!("{name}=");
             self.boot_args
                 .split_whitespace()
@@ -2365,66 +2402,17 @@ impl Config {
                 .next_back()
                 .map_or(default.to_string(), str::to_string)
         };
-        let all = [
-            ("session-mode", self.session_mode.as_str().to_string(), "hosted"),
-            ("stop-loop", self.stop_loop.as_str().to_string(), "wait"),
-            ("takeover-reclaim", on(self.takeover_reclaim).to_string(), "1"),
-            ("takeover-swappiness", self.takeover_swappiness.map_or("keep".to_string(), |n| n.to_string()), "keep"),
-            ("task-trim", on(self.task_trim).to_string(), "1"),
-            ("timer-coalesce", on(self.timer_coalesce).to_string(), "1"),
-            ("ram-fit-terms", (if self.ram_fit_terms_old { "old" } else { "tasks" }).to_string(), "tasks"),
-            ("ram-ondemand", on(self.ram_ondemand).to_string(), "0"),
-            ("uclamp-rule", self.uclamp_rule.as_str().to_string(), "work"),
-            ("gpu-down", self.gpu_down.as_str().to_string(), "governor"),
-            ("gpu-blob-entries", self.gpu_blob_entries.to_string(), "65532"),
-            ("wifi-ring-wait", on(self.wifi_ring_wait).to_string(), "1"),
-            ("wifi-send-wait", on(self.wifi_send_wait).to_string(), "1"),
-            ("wifi-buffers", on(self.wifi_buffers).to_string(), "1"),
-            ("wifi-joined-scan", self.wifi_joined_scan.as_str().to_string(), "cache"),
-            ("encoder-10bit", self.encoder_10bit.as_str().to_string(), "main10"),
-            ("encoder-warmup", on(self.encoder_warmup).to_string(), "1"),
-            ("display-post", (if self.display_post_serial { "serial" } else { "apart" }).to_string(), "apart"),
-            ("display-present", (if self.display_present_ahb { "ahb" } else { "window" }).to_string(), "ahb"),
-            ("decoder", self.decoder.as_str().to_string(), "auto"),
-            ("decoder-codecs", oneencoder::switches::codecs_text(self.decoder_codecs), "h264,hevc,vp9,av1"),
-            ("astc", on(self.astc).to_string(), "1"),
-            // sensors-als (2026-11-25): the sensor hub, and the guest switches xnuhost adds when it gives the guest its parts
-            ("sensors", self.sensors.as_str().to_string(), "auto"),
-            ("sensors-hz", self.sensors_hz.to_string(), "50"),
-            ("sensors-light", self.sensors_light.map_or("auto".to_string(), |n| n.to_string()), "auto"),
-            ("oneios-motion", arg("oneios-motion", "0"), "0"),
-            ("oneios-als-spu", arg("oneios-als-spu", "0"), "0"),
-            ("oneios-wifi-rssi", arg("oneios-wifi-rssi", "1"), "1"),
-            ("oneios-telemetry-jobs", arg("oneios-telemetry-jobs", "0"), "0"),
-            ("oneios-pool-cut", arg("oneios-pool-cut", "1"), "1"),
-            ("oneios-pressure-big", arg("oneios-pressure-big", "512"), "512"),
-            ("oneios-disable-allowed", arg("oneios-disable-allowed", "1"), "1"),
-            ("oneios-nested-exact", arg("oneios-nested-exact", "1"), "1"),
-            ("oneios-upgrade-flush", arg("oneios-upgrade-flush", "0"), "0"),
-            ("oneios-fill-fast-fault", arg("oneios-fill-fast-fault", "1"), "1"),
-            ("oneios-audio-rt", arg("oneios-audio-rt", "1"), "1"),
-            ("oneios-audio-curve", arg("oneios-audio-curve", "1"), "1"),
-            // fix/codec-irq: the video codec's transport on the media device's SPI (the codec archive's edit 7); 0 polls.
-            ("oneios-codec-irq", arg("oneios-codec-irq", "1"), "1"),
-            ("oneios-idle-spares", arg("oneios-idle-spares", "1"), "1"),
-            ("oneios-bo-cache-idle", arg("oneios-bo-cache-idle", "1"), "1"),
-            // fix/s24-fps-heat-camera: the Metal add-on's room kept ahead (KeepRoom.inc), UIKit's animation links
-            // (DisplayLinks.inc), the slowest refresh rate the guest's display reports (staged/display.rs LEGACY).
-            ("oneios-keep-room", arg("oneios-keep-room", "8"), "8"),
-            ("oneios-dl-full", arg("oneios-dl-full", "1"), "1"),
-            ("sheng-vsync-min", arg("sheng-vsync-min", "60"), "60"),
-            // The compile deadline of the Metal clients but backboardd (CompileDeadline.inc), SpringBoard's snapshot format
-            // (SnapshotFormat.inc), the capture plug-in's stream notifications (userland/camera).
-            ("oneios-compile-s", arg("oneios-compile-s", "120"), "120"),
-            ("oneios-snapshot-astc", arg("oneios-snapshot-astc", "0"), "0"),
-            ("oneios-camera-notify", arg("oneios-camera-notify", "1"), "1"),
-            // main 166a22c: the Adreno shader fixes 0101 and 0102 (ShaderFix.inc, 90110-shader-fix-switch.patch), on by default
-            // since 2026-11-25 (the owner: every new fix on); oneios-m2v-shader-fix=0 turns them off.
-            ("oneios-m2v-shader-fix", arg("oneios-m2v-shader-fix", "1"), "1"),
-            // The rt Metal add-on's (userland/metal/rt/RtSwitches.inc); the 624bab3 add-on reads neither.
-            ("oneios-dont-care", arg("oneios-dont-care", "1"), "1"),
-            ("oneios-queue-priority", arg("oneios-queue-priority", "1"), "1"),
-        ];
+        let all: Vec<(&str, String, &str)> = oneios_switches::SWITCHES
+            .iter()
+            .filter(|s| s.line)
+            .map(|s| {
+                let value = match s.place {
+                    oneios_switches::Place::BootArg => arg(s.name, s.default),
+                    oneios_switches::Place::Conf => self.switch_value(s.name).unwrap_or_else(|| "?".to_string()),
+                };
+                (s.name, value, s.default)
+            })
+            .collect();
         let changed: Vec<&str> = all.iter().filter(|(_, v, d)| v != d).map(|(k, _, _)| *k).collect();
         let words: Vec<String> = all.iter().map(|(k, v, _)| format!("{k}={v}")).collect();
         format!(

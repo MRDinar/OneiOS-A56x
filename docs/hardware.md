@@ -4490,7 +4490,7 @@ image set's `gpu=` is now taken (it was read and dropped before; no image this t
 
 ```
 host: galaxy-s24-ultra (Galaxy S24 Ultra (SM-S928, SM8650)), matched by ro.product.model=SM-S928B; read: ro.product.model=SM-S928B ro.product.device=e3q ro.board.platform=pineapple ro.soc.model=SM8650 ro.soc.manufacturer=QTI; defaults: none (today's)
-host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; read: ...; defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, hw-backend-haptics=treble, hw-backend-fallback=1
+host: galaxy-a56 (Galaxy A56 (SM-A566, Exynos 1580)), matched by ro.product.model=SM-A566E; read: ...; defaults: gpu=auto, panel-fallback=1080x2340@120, width=720, height=1560, scale=2, hz=60, return-graceful-ms=4000, astc=0, hw-backend-haptics=treble, hw-backend-fallback=1
 host: galaxy-a56 (...), ...; defaults: gpu=auto not taken (the command line or the image set gives it)
 host: galaxy-s26-ultra (...), matched by ro.product.model=SM-S948B; read: ...; defaults: ONEIOS_BRIGHT_MAX=2300
 host: unknown phone (read: ro.product.model=Pixel 11 Pro ro.product.device=... ...): today's defaults (host-device=NAME forces one of galaxy-s24-ultra, ...)

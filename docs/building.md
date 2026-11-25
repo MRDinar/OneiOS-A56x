@@ -1401,6 +1401,29 @@ cargo build --release --manifest-path tools/oneios-tool/Cargo.toml     # -> tool
 cargo test  --release --manifest-path tools/oneios-tool/Cargo.toml     # unit tests, no Apple file
 ```
 
+Since 2026-11-25 also `switches` and `conf`, which the OneOS app's Switches screen runs as root from the staged
+runtime's `bin/oneios-tool` (the app parses no conf file and keeps no switch list of its own). The catalog is one
+list, `runtime/switches` (crate `oneios-switches`), from which xnuhost's own `switches:` line is made; xnuhost's
+`config::tests::the_catalog` fails when the two disagree. The runtime package carries it as `lib/switches.json`
+(`runtime/package.sh` step 1d). The JSON of each command, the checks and the write rules:
+[tools/oneios-tool/README.md](../tools/oneios-tool/README.md) "switches and conf".
+
+```sh
+oneios-tool switches --json [--runtime DIR]          # every switch: where, kind, values, default, off, group, title, help, phone, warning
+oneios-tool conf show FILE --json                    # text, set, boot_args_add, unknown, errors, warnings (a missing FILE is empty)
+oneios-tool conf check FILE --json                   # errors (what xnuhost would refuse) and unknown keys; exit 1 with an error
+oneios-tool conf set FILE NAME=VALUE... [--json]     # a boot-arg switch into boot-args-add=, a conf one as its own line; all or none
+oneios-tool conf unset FILE NAME... [--json]         # back to the default (the line or word removed)
+oneios-tool conf write FILE [--force] --json < TEXT  # the whole text, written only without errors (--force: anyway)
+oneios-tool conf restore FILE                        # FILE.bak back (the replaced text becomes FILE.bak)
+# e.g. the image's overlay on the phone (as root):
+#   $STAGE/runtime/bin/oneios-tool conf set $IMAGE/overlay/userland/xnuhost.conf gpu-down=bottom oneios-pool-cut=0 --json
+```
+
+Every write is atomic (a temporary file in the folder, the file's mode, owner and SELinux label kept, renamed over
+it) and keeps one backup, `FILE.bak`. Exit status: 0, 1 refused (`{"error": "..."}` with `--json`, the file
+untouched), 2 a wrong command line.
+
 Optional on Linux: **apfs-fuse** (github.com/sgan81/apfs-fuse, with `fusermount3`), a second APFS reader that
 `oneios-tool image apfs-ls`, `apfs-copy` and `ioslog` use with `--apfs fuse`, or by themselves when our own reader
 refuses an image (`--apfs auto`, the default); the comparison scripts check our reader against it. Nothing needs
