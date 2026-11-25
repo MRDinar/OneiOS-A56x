@@ -341,7 +341,6 @@ index 0000000..0e1ce8a
 +   d->device.deviceinfo.pci = &d->info;
 +   d->info.vendor_id = 0x1002;
 +   d->info.device_id = 0x744c;
-
 +   d->device.businfo.pci = &d->bus;
 +   d->device.deviceinfo.pci = &d->info;
 +   *device = &d->device;
