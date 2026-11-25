@@ -41,6 +41,19 @@ one setting turns one back: [docs/switches.md](docs/switches.md) has the table a
 | Return to One UI | Yes — chord, SIGKILL backstop | n/a | Never touches side keys, realtime, or `/sys/power` |
 | Host test suites | n/a | All green: the Rust runtime's `cargo test --workspace` and clippy, the test kernel's five boots under qemu (`runtime/xnuhost/check-arm64.sh`); the prelink audit 0 failures | `runtime/host-tests.sh`, [runtime/RUST.md](runtime/RUST.md) |
 
+### The owner's report of 2026-11-25 (Galaxy S24 Ultra, OneiOS v0.1.3x)
+
+- **Boot:** iOS boots on the phone, semi-stable.
+- **Audio:** works, but laggy. Volume control, the volume keys and the power key work.
+- **Thermal:** the phone runs hot.
+- **Wi-Fi and Bluetooth:** work.
+- **S Pen:** it worked before, and does not work in the latest iOS build (to be fixed).
+- **Haptics:** work.
+- **Camera:** work in progress: the Camera app shows a black preview.
+- **Video playback:** works, but laggy.
+- **Brightness control:** works (the slider). Auto-brightness from the front light sensor (v0.1.29 and later) is not
+  confirmed yet.
+
 ## Known issues
 
 | Issue | State | Tracking |
