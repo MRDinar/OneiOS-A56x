@@ -219,8 +219,9 @@ lane_runtime() {
   # Every target of METAL_TARGETS after the first (the default, iPhone18,2 24A446) is another iOS build's plug-in,
   # lib/guest/<build>/ (runtime/package.sh METAL_MORE_DIRS), with the same capture plug-in (it has no build's addresses).
   local guest=() g=$OUT/guest more_metal="" target t
-  # The tools the plug-ins' builds run, by tree (oneios-tool ios ... and its crates).
-  local tools=(scripts/ios scripts/lib/oneios-tool.sh tools/oneios-tool/Cargo.lock tools/oneios-tool/crates/oneios-ios
+  # The tools the plug-ins' builds run, by tree (oneios-tool ios ... and its crates; not Cargo.lock: a crate added
+  # elsewhere in the workspace changes it and would rebuild every plug-in for nothing, 2026-11-25).
+  local tools=(scripts/ios scripts/lib/oneios-tool.sh tools/oneios-tool/crates/oneios-ios
     tools/oneios-tool/crates/oneios-common tools/oneios-tool/crates/oneios-json tools/oneios-tool/crates/oneios-sym
     tools/oneios-tool/crates/oneios-image tools/oneios-tool/crates/oneios-tweaks)
   local metal_in=(userland/metal drivers/brightness "${tools[@]}" ext:NativeMetal ext:metal2vulkan ext:mesa-droidvm
