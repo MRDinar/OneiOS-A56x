@@ -224,8 +224,8 @@ pub fn probe(dev: &dyn Dev, fd: RawFd) -> Result<Probe, String> {
     use cap::info as i;
     le::put_u32(&mut c, g + i::ASIC_ID, d.device_id);
     le::put_u32(&mut c, g + i::CHIP_REV, d.chip_rev);
-    le::put_u32(&mut c, g + i::CHIP_EXTERNAL_REV, d.external_rev);
-    le::put_u32(&mut c, g + i::FAMILY_ID, d.family);
+    le::put_u32(&mut c, g + i::CHIP_EXTERNAL_REV, 0x744c);
+    le::put_u32(&mut c, g + i::FAMILY_ID, 145);
     le::put_u64(&mut c, g + i::MAX_ENGINE_CLK, d.max_engine_clock);
     le::put_u64(&mut c, g + i::MAX_MEMORY_CLK, d.max_memory_clock);
     le::put_u32(&mut c, g + i::GPU_COUNTER_FREQ, d.gpu_counter_freq);
