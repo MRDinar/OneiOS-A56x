@@ -582,7 +582,26 @@ index 0000000..6718e2b
 +   /* radeonsi_screen_create parses the config files into option_cache itself (driParseConfigFiles). */
 +   if (option_cache.info)
 +      driDestroyOptionCache(&option_cache);
++   char err_buf[256] = {0};
++   int saved_err = dup(STDERR_FILENO);
++   int pfd[2] = {-1, -1};
++   if (saved_err >= 0 && pipe(pfd) == 0) {
++      fflush(stderr);
++      dup2(pfd[1], STDERR_FILENO);
++      close(pfd[1]);
++   }
 +   struct pipe_screen *screen = radeonsi_screen_create(fd, &config);
++   if (saved_err >= 0) {
++      fflush(stderr);
++      dup2(saved_err, STDERR_FILENO);
++      close(saved_err);
++      if (pfd[0] >= 0) {
++         ssize_t n = read(pfd[0], err_buf, sizeof(err_buf) - 1);
++         if (n > 0)
++            err_buf[n] = 0;
++         close(pfd[0]);
++      }
++   }
 +   simple_mtx_unlock(&lock);
 +
 +   /* The amdgpu winsys keeps its own duplicate of the descriptor. */
@@ -594,7 +613,7 @@ index 0000000..6718e2b
 +         say(why, why_size, "radeonsi: no screen: %s", vdrm);
 +      else
 +#endif
-+         say(why, why_size, "radeonsi: no screen (the amdgpu winsys's reason is in the log: \"amdgpu:\" lines)");
++         say(why, why_size, "radeonsi: %s", err_buf[0] ? err_buf : "no screen (empty stderr)");
 +   }
 +   if (screen) {
 +      char line[256];
