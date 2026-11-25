@@ -556,6 +556,23 @@ digest and `xnu.macho` agree). The app's pairing files match these records (`one
 --check`: none changed). On the way: the toolchain layout's links now name `out/toolchain`'s real path (`598f7ce`) and
 `kernel/prelink/build.sh` removes a stale `aligned-reference.json` before its weak list (`2b715ce`). **Not booted.**
 
+The **release kernels of the motion fix** (2026-11-25; **uploaded and pinned** from the build laptop; both lines of
+`kernel/release-kernel.txt` replaced; merged into main as `ccd0c1e` on the owner's word **without a phone boot**):
+fix/motion-spu-clash `caf5b6a`, the fix of v0.1.29's panic ("class AppleSPUHIDDevice is a duplicate"): IOKit loads the
+kext of every matching personality before it starts the best one, and `com.apple.driver.AppleSPU`'s gesture driver
+matches the motion devices' `{0xff0c,3}` on the SPU transport; AppleSPU and the four kexts that link it
+(AppleALSColorSensor, AppleEmbeddedLightSensor, AOPTouchKext, AppleHIDTransportSCMCommon) are left out of both
+collections (`prelink roots`: 130 to 125 roots), the HID archive refuses its motion classes when AppleSPU is in the
+collection, and xnuhost gives the motion device only when `kernel.kc` has no AppleSPU entry. `HOSTED_OUT=motion24a`:
+`xnu-12377.121.6-ios-27.0.1-24A446-abc62d7cd36e` (`xnu.macho` `37792182…`, collection `ca2d9187…`, audit 0 failures, 82 on
+the stub); `HOSTED_OUT=motion272`: `xnu-12377.121.6-ios-27.2.1-24B156-e90fb6a59da6` (`xnu.macho` `a10fe0a4…`, collection
+`08f46a72…`, audit 0 failures). `kernel/publish.sh --hosted motion24a --upload`, `--hosted motion272 --upload`:
+[`kernel-…-24A446-abc62d7cd36e`](https://github.com/akshaynexus/OneiOS/releases/tag/kernel-xnu-12377.121.6-ios-27.0.1-24A446-abc62d7cd36e)
+SHA-256 `07d667cf74a0825fc6845c534df8e49ae800e25f3a2c8af7bc3d743521485650`,
+[`kernel-…-24B156-e90fb6a59da6`](https://github.com/akshaynexus/OneiOS/releases/tag/kernel-xnu-12377.121.6-ios-27.2.1-24B156-e90fb6a59da6)
+SHA-256 `e8a8b434eb08a6ac83bb6e4594102a57667ffc016c803c02c98ba4a89b27d8cf` (downloaded back: the SHA-256, GitHub's digest and
+`xnu.macho` agree; both releasable). The app's pairing files do not change (`app kb --check`). **Not booted.**
+
 ## Released
 
 | Tag | Date | Commit | What |
