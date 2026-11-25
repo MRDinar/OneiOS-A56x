@@ -336,13 +336,10 @@ index 0000000..0e1ce8a
 +   d->device.nodes = d->nodes;
 +   d->device.available_nodes = 1 << DRM_NODE_RENDER;
 +   d->device.bustype = DRM_BUS_PCI;
-+   d->device.bustype = DRM_BUS_PCI;
 +   d->device.businfo.pci = &d->bus;
 +   d->device.deviceinfo.pci = &d->info;
 +   d->info.vendor_id = 0x1002;
 +   d->info.device_id = 0x744c;
-+   d->device.businfo.pci = &d->bus;
-+   d->device.deviceinfo.pci = &d->info;
 +   *device = &d->device;
 +   return 0;
 +}
