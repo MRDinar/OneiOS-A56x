@@ -84,9 +84,32 @@ jobs:
           fi
           echo "release=$release version=$version runtime=$runtime apk=$apk"
           { echo "release=$release"; echo "version=$version"; echo "runtime=$runtime"; echo "apk=$apk"; } >> "$GITHUB_OUTPUT"
-
-  runtime:
+    metal-amd:
     needs: plan
+    if: needs.plan.outputs.runtime == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@83d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install build tools
+        run: brew install meson ninja pkg-config cmake
+      - name: Fetch references
+        run: scripts/setup/get-references.sh
+      - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
+        run: |
+          METAL_AMD_OUT=out/metal-amd userland/metal-amd/build.sh all
+          METAL_AMD_OUT=out/metal-amd userland/metal-amd/air/build.sh plugin \
+            out/metal-amd/build-ios-arm64/src/gallium/targets/oneios-radeonsi/liboneios_radeonsi.dylib
+      - name: Upload metal-amd bundles
+        uses: actions/upload-artifact@c4f430e030ddbb5bdabf93d22962f4752f3646cd9
+        with:
+          name: metal-amd
+          path: |
+            out/metal-amd/OneiOSRadeonMetal.bundle
+            out/metal-amd/gl/OneiOSRadeonGL.bundle
+            out/metal-amd/libdrm-2.4.133/amdgpu/amdgpu_bo.c
+  runtime:
+    needs: [plan, metal-amd]
     if: needs.plan.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -161,9 +184,13 @@ jobs:
           gh release download "$ktag" --repo "$krepo" --pattern 'xnu-*.tar.zst' --dir out/kernel/dl
           echo "$ksha  $(ls out/kernel/dl/xnu-*.tar.zst)" | sha256sum -c -
           zstd -dc out/kernel/dl/xnu-*.tar.zst | tar -x -C out/kernel/current
-      - name: Package (refuses Apple files and what Android cannot load)
-        run: runtime/package.sh "$VERSION"
-      - name: The package's xnuhost and gpuctl have drm2kgsl
+           - name: Download metal-amd bundles
+         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -n metal-amd -D out/metal-amd
+       - name: Package (refuses Apple files and what Android cannot load)
+      env:
+        METAL_AMD_DIR: out/metal-amd
+       run: runtime/package.sh "$VERSION"
+       - name: The package's xnuhost and gpuctl have drm2kgsl
         run: |
           set -euo pipefail
           d=$(mktemp -d); zstd -dc out/release/oneios-runtime-$VERSION-arm64.tar.zst | tar -x -C "$d"
@@ -178,7 +205,7 @@ jobs:
           set -euo pipefail
           d=$(mktemp -d); zstd -dc out/release/oneios-runtime-$VERSION-arm64.tar.zst | tar -x -C "$d"
           runtime/package/elf-check.sh "$d"
-      - name: The package holds the runtime's own folders only
+       - name: The package holds the runtime's own folders only
         # runtime.json, NOTICE, LICENSE, bin/, lib/, scripts/, kernel/xnu.macho and its record: nothing of the
         # fork's tree (app/) or any other part of the checkout.
         run: |
@@ -188,7 +215,7 @@ jobs:
           zstd -dc "$a" | tar -t | tee members.txt | grep -Ev '^(runtime\.json|NOTICE|LICENSE|(bin|lib|scripts)/[^/].*|kernel/([0-9A-Z]+/)?xnu\.macho(\.build\.json)?)$' && { echo "::error::the package has members outside the runtime's folders (above)"; exit 1; }
           [ "$(head -n 1 members.txt)" = runtime.json ] || { echo "::error::runtime.json is not the first member"; exit 1; }
           echo "$(wc -l < members.txt) members, runtime.json first"
-      - name: The phone's oneios-tool is the package's bin/oneios-tool, stripped, with its .sha256
+     - name: The phone's oneios-tool is the package's bin/oneios-tool, stripped, with its .sha256
         # runtime/package.sh builds tools/oneios-tool for aarch64-linux-android into bin/oneios-tool and writes the
         # same bytes beside the package (docs/releases.md, "oneios-tool for the phone"). The OneOS app runs it as root.
         run: .github/scripts/check-phone-tool.sh "$VERSION"
@@ -198,11 +225,10 @@ jobs:
           path: |
             out/release/*.tar.zst
             out/release/*.sha256
-            out/release/*.runtime.json
-            out/release/oneios-tool-*-android-arm64
-          if-no-files-found: error
-          retention-days: 14
-
+       out/release/*.runtime.json
+      out/release/oneios-tool-*-android-arm64         
+    if-no-files-found: error
+  retention-days: 14
   apk:
     needs: plan
     if: needs.plan.outputs.apk == 'true'
