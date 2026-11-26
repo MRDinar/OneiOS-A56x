@@ -93,11 +93,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install build tools
         run: brew install meson ninja pkg-config cmake
-      - name: Fetch references-ios
-        run: scripts/setup/get-references.sh mesa-droidvm ios16-tbd
-      - name: Fetch references
-        run: scripts/setup/get-references.sh
+      - name: Generate iOS SDK stubs from Xcode
+        run: scripts/setup/ios-toolchain.sh --tbd
       - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
+        env:
+          IOS_TBD: out/ios27-tbd
         run: |
           METAL_AMD_OUT=out/metal-amd userland/metal-amd/build.sh all
           METAL_AMD_OUT=out/metal-amd userland/metal-amd/air/build.sh plugin \
