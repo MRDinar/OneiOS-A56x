@@ -14,7 +14,7 @@
 # "both", "runtime only" or "apk only".
 # The runtime job never checks out app/: the fork's tree cannot reach the package. Nothing of Apple's, Samsung's,
 # Google's or OPPO's is downloaded or uploaded here: runtime/package.sh refuses Apple files (`oneios-tool package`),
-# and .github/scripts/check-apk.sh refuses an APK that carries a package set, an image or firmware.
+ # and .github/scripts/check-apk.sh refuses an APK that carries a package set, an image or firmware.
 name: build and release
 on:
   pull_request:
