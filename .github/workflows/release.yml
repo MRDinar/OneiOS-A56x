@@ -39,7 +39,7 @@ concurrency:
   group: build-${{ github.event_name }}-${{ github.ref }}
   # Builds of a branch or a pull request give way to a newer push; a release never does.
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' && github.event_name == 'push' }}
-jobs:
+  jobs:
     plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
