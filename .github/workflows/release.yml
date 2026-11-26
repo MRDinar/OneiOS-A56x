@@ -94,7 +94,7 @@ jobs:
       - name: Install build tools
         run: brew install meson ninja pkg-config cmake
       - name: Generate iOS SDK stubs from Xcode
-        run: scripts/setup/ios-toolchain.sh --tbd
+        run: mkdir -p out && ln -s "$(xcrun --sdk iphoneos --show-sdk-path)" out/ios27-tbd
       - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
         env:
           IOS_TBD: out/ios27-tbd
