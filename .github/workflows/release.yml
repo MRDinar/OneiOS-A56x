@@ -94,7 +94,8 @@ jobs:
       - name: Install build tools
         run: brew install meson ninja pkg-config cmake
       - name: Fetch references
-        run: scripts/setup/get-references.sh
+        run: scripts/setup/get-references.sh 
+        run: scripts/setup/get-references.sh mesa-droidvm ios16-tbd
       - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
         run: |
           METAL_AMD_OUT=out/metal-amd userland/metal-amd/build.sh all
