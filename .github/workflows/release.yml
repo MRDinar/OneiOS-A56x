@@ -184,7 +184,7 @@ jobs:
           gh release download "$ktag" --repo "$krepo" --pattern 'xnu-*.tar.zst' --dir out/kernel/dl
           echo "$ksha  $(ls out/kernel/dl/xnu-*.tar.zst)" | sha256sum -c -
           zstd -dc out/kernel/dl/xnu-*.tar.zst | tar -x -C out/kernel/current
-           - name: Download metal-amd bundles
+      - name: Download metal-amd bundles
         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -n metal-amd -D out/metal-amd
       - name: Package (refuses Apple files and what Android cannot load)
         env:
@@ -227,8 +227,8 @@ jobs:
             out/release/*.sha256
             out/release/*.runtime.json
             out/release/oneios-tool-*-android-arm64         
-    if-no-files-found: error
-  retention-days: 14
+          if-no-files-found: error
+          retention-days: 14
   apk:
     needs: plan
     if: needs.plan.outputs.apk == 'true'
