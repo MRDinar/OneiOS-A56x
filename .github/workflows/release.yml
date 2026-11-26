@@ -84,7 +84,7 @@ jobs:
           fi
           echo "release=$release version=$version runtime=$runtime apk=$apk"
           { echo "release=$release"; echo "version=$version"; echo "runtime=$runtime"; echo "apk=$apk"; } >> "$GITHUB_OUTPUT"
-    metal-amd:
+  metal-amd:
     needs: plan
     if: needs.plan.outputs.runtime == 'true'
     runs-on: macos-latest
