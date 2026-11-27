@@ -93,8 +93,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install build tools
         run: |
-          brew install meson ninja pkg-config cmake python-packaging python-mako || true
-          /Library/Frameworks/Python.framework/Versions/Current/bin/pip3 install --break-system-packages packaging mako || pip3 install --break-system-packages packaging mako
+          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+          brew install meson ninja pkg-config cmake
+          python3 -m pip install --break-system-packages meson ninja packaging mako || pip3 install --break-system-packages meson ninja packaging mako
+          which meson ninja
       - name: Link iOS SDK stubs from Xcode
         run: scripts/setup/get-references.sh mesa-droidvm && mkdir -p out && ln -s "$(xcrun --sdk iphoneos --show-sdk-path)" out/ios27-tbd
       - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
