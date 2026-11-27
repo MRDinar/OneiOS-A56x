@@ -96,12 +96,12 @@ jobs:
       - name: Link iOS SDK stubs from Xcode
         run: scripts/setup/get-references.sh mesa-droidvm && mkdir -p out && ln -s "$(xcrun --sdk iphoneos --show-sdk-path)" out/ios27-tbd
       - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
-        env:
-          IOS_TBD: out/ios27-tbd
         run: |
-          METAL_AMD_OUT=out/metal-amd userland/metal-amd/build.sh all
-          METAL_AMD_OUT=out/metal-amd userland/metal-amd/air/build.sh plugin \
-            out/metal-amd/build-ios-arm64/src/gallium/targets/oneios-radeonsi/liboneios_radeonsi.dylib
+          export IOS_TBD="$PWD/out/ios27-tbd"
+          export METAL_AMD_OUT="$PWD/out/metal-amd"
+          userland/metal-amd/build.sh all
+          userland/metal-amd/air/build.sh plugin \
+            "$PWD/out/metal-amd/build-ios-arm64/src/gallium/targets/oneios-radeonsi/liboneios_radeonsi.dylib"
       - name: Upload metal-amd bundles
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
