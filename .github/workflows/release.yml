@@ -110,6 +110,7 @@ jobs:
       - name: Build OneiOSRadeonMetal and OneiOSRadeonGL
         run: |
           export IOS_TBD="$PWD/out/ios27-tbd"
+          export IOS_LD=/usr/bin/ld
           export METAL_AMD_OUT="$PWD/out/metal-amd"
           userland/metal-amd/build.sh all
           userland/metal-amd/air/build.sh plugin "$PWD/out/metal-amd/build-ios"
