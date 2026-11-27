@@ -96,7 +96,7 @@ jobs:
           export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
           brew install meson ninja pkg-config cmake
           for py in $(which -a python3 python) /usr/local/bin/python3* /usr/local/opt/python*/bin/python3* /Library/Frameworks/Python.framework/Versions/*/bin/python3*; do
-            [ -x "$py" ] && "$py" -m pip install --break-system-packages packaging mako 2>/dev/null || true
+             [ -x "$py" ] && "$py" -m pip install --break-system-packages packaging mako pyyaml ply 2>/dev/null || true
           done
       - name: Link iOS SDK stubs from Xcode
         run: scripts/setup/get-references.sh mesa-droidvm && mkdir -p out && ln -s "$(xcrun --sdk iphoneos --show-sdk-path)" out/ios27-tbd
