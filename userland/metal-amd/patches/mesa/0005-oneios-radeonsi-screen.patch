@@ -465,7 +465,7 @@ new file mode 100644
 index 0000000..6718e2b
 --- /dev/null
 +++ b/src/gallium/targets/oneios-radeonsi/oneios_radeonsi.c
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,164 @@
 +/*
 + * OneiOS: oneios_radeonsi_screen_create (oneios_radeonsi.h).
 + *
