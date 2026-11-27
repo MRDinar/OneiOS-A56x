@@ -618,9 +618,6 @@ index 0000000..6718e2b
 +#ifdef HAVE_VDRM_DARWIN
 +      }
 +#endif
-+#endif
-+         size_t elen = strlen(err_buf);
-+         say(why, why_size, "radeonsi2: %s", elen > 45 ? err_buf + 45 : err_buf);
 +   }
 +   if (screen) {
 +      char line[256];
