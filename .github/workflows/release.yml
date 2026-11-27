@@ -169,7 +169,7 @@ jobs:
         # pull request builds what a release builds. Fetched before the host tests (docs/releases.md).
         run: |
           set -euo pipefail
-          scripts/setup/get-references.sh virglrenderer
+          scripts/setup/get-references.sh virglrenderer mesa-droidvm
           test -f external/virglrenderer/src/drm/drm2kgsl/drm2kgsl_renderer.c || { echo "virglrenderer checkout has no drm2kgsl"; exit 1; }
       - name: Host tests
         run: |
