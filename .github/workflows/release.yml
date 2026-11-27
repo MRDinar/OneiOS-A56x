@@ -93,10 +93,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install build tools
         run: |
-          export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-          brew install meson ninja pkg-config cmake
+          brew install meson ninja pkg-config cmake bison flex
+          echo "/usr/local/opt/bison/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/opt/flex/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/flex/bin" >> "$GITHUB_PATH"
           for py in $(which -a python3 python) /usr/local/bin/python3* /usr/local/opt/python*/bin/python3* /Library/Frameworks/Python.framework/Versions/*/bin/python3*; do
-             [ -x "$py" ] && "$py" -m pip install --break-system-packages packaging mako pyyaml ply 2>/dev/null || true
+            [ -x "$py" ] && "$py" -m pip install --break-system-packages packaging mako pyyaml ply 2>/dev/null || true
           done
       - name: Link iOS SDK stubs from Xcode
         run: scripts/setup/get-references.sh mesa-droidvm && mkdir -p out && ln -s "$(xcrun --sdk iphoneos --show-sdk-path)" out/ios27-tbd
