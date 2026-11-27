@@ -112,15 +112,15 @@ jobs:
           export IOS_TBD="$PWD/out/ios27-tbd"
           export METAL_AMD_OUT="$PWD/out/metal-amd"
           userland/metal-amd/build.sh all
-          userland/metal-amd/build.sh mesa-ios
-          userland/metal-amd/air/build.sh plugin \
-            "$PWD/out/metal-amd/build-ios-arm64/src/gallium/targets/air-metal/libOneiOSRadeonAir.dylib"
+          userland/metal-amd/air/build.sh "$PWD/out/metal-amd/mesa" "$PWD/out/metal-amd/build-ios-arm64"
+          userland/metal-amd/air/build.sh plugin "$PWD/out/metal-amd/build-ios-arm64"
       - name: Upload metal-amd bundles
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: metal-amd
           path: |
             out/metal-amd/OneiOSRadeonMetal.bundle
+            out/metal-amd/OneiOSRadeonMetal.gpuaddon
             out/metal-amd/gl/OneiOSRadeonGL.bundle
             out/metal-amd/libdrm-2.4.133/amdgpu/amdgpu_bo.c
   runtime:
